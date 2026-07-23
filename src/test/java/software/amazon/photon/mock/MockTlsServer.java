@@ -93,8 +93,10 @@ public class MockTlsServer implements Closeable {
                                 byte[] encoded = encodeResponse(response);
                                 out.write(encoded);
                                 out.flush();
+                            } else {
+                                // null response = drop mode: close the connection
+                                return;
                             }
-                            // null response = hang/drop mode
                         }
                     } catch (IncompleteFrame e) {
                         // Need more data
