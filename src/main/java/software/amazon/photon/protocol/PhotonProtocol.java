@@ -10,6 +10,7 @@ import software.amazon.photon.resp.RespArray;
 import software.amazon.photon.resp.RespBulkString;
 import software.amazon.photon.resp.RespError;
 import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespNull;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
@@ -199,7 +200,11 @@ public final class PhotonProtocol {
         RespValue statusValue = elements.get(0);
         int statusCode;
         if (statusValue instanceof RespInteger) {
-            statusCode = (int) ((RespInteger) statusValue).getValue();
+            long rawStatus = ((RespInteger) statusValue).getValue();
+            if (rawStatus < 100 || rawStatus > 599) {
+                throw new PhotonProtocolError("Status code out of range: " + rawStatus);
+            }
+            statusCode = (int) rawStatus;
         } else if (statusValue instanceof RespBulkString) {
             String statusStr = new String(((RespBulkString) statusValue).getValue(), StandardCharsets.UTF_8);
             try {
@@ -233,8 +238,10 @@ public final class PhotonProtocol {
             body = ((RespBulkString) bodyValue).getValue();
         } else if (bodyValue instanceof RespSimpleString) {
             body = ((RespSimpleString) bodyValue).getValue();
-        } else {
+        } else if (bodyValue instanceof RespNull) {
             body = new byte[0];
+        } else {
+            throw new PhotonProtocolError("Unexpected body type: " + bodyValue.getClass().getSimpleName());
         }
 
         return new PhotonResponse(statusCode, headers, body);

@@ -2,6 +2,7 @@ package software.amazon.photon.connection;
 
 import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
+import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -43,6 +44,7 @@ public class PhotonConnection implements Closeable {
     private static final int DEFAULT_READ_TIMEOUT_MS = 5000;
     private static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
     private static final int READ_BUFFER_SIZE = 8192;
+    private static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024; // 16 MB
 
     private final String host;
     private final int port;
@@ -114,15 +116,19 @@ public class PhotonConnection implements Closeable {
             RespValue authReply = readResponse();
             // Expect +OK
             if (!(authReply instanceof RespSimpleString)) {
+                close();
                 throw new PhotonConnectionError("AUTH failed: unexpected response type: " + authReply);
             }
             String ok = new String(((RespSimpleString) authReply).getValue(), StandardCharsets.UTF_8);
             if (!"OK".equals(ok)) {
+                close();
                 throw new PhotonConnectionError("AUTH failed: " + ok);
             }
         } catch (PhotonConnectionError e) {
+            close();
             throw e;
         } catch (Exception e) {
+            close();
             throw new PhotonConnectionError("AUTH handshake failed", e);
         }
 
@@ -136,8 +142,10 @@ public class PhotonConnection implements Closeable {
             this.config = PhotonProtocol.parseConfigResponse(configReply);
             return this.config;
         } catch (PhotonConnectionError e) {
+            close();
             throw e;
         } catch (Exception e) {
+            close();
             throw new PhotonConnectionError("Config handshake failed", e);
         }
     }
@@ -270,6 +278,10 @@ public class PhotonConnection implements Closeable {
 
             if (bytesRead < 0) {
                 throw new ConnectionLost("Connection closed by server (EOF)");
+            }
+
+            if (buffer.size() + bytesRead > MAX_RESPONSE_SIZE) {
+                throw new PhotonProtocolError("Response exceeded maximum size of " + MAX_RESPONSE_SIZE + " bytes");
             }
 
             buffer.write(readBuf, 0, bytesRead);

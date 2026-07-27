@@ -306,6 +306,28 @@ class PhotonProtocolTest {
     // === serializeConfig tests ===
 
     @Test
+    void deserializeResponse_nullBody_treatedAsEmpty() {
+        List<RespValue> elements = Arrays.asList(
+                new RespInteger(200),
+                new RespBulkString(new byte[0]),
+                RespNull.INSTANCE
+        );
+        PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
+        assertEquals(200, response.getStatusCode());
+        assertArrayEquals(new byte[0], response.getBody());
+    }
+
+    @Test
+    void deserializeResponse_unexpectedBodyType_throws() {
+        List<RespValue> elements = Arrays.asList(
+                new RespInteger(200),
+                new RespBulkString(new byte[0]),
+                new RespInteger(42)
+        );
+        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
+    }
+
+    @Test
     void serializeConfig_withOverrides() {
         Map<String, Object> overrides = new LinkedHashMap<>();
         overrides.put("key", "value");

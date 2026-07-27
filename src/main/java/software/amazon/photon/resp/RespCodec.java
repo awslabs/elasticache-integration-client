@@ -129,7 +129,8 @@ public final class RespCodec {
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete integer");
         }
-        String numStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
+        int len = crlfPos - (start + 1);
+        String numStr = new String(data, start + 1, len, StandardCharsets.US_ASCII);
         try {
             long value = Long.parseLong(numStr);
             return new DecodeResult(new RespInteger(value), crlfPos + 2);
@@ -143,7 +144,8 @@ public final class RespCodec {
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete error");
         }
-        String line = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.UTF_8);
+        int len = crlfPos - (start + 1);
+        String line = new String(data, start + 1, len, StandardCharsets.UTF_8);
         int spaceIdx = line.indexOf(' ');
         String code;
         String message;
