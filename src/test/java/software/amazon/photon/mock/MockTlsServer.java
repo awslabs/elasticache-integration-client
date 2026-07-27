@@ -1,0 +1,242 @@
+package software.amazon.photon.mock;
+
+import software.amazon.photon.resp.*;
+
+import javax.net.ssl.*;
+import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.X509Certificate;
+import java.math.BigInteger;
+import java.security.cert.Certificate;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Threaded TLS test server implementing the Photon cache contract.
+ * Uses a self-signed certificate for testing.
+ */
+public class MockTlsServer implements Closeable {
+
+    private final MockCache cache;
+    private final SSLServerSocket serverSocket;
+    private final Thread serverThread;
+    private final AtomicBoolean running = new AtomicBoolean(true);
+    private final SSLContext sslContext;
+
+    public MockTlsServer(MockCache cache) throws Exception {
+        this.cache = cache;
+        this.sslContext = createSelfSignedSslContext();
+        SSLServerSocketFactory factory = sslContext.getServerSocketFactory();
+        this.serverSocket = (SSLServerSocket) factory.createServerSocket(0); // random port
+        this.serverThread = new Thread(this::acceptLoop, "mock-tls-server");
+        this.serverThread.setDaemon(true);
+        this.serverThread.start();
+    }
+
+    public int getPort() {
+        return serverSocket.getLocalPort();
+    }
+
+    public SSLContext getSslContext() {
+        return sslContext;
+    }
+
+    private void acceptLoop() {
+        while (running.get()) {
+            try {
+                Socket client = serverSocket.accept();
+                Thread handler = new Thread(() -> handleClient(client), "mock-client-handler");
+                handler.setDaemon(true);
+                handler.start();
+            } catch (IOException e) {
+                if (running.get()) {
+                    // unexpected
+                    e.printStackTrace();
+                }
+            }
+        }
+    }
+
+    private void handleClient(Socket client) {
+        try (InputStream in = client.getInputStream();
+             OutputStream out = client.getOutputStream()) {
+            byte[] buffer = new byte[8192];
+            ByteArrayOutputStream accum = new ByteArrayOutputStream();
+
+            while (running.get()) {
+                int read = in.read(buffer);
+                if (read < 0) break;
+                accum.write(buffer, 0, read);
+
+                // Try to decode commands from accumulated data
+                byte[] data = accum.toByteArray();
+                int pos = 0;
+                while (pos < data.length) {
+                    try {
+                        DecodeResult result = RespCodec.decode(data, pos);
+                        RespValue value = result.getValue();
+                        pos = result.getPosition();
+
+                        // Extract command array
+                        if (value instanceof RespArray) {
+                            RespArray array = (RespArray) value;
+                            RespValue response = cache.handle(array.getElements());
+                            if (response != null) {
+                                byte[] encoded = encodeResponse(response);
+                                out.write(encoded);
+                                out.flush();
+                            } else {
+                                // null response = drop mode: close the connection
+                                return;
+                            }
+                        }
+                    } catch (IncompleteFrame e) {
+                        // Need more data
+                        break;
+                    }
+                }
+
+                // Keep unprocessed data
+                if (pos > 0) {
+                    byte[] remaining = new byte[data.length - pos];
+                    System.arraycopy(data, pos, remaining, 0, remaining.length);
+                    accum.reset();
+                    accum.write(remaining, 0, remaining.length);
+                }
+            }
+        } catch (IOException e) {
+            // Client disconnected
+        }
+    }
+
+    private byte[] encodeResponse(RespValue value) {
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        encodeValue(out, value);
+        return out.toByteArray();
+    }
+
+    private void encodeValue(ByteArrayOutputStream out, RespValue value) {
+        if (value instanceof RespSimpleString) {
+            byte[] data = ((RespSimpleString) value).getValue();
+            out.write('+');
+            out.write(data, 0, data.length);
+            out.write('\r');
+            out.write('\n');
+        } else if (value instanceof RespInteger) {
+            String s = ":" + ((RespInteger) value).getValue() + "\r\n";
+            byte[] bytes = s.getBytes(StandardCharsets.US_ASCII);
+            out.write(bytes, 0, bytes.length);
+        } else if (value instanceof RespError) {
+            RespError err = (RespError) value;
+            String s = "-" + err.getCode() + " " + err.getMessage() + "\r\n";
+            byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+            out.write(bytes, 0, bytes.length);
+        } else if (value instanceof RespBulkString) {
+            byte[] data = ((RespBulkString) value).getValue();
+            String header = "$" + data.length + "\r\n";
+            byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
+            out.write(headerBytes, 0, headerBytes.length);
+            out.write(data, 0, data.length);
+            out.write('\r');
+            out.write('\n');
+        } else if (value instanceof RespArray) {
+            List<RespValue> elements = ((RespArray) value).getElements();
+            String header = "*" + elements.size() + "\r\n";
+            byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
+            out.write(headerBytes, 0, headerBytes.length);
+            for (RespValue element : elements) {
+                encodeValue(out, element);
+            }
+        } else if (value instanceof RespNull) {
+            byte[] bytes = "$-1\r\n".getBytes(StandardCharsets.US_ASCII);
+            out.write(bytes, 0, bytes.length);
+        }
+    }
+
+    private SSLContext createSelfSignedSslContext() throws Exception {
+        // Generate a self-signed certificate
+        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
+        keyGen.initialize(2048, new SecureRandom());
+        KeyPair keyPair = keyGen.generateKeyPair();
+
+        // Create a self-signed X509 certificate using sun.security.x509 internals
+        // For Java 11 compatibility, we use a simpler approach with KeyStore
+        X509Certificate cert = generateSelfSignedCert(keyPair);
+
+        KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+        ks.load(null, null);
+        ks.setKeyEntry("server", keyPair.getPrivate(), "password".toCharArray(),
+                new Certificate[]{cert});
+
+        KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        kmf.init(ks, "password".toCharArray());
+
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        ks.setCertificateEntry("ca", cert);
+        tmf.init(ks);
+
+        SSLContext ctx = SSLContext.getInstance("TLS");
+        ctx.init(kmf.getKeyManagers(), tmf.getTrustManagers(), new SecureRandom());
+        return ctx;
+    }
+
+    @SuppressWarnings("all")
+    private X509Certificate generateSelfSignedCert(KeyPair keyPair) throws Exception {
+        // Use reflection to access sun.security.x509 classes (available in Java 11)
+        long now = System.currentTimeMillis();
+        Date notBefore = new Date(now);
+        Date notAfter = new Date(now + 365L * 24 * 60 * 60 * 1000);
+
+        Class<?> x500NameClass = Class.forName("sun.security.x509.X500Name");
+        Object issuer = x500NameClass.getConstructor(String.class).newInstance("CN=MockPhotonServer");
+
+        Class<?> certInfoClass = Class.forName("sun.security.x509.X509CertInfo");
+        Object certInfo = certInfoClass.getConstructor().newInstance();
+
+        Class<?> certValidityClass = Class.forName("sun.security.x509.CertificateValidity");
+        Object validity = certValidityClass.getConstructor(Date.class, Date.class).newInstance(notBefore, notAfter);
+
+        Class<?> serialNumClass = Class.forName("sun.security.x509.CertificateSerialNumber");
+        Object serialNum = serialNumClass.getConstructor(int.class).newInstance((int) (now / 1000));
+
+        // Set fields on CertInfo
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "validity", validity);
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "serialNumber", serialNum);
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "subject", issuer);
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "issuer", issuer);
+
+        Class<?> certKeyClass = Class.forName("sun.security.x509.CertificateX509Key");
+        Object certKey = certKeyClass.getConstructor(java.security.PublicKey.class).newInstance(keyPair.getPublic());
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "key", certKey);
+
+        // Algorithm
+        Class<?> algIdClass = Class.forName("sun.security.x509.AlgorithmId");
+        Object algId = algIdClass.getMethod("get", String.class).invoke(null, "SHA256withRSA");
+        Class<?> certAlgClass = Class.forName("sun.security.x509.CertificateAlgorithmId");
+        Object certAlg = certAlgClass.getConstructor(algIdClass).newInstance(algId);
+        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "algorithmID", certAlg);
+
+        // Create X509CertImpl and sign it
+        Class<?> x509CertImplClass = Class.forName("sun.security.x509.X509CertImpl");
+        Object cert = x509CertImplClass.getConstructor(certInfoClass).newInstance(certInfo);
+        x509CertImplClass.getMethod("sign", java.security.PrivateKey.class, String.class)
+                .invoke(cert, keyPair.getPrivate(), "SHA256withRSA");
+
+        return (X509Certificate) cert;
+    }
+
+    @Override
+    public void close() throws IOException {
+        running.set(false);
+        serverSocket.close();
+        serverThread.interrupt();
+    }
+}
