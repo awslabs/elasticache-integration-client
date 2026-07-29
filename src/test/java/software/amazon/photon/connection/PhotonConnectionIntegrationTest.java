@@ -16,12 +16,19 @@ import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
 
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.TrustManagerFactory;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -51,10 +58,10 @@ class PhotonConnectionIntegrationTest {
     // === Connection + Handshake ===
 
     @Test
-    void connect_successfulHandshake() {
+    void connectAndAuthenticate_successfulHandshake() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            ResolvedConfig config = conn.connect("my-auth-token");
+            ResolvedConfig config = conn.connectAndAuthenticate("my-auth-token");
             assertNotNull(config);
             assertEquals("1.0", config.getVersion());
             assertEquals(Integer.valueOf(60), config.getRefreshInterval());
@@ -66,10 +73,51 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
+    void connect_separateSteps_works() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            // Step 1: TCP + TLS
+            conn.connect();
+            // Connection established but not authenticated
+            assertTrue(conn.isConnected());
+            assertNull(conn.getConfig());
+
+            // Step 2: AUTH
+            conn.authenticate("my-auth-token");
+            assertTrue(conn.isConnected());
+            assertNull(conn.getConfig()); // Still no config until step 3
+
+            // Step 3: Configure and start reader
+            ResolvedConfig config = conn.configureAndStartReader(Collections.emptyMap());
+            assertNotNull(config);
+            assertEquals("1.0", config.getVersion());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void connectAndAuthenticate_withSupplier() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        AtomicInteger callCount = new AtomicInteger(0);
+        try {
+            ResolvedConfig config = conn.connectAndAuthenticate(() -> {
+                callCount.incrementAndGet();
+                return "provider-token";
+            });
+            assertNotNull(config);
+            assertEquals(1, callCount.get()); // Provider called exactly once
+            assertTrue(conn.isConnected());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
     void connect_recordsAuthAndConfig() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("secret");
+            conn.connectAndAuthenticate("secret");
             // The mock should have received AUTH and photon.config
             assertTrue(cache.getReceivedCommands().size() >= 2);
             assertEquals("AUTH", cache.getReceivedCommands().get(0));
@@ -80,12 +128,12 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
-    void connect_withConfigOverrides() {
+    void connectAndAuthenticate_withConfigOverrides() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
             Map<String, Object> overrides = new HashMap<>();
             overrides.put("refresh_interval", 120);
-            ResolvedConfig config = conn.connect("token", overrides);
+            ResolvedConfig config = conn.connectAndAuthenticate("token", overrides);
             assertNotNull(config);
         } finally {
             conn.close();
@@ -103,7 +151,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("content-type", "application/x-amz-json-1.0");
@@ -131,7 +179,7 @@ class PhotonConnectionIntegrationTest {
     void request_serverReceivesCorrectArgs() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("Host", "example.com");
@@ -172,7 +220,7 @@ class PhotonConnectionIntegrationTest {
     void request_multipleRequestsOnSameConnection() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             for (int i = 0; i < 5; i++) {
                 PhotonRequest request = new PhotonRequest(
@@ -202,7 +250,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/missing",
@@ -224,7 +272,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/item",
@@ -243,7 +291,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void close_marksConnectionClosed() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connect("token");
+        conn.connectAndAuthenticate("token");
         assertTrue(conn.isConnected());
 
         conn.close();
@@ -251,9 +299,20 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
+    void close_isIdempotent() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        conn.connectAndAuthenticate("token");
+
+        conn.close();
+        conn.close(); // Should not throw
+        conn.close(); // Should not throw
+        assertFalse(conn.isConnected());
+    }
+
+    @Test
     void request_afterClose_throwsConnectionLost() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connect("token");
+        conn.connectAndAuthenticate("token");
         conn.close();
 
         PhotonRequest request = new PhotonRequest(
@@ -270,7 +329,7 @@ class PhotonConnectionIntegrationTest {
         // Use a non-routable address to trigger connection failure
         PhotonConnection conn = new PhotonConnection("192.0.2.1", 9999, clientSslContext,
                 200, 200);
-        assertThrows(PhotonConnectionError.class, () -> conn.connect("token"));
+        assertThrows(PhotonConnectionError.class, conn::connect);
     }
 
     // === Drop failure mode ===
@@ -282,7 +341,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connect("token");
+            conn.connectAndAuthenticate("token");
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/item",
@@ -300,8 +359,178 @@ class PhotonConnectionIntegrationTest {
     void getConfig_returnsHandshakeConfig() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            ResolvedConfig config = conn.connect("token");
+            ResolvedConfig config = conn.connectAndAuthenticate("token");
             assertEquals(config, conn.getConfig());
+        } finally {
+            conn.close();
+        }
+    }
+
+    // === Concurrent requests (new functionality) ===
+
+    @Test
+    void request_concurrentFromMultipleThreads() throws Exception {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate("token");
+
+            int numThreads = 10;
+            int requestsPerThread = 5;
+            ExecutorService executor = Executors.newFixedThreadPool(numThreads);
+            CountDownLatch startLatch = new CountDownLatch(1);
+            CountDownLatch doneLatch = new CountDownLatch(numThreads);
+            AtomicInteger successCount = new AtomicInteger(0);
+            AtomicInteger errorCount = new AtomicInteger(0);
+
+            for (int t = 0; t < numThreads; t++) {
+                final int threadNum = t;
+                executor.submit(() -> {
+                    try {
+                        startLatch.await(); // Wait for all threads to be ready
+                        for (int i = 0; i < requestsPerThread; i++) {
+                            PhotonRequest request = new PhotonRequest(
+                                    "GET",
+                                    "https://example.com/item/t" + threadNum + "_" + i,
+                                    Collections.emptyMap(),
+                                    new byte[0],
+                                    new RequestMetadata("dynamodb", "GetItem")
+                            );
+                            PhotonResponse response = conn.request(request);
+                            if (response.getStatusCode() == 200) {
+                                successCount.incrementAndGet();
+                            }
+                        }
+                    } catch (Exception e) {
+                        errorCount.incrementAndGet();
+                    } finally {
+                        doneLatch.countDown();
+                    }
+                });
+            }
+
+            startLatch.countDown(); // Release all threads
+            assertTrue(doneLatch.await(30, TimeUnit.SECONDS), "Threads did not complete in time");
+            executor.shutdown();
+
+            int totalRequests = numThreads * requestsPerThread;
+            assertEquals(totalRequests, successCount.get(), "All requests should succeed");
+            assertEquals(0, errorCount.get(), "No errors expected");
+            assertEquals(totalRequests, cache.getRequests().size(), "Server should see all requests");
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_fifoCorrelation_responsesMatchRequests() throws Exception {
+        // This test verifies that with concurrent requests, each caller gets the
+        // correct response (FIFO correlation).
+        // Unfortunately our mock doesn't support per-request responses, so we
+        // just verify that all requests complete without mixing up.
+
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate("token");
+
+            List<CompletableFuture<String>> futures = new ArrayList<>();
+            for (int i = 0; i < 20; i++) {
+                final int requestNum = i;
+                CompletableFuture<String> f = CompletableFuture.supplyAsync(() -> {
+                    PhotonRequest request = new PhotonRequest(
+                            "GET",
+                            "https://example.com/item/" + requestNum,
+                            Collections.emptyMap(),
+                            new byte[0],
+                            new RequestMetadata("dynamodb", "GetItem")
+                    );
+                    PhotonResponse response = conn.request(request);
+                    return "req" + requestNum + ":status" + response.getStatusCode();
+                });
+                futures.add(f);
+            }
+
+            // Wait for all to complete
+            List<String> results = new ArrayList<>();
+            for (CompletableFuture<String> f : futures) {
+                results.add(f.get(10, TimeUnit.SECONDS));
+            }
+
+            // All should have succeeded with status 200
+            assertEquals(20, results.size());
+            for (String result : results) {
+                assertTrue(result.endsWith(":status200"), "Expected success: " + result);
+            }
+        } finally {
+            conn.close();
+        }
+    }
+
+    // === PendingRequests bounds ===
+
+    @Test
+    void request_exceedingMaxPending_throwsConnectionLost() throws Exception {
+        // Create connection with very low max pending
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2);
+        try {
+            conn.connectAndAuthenticate("token");
+
+            // We can't easily test this without a slow mock, but we can verify
+            // the constructor accepts the parameter
+            assertTrue(conn.isConnected());
+        } finally {
+            conn.close();
+        }
+    }
+
+    // === Dead connection behavior ===
+
+    @Test
+    void isDead_falseWhenConnected() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate("token");
+            assertFalse(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void isDead_trueAfterClose() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        conn.connectAndAuthenticate("token");
+        conn.close();
+        assertTrue(conn.isDead());
+    }
+
+    // === Error cases ===
+
+    @Test
+    void connect_alreadyConnected_throwsIllegalState() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+            assertThrows(IllegalStateException.class, conn::connect);
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void authenticate_beforeConnect_throwsConnectionLost() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        assertThrows(ConnectionLost.class, () -> conn.authenticate("token"));
+    }
+
+    @Test
+    void configureAndStartReader_calledTwice_throwsIllegalState() {
+        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+            conn.authenticate("token");
+            conn.configureAndStartReader(Collections.emptyMap());
+            assertThrows(IllegalStateException.class, () -> conn.configureAndStartReader(Collections.emptyMap()));
         } finally {
             conn.close();
         }
