@@ -17,6 +17,11 @@ repositories {
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
 
+    // AWS SDK v2 for IAM auth (SigV4 presigning)
+    implementation(platform("software.amazon.awssdk:bom:2.25.16"))
+    implementation("software.amazon.awssdk:auth")
+    implementation("software.amazon.awssdk:regions")
+
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
