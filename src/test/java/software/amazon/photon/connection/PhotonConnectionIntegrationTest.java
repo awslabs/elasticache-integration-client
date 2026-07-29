@@ -423,10 +423,9 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_fifoCorrelation_responsesMatchRequests() throws Exception {
-        // This test verifies that with concurrent requests, each caller gets the
-        // correct response (FIFO correlation).
-        // Unfortunately our mock doesn't support per-request responses, so we
-        // just verify that all requests complete without mixing up.
+        // Comment #461: Actually verify FIFO correlation by having the mock
+        // echo back a request-specific marker in the response body
+        cache.setReplyFunction(req -> Reply.ok(200, Collections.emptyMap(), req.getBody()));
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
@@ -435,30 +434,32 @@ class PhotonConnectionIntegrationTest {
             List<CompletableFuture<String>> futures = new ArrayList<>();
             for (int i = 0; i < 20; i++) {
                 final int requestNum = i;
+                final String marker = "marker-" + requestNum;
                 CompletableFuture<String> f = CompletableFuture.supplyAsync(() -> {
                     PhotonRequest request = new PhotonRequest(
                             "GET",
                             "https://example.com/item/" + requestNum,
                             Collections.emptyMap(),
-                            new byte[0],
+                            marker.getBytes(StandardCharsets.UTF_8),
                             new RequestMetadata("dynamodb", "GetItem")
                     );
                     PhotonResponse response = conn.request(request);
-                    return "req" + requestNum + ":status" + response.getStatusCode();
+                    // Return the marker we sent AND the body we got back
+                    String receivedBody = new String(response.getBody(), StandardCharsets.UTF_8);
+                    return marker + "|" + receivedBody;
                 });
                 futures.add(f);
             }
 
-            // Wait for all to complete
-            List<String> results = new ArrayList<>();
-            for (CompletableFuture<String> f : futures) {
-                results.add(f.get(10, TimeUnit.SECONDS));
-            }
-
-            // All should have succeeded with status 200
-            assertEquals(20, results.size());
-            for (String result : results) {
-                assertTrue(result.endsWith(":status200"), "Expected success: " + result);
+            // Wait for all to complete and verify each caller got their own response
+            for (int i = 0; i < futures.size(); i++) {
+                String result = futures.get(i).get(10, TimeUnit.SECONDS);
+                String[] parts = result.split("\\|");
+                assertEquals(2, parts.length, "Result should have marker|body format");
+                String sentMarker = parts[0];
+                String receivedBody = parts[1];
+                assertEquals(sentMarker, receivedBody,
+                        "Response body should match the request body (FIFO correlation)");
             }
         } finally {
             conn.close();

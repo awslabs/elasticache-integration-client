@@ -71,7 +71,8 @@ public class SocketReader {
      * Run the reader loop. This blocks until the connection dies.
      *
      * <p>Call this from a dedicated thread. On exit (normal or exceptional),
-     * all pending requests are failed and the onDeath callback is invoked.
+     * the onDeath callback is invoked first (to set dead=true), then all
+     * pending requests are failed.
      */
     public void runLoop() {
         try {
@@ -79,11 +80,13 @@ public class SocketReader {
                 readAndResolve();
             }
         } catch (ConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
+            // Comment #82: Call onDeath before failAll so isDead() is true
+            // when callers observe the exception
+            onDeath.run();
             pending.failAll(e);
-            onDeath.run();
         } catch (Exception e) {
-            pending.failAll(new ConnectionLost("Reader thread failed", e));
             onDeath.run();
+            pending.failAll(new ConnectionLost("Reader thread failed", e));
         }
     }
 
