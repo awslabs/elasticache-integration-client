@@ -1,0 +1,187 @@
+package software.amazon.photon.session;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTlsServer;
+
+import javax.net.ssl.SSLContext;
+import java.net.URI;
+import java.util.Map;
+import java.util.function.Consumer;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class PhotonClientTest {
+
+    private MockCache cache;
+    private MockTlsServer server;
+    private SSLContext clientSslContext;
+
+    // Common SDK client configuration for tests - fake credentials since we intercept requests
+    private final Consumer<DynamoDbClientBuilder> sdkConfig = b -> b
+            .region(Region.US_EAST_1)
+            .credentialsProvider(StaticCredentialsProvider.create(
+                    AwsBasicCredentials.create("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
+            .endpointOverride(URI.create("http://localhost:8080"));
+
+    @BeforeEach
+    void setUp() throws Exception {
+        cache = new MockCache();
+        server = new MockTlsServer(cache);
+        clientSslContext = server.getSslContext();
+    }
+
+    @AfterEach
+    void tearDown() throws Exception {
+        if (server != null) {
+            server.close();
+        }
+    }
+
+    @Test
+    void builder_withEndpoint_parsesHostAndPort() {
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertNotNull(result.client());
+            assertNotNull(result.handle());
+            assertTrue(result.handle().isOpen());
+        }
+    }
+
+    @Test
+    void builder_withHostAndPort_buildsSuccessfully() {
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .host("localhost")
+                .port(server.getPort())
+                .authProvider(() -> "test-token")
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertNotNull(result.client());
+            assertTrue(result.handle().isOpen());
+        }
+    }
+
+    @Test
+    void builder_withEndpointAndHost_throwsPhotonError() {
+        PhotonClient.Builder builder = PhotonClient.builder()
+                .endpoint("cache.example.com:6379")
+                .host("other-host")
+                .authProvider(() -> "test-token");
+
+        assertThrows(PhotonError.class, () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+    }
+
+    @Test
+    void builder_withoutEndpointOrHost_throwsPhotonError() {
+        PhotonClient.Builder builder = PhotonClient.builder()
+                .authProvider(() -> "test-token");
+
+        PhotonError error = assertThrows(PhotonError.class, 
+                () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+        assertTrue(error.getMessage().contains("endpoint or host is required"));
+    }
+
+    @Test
+    void builder_withoutAuthProvider_throwsPhotonError() {
+        PhotonClient.Builder builder = PhotonClient.builder()
+                .endpoint("cache.example.com:6379");
+
+        PhotonError error = assertThrows(PhotonError.class, 
+                () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+        assertTrue(error.getMessage().contains("authProvider is required"));
+    }
+
+    @Test
+    void builder_withStaticAuthToken_usesTokenProvider() {
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authToken("my-static-token")
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertTrue(result.handle().isOpen());
+        }
+    }
+
+    @Test
+    void result_close_closesBothHandleAndClient() {
+        PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig);
+
+        assertTrue(result.handle().isOpen());
+        
+        result.close();
+        
+        assertFalse(result.handle().isOpen());
+    }
+
+    @Test
+    void result_close_isIdempotent() {
+        PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig);
+
+        result.close();
+        result.close(); // Should not throw
+        
+        assertFalse(result.handle().isOpen());
+    }
+
+    @Test
+    void builder_connectionFailure_cleansUpAndRethrows() throws Exception {
+        server.close(); // Stop the server so connection fails
+        
+        PhotonClient.Builder builder = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .sslContext(clientSslContext)
+                .connectTimeoutMs(100);
+
+        assertThrows(Exception.class, () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+    }
+
+    @Test
+    void builder_withConfigOverrides_passesToSession() {
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .configOverrides(Map.of("ttl", 300))
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertNotNull(result.handle().getSession().getResolvedConfig());
+        }
+    }
+
+    @Test
+    void builder_withTimeouts_appliesTimeouts() {
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authProvider(() -> "test-token")
+                .connectTimeoutMs(1000)
+                .readTimeoutMs(2000)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertTrue(result.handle().isOpen());
+        }
+    }
+}
