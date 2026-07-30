@@ -107,7 +107,12 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      * @throws IllegalStateException if region cannot be resolved
      */
     public static IamAuthTokenProvider create(String cacheName) {
-        Region region = new DefaultAwsRegionProviderChain().getRegion();
+        Region region;
+        try {
+            region = new DefaultAwsRegionProviderChain().getRegion();
+        } catch (Exception e) {
+            throw new IllegalStateException("Could not resolve AWS region from default provider chain", e);
+        }
         if (region == null) {
             throw new IllegalStateException("Could not resolve AWS region from default provider chain");
         }
@@ -212,7 +217,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
                     .region(region)
                     .credentialsProvider(creds);
 
-            if (userId != null) {
+            if (userId != null && !userId.isEmpty()) {
                 generatorBuilder.userId(userId);
             }
             if (expiresIn != null) {

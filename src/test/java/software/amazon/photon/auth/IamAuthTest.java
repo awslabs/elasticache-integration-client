@@ -104,6 +104,22 @@ class IamAuthTest {
         }
 
         @Test
+        void generateToken_emptyUserIdUsesDefault() {
+            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
+                    .cacheName("my-cache")
+                    .region(Region.US_EAST_1)
+                    .credentialsProvider(staticCredentials())
+                    .userId("")
+                    .build();
+
+            String token = generator.generateToken();
+
+            assertTrue(token.contains("User=" + IamAuthTokenGenerator.DEFAULT_USER_ID),
+                    "Token should use default user ID when empty string specified");
+            assertEquals(IamAuthTokenGenerator.DEFAULT_USER_ID, generator.getUserId());
+        }
+
+        @Test
         void generateToken_customExpiresIn() {
             IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
                     .cacheName("my-cache")

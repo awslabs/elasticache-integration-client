@@ -46,7 +46,7 @@ public final class IamAuthTokenGenerator {
     public static final Duration TOKEN_EXPIRY = Duration.ofSeconds(900);
 
     /** Default ElastiCache IAM user for serverless caches. */
-    public static final String DEFAULT_USER_ID = "default";
+    public static final String DEFAULT_USER_ID = "default.iam-user";
 
     private static final String SERVICE_NAME = "elasticache";
     private static final String HTTP_SCHEME = "http://";
@@ -60,7 +60,8 @@ public final class IamAuthTokenGenerator {
 
     private IamAuthTokenGenerator(Builder builder) {
         this.cacheName = Objects.requireNonNull(builder.cacheName, "cacheName is required");
-        this.userId = builder.userId != null ? builder.userId : DEFAULT_USER_ID;
+        this.userId = (builder.userId != null && !builder.userId.isEmpty()) 
+                ? builder.userId : DEFAULT_USER_ID;
         this.region = Objects.requireNonNull(builder.region, "region is required");
         this.credentialsProvider = Objects.requireNonNull(builder.credentialsProvider,
                 "credentialsProvider is required");
@@ -112,11 +113,6 @@ public final class IamAuthTokenGenerator {
                     .signingClockOverride(Clock.fixed(signingTime, clock.getZone()))
                     .expirationTime(signingTime.plus(expiresIn))
                     .awsCredentials(credentials);
-
-            // Add session token if present
-            if (credentials instanceof AwsSessionCredentials) {
-                // Session token is handled automatically by the signer
-            }
 
             Aws4Signer signer = Aws4Signer.create();
             SdkHttpFullRequest signedRequest = signer.presign(request, presignerParams.build());
