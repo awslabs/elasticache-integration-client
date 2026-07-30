@@ -17,9 +17,8 @@ import java.util.function.Supplier;
  * its associated PhotonConnection. It provides a clean API for setting up
  * Photon with an SDK client.
  *
- * <p>Unlike Python and Node which can dynamically attach/detach interceptors,
- * AWS SDK v2 for Java requires interceptors to be configured at client build
- * time. Therefore, this handle is used during client construction:
+ * <p>AWS SDK v2 for Java requires interceptors to be configured at client build
+ * time, so this handle is used during client construction:
  *
  * <pre>{@code
  * // Create the handle
