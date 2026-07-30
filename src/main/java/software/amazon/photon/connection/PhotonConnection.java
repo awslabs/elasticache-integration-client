@@ -162,7 +162,6 @@ public class PhotonConnection implements Closeable {
             if (closed) {
                 throw new IllegalStateException("Connection was closed");
             }
-            // Comment #151: Check dead flag - reconnecting after failure not allowed
             if (dead) {
                 throw new IllegalStateException("Connection is dead and cannot be reconnected");
             }
@@ -173,15 +172,15 @@ public class PhotonConnection implements Closeable {
                 plainSocket.setTcpNoDelay(true); // Disable Nagle's algorithm
                 plainSocket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
 
-                // Comment #164: Keep plainSocket under cleanup until createSocket succeeds
+                // createSocket takes ownership of plainSocket on success (autoClose=true).
+                // Keep plainSocket reference until then for cleanup on failure.
                 SSLSocket sslSocket = (SSLSocket) factory.createSocket(plainSocket, host, port, true);
-                // createSocket succeeded, sslSocket now owns plainSocket (autoClose=true)
-                plainSocket = null;
+                plainSocket = null; // Transfer ownership succeeded
 
                 socket = sslSocket;
                 socket.setSoTimeout(readTimeoutMs);
 
-                // Comment #168: Filter supported protocols instead of hardcoding
+                // Filter to TLS 1.2+ (don't hardcode protocol names that may not be supported)
                 String[] enabledProtocols = filterSupportedProtocols(socket.getSupportedProtocols());
                 if (enabledProtocols.length == 0) {
                     throw new IOException("No supported TLS protocols (need TLS 1.2 or higher)");
@@ -198,11 +197,11 @@ public class PhotonConnection implements Closeable {
                 closeSocketQuietly();
                 throw new PhotonConnectionError("Failed to establish TLS connection to " + host + ":" + port, e);
             } catch (RuntimeException e) {
-                // Comment #168: Handle IllegalArgumentException from setEnabledProtocols
+                // Catches IllegalArgumentException from setEnabledProtocols if protocols unsupported
                 closeSocketQuietly();
                 throw new PhotonConnectionError("Failed to configure TLS for " + host + ":" + port, e);
             } finally {
-                // Comment #164: Close plainSocket if createSocket failed
+                // Clean up plainSocket if createSocket failed before taking ownership
                 if (plainSocket != null) {
                     try {
                         plainSocket.close();
@@ -216,7 +215,6 @@ public class PhotonConnection implements Closeable {
         // Check for close-during-connect race
         synchronized (stateLock) {
             if (closed) {
-                // Comment #128: Mark dead on close-during-connect race
                 dead = true;
                 closeSocketQuietly();
                 throw new PhotonConnectionError("Connection closed during connect");
@@ -337,7 +335,6 @@ public class PhotonConnection implements Closeable {
      */
     public ResolvedConfig connectAndAuthenticate(Supplier<String> authProvider, Map<String, Object> configOverrides) {
         connect();
-        // Comment #290: Close connection if authProvider.get() throws
         String token;
         try {
             token = authProvider.get();
@@ -379,7 +376,7 @@ public class PhotonConnection implements Closeable {
      * @throws PhotonTimeoutError if the read times out (connection is then closed)
      */
     public PhotonResponse request(PhotonRequest request) {
-        ensureReady(); // Comment #324: Check reader is running
+        ensureReady();
 
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         byte[] encoded = RespCodec.encodeCommand(cmd.getCommandName(),
@@ -399,7 +396,7 @@ public class PhotonConnection implements Closeable {
      * @return the RESP response
      */
     public RespValue sendCommand(String command, byte[]... args) {
-        ensureReady(); // Comment #324: Check reader is running
+        ensureReady();
         byte[] encoded = RespCodec.encodeCommand(command, args);
         return sendAndAwait(encoded);
     }
@@ -502,7 +499,7 @@ public class PhotonConnection implements Closeable {
     }
 
     /**
-     * Comment #324: Ensure connection is fully ready for requests (reader running).
+     * Ensure connection is fully ready for requests (reader thread running).
      */
     private void ensureReady() {
         ensureConnectedNotDead();
@@ -539,7 +536,7 @@ public class PhotonConnection implements Closeable {
             // Must register before sending to maintain FIFO correlation
             future = pending.register();
 
-            // Comment #463: Snapshot outputStream to avoid NPE race with close/markDead
+            // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
             OutputStream out;
             synchronized (stateLock) {
                 out = outputStream;
@@ -569,13 +566,12 @@ public class PhotonConnection implements Closeable {
             pending.failAll(new PhotonTimeoutError("Read timed out after " + readTimeoutMs + "ms"));
             throw new PhotonTimeoutError("Read timed out after " + readTimeoutMs + "ms", e);
         } catch (ExecutionException e) {
-            // Reader thread failed the future
+            // Reader thread failed the future - preserve the original exception type
             Throwable cause = e.getCause();
             if (cause instanceof ConnectionLost) {
                 throw (ConnectionLost) cause;
             } else if (cause instanceof PhotonTimeoutError) {
                 throw (PhotonTimeoutError) cause;
-            // Comment #491: Preserve PhotonProtocolError instead of wrapping as ConnectionLost
             } else if (cause instanceof PhotonProtocolError) {
                 throw (PhotonProtocolError) cause;
             } else if (cause instanceof PhotonError) {

@@ -423,8 +423,8 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_fifoCorrelation_responsesMatchRequests() throws Exception {
-        // Comment #461: Actually verify FIFO correlation by having the mock
-        // echo back a request-specific marker in the response body
+        // Verify FIFO correlation by having the mock echo back a request-specific
+        // marker in the response body. Each caller must receive their own marker.
         cache.setReplyFunction(req -> Reply.ok(200, Collections.emptyMap(), req.getBody()));
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);

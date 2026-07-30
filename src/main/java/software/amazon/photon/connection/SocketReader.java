@@ -80,8 +80,7 @@ public class SocketReader {
                 readAndResolve();
             }
         } catch (ConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
-            // Comment #82: Call onDeath before failAll so isDead() is true
-            // when callers observe the exception
+            // Mark dead before failing futures so isDead() is true when callers observe the exception
             onDeath.run();
             pending.failAll(e);
         } catch (Exception e) {
