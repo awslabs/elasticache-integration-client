@@ -5,6 +5,7 @@ import software.amazon.photon.resp.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.Function;
 
 /**
  * Mock Photon cache server logic. Implements the command handling contract.
@@ -19,6 +20,7 @@ public class MockCache {
     }
 
     private Reply reply = Reply.ok(200, Collections.emptyMap(), new byte[0]);
+    private Function<ReceivedRequest, Reply> replyFunction = null;
     private String configJson = "{\"version\":\"1.0\",\"refresh_interval\":60}";
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
@@ -29,6 +31,15 @@ public class MockCache {
 
     public void setReply(Reply reply) {
         this.reply = reply;
+        this.replyFunction = null; // Clear function when setting static reply
+    }
+
+    /**
+     * Set a function to generate replies based on the request.
+     * This overrides the static reply.
+     */
+    public void setReplyFunction(Function<ReceivedRequest, Reply> replyFunction) {
+        this.replyFunction = replyFunction;
     }
 
     public void setConfigJson(String configJson) {
@@ -154,19 +165,22 @@ public class MockCache {
         ReceivedRequest req = new ReceivedRequest(method, url, headers, body, metadata, ttl, nttl, rawArgs);
         requests.add(req);
 
-        if (reply.isError()) {
-            return new RespError(reply.getErrorCode(), reply.getErrorMessage());
+        // Use reply function if set, otherwise use static reply
+        Reply effectiveReply = replyFunction != null ? replyFunction.apply(req) : reply;
+
+        if (effectiveReply.isError()) {
+            return new RespError(effectiveReply.getErrorCode(), effectiveReply.getErrorMessage());
         }
 
         // Build response array: [status, headers_str, body]
         List<RespValue> responseElements = new ArrayList<>();
-        responseElements.add(new RespInteger(reply.getStatusCode()));
+        responseElements.add(new RespInteger(effectiveReply.getStatusCode()));
 
         // Format response headers
         StringBuilder headerStr = new StringBuilder();
-        if (reply.getHeaders() != null && !reply.getHeaders().isEmpty()) {
+        if (effectiveReply.getHeaders() != null && !effectiveReply.getHeaders().isEmpty()) {
             boolean first = true;
-            for (Map.Entry<String, String> entry : reply.getHeaders().entrySet()) {
+            for (Map.Entry<String, String> entry : effectiveReply.getHeaders().entrySet()) {
                 if (!first) {
                     headerStr.append('\n');
                 }
@@ -175,7 +189,7 @@ public class MockCache {
             }
         }
         responseElements.add(new RespBulkString(headerStr.toString().getBytes(StandardCharsets.UTF_8)));
-        responseElements.add(new RespBulkString(reply.getBody() != null ? reply.getBody() : new byte[0]));
+        responseElements.add(new RespBulkString(effectiveReply.getBody() != null ? effectiveReply.getBody() : new byte[0]));
 
         return new RespArray(responseElements);
     }
