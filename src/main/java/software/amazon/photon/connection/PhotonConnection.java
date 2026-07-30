@@ -1,5 +1,6 @@
 package software.amazon.photon.connection;
 
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
@@ -44,10 +45,10 @@ import java.util.function.Supplier;
  * {@link #request(PhotonRequest)} concurrently — responses are correlated via
  * a FIFO queue.
  *
- * <p>Lifecycle: {@code connect()} → {@code authenticate()} → {@code configureAndStartReader()}
+ * <p>Lifecycle: {@code connect()} → {@code authenticate(String, String)} → {@code configureAndStartReader()}
  * → {@code request()} (repeated) → {@code close()}.
  *
- * <p>For simpler use, {@link #connectAndAuthenticate(String)} and
+ * <p>For simpler use, {@link #connectAndAuthenticate(String, String)} and
  * {@link #connectAndAuthenticate(Supplier, Map)} combine these steps.
  *
  * <h3>Thread Safety</h3>
@@ -242,17 +243,20 @@ public class PhotonConnection implements Closeable {
      * <p>Must be called after {@link #connect()} and before any requests.
      * The reader thread is not started yet, so this uses synchronous reads.
      *
+     * @param userId    the user ID for AUTH (e.g., "default.iam-user")
      * @param authToken the AUTH token/password
      * @throws PhotonConnectionError if AUTH fails
      */
-    public void authenticate(String authToken) {
+    public void authenticate(String userId, String authToken) {
         ensureConnectedNotDead();
         if (readerThread != null) {
             throw new IllegalStateException("Reader already started - authenticate must be called before configureAndStartReader");
         }
 
         try {
-            byte[] authCmd = RespCodec.encodeCommand("AUTH", authToken.getBytes(StandardCharsets.UTF_8));
+            byte[] authCmd = RespCodec.encodeCommand("AUTH", 
+                    userId.getBytes(StandardCharsets.UTF_8),
+                    authToken.getBytes(StandardCharsets.UTF_8));
             sendRawDirect(authCmd);
             RespValue authReply = reader.readFrame();
 
@@ -314,49 +318,52 @@ public class PhotonConnection implements Closeable {
     /**
      * Convenience: connect, authenticate, configure, and start reader in one call.
      *
+     * @param userId          the user ID for AUTH (e.g., "default.iam-user")
      * @param authToken       the AUTH token/password
      * @param configOverrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
      */
-    public ResolvedConfig connectAndAuthenticate(String authToken, Map<String, Object> configOverrides) {
+    public ResolvedConfig connectAndAuthenticate(String userId, String authToken, Map<String, Object> configOverrides) {
         connect();
-        authenticate(authToken);
+        authenticate(userId, authToken);
         return configureAndStartReader(configOverrides);
     }
 
     /**
-     * Convenience: connect, authenticate with provider, configure, and start reader.
+     * Convenience: connect, authenticate with credentials provider, configure, and start reader.
      *
-     * @param authProvider    supplies the AUTH token (called after TLS connect)
+     * <p>The provider is called after TLS connect to get fresh credentials.
+     *
+     * @param authProvider    supplies the AUTH credentials (called after TLS connect)
      * @param configOverrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
      */
-    public ResolvedConfig connectAndAuthenticate(Supplier<String> authProvider, Map<String, Object> configOverrides) {
+    public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider, Map<String, Object> configOverrides) {
         connect();
-        String token;
+        AuthCredentials creds;
         try {
-            token = authProvider.get();
+            creds = authProvider.get();
         } catch (Exception e) {
             markDead();
             throw new PhotonConnectionError("Auth provider failed", e);
         }
-        authenticate(token);
+        authenticate(creds.getUserId(), creds.getToken());
         return configureAndStartReader(configOverrides);
     }
 
     /**
      * Convenience: connect and authenticate with empty config overrides.
      */
-    public ResolvedConfig connectAndAuthenticate(String authToken) {
-        return connectAndAuthenticate(authToken, Collections.emptyMap());
+    public ResolvedConfig connectAndAuthenticate(String userId, String authToken) {
+        return connectAndAuthenticate(userId, authToken, Collections.emptyMap());
     }
 
     /**
      * Convenience: connect and authenticate with provider and empty config overrides.
      */
-    public ResolvedConfig connectAndAuthenticate(Supplier<String> authProvider) {
+    public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider) {
         return connectAndAuthenticate(authProvider, Collections.emptyMap());
     }
 

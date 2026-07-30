@@ -3,6 +3,7 @@ package software.amazon.photon.connection;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonProtocolError;
@@ -38,6 +39,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class PhotonConnectionIntegrationTest {
 
+    private static final String TEST_USER = "test-user";
+    private static final String TEST_TOKEN = "test-token";
+    
     private MockCache cache;
     private MockTlsServer server;
     private SSLContext clientSslContext;
@@ -61,7 +65,7 @@ class PhotonConnectionIntegrationTest {
     void connectAndAuthenticate_successfulHandshake() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            ResolvedConfig config = conn.connectAndAuthenticate("my-auth-token");
+            ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, "my-auth-token");
             assertNotNull(config);
             assertEquals("1.0", config.getVersion());
             assertEquals(Integer.valueOf(60), config.getRefreshInterval());
@@ -83,7 +87,7 @@ class PhotonConnectionIntegrationTest {
             assertNull(conn.getConfig());
 
             // Step 2: AUTH
-            conn.authenticate("my-auth-token");
+            conn.authenticate(TEST_USER, "my-auth-token");
             assertTrue(conn.isConnected());
             assertNull(conn.getConfig()); // Still no config until step 3
 
@@ -103,7 +107,7 @@ class PhotonConnectionIntegrationTest {
         try {
             ResolvedConfig config = conn.connectAndAuthenticate(() -> {
                 callCount.incrementAndGet();
-                return "provider-token";
+                return new AuthCredentials(TEST_USER, "provider-token");
             });
             assertNotNull(config);
             assertEquals(1, callCount.get()); // Provider called exactly once
@@ -117,7 +121,7 @@ class PhotonConnectionIntegrationTest {
     void connect_recordsAuthAndConfig() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("secret");
+            conn.connectAndAuthenticate(TEST_USER, "secret");
             // The mock should have received AUTH and photon.config
             assertTrue(cache.getReceivedCommands().size() >= 2);
             assertEquals("AUTH", cache.getReceivedCommands().get(0));
@@ -133,7 +137,7 @@ class PhotonConnectionIntegrationTest {
         try {
             Map<String, Object> overrides = new HashMap<>();
             overrides.put("refresh_interval", 120);
-            ResolvedConfig config = conn.connectAndAuthenticate("token", overrides);
+            ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN, overrides);
             assertNotNull(config);
         } finally {
             conn.close();
@@ -151,7 +155,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("content-type", "application/x-amz-json-1.0");
@@ -179,7 +183,7 @@ class PhotonConnectionIntegrationTest {
     void request_serverReceivesCorrectArgs() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             Map<String, String> headers = new LinkedHashMap<>();
             headers.put("Host", "example.com");
@@ -220,7 +224,7 @@ class PhotonConnectionIntegrationTest {
     void request_multipleRequestsOnSameConnection() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             for (int i = 0; i < 5; i++) {
                 PhotonRequest request = new PhotonRequest(
@@ -250,7 +254,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/missing",
@@ -272,7 +276,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/item",
@@ -291,7 +295,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void close_marksConnectionClosed() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connectAndAuthenticate("token");
+        conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         assertTrue(conn.isConnected());
 
         conn.close();
@@ -301,7 +305,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void close_isIdempotent() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connectAndAuthenticate("token");
+        conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
         conn.close();
         conn.close(); // Should not throw
@@ -312,7 +316,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void request_afterClose_throwsConnectionLost() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connectAndAuthenticate("token");
+        conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         conn.close();
 
         PhotonRequest request = new PhotonRequest(
@@ -341,7 +345,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             PhotonRequest request = new PhotonRequest(
                     "GET", "https://example.com/item",
@@ -359,7 +363,7 @@ class PhotonConnectionIntegrationTest {
     void getConfig_returnsHandshakeConfig() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            ResolvedConfig config = conn.connectAndAuthenticate("token");
+            ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             assertEquals(config, conn.getConfig());
         } finally {
             conn.close();
@@ -372,7 +376,7 @@ class PhotonConnectionIntegrationTest {
     void request_concurrentFromMultipleThreads() throws Exception {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             int numThreads = 10;
             int requestsPerThread = 5;
@@ -429,7 +433,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             List<CompletableFuture<String>> futures = new ArrayList<>();
             for (int i = 0; i < 20; i++) {
@@ -474,7 +478,7 @@ class PhotonConnectionIntegrationTest {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext,
                 5000, 5000, 2);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
             // We can't easily test this without a slow mock, but we can verify
             // the constructor accepts the parameter
@@ -490,7 +494,7 @@ class PhotonConnectionIntegrationTest {
     void isDead_falseWhenConnected() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
-            conn.connectAndAuthenticate("token");
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             assertFalse(conn.isDead());
         } finally {
             conn.close();
@@ -500,7 +504,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void isDead_trueAfterClose() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        conn.connectAndAuthenticate("token");
+        conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         conn.close();
         assertTrue(conn.isDead());
     }
@@ -521,7 +525,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void authenticate_beforeConnect_throwsConnectionLost() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        assertThrows(ConnectionLost.class, () -> conn.authenticate("token"));
+        assertThrows(ConnectionLost.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
     }
 
     @Test
@@ -529,7 +533,7 @@ class PhotonConnectionIntegrationTest {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
             conn.connect();
-            conn.authenticate("token");
+            conn.authenticate(TEST_USER, TEST_TOKEN);
             conn.configureAndStartReader(Collections.emptyMap());
             assertThrows(IllegalStateException.class, () -> conn.configureAndStartReader(Collections.emptyMap()));
         } finally {
