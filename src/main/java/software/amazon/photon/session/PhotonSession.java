@@ -1,5 +1,6 @@
 package software.amazon.photon.session;
 
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
@@ -26,7 +27,7 @@ import java.util.function.Supplier;
  *
  * <p>Usage:
  * <pre>{@code
- * PhotonSession session = new PhotonSession(connection, () -> authToken, configOverrides);
+ * PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
  * session.open();
  * try {
  *     PhotonResponse response = session.request(photonRequest);
@@ -50,7 +51,7 @@ public class PhotonSession implements Closeable {
     }
 
     private final PhotonConnection connection;
-    private final Supplier<String> authProvider;
+    private final Supplier<AuthCredentials> authProvider;
     private final Map<String, Object> configOverrides;
 
     private volatile State state = State.CREATED;
@@ -60,10 +61,10 @@ public class PhotonSession implements Closeable {
      * Create a session with the given connection and auth provider.
      *
      * @param connection      the underlying connection (not yet connected)
-     * @param authProvider    supplies the AUTH token
+     * @param authProvider    supplies the AUTH credentials (userId + token)
      * @param configOverrides optional config overrides (may be null)
      */
-    public PhotonSession(PhotonConnection connection, Supplier<String> authProvider,
+    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider,
                          Map<String, Object> configOverrides) {
         this.connection = connection;
         this.authProvider = authProvider;
@@ -71,35 +72,37 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Create a session with the given connection and static auth token.
+     * Create a session with the given connection and static auth credentials.
      *
      * @param connection      the underlying connection (not yet connected)
+     * @param userId          the user ID for AUTH
      * @param authToken       the AUTH token
      * @param configOverrides optional config overrides (may be null)
      */
-    public PhotonSession(PhotonConnection connection, String authToken,
+    public PhotonSession(PhotonConnection connection, String userId, String authToken,
                          Map<String, Object> configOverrides) {
-        this(connection, () -> authToken, configOverrides);
+        this(connection, () -> new AuthCredentials(userId, authToken), configOverrides);
     }
 
     /**
      * Create a session with default config overrides.
      *
      * @param connection   the underlying connection
-     * @param authProvider supplies the AUTH token
+     * @param authProvider supplies the AUTH credentials
      */
-    public PhotonSession(PhotonConnection connection, Supplier<String> authProvider) {
+    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider) {
         this(connection, authProvider, null);
     }
 
     /**
-     * Create a session with default config overrides and static auth token.
+     * Create a session with default config overrides and static auth credentials.
      *
      * @param connection the underlying connection
+     * @param userId     the user ID for AUTH
      * @param authToken  the AUTH token
      */
-    public PhotonSession(PhotonConnection connection, String authToken) {
-        this(connection, authToken, null);
+    public PhotonSession(PhotonConnection connection, String userId, String authToken) {
+        this(connection, userId, authToken, null);
     }
 
     /**
@@ -130,7 +133,8 @@ public class PhotonSession implements Closeable {
 
         connection.connect();
         try {
-            connection.authenticate(authProvider.get());
+            AuthCredentials creds = authProvider.get();
+            connection.authenticate(creds.getUserId(), creds.getToken());
             resolvedConfig = connection.configureAndStartReader(configOverrides);
         } catch (Exception e) {
             // Close on failure to clean up partially-opened state

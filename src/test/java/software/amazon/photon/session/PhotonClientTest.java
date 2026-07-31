@@ -21,6 +21,9 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class PhotonClientTest {
 
+    private static final String TEST_USER = "test-user";
+    private static final String TEST_TOKEN = "test-token";
+
     private MockCache cache;
     private MockTlsServer server;
     private SSLContext clientSslContext;
@@ -50,7 +53,7 @@ class PhotonClientTest {
     void builder_withEndpoint_parsesHostAndPort() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
@@ -65,7 +68,7 @@ class PhotonClientTest {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .host("localhost")
                 .port(server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
@@ -79,7 +82,7 @@ class PhotonClientTest {
         PhotonClient.Builder builder = PhotonClient.builder()
                 .endpoint("cache.example.com:6379")
                 .host("other-host")
-                .authProvider(() -> "test-token");
+                .authCredentials(TEST_USER, TEST_TOKEN);
 
         assertThrows(PhotonError.class, () -> builder.build(DynamoDbClient.builder(), sdkConfig));
     }
@@ -87,7 +90,7 @@ class PhotonClientTest {
     @Test
     void builder_withoutEndpointOrHost_throwsPhotonError() {
         PhotonClient.Builder builder = PhotonClient.builder()
-                .authProvider(() -> "test-token");
+                .authCredentials(TEST_USER, TEST_TOKEN);
 
         PhotonError error = assertThrows(PhotonError.class, 
                 () -> builder.build(DynamoDbClient.builder(), sdkConfig));
@@ -108,7 +111,7 @@ class PhotonClientTest {
     void builder_withStaticAuthToken_usesTokenProvider() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authToken("my-static-token")
+                .authCredentials(TEST_USER, "my-static-token")
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
@@ -120,7 +123,7 @@ class PhotonClientTest {
     void result_close_closesBothHandleAndClient() {
         PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig);
 
@@ -135,7 +138,7 @@ class PhotonClientTest {
     void result_close_isIdempotent() {
         PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig);
 
@@ -151,7 +154,7 @@ class PhotonClientTest {
         
         PhotonClient.Builder builder = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .connectTimeoutMs(100);
 
@@ -162,7 +165,7 @@ class PhotonClientTest {
     void builder_withConfigOverrides_passesToSession() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .configOverrides(Map.of("ttl", 300))
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
@@ -175,7 +178,7 @@ class PhotonClientTest {
     void builder_withTimeouts_appliesTimeouts() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
-                .authProvider(() -> "test-token")
+                .authCredentials(TEST_USER, TEST_TOKEN)
                 .connectTimeoutMs(1000)
                 .readTimeoutMs(2000)
                 .sslContext(clientSslContext)

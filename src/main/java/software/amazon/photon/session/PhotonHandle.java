@@ -1,6 +1,7 @@
 package software.amazon.photon.session;
 
 import software.amazon.awssdk.core.SdkClient;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.exception.PhotonError;
 
@@ -128,7 +129,7 @@ public class PhotonHandle implements Closeable {
         private String host;
         private int port = 6379;
         private SSLContext sslContext;
-        private Supplier<String> authProvider;
+        private Supplier<AuthCredentials> authProvider;
         private Map<String, Object> configOverrides;
         private int connectTimeoutMs = 5000;
         private int readTimeoutMs = 5000;
@@ -162,16 +163,16 @@ public class PhotonHandle implements Closeable {
         /**
          * Set the auth provider (required).
          */
-        public Builder authProvider(Supplier<String> authProvider) {
+        public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;
             return this;
         }
 
         /**
-         * Set a static auth token (convenience for non-IAM auth).
+         * Set static auth credentials (convenience for non-IAM auth).
          */
-        public Builder authToken(String authToken) {
-            this.authProvider = () -> authToken;
+        public Builder authCredentials(String userId, String authToken) {
+            this.authProvider = () -> new AuthCredentials(userId, authToken);
             return this;
         }
 

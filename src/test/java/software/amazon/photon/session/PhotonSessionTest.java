@@ -3,6 +3,7 @@ package software.amazon.photon.session;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
@@ -25,6 +26,9 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for PhotonSession.
  */
 class PhotonSessionTest {
+
+    private static final String TEST_USER = "test-user";
+    private static final String TEST_TOKEN = "test-token";
 
     private MockCache cache;
     private MockTlsServer server;
@@ -50,7 +54,7 @@ class PhotonSessionTest {
 
     @Test
     void open_transitionsToOpenState() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         assertEquals(PhotonSession.State.CREATED, session.getState());
 
         session.open();
@@ -62,7 +66,7 @@ class PhotonSessionTest {
 
     @Test
     void close_transitionsToClosedState() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         session.open();
         assertTrue(session.isOpen());
 
@@ -73,7 +77,7 @@ class PhotonSessionTest {
 
     @Test
     void close_isIdempotent() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         session.open();
 
         session.close();
@@ -85,7 +89,7 @@ class PhotonSessionTest {
 
     @Test
     void open_onOpenedSession_throws() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         session.open();
 
         PhotonError error = assertThrows(PhotonError.class, session::open);
@@ -96,7 +100,7 @@ class PhotonSessionTest {
 
     @Test
     void open_onClosedSession_throws() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         session.open();
         session.close();
 
@@ -111,7 +115,7 @@ class PhotonSessionTest {
         cache.setReply(Reply.ok(200, Collections.singletonMap("content-type", "application/json"),
                 "{\"ok\":true}".getBytes(StandardCharsets.UTF_8)));
 
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
 
@@ -134,7 +138,7 @@ class PhotonSessionTest {
 
     @Test
     void request_onCreatedSession_throws() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
 
         PhotonRequest request = new PhotonRequest(
                 "GET", "https://example.com/",
@@ -148,7 +152,7 @@ class PhotonSessionTest {
 
     @Test
     void request_onClosedSession_throws() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         session.open();
         session.close();
 
@@ -166,7 +170,7 @@ class PhotonSessionTest {
 
     @Test
     void getResolvedConfig_afterOpen_returnsConfig() {
-        PhotonSession session = new PhotonSession(createConnection(), "token");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         assertNull(session.getResolvedConfig());
 
         session.open();
@@ -181,7 +185,7 @@ class PhotonSessionTest {
         Map<String, Object> overrides = new HashMap<>();
         overrides.put("refresh_interval", 120);
 
-        PhotonSession session = new PhotonSession(createConnection(), "token", overrides);
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN, overrides);
         session.open();
 
         // Verify the config command was sent
@@ -197,7 +201,7 @@ class PhotonSessionTest {
         AtomicInteger callCount = new AtomicInteger(0);
         PhotonSession session = new PhotonSession(createConnection(), () -> {
             callCount.incrementAndGet();
-            return "dynamic-token";
+            return new AuthCredentials(TEST_USER, "dynamic-token");
         });
 
         session.open();
