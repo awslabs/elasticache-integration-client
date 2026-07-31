@@ -27,7 +27,7 @@ import java.util.function.Supplier;
  *     .build();
  *
  * PhotonConnection conn = new PhotonConnection(host, port, sslContext);
- * conn.connectAndAuthenticate(() -> authProvider.get().getToken());
+ * conn.connectAndAuthenticate(authProvider);
  * }</pre>
  *
  * <p>Or using the convenience factory:
