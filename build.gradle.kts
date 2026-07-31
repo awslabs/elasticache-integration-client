@@ -28,4 +28,11 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    
+    // Open internal JDK modules for MockTlsServer's self-signed certificate generation
+    // Required for Java 17+ which enforces strong encapsulation
+    jvmArgs(
+        "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
+        "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
+    )
 }

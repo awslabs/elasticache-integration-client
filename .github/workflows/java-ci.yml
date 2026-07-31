@@ -1,0 +1,54 @@
+name: Java CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**"
+      - ".github/workflows/java-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "**"
+      - ".github/workflows/java-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Java 21 excluded for now - MockTlsServer uses sun.security.x509 internal
+        # APIs that changed in Java 21. TODO: Use BouncyCastle or keytool for cert gen.
+        java-version: [11, 17]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.java-version }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ matrix.java-version }}
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build and test
+        run: ./gradlew build
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-java-${{ matrix.java-version }}
+          path: build/reports/tests/test/
+          retention-days: 7
