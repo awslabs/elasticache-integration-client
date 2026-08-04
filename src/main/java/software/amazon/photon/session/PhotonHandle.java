@@ -1,0 +1,236 @@
+package software.amazon.photon.session;
+
+import software.amazon.awssdk.core.SdkClient;
+import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.exception.PhotonError;
+
+import javax.net.ssl.SSLContext;
+import java.io.Closeable;
+import java.security.NoSuchAlgorithmException;
+import java.util.Map;
+import java.util.function.Supplier;
+
+/**
+ * Manages the attachment of Photon to an AWS SDK client.
+ *
+ * <p>PhotonHandle creates and manages the lifecycle of a PhotonSession and
+ * its associated PhotonConnection. It provides a clean API for setting up
+ * Photon with an SDK client.
+ *
+ * <p>AWS SDK v2 for Java requires interceptors to be configured at client build
+ * time, so this handle is used during client construction:
+ *
+ * <pre>{@code
+ * // Create the handle with an IamAuthTokenProvider
+ * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
+ *     .cacheName("my-cache")
+ *     .region(Region.US_EAST_1)
+ *     .build();
+ *
+ * PhotonHandle handle = PhotonHandle.builder()
+ *     .host("my-cache.serverless.use1.cache.amazonaws.com")
+ *     .port(6379)
+ *     .authProvider(iamAuth)
+ *     .build();
+ *
+ * // Open the session
+ * handle.open();
+ *
+ * // Build the SDK client with the interceptor
+ * DynamoDbClient client = DynamoDbClient.builder()
+ *     .overrideConfiguration(c -> c.addExecutionInterceptor(handle.getInterceptor()))
+ *     .build();
+ *
+ * // Use the client...
+ *
+ * // Clean up (close the handle, then the client)
+ * handle.close();
+ * client.close();
+ * }</pre>
+ *
+ * <p>For simpler lifecycle management, consider using try-with-resources
+ * or integrating with your application's shutdown hooks.
+ */
+public class PhotonHandle implements Closeable {
+
+    private final PhotonConnection connection;
+    private final PhotonSession session;
+    private final PhotonInterceptor interceptor;
+    private boolean opened = false;
+    private boolean closed = false;
+
+    private PhotonHandle(PhotonConnection connection, PhotonSession session) {
+        this.connection = connection;
+        this.session = session;
+        this.interceptor = new PhotonInterceptor(session);
+    }
+
+    /**
+     * Get the interceptor to add to an SDK client.
+     *
+     * <p>The interceptor should be added during client construction via
+     * {@code overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}.
+     */
+    public PhotonInterceptor getInterceptor() {
+        return interceptor;
+    }
+
+    /**
+     * Get the underlying session.
+     */
+    public PhotonSession getSession() {
+        return session;
+    }
+
+    /**
+     * Open the Photon session (connect, authenticate, config handshake).
+     *
+     * <p>This must be called before using the SDK client.
+     *
+     * @throws PhotonError if opening fails
+     */
+    public void open() {
+        if (opened) {
+            throw new PhotonError("Handle already opened");
+        }
+        if (closed) {
+            throw new PhotonError("Handle already closed");
+        }
+        session.open();
+        opened = true;
+    }
+
+    /**
+     * Close the Photon session. Idempotent.
+     */
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        session.close();
+    }
+
+    /**
+     * Check if the handle is open and ready.
+     */
+    public boolean isOpen() {
+        return opened && !closed && session.isOpen();
+    }
+
+    /**
+     * Create a new builder.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Builder for PhotonHandle.
+     */
+    public static final class Builder {
+        private String host;
+        private int port = 6379;
+        private SSLContext sslContext;
+        private Supplier<AuthCredentials> authProvider;
+        private Map<String, Object> configOverrides;
+        private int connectTimeoutMs = 5000;
+        private int readTimeoutMs = 5000;
+
+        private Builder() {}
+
+        /**
+         * Set the cache host (required).
+         */
+        public Builder host(String host) {
+            this.host = host;
+            return this;
+        }
+
+        /**
+         * Set the cache port (default: 6379).
+         */
+        public Builder port(int port) {
+            this.port = port;
+            return this;
+        }
+
+        /**
+         * Set the SSL context (optional, uses default if not specified).
+         */
+        public Builder sslContext(SSLContext sslContext) {
+            this.sslContext = sslContext;
+            return this;
+        }
+
+        /**
+         * Set the auth provider (required).
+         */
+        public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            this.authProvider = authProvider;
+            return this;
+        }
+
+        /**
+         * Set static auth credentials (convenience for non-IAM auth).
+         */
+        public Builder authCredentials(String userId, String authToken) {
+            this.authProvider = () -> new AuthCredentials(userId, authToken);
+            return this;
+        }
+
+        /**
+         * Set config overrides (optional).
+         */
+        public Builder configOverrides(Map<String, Object> configOverrides) {
+            this.configOverrides = configOverrides;
+            return this;
+        }
+
+        /**
+         * Set connect timeout in milliseconds (default: 5000).
+         */
+        public Builder connectTimeoutMs(int connectTimeoutMs) {
+            this.connectTimeoutMs = connectTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set read timeout in milliseconds (default: 5000).
+         */
+        public Builder readTimeoutMs(int readTimeoutMs) {
+            this.readTimeoutMs = readTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Build the handle.
+         *
+         * @throws PhotonError if required fields are missing
+         */
+        public PhotonHandle build() {
+            if (host == null || host.isEmpty()) {
+                throw new PhotonError("host is required");
+            }
+            if (authProvider == null) {
+                throw new PhotonError("authProvider is required");
+            }
+
+            SSLContext ssl = sslContext;
+            if (ssl == null) {
+                try {
+                    ssl = SSLContext.getDefault();
+                } catch (NoSuchAlgorithmException e) {
+                    throw new PhotonError("Failed to get default SSLContext", e);
+                }
+            }
+
+            PhotonConnection connection = new PhotonConnection(
+                    host, port, ssl, connectTimeoutMs, readTimeoutMs);
+            PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+            return new PhotonHandle(connection, session);
+        }
+    }
+}
