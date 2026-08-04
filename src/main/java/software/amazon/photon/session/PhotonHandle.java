@@ -22,11 +22,16 @@ import java.util.function.Supplier;
  * time, so this handle is used during client construction:
  *
  * <pre>{@code
- * // Create the handle
+ * // Create the handle with an IamAuthTokenProvider
+ * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
+ *     .cacheName("my-cache")
+ *     .region(Region.US_EAST_1)
+ *     .build();
+ *
  * PhotonHandle handle = PhotonHandle.builder()
  *     .host("my-cache.serverless.use1.cache.amazonaws.com")
  *     .port(6379)
- *     .authProvider(() -> iamAuthProvider.get().getToken())
+ *     .authProvider(iamAuth)
  *     .build();
  *
  * // Open the session

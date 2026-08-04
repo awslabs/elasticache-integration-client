@@ -213,7 +213,7 @@ public final class PhotonClient {
          * <pre>{@code
          * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
          *         .endpoint("cache.example.com:6379")
-         *         .authProvider(() -> iamAuth.get().getToken())
+         *         .authProvider(iamAuth)
          *         .build(DynamoDbClient.builder())) {
          *     result.client().listTables();
          * }
@@ -236,7 +236,7 @@ public final class PhotonClient {
          * <pre>{@code
          * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
          *         .endpoint("cache.example.com:6379")
-         *         .authProvider(() -> iamAuth.get().getToken())
+         *         .authProvider(iamAuth)
          *         .build(DynamoDbClient.builder(), b -> b.region(Region.US_EAST_1))) {
          *     result.client().listTables();
          * }
@@ -265,14 +265,13 @@ public final class PhotonClient {
                 throw e;
             }
 
-            // Apply user's SDK configuration
-            if (sdkConfigurer != null) {
-                sdkConfigurer.accept(sdkClientBuilder);
-            }
-
-            // Install the interceptor
+            // Apply user's SDK configuration and build client - close handle on any failure
             C client;
             try {
+                if (sdkConfigurer != null) {
+                    sdkConfigurer.accept(sdkClientBuilder);
+                }
+
                 client = sdkClientBuilder
                         .overrideConfiguration(buildOverrideConfig(handle))
                         .build();
