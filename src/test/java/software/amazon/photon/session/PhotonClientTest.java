@@ -212,12 +212,15 @@ class PhotonClientTest {
                 .apiCallTimeout(Duration.ofSeconds(30))
                 .build();
         
+        // Use sdkConfigurer to set override configuration - Photon should merge with it
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .sdkOverrideConfiguration(sdkOverride)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .build(DynamoDbClient.builder(), b -> {
+                    sdkConfig.accept(b);  // Apply base config (region, creds, endpoint)
+                    b.overrideConfiguration(sdkOverride);  // Add our custom override config
+                })) {
             
             assertTrue(result.handle().isOpen());
             // The client should have both the Photon interceptor and our custom interceptor merged

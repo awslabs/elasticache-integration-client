@@ -540,4 +540,20 @@ class PhotonConnectionIntegrationTest {
             conn.close();
         }
     }
+
+    // === TLS hostname verification ===
+
+    @Test
+    void connect_withMismatchedHostname_failsHostnameVerification() {
+        // The mock server's certificate has CN=localhost
+        // Connecting with a different hostname (127.0.0.1) should fail hostname verification
+        // even though we trust the certificate (same SSLContext)
+        PhotonConnection conn = new PhotonConnection("127.0.0.1", server.getPort(), clientSslContext);
+        
+        PhotonConnectionError error = assertThrows(PhotonConnectionError.class, conn::connect);
+        
+        // The error should be related to certificate/hostname mismatch
+        assertTrue(error.getMessage().contains("TLS") || error.getCause() != null,
+                "Should fail due to TLS hostname verification");
+    }
 }

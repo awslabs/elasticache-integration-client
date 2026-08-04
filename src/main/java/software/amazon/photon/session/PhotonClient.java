@@ -110,7 +110,6 @@ public final class PhotonClient {
         private Map<String, Object> configOverrides;
         private int connectTimeoutMs = 5000;
         private int readTimeoutMs = 5000;
-        private ClientOverrideConfiguration sdkOverrideConfiguration;
 
         private Builder() {}
 
@@ -184,33 +183,6 @@ public final class PhotonClient {
          */
         public Builder configOverrides(Map<String, Object> configOverrides) {
             this.configOverrides = configOverrides;
-            return this;
-        }
-
-        /**
-         * Set AWS SDK client override configuration (optional).
-         *
-         * <p>This allows setting retry policies, timeouts, metrics publishers, headers,
-         * and other SDK interceptors that will be merged with the Photon interceptor.
-         *
-         * <p>Example:
-         * <pre>{@code
-         * ClientOverrideConfiguration sdkConfig = ClientOverrideConfiguration.builder()
-         *     .retryPolicy(RetryPolicy.none())
-         *     .apiCallTimeout(Duration.ofSeconds(10))
-         *     .build();
-         *
-         * PhotonClient.builder()
-         *     .endpoint("cache.example.com:6379")
-         *     .authProvider(iamAuth)
-         *     .sdkOverrideConfiguration(sdkConfig)
-         *     .build(DynamoDbClient.builder());
-         * }</pre>
-         *
-         * @param sdkOverrideConfiguration the SDK override configuration to merge
-         */
-        public Builder sdkOverrideConfiguration(ClientOverrideConfiguration sdkOverrideConfiguration) {
-            this.sdkOverrideConfiguration = sdkOverrideConfiguration;
             return this;
         }
 
@@ -302,7 +274,8 @@ public final class PhotonClient {
 
                 // Merge Photon interceptor into any existing override configuration
                 // instead of replacing it (preserves user's retries, timeouts, metrics, etc.)
-                ClientOverrideConfiguration mergedConfig = mergeOverrideConfig(handle.getInterceptor());
+                ClientOverrideConfiguration mergedConfig = mergeOverrideConfig(
+                        sdkClientBuilder, handle.getInterceptor());
 
                 client = sdkClientBuilder
                         .overrideConfiguration(mergedConfig)
@@ -351,19 +324,16 @@ public final class PhotonClient {
                     .build();
         }
 
-        private ClientOverrideConfiguration mergeOverrideConfig(PhotonInterceptor interceptor) {
-            // If user provided SDK override configuration, copy it and add our interceptor
-            // Otherwise, create a fresh config with just our interceptor
-            ClientOverrideConfiguration.Builder configBuilder;
+        private <B extends AwsClientBuilder<B, C>, C extends SdkClient> ClientOverrideConfiguration mergeOverrideConfig(
+                B sdkClientBuilder, PhotonInterceptor interceptor) {
+            // Get existing config from the SDK builder (includes anything set via sdkConfigurer)
+            // then add our Photon interceptor to it
+            ClientOverrideConfiguration existingConfig = sdkClientBuilder.overrideConfiguration();
+            ClientOverrideConfiguration.Builder configBuilder = existingConfig != null
+                    ? existingConfig.toBuilder()
+                    : ClientOverrideConfiguration.builder();
             
-            if (sdkOverrideConfiguration != null) {
-                // Copy existing config and add our interceptor
-                configBuilder = sdkOverrideConfiguration.toBuilder();
-            } else {
-                configBuilder = ClientOverrideConfiguration.builder();
-            }
-            
-            // Add the Photon interceptor (preserves any user-added interceptors)
+            // Add the Photon interceptor (preserves any existing interceptors)
             configBuilder.addExecutionInterceptor(interceptor);
             
             return configBuilder.build();
