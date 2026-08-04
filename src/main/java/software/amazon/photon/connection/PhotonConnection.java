@@ -181,6 +181,13 @@ public class PhotonConnection implements Closeable {
                 socket = sslSocket;
                 socket.setSoTimeout(readTimeoutMs);
 
+                // Enable hostname verification - validates that the server's certificate
+                // matches the hostname we're connecting to. SSLContext.getDefault() validates
+                // the certificate chain, but doesn't verify the hostname by default.
+                javax.net.ssl.SSLParameters sslParams = socket.getSSLParameters();
+                sslParams.setEndpointIdentificationAlgorithm("HTTPS");
+                socket.setSSLParameters(sslParams);
+
                 // Filter to TLS 1.2+ (don't hardcode protocol names that may not be supported)
                 String[] enabledProtocols = filterSupportedProtocols(socket.getSupportedProtocols());
                 if (enabledProtocols.length == 0) {

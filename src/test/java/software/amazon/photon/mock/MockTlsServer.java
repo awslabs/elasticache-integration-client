@@ -195,8 +195,9 @@ public class MockTlsServer implements Closeable {
         Date notBefore = new Date(now);
         Date notAfter = new Date(now + 365L * 24 * 60 * 60 * 1000);
 
+        // Use CN=localhost so hostname verification passes when connecting to localhost
         Class<?> x500NameClass = Class.forName("sun.security.x509.X500Name");
-        Object issuer = x500NameClass.getConstructor(String.class).newInstance("CN=MockPhotonServer");
+        Object issuer = x500NameClass.getConstructor(String.class).newInstance("CN=localhost");
 
         Class<?> certInfoClass = Class.forName("sun.security.x509.X509CertInfo");
         Object certInfo = certInfoClass.getConstructor().newInstance();

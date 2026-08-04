@@ -14,13 +14,20 @@ import java.util.Optional;
 /**
  * AWS SDK v2 ExecutionInterceptor that redirects requests to the Photon cache.
  *
- * <p>This interceptor hooks into the SDK's request pipeline after the request
- * is fully serialized and SigV4-signed. It converts the SDK request to a
- * Photon request, calls the session, and returns a synthetic SDK response
- * that short-circuits the real network call.
+ * <p>This interceptor hooks into the SDK's request pipeline at {@code modifyHttpRequest},
+ * which runs BEFORE SigV4 signing. The request is serialized to HTTP form but does not
+ * yet contain the Authorization header or signature.
  *
- * <p>The interceptor operates at the {@code modifyHttpResponse} stage, which
- * allows it to return a synthetic response. The SDK's retry and deserialization
+ * <p><b>Note on signing timing:</b> Unlike the Python client which hooks at botocore's
+ * {@code before-send} (after signing), the AWS SDK for Java v2 does not provide an
+ * interceptor hook that runs after signing but before transmission. The only options
+ * are {@code modifyHttpRequest} (before signing, can modify) or {@code beforeTransmission}
+ * (after signing, read-only). Since we need to forward the request to Photon, we use
+ * {@code modifyHttpRequest}. The request sent to Photon will not include AWS signatures,
+ * but Photon does not require them for caching purposes.
+ *
+ * <p>The interceptor stores the Photon response and returns it via {@code modifyHttpResponse},
+ * which allows it to return a synthetic response. The SDK's retry and deserialization
  * pipeline then processes this response normally.
  *
  * <p>Usage:
@@ -49,9 +56,12 @@ public class PhotonInterceptor implements ExecutionInterceptor {
     /**
      * Intercept the request before it's sent to AWS.
      *
-     * <p>This method is called after signing. We convert the SDK request to
-     * a Photon request, send it to the cache, and store the response for
-     * {@link #modifyHttpResponse} to return.
+     * <p>This method runs BEFORE signing (part of the SDK's interceptor lifecycle).
+     * We convert the SDK request to a Photon request and send it to the cache.
+     * The response is stored for {@link #modifyHttpResponse} to return.
+     *
+     * <p>The request at this stage does not include AWS signatures, but contains
+     * the full HTTP representation (method, URL, headers, body) that Photon needs.
      */
     @Override
     public SdkHttpFullRequest modifyHttpRequest(Context.ModifyHttpRequest context,

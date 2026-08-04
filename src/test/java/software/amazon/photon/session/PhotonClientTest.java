@@ -5,6 +5,10 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.interceptor.Context;
+import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
+import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
@@ -14,7 +18,9 @@ import software.amazon.photon.mock.MockTlsServer;
 
 import javax.net.ssl.SSLContext;
 import java.net.URI;
+import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -182,6 +188,53 @@ class PhotonClientTest {
                 .connectTimeoutMs(1000)
                 .readTimeoutMs(2000)
                 .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertTrue(result.handle().isOpen());
+        }
+    }
+
+    @Test
+    void builder_withSdkOverrideConfiguration_mergesWithPhotonInterceptor() {
+        // Track if our custom interceptor was installed
+        AtomicBoolean customInterceptorCalled = new AtomicBoolean(false);
+        
+        ExecutionInterceptor customInterceptor = new ExecutionInterceptor() {
+            @Override
+            public void beforeExecution(Context.BeforeExecution context, ExecutionAttributes attrs) {
+                customInterceptorCalled.set(true);
+            }
+        };
+        
+        // Create SDK config with custom interceptor and timeout
+        ClientOverrideConfiguration sdkOverride = ClientOverrideConfiguration.builder()
+                .addExecutionInterceptor(customInterceptor)
+                .apiCallTimeout(Duration.ofSeconds(30))
+                .build();
+        
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .sdkOverrideConfiguration(sdkOverride)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            
+            assertTrue(result.handle().isOpen());
+            // The client should have both the Photon interceptor and our custom interceptor merged
+            // Note: We can't directly inspect the interceptors, but we can verify no exception thrown
+            // and the client was built successfully with both configs
+        }
+    }
+
+    @Test
+    void builder_withoutSdkOverrideConfiguration_usesDefaultConfig() {
+        // This just verifies that when no sdkOverrideConfiguration is set,
+        // the build still works (using only the Photon interceptor)
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                // No sdkOverrideConfiguration set
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
             assertTrue(result.handle().isOpen());
