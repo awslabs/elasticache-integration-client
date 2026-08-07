@@ -21,7 +21,7 @@ public class PhotonRequest {
         this.url = Objects.requireNonNull(url, "url must not be null");
         this.headers = headers != null ? headers : Collections.emptyMap();
         this.body = body != null ? body : new byte[0];
-        this.metadata = metadata;
+        this.metadata = metadata != null ? metadata : new RequestMetadata(null, null);
     }
 
     public PhotonRequest(String method, String url, Map<String, String> headers, RequestMetadata metadata) {

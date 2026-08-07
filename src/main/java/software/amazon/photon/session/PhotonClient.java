@@ -2,6 +2,7 @@ package software.amazon.photon.session;
 
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.SdkClient;
+import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
@@ -16,7 +17,8 @@ import java.util.function.Supplier;
  * Factory for creating AWS SDK clients wired up with Photon.
  *
  * <p>This provides a one-liner API that creates an SDK client, connects to Photon,
- * authenticates, performs the config handshake, and installs the interceptor.
+ * authenticates, performs the config handshake, and installs the interceptor
+ * and short-circuiting HTTP transport.
  *
  * <p>Usage:
  * <pre>{@code
@@ -206,8 +208,8 @@ public final class PhotonClient {
          * Build the SDK client with Photon enabled.
          *
          * <p>This connects to Photon, authenticates, performs the config handshake,
-         * installs the interceptor, and returns a {@link Result} containing the
-         * ready-to-use SDK client.
+         * installs the interceptor and HTTP transport, and returns a {@link Result}
+         * containing the ready-to-use SDK client.
          *
          * <p>Example:
          * <pre>{@code
@@ -225,7 +227,8 @@ public final class PhotonClient {
          * @return a Result containing the configured SDK client and Photon handle
          * @throws PhotonError if connection or authentication fails
          */
-        public <B extends AwsClientBuilder<B, C>, C extends SdkClient> Result<C> build(B sdkClientBuilder) {
+        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
+                Result<C> build(B sdkClientBuilder) {
             return build(sdkClientBuilder, null);
         }
 
@@ -249,7 +252,7 @@ public final class PhotonClient {
          * @return a Result containing the configured SDK client and Photon handle
          * @throws PhotonError if connection or authentication fails
          */
-        public <B extends AwsClientBuilder<B, C>, C extends SdkClient> Result<C> build(
+        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient> Result<C> build(
                 B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             
             PhotonHandle handle = buildHandle();
@@ -279,6 +282,7 @@ public final class PhotonClient {
 
                 client = sdkClientBuilder
                         .overrideConfiguration(mergedConfig)
+                        .httpClient(handle.getHttpClient())
                         .build();
             } catch (Exception e) {
                 try {

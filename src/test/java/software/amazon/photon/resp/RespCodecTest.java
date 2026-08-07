@@ -260,6 +260,24 @@ class RespCodecTest {
         assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
     }
 
+    @Test
+    void decode_garbage_bulkStringLengthBelowNullSentinel() {
+        byte[] data = "$-2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_garbage_arrayLengthBelowNullSentinel() {
+        byte[] data = "*-2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_garbage_bulkStringWithoutTrailingCrlf() {
+        byte[] data = "$5\r\nhelloxx".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
     // === Round trip tests ===
 
     @Test

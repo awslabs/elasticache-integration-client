@@ -17,7 +17,7 @@ import java.util.function.Supplier;
  *
  * <p>A session orchestrates connection bring-up (transport connect → AUTH →
  * the mandatory {@code photon.config} handshake) and exposes a synchronous
- * {@link #request(PhotonRequest)} method for the SDK interceptor to call.
+ * {@link #request(PhotonRequest)} method for the SDK transport to call.
  *
  * <p>Lifecycle: {@code CREATED} → {@code OPEN} → {@code CLOSED}
  *

@@ -247,6 +247,28 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
+    void request_succeedsAfterConnectionIsIdleLongerThanReadTimeout() throws Exception {
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext, 5000, 150);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Thread.sleep(350);
+
+            PhotonResponse response = conn.request(new PhotonRequest(
+                    "GET",
+                    "https://example.com/item",
+                    Collections.emptyMap(),
+                    new byte[0],
+                    new RequestMetadata("dynamodb", "GetItem")));
+
+            assertEquals(200, response.getStatusCode());
+            assertFalse(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
     void request_customResponseStatus() {
         Map<String, String> respHeaders = new LinkedHashMap<>();
         respHeaders.put("content-type", "application/json");
