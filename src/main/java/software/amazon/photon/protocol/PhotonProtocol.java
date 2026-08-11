@@ -14,6 +14,9 @@ import software.amazon.photon.resp.RespNull;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -120,17 +123,14 @@ public final class PhotonProtocol {
             throw new PhotonProtocolError("Unexpected array response for config");
         }
 
-        byte[] data;
-        if (value instanceof RespBulkString) {
-            data = ((RespBulkString) value).getValue();
-        } else if (value instanceof RespSimpleString) {
-            data = ((RespSimpleString) value).getValue();
-        } else {
+        if (!(value instanceof RespBulkString)) {
             throw new PhotonProtocolError("Unexpected response type for config: " + value);
         }
+        byte[] data = ((RespBulkString) value).getValue();
 
         try {
-            Map<String, Object> raw = OBJECT_MAPPER.readValue(data, new TypeReference<Map<String, Object>>() {});
+            String json = decodeUtf8(data, "config JSON");
+            Map<String, Object> raw = OBJECT_MAPPER.readValue(json, new TypeReference<Map<String, Object>>() {});
             String version = raw.containsKey("version") ? String.valueOf(raw.get("version")) : null;
             Integer refreshInterval = null;
             if (raw.containsKey("refresh_interval")) {
@@ -155,12 +155,8 @@ public final class PhotonProtocol {
         byte[] url = request.getUrl().getBytes(StandardCharsets.UTF_8);
         byte[] normalizedHeaders = normalizeHeaders(request.getHeaders());
         byte[] body = request.getBody();
-        byte[] metadata;
-        if (request.getMetadata() != null) {
-            metadata = formatMetadata(request.getMetadata().getService(), request.getMetadata().getOperation());
-        } else {
-            metadata = formatMetadata(null, null);
-        }
+        byte[] metadata = formatMetadata(
+                request.getMetadata().getService(), request.getMetadata().getOperation());
 
         List<byte[]> args = new ArrayList<>(5);
         args.add(method);
@@ -206,19 +202,9 @@ public final class PhotonProtocol {
             }
             statusCode = (int) rawStatus;
         } else if (statusValue instanceof RespBulkString) {
-            String statusStr = new String(((RespBulkString) statusValue).getValue(), StandardCharsets.UTF_8);
-            try {
-                statusCode = Integer.parseInt(statusStr);
-            } catch (NumberFormatException e) {
-                throw new PhotonProtocolError("Non-integer status code: " + statusStr);
-            }
+            statusCode = parseStatus(((RespBulkString) statusValue).getValue());
         } else if (statusValue instanceof RespSimpleString) {
-            String statusStr = new String(((RespSimpleString) statusValue).getValue(), StandardCharsets.UTF_8);
-            try {
-                statusCode = Integer.parseInt(statusStr);
-            } catch (NumberFormatException e) {
-                throw new PhotonProtocolError("Non-integer status code: " + statusStr);
-            }
+            statusCode = parseStatus(((RespSimpleString) statusValue).getValue());
         } else {
             throw new PhotonProtocolError("Non-integer status code: " + statusValue);
         }
@@ -261,7 +247,7 @@ public final class PhotonProtocol {
             return Collections.emptyMap();
         }
 
-        String headerStr = new String(headerBytes, StandardCharsets.UTF_8);
+        String headerStr = decodeUtf8(headerBytes, "response headers");
         String[] lines = headerStr.split("\n");
         Map<String, String> headers = new LinkedHashMap<>();
         for (String line : lines) {
@@ -270,12 +256,33 @@ public final class PhotonProtocol {
             }
             int colonIdx = line.indexOf(':');
             if (colonIdx < 0) {
-                throw new PhotonProtocolError("Malformed header line: " + line);
+                continue;
             }
-            String name = line.substring(0, colonIdx);
-            String val = line.substring(colonIdx + 1);
+            String name = line.substring(0, colonIdx).trim();
+            String val = line.substring(colonIdx + 1).trim();
             headers.put(name, val);
         }
         return headers;
+    }
+
+    private static int parseStatus(byte[] value) {
+        String status = decodeUtf8(value, "response status").trim();
+        try {
+            return Integer.parseInt(status);
+        } catch (NumberFormatException e) {
+            throw new PhotonProtocolError("Non-integer status code: " + status);
+        }
+    }
+
+    private static String decodeUtf8(byte[] value, String field) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(value))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            throw new PhotonProtocolError("Invalid UTF-8 in " + field, e);
+        }
     }
 }

@@ -50,6 +50,7 @@ class PhotonProtocolTest {
     void serializeRequest_nullMetadata() {
         PhotonRequest request = new PhotonRequest("GET", "https://example.com",
                 Collections.emptyMap(), null);
+        assertNotNull(request.getMetadata());
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         assertArrayEquals("service=&op=".getBytes(StandardCharsets.UTF_8), cmd.getArgs().get(4));
     }
@@ -168,6 +169,18 @@ class PhotonProtocolTest {
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(array));
     }
 
+    @Test
+    void parseConfigResponse_rejectsSimpleString() {
+        RespSimpleString value = new RespSimpleString("{}".getBytes(StandardCharsets.UTF_8));
+        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
+    }
+
+    @Test
+    void parseConfigResponse_rejectsInvalidUtf8() {
+        RespBulkString value = new RespBulkString(new byte[]{(byte) 0xff});
+        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
+    }
+
     // === parseRequestResponse tests ===
 
     @Test
@@ -246,13 +259,34 @@ class PhotonProtocolTest {
     }
 
     @Test
-    void deserializeResponse_malformedHeaderLines() {
+    void deserializeResponse_skipsMalformedHeaderLinesAndTrimsValues() {
         List<RespValue> elements = Arrays.asList(
                 new RespInteger(200),
-                new RespBulkString("no-colon-here".getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString(" content-type : application/json \nno-colon-here".getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString(new byte[0])
+        );
+        PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
+        assertEquals(Collections.singletonMap("content-type", "application/json"), response.getHeaders());
+    }
+
+    @Test
+    void deserializeResponse_rejectsInvalidUtf8InHeaders() {
+        List<RespValue> elements = Arrays.asList(
+                new RespInteger(200),
+                new RespBulkString(new byte[]{(byte) 0xff}),
                 new RespBulkString(new byte[0])
         );
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
+    }
+
+    @Test
+    void deserializeResponse_acceptsWhitespaceAroundStringStatus() {
+        List<RespValue> elements = Arrays.asList(
+                new RespBulkString(" 200 ".getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString(new byte[0]),
+                new RespBulkString(new byte[0])
+        );
+        assertEquals(200, PhotonProtocol.deserializeResponse(elements).getStatusCode());
     }
 
     @Test

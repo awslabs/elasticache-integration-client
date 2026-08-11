@@ -69,7 +69,7 @@ public class PhotonConnection implements Closeable {
     /** Default connection timeout in milliseconds. */
     public static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
     /** Default maximum pending requests. */
-    public static final int DEFAULT_MAX_PENDING = 1000;
+    public static final int DEFAULT_MAX_PENDING = 100;
     /** Maximum response size in bytes (16 MB). */
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
@@ -171,6 +171,7 @@ public class PhotonConnection implements Closeable {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 plainSocket = new Socket();
                 plainSocket.setTcpNoDelay(true); // Disable Nagle's algorithm
+                plainSocket.setKeepAlive(true);
                 plainSocket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
 
                 // createSocket takes ownership of plainSocket on success (autoClose=true).
@@ -314,6 +315,15 @@ public class PhotonConnection implements Closeable {
         } catch (Exception e) {
             markDead();
             throw new PhotonConnectionError("Config handshake failed", e);
+        }
+
+        // Request timeouts are enforced per future below. A socket timeout here
+        // would kill an otherwise healthy connection simply because it was idle.
+        try {
+            socket.setSoTimeout(0);
+        } catch (IOException e) {
+            markDead();
+            throw new PhotonConnectionError("Failed to configure background reader", e);
         }
 
         // Start the reader thread

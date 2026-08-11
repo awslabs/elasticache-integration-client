@@ -107,7 +107,7 @@ class SdkAdaptersTest {
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, attributes);
 
-        assertEquals("DynamoDb", photonRequest.getMetadata().getService());
+        assertEquals("dynamodb", photonRequest.getMetadata().getService());
         assertEquals("GetItem", photonRequest.getMetadata().getOperation());
     }
 
@@ -215,7 +215,7 @@ class SdkAdaptersTest {
         assertEquals("https://dynamodb.us-east-1.amazonaws.com/", photonRequest.getUrl());
         assertEquals("application/x-amz-json-1.0", photonRequest.getHeaders().get("Content-Type"));
         assertArrayEquals(body, photonRequest.getBody());
-        assertEquals("DynamoDb", photonRequest.getMetadata().getService());
+        assertEquals("dynamodb", photonRequest.getMetadata().getService());
         assertEquals("GetItem", photonRequest.getMetadata().getOperation());
     }
 

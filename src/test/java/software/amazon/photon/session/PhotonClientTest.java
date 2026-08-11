@@ -15,12 +15,17 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
+import software.amazon.photon.mock.ReceivedRequest;
+import software.amazon.photon.mock.Reply;
 
 import javax.net.ssl.SSLContext;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -81,6 +86,70 @@ class PhotonClientTest {
             assertNotNull(result.client());
             assertTrue(result.handle().isOpen());
         }
+    }
+
+    @Test
+    void clientOperation_isServedByPhotonWithoutContactingOrigin() {
+        cache.setReply(Reply.ok(
+                200,
+                Map.of("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
+
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
+
+        ReceivedRequest request = cache.getLastRequest();
+        assertNotNull(request);
+        assertEquals("POST", request.getMethod());
+        assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
+        assertFalse(request.getHeaders().contains("authorization"));
+        assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void clientOperation_reusesCapturedRequestForSdkRetry() {
+        AtomicInteger attempt = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            if (attempt.getAndIncrement() == 0) {
+                return Reply.ok(
+                        500,
+                        Map.of(
+                                "content-type", "application/x-amz-json-1.0",
+                                "x-amzn-errortype", "InternalServerError"),
+                        "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
+            }
+            return Reply.ok(
+                    200,
+                    Map.of("content-type", "application/x-amz-json-1.0"),
+                    "{\"TableNames\":[]}");
+        });
+
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
+
+        assertEquals(2, cache.getRequests().size());
     }
 
     @Test
@@ -223,9 +292,8 @@ class PhotonClientTest {
                 })) {
             
             assertTrue(result.handle().isOpen());
-            // The client should have both the Photon interceptor and our custom interceptor merged
-            // Note: We can't directly inspect the interceptors, but we can verify no exception thrown
-            // and the client was built successfully with both configs
+            result.client().listTables();
+            assertTrue(customInterceptorCalled.get());
         }
     }
 

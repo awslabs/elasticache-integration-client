@@ -1,5 +1,6 @@
 package software.amazon.photon.model;
 
+import java.util.Locale;
 import java.util.Objects;
 
 /**
@@ -11,7 +12,7 @@ public class RequestMetadata {
     private final String operation;
 
     public RequestMetadata(String service, String operation) {
-        this.service = service;
+        this.service = service != null ? service.toLowerCase(Locale.ROOT) : null;
         this.operation = operation;
     }
 

@@ -1,6 +1,5 @@
 package software.amazon.photon.session;
 
-import software.amazon.awssdk.core.SdkClient;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.exception.PhotonError;
@@ -18,8 +17,8 @@ import java.util.function.Supplier;
  * its associated PhotonConnection. It provides a clean API for setting up
  * Photon with an SDK client.
  *
- * <p>AWS SDK v2 for Java requires interceptors to be configured at client build
- * time, so this handle is used during client construction:
+ * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be
+ * configured at client build time, so this handle is used during construction:
  *
  * <pre>{@code
  * // Create the handle with an IamAuthTokenProvider
@@ -37,9 +36,10 @@ import java.util.function.Supplier;
  * // Open the session
  * handle.open();
  *
- * // Build the SDK client with the interceptor
+ * // Build the SDK client with the interceptor and short-circuiting transport
  * DynamoDbClient client = DynamoDbClient.builder()
  *     .overrideConfiguration(c -> c.addExecutionInterceptor(handle.getInterceptor()))
+ *     .httpClient(handle.getHttpClient())
  *     .build();
  *
  * // Use the client...
@@ -57,6 +57,7 @@ public class PhotonHandle implements Closeable {
     private final PhotonConnection connection;
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
+    private final PhotonHttpClient httpClient;
     private boolean opened = false;
     private boolean closed = false;
 
@@ -64,6 +65,7 @@ public class PhotonHandle implements Closeable {
         this.connection = connection;
         this.session = session;
         this.interceptor = new PhotonInterceptor(session);
+        this.httpClient = interceptor.getHttpClient();
     }
 
     /**
@@ -71,9 +73,21 @@ public class PhotonHandle implements Closeable {
      *
      * <p>The interceptor should be added during client construction via
      * {@code overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}.
+     * The client must also use {@link #getHttpClient()} as its HTTP transport.
      */
     public PhotonInterceptor getInterceptor() {
         return interceptor;
+    }
+
+    /**
+     * Get the HTTP client that serves SDK responses from Photon without contacting AWS.
+     *
+     * <p>This transport must be installed together with {@link #getInterceptor()}.
+     * Installing only the interceptor allows the SDK's default transport to
+     * contact the origin service.
+     */
+    public PhotonHttpClient getHttpClient() {
+        return httpClient;
     }
 
     /**

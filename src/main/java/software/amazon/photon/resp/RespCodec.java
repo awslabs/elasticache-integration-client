@@ -176,12 +176,19 @@ public final class RespCodec {
         if (length == -1) {
             return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
         }
+        if (length < -1) {
+            throw new PhotonProtocolError("Invalid bulk string length: " + length);
+        }
 
         int dataStart = crlfPos + 2;
-        int dataEnd = dataStart + length;
+        long dataEndLong = (long) dataStart + length;
         // Need data + CRLF
-        if (dataEnd + 2 > data.length) {
+        if (dataEndLong + 2 > data.length) {
             throw new IncompleteFrame("Incomplete bulk string data");
+        }
+        int dataEnd = (int) dataEndLong;
+        if (data[dataEnd] != '\r' || data[dataEnd + 1] != '\n') {
+            throw new PhotonProtocolError("Bulk string is not terminated by CRLF");
         }
 
         byte[] value = new byte[length];
@@ -206,8 +213,11 @@ public final class RespCodec {
         if (count == -1) {
             return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
         }
+        if (count < -1) {
+            throw new PhotonProtocolError("Invalid array count: " + count);
+        }
 
-        List<RespValue> elements = new ArrayList<>(count);
+        List<RespValue> elements = new ArrayList<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
             DecodeResult element = decode(data, pos);
