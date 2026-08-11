@@ -24,6 +24,11 @@ import software.amazon.photon.model.PhotonRequest;
  * <p>The interceptor hands the unsigned request to {@link PhotonHttpClient}, which
  * returns the Photon response without making an origin HTTP request.
  *
+ * <p><b>Important:</b> Installing this interceptor without also configuring
+ * {@link #getHttpClient()} as the SDK client's HTTP transport does not enable
+ * Photon and allows the default transport to contact the origin service. Prefer
+ * {@link PhotonClient} unless manual lifecycle control is required.
+ *
  * <p>Usage:
  * <pre>{@code
  * PhotonInterceptor interceptor = new PhotonInterceptor(session);
@@ -52,6 +57,10 @@ public class PhotonInterceptor implements ExecutionInterceptor {
 
     /**
      * Get the HTTP client that short-circuits origin requests through Photon.
+     *
+     * <p>This transport must be installed together with this interceptor. Using
+     * the interceptor with the SDK's default transport does not short-circuit the
+     * origin request.
      */
     public PhotonHttpClient getHttpClient() {
         return httpClient;

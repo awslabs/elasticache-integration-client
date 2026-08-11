@@ -81,6 +81,10 @@ public class PhotonHandle implements Closeable {
 
     /**
      * Get the HTTP client that serves SDK responses from Photon without contacting AWS.
+     *
+     * <p>This transport must be installed together with {@link #getInterceptor()}.
+     * Installing only the interceptor allows the SDK's default transport to
+     * contact the origin service.
      */
     public PhotonHttpClient getHttpClient() {
         return httpClient;

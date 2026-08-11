@@ -33,7 +33,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
         return new ExecutableHttpRequest() {
             @Override
             public HttpExecuteResponse call() {
-                PhotonRequest photonRequest = requestContext.take();
+                PhotonRequest photonRequest = requestContext.get();
                 if (photonRequest == null) {
                     throw new PhotonError("Photon request was not captured before HTTP execution");
                 }
@@ -51,7 +51,8 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
             @Override
             public void abort() {
-                requestContext.clear();
+                // The SDK may retry after aborting an attempt. Execution completion
+                // or failure hooks clear the request after all attempts finish.
             }
         };
     }

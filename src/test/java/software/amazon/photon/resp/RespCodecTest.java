@@ -235,6 +235,12 @@ class RespCodecTest {
     }
 
     @Test
+    void decode_largeArrayCount_doesNotPreallocateFromWireValue() {
+        byte[] data = "*2000000000\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
     void decode_emptyData() {
         byte[] data = new byte[0];
         assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));

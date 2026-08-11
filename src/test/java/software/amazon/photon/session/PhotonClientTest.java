@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -114,6 +115,41 @@ class PhotonClientTest {
         assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
         assertFalse(request.getHeaders().contains("authorization"));
         assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void clientOperation_reusesCapturedRequestForSdkRetry() {
+        AtomicInteger attempt = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            if (attempt.getAndIncrement() == 0) {
+                return Reply.ok(
+                        500,
+                        Map.of(
+                                "content-type", "application/x-amz-json-1.0",
+                                "x-amzn-errortype", "InternalServerError"),
+                        "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
+            }
+            return Reply.ok(
+                    200,
+                    Map.of("content-type", "application/x-amz-json-1.0"),
+                    "{\"TableNames\":[]}");
+        });
+
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
+
+        assertEquals(2, cache.getRequests().size());
     }
 
     @Test

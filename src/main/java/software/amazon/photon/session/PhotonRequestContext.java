@@ -13,10 +13,8 @@ final class PhotonRequestContext {
         currentRequest.set(request);
     }
 
-    PhotonRequest take() {
-        PhotonRequest request = currentRequest.get();
-        currentRequest.remove();
-        return request;
+    PhotonRequest get() {
+        return currentRequest.get();
     }
 
     void clear() {

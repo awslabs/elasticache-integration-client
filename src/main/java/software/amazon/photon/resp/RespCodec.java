@@ -217,7 +217,7 @@ public final class RespCodec {
             throw new PhotonProtocolError("Invalid array count: " + count);
         }
 
-        List<RespValue> elements = new ArrayList<>(count);
+        List<RespValue> elements = new ArrayList<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
             DecodeResult element = decode(data, pos);

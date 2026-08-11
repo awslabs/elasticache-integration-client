@@ -171,6 +171,7 @@ public class PhotonConnection implements Closeable {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 plainSocket = new Socket();
                 plainSocket.setTcpNoDelay(true); // Disable Nagle's algorithm
+                plainSocket.setKeepAlive(true);
                 plainSocket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
 
                 // createSocket takes ownership of plainSocket on success (autoClose=true).
