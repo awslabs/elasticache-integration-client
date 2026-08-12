@@ -232,24 +232,20 @@ class PhotonClientTest {
     }
 
     @Test
-    void builder_connectionFailure_fallsBackToSignedOriginRequest() throws Exception {
+    void builder_connectionFailure_propagatesWithoutCallingOrigin() throws Exception {
         int photonPort = server.getPort();
         server.close(); // Stop the server so connection fails
         RecordingOriginClient origin = new RecordingOriginClient();
 
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+        assertThrows(PhotonError.class, () -> PhotonClient.builder()
                 .endpoint("localhost:" + photonPort)
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 .connectTimeoutMs(100)
                 .originHttpClient(origin)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
-            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
-            assertFalse(result.handle().isOpen());
-        }
+                .build(DynamoDbClient.builder(), sdkConfig));
 
-        assertNotNull(origin.request.get());
-        assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
+        assertNull(origin.request.get());
         assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
     }
 

@@ -280,11 +280,9 @@ public final class PhotonClient {
             
             try {
                 handle.open();
-            } catch (PhotonError photonFailure) {
-                // A failed initial Photon connection degrades to origin-only operation.
-            } catch (RuntimeException unexpectedFailure) {
+            } catch (RuntimeException initializationFailure) {
                 handle.close();
-                throw unexpectedFailure;
+                throw initializationFailure;
             }
 
             // Apply user's SDK configuration and build client - close handle on any failure
