@@ -101,7 +101,7 @@ class PhotonHttpClientTest {
     }
 
     private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
-                                               boolean closeOrigin) {
+                                               boolean ownsOrigin) {
         PhotonRequestContext context = new PhotonRequestContext();
         context.set(new PhotonRequest(
                 "POST",
@@ -109,7 +109,7 @@ class PhotonHttpClientTest {
                 Collections.emptyMap(),
                 new byte[0],
                 new RequestMetadata("dynamodb", "ListTables")));
-        return new PhotonHttpClient(session, context, origin, closeOrigin);
+        return new PhotonHttpClient(session, context, origin, ownsOrigin);
     }
 
     private static HttpExecuteRequest signedRequest() {

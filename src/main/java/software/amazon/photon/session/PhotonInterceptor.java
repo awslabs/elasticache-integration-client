@@ -67,9 +67,9 @@ public class PhotonInterceptor implements ExecutionInterceptor {
         this(session, originClient, false);
     }
 
-    PhotonInterceptor(PhotonSession session, SdkHttpClient originClient, boolean closeOriginClient) {
+    PhotonInterceptor(PhotonSession session, SdkHttpClient originClient, boolean ownsOriginClient) {
         this.requestContext = new PhotonRequestContext();
-        this.httpClient = new PhotonHttpClient(session, requestContext, originClient, closeOriginClient);
+        this.httpClient = new PhotonHttpClient(session, requestContext, originClient, ownsOriginClient);
     }
 
     /**

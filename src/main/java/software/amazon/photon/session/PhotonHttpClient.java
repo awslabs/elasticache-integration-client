@@ -27,15 +27,15 @@ public final class PhotonHttpClient implements SdkHttpClient {
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
     private final SdkHttpClient originClient;
-    private final boolean closeOriginClient;
+    private final boolean ownsOriginClient;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext,
-                     SdkHttpClient originClient, boolean closeOriginClient) {
+                     SdkHttpClient originClient, boolean ownsOriginClient) {
         this.session = session;
         this.requestContext = requestContext;
         this.originClient = originClient;
-        this.closeOriginClient = closeOriginClient;
+        this.ownsOriginClient = ownsOriginClient;
     }
 
     @Override
@@ -93,7 +93,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
             return;
         }
         requestContext.clear();
-        if (closeOriginClient) {
+        if (ownsOriginClient) {
             originClient.close();
         }
     }

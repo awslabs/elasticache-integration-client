@@ -200,19 +200,6 @@ public final class PhotonClient {
         }
 
         /**
-         * Set both initialization and request timeouts in milliseconds.
-         *
-         * @deprecated Use {@link #initializationTimeoutMs(int)} and
-         * {@link #requestTimeoutMs(int)} to configure the independent budgets.
-         */
-        @Deprecated
-        public Builder readTimeoutMs(int readTimeoutMs) {
-            this.initializationTimeoutMs = readTimeoutMs;
-            this.requestTimeoutMs = readTimeoutMs;
-            return this;
-        }
-
-        /**
          * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
          */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {

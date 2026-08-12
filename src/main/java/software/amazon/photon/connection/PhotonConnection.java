@@ -31,9 +31,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -80,12 +79,18 @@ public class PhotonConnection implements Closeable {
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
-    private static final ScheduledExecutorService TIMEOUT_EXECUTOR =
-            Executors.newSingleThreadScheduledExecutor(runnable -> {
-                Thread thread = new Thread(runnable, "photon-timeout-watchdog");
-                thread.setDaemon(true);
-                return thread;
-            });
+    private static final ScheduledThreadPoolExecutor TIMEOUT_EXECUTOR = createTimeoutExecutor();
+
+    private static ScheduledThreadPoolExecutor createTimeoutExecutor() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
+                1, runnable -> {
+                    Thread thread = new Thread(runnable, "photon-timeout-watchdog");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
 
     private final String host;
     private final int port;

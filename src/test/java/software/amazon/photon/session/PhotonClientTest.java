@@ -292,7 +292,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .connectTimeoutMs(1000)
-                .readTimeoutMs(2000)
+                .initializationTimeoutMs(2000)
+                .requestTimeoutMs(2000)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             

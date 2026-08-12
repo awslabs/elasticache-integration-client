@@ -64,10 +64,10 @@ public class PhotonHandle implements Closeable {
     private boolean closed = false;
 
     private PhotonHandle(PhotonConnection connection, PhotonSession session,
-                         SdkHttpClient originClient, boolean closeOriginClient) {
+                         SdkHttpClient originClient, boolean ownsOriginClient) {
         this.connection = connection;
         this.session = session;
-        this.interceptor = new PhotonInterceptor(session, originClient, closeOriginClient);
+        this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
     }
 
@@ -221,19 +221,6 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
-         * Set both initialization and request timeouts in milliseconds.
-         *
-         * @deprecated Use {@link #initializationTimeoutMs(int)} and
-         * {@link #requestTimeoutMs(int)} to configure the independent budgets.
-         */
-        @Deprecated
-        public Builder readTimeoutMs(int readTimeoutMs) {
-            this.initializationTimeoutMs = readTimeoutMs;
-            this.requestTimeoutMs = readTimeoutMs;
-            return this;
-        }
-
-        /**
          * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
          */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
@@ -286,12 +273,12 @@ public class PhotonHandle implements Closeable {
                     requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
             PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
             SdkHttpClient origin = originHttpClient;
-            boolean closeOrigin = false;
+            boolean ownsOrigin = false;
             if (origin == null) {
                 origin = ApacheHttpClient.create();
-                closeOrigin = true;
+                ownsOrigin = true;
             }
-            return new PhotonHandle(connection, session, origin, closeOrigin);
+            return new PhotonHandle(connection, session, origin, ownsOrigin);
         }
     }
 }
