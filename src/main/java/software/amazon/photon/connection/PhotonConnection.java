@@ -441,13 +441,24 @@ public class PhotonConnection implements Closeable {
      * @throws PhotonTimeoutError if the read times out (connection is then closed)
      */
     public PhotonResponse request(PhotonRequest request) {
+        return request(request, new PhotonRequestCancellation());
+    }
+
+    /**
+     * Send a {@code photon.request} with an external cancellation signal.
+     *
+     * @param request      the request to send
+     * @param cancellation cancellation signal for this request
+     * @return the cache response
+     */
+    public PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
         ensureReady();
 
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         byte[] encoded = RespCodec.encodeCommand(cmd.getCommandName(),
                 cmd.getArgs().toArray(new byte[0][]));
 
-        RespValue reply = sendAndAwait(encoded);
+        RespValue reply = sendAndAwait(encoded, cancellation);
         return PhotonProtocol.parseRequestResponse(reply);
     }
 
@@ -597,6 +608,14 @@ public class PhotonConnection implements Closeable {
      * Uses the send lock to ensure atomic register+send.
      */
     private RespValue sendAndAwait(byte[] encoded) {
+        return sendAndAwait(encoded, new PhotonRequestCancellation());
+    }
+
+    private RespValue sendAndAwait(byte[] encoded, PhotonRequestCancellation cancellation) {
+        if (cancellation.isCancelled()) {
+            throw new PhotonRequestCancellation.CancelledException();
+        }
+
         CompletableFuture<RespValue> future;
         long deadlineNanos = deadlineAfter(requestTimeoutMs);
 
@@ -614,6 +633,10 @@ public class PhotonConnection implements Closeable {
             throw timeout;
         }
         try {
+            if (cancellation.isCancelled()) {
+                throw new PhotonRequestCancellation.CancelledException();
+            }
+
             // Must register before sending to maintain FIFO correlation
             future = pending.register();
 
@@ -642,6 +665,10 @@ public class PhotonConnection implements Closeable {
         } finally {
             sendLock.unlock();
         }
+
+        Runnable cancellationAction = () -> future.completeExceptionally(
+                new PhotonRequestCancellation.CancelledException());
+        cancellation.register(cancellationAction);
 
         // Wait for response
         try {
@@ -676,6 +703,8 @@ public class PhotonConnection implements Closeable {
             markDead();
             pending.failAll(new ConnectionLost("Request interrupted", e));
             throw new ConnectionLost("Request interrupted", e);
+        } finally {
+            cancellation.clear(cancellationAction);
         }
     }
 

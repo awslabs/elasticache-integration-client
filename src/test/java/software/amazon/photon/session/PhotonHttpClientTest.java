@@ -10,6 +10,7 @@ import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -19,10 +20,15 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -71,17 +77,80 @@ class PhotonHttpClientTest {
     }
 
     @Test
-    void abortReachesActiveOriginRequest() throws Exception {
+    void abortBeforeCallDoesNotContactPhotonOrOrigin() {
         StubSession session = new StubSession();
-        session.failure = new ConnectionLost("cache unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
         ExecutableHttpRequest request = client.prepareRequest(signedRequest());
 
         request.abort();
-        request.call();
+
+        assertThrows(IOException.class, request::call);
+        assertEquals(0, session.requestCount.get());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void abortDuringPhotonRequestReturnsWithoutContactingOrigin() throws Exception {
+        StubSession session = new StubSession();
+        session.blockUntilCancelled = true;
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonRequestContext context = new PhotonRequestContext();
+        PhotonHttpClient client = new PhotonHttpClient(session, context, origin, false);
+        ExecutableHttpRequest request = client.prepareRequest(signedRequest());
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread caller = new Thread(() -> {
+            context.set(photonRequest());
+            try {
+                request.call();
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            } finally {
+                context.clear();
+            }
+        });
+        caller.start();
+        assertTrue(session.requestStarted.await(2, TimeUnit.SECONDS));
+
+        request.abort();
+        caller.join(2000);
+
+        assertTrue(failure.get() instanceof IOException);
+        assertEquals(0, origin.prepareCount.get());
+        assertFalse(caller.isAlive());
+    }
+
+    @Test
+    void abortReachesActiveOriginRequest() throws Exception {
+        StubSession session = new StubSession();
+        session.failure = new ConnectionLost("cache unavailable");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        origin.blockCall = true;
+        PhotonRequestContext context = new PhotonRequestContext();
+        PhotonHttpClient client = new PhotonHttpClient(session, context, origin, false);
+        ExecutableHttpRequest request = client.prepareRequest(signedRequest());
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+
+        Thread caller = new Thread(() -> {
+            context.set(photonRequest());
+            try {
+                request.call();
+            } catch (Throwable throwable) {
+                failure.set(throwable);
+            } finally {
+                context.clear();
+            }
+        });
+        caller.start();
+        assertTrue(origin.callStarted.await(2, TimeUnit.SECONDS));
+
+        request.abort();
+        caller.join(2000);
 
         assertTrue(origin.aborted.get());
+        assertNull(failure.get());
+        assertFalse(caller.isAlive());
     }
 
     @Test
@@ -103,13 +172,17 @@ class PhotonHttpClientTest {
     private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
                                                boolean ownsOrigin) {
         PhotonRequestContext context = new PhotonRequestContext();
-        context.set(new PhotonRequest(
+        context.set(photonRequest());
+        return new PhotonHttpClient(session, context, origin, ownsOrigin);
+    }
+
+    private static PhotonRequest photonRequest() {
+        return new PhotonRequest(
                 "POST",
                 "https://dynamodb.us-east-1.amazonaws.com/",
                 Collections.emptyMap(),
                 new byte[0],
-                new RequestMetadata("dynamodb", "ListTables")));
-        return new PhotonHttpClient(session, context, origin, ownsOrigin);
+                new RequestMetadata("dynamodb", "ListTables"));
     }
 
     private static HttpExecuteRequest signedRequest() {
@@ -124,6 +197,9 @@ class PhotonHttpClientTest {
     private static final class StubSession extends PhotonSession {
         private PhotonResponse response;
         private RuntimeException failure;
+        private final AtomicInteger requestCount = new AtomicInteger();
+        private final CountDownLatch requestStarted = new CountDownLatch(1);
+        private volatile boolean blockUntilCancelled;
 
         private StubSession() {
             super(new PhotonConnection("unused", 1, null), "user", "token");
@@ -131,6 +207,19 @@ class PhotonHttpClientTest {
 
         @Override
         public PhotonResponse request(PhotonRequest request) {
+            return request(request, new PhotonRequestCancellation());
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            requestCount.incrementAndGet();
+            requestStarted.countDown();
+            if (blockUntilCancelled) {
+                while (!cancellation.isCancelled()) {
+                    Thread.yield();
+                }
+                throw new PhotonRequestCancellation.CancelledException();
+            }
             if (failure != null) {
                 throw failure;
             }
@@ -144,6 +233,8 @@ class PhotonHttpClientTest {
         private final java.util.concurrent.atomic.AtomicReference<HttpExecuteRequest> request =
                 new java.util.concurrent.atomic.AtomicReference<>();
         private final AtomicBoolean aborted = new AtomicBoolean();
+        private final CountDownLatch callStarted = new CountDownLatch(1);
+        private volatile boolean blockCall;
 
         @Override
         public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
@@ -152,6 +243,10 @@ class PhotonHttpClientTest {
             return new ExecutableHttpRequest() {
                 @Override
                 public HttpExecuteResponse call() {
+                    callStarted.countDown();
+                    while (blockCall && !aborted.get()) {
+                        Thread.yield();
+                    }
                     return HttpExecuteResponse.builder()
                             .response(SdkHttpFullResponse.builder().statusCode(201).build())
                             .responseBody(AbortableInputStream.create(

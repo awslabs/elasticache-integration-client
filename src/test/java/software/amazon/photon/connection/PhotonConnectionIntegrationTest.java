@@ -412,6 +412,53 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
+    void request_cancelledResponseRetainsFifoPosition() throws Exception {
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger sequence = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                firstReceived.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+                return Reply.ok(200, Collections.emptyMap(), "cancelled");
+            }
+            return Reply.ok(200, Collections.emptyMap(), "next");
+        });
+
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnection.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
+            Future<PhotonResponse> cancelled = executor.submit(
+                    () -> conn.request(testRequest(), cancellation));
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+
+            cancellation.cancel();
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> cancelled.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonRequestCancellation.CancelledException);
+            assertFalse(conn.isDead());
+
+            releaseFirst.countDown();
+            PhotonResponse next = conn.request(testRequest());
+            assertEquals("next", new String(next.getBody(), StandardCharsets.UTF_8));
+            assertFalse(conn.isDead());
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
     void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
         PhotonConnection conn = new PhotonConnection(
                 "localhost", server.getPort(), clientSslContext,
