@@ -11,48 +11,73 @@ import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Synchronous SDK HTTP transport that serves responses from Photon.
+ * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
- * <p>No origin HTTP request is performed. The unsigned request captured by
- * {@link PhotonInterceptor} is forwarded to the Photon session instead.
+ * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
+ * Photon. Expected Photon failures transparently delegate the original signed
+ * SDK request to the configured origin transport.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
+    private final SdkHttpClient originClient;
+    private final boolean closeOriginClient;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext) {
+    PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext,
+                     SdkHttpClient originClient, boolean closeOriginClient) {
         this.session = session;
         this.requestContext = requestContext;
+        this.originClient = originClient;
+        this.closeOriginClient = closeOriginClient;
     }
 
     @Override
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
         return new ExecutableHttpRequest() {
+            private final AtomicReference<ExecutableHttpRequest> activeOriginRequest = new AtomicReference<>();
+            private final AtomicBoolean aborted = new AtomicBoolean();
+
             @Override
-            public HttpExecuteResponse call() {
+            public HttpExecuteResponse call() throws IOException {
                 PhotonRequest photonRequest = requestContext.get();
                 if (photonRequest == null) {
-                    throw new PhotonError("Photon request was not captured before HTTP execution");
+                    throw new IllegalStateException("Photon request was not captured before HTTP execution");
                 }
 
-                PhotonResponse photonResponse = session.request(photonRequest);
-                SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
-                HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
-                        .response(sdkResponse);
-                byte[] body = photonResponse.getBody();
-                if (body != null && body.length > 0) {
-                    response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
+                try {
+                    PhotonResponse photonResponse = session.request(photonRequest);
+                    SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
+                    HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
+                            .response(sdkResponse);
+                    byte[] body = photonResponse.getBody();
+                    if (body != null && body.length > 0) {
+                        response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
+                    }
+                    return response.build();
+                } catch (PhotonError photonFailure) {
+                    ExecutableHttpRequest originRequest = originClient.prepareRequest(request);
+                    activeOriginRequest.set(originRequest);
+                    if (aborted.get()) {
+                        originRequest.abort();
+                    }
+                    return originRequest.call();
                 }
-                return response.build();
             }
 
             @Override
             public void abort() {
-                // The SDK may retry after aborting an attempt. Execution completion
-                // or failure hooks clear the request after all attempts finish.
+                aborted.set(true);
+                ExecutableHttpRequest originRequest = activeOriginRequest.get();
+                if (originRequest != null) {
+                    originRequest.abort();
+                }
             }
         };
     }
@@ -64,6 +89,12 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         requestContext.clear();
+        if (closeOriginClient) {
+            originClient.close();
+        }
     }
 }

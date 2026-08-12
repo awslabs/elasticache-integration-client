@@ -4,6 +4,8 @@ import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.photon.model.PhotonRequest;
 
 /**
@@ -22,7 +24,8 @@ import software.amazon.photon.model.PhotonRequest;
  * but Photon does not require them for caching purposes.
  *
  * <p>The interceptor hands the unsigned request to {@link PhotonHttpClient}, which
- * returns the Photon response without making an origin HTTP request.
+ * returns the Photon response or delegates the signed request to the origin
+ * transport when Photon fails.
  *
  * <p><b>Important:</b> Installing this interceptor without also configuring
  * {@link #getHttpClient()} as the SDK client's HTTP transport does not enable
@@ -51,16 +54,29 @@ public class PhotonInterceptor implements ExecutionInterceptor {
      * @param session the Photon session (must be opened before use)
      */
     public PhotonInterceptor(PhotonSession session) {
-        this.requestContext = new PhotonRequestContext();
-        this.httpClient = new PhotonHttpClient(session, requestContext);
+        this(session, ApacheHttpClient.create(), true);
     }
 
     /**
-     * Get the HTTP client that short-circuits origin requests through Photon.
+     * Create an interceptor with a caller-managed origin HTTP client.
+     *
+     * @param session the Photon session (must be opened before use)
+     * @param originClient transport used when Photon is unavailable; Photon does not close it
+     */
+    public PhotonInterceptor(PhotonSession session, SdkHttpClient originClient) {
+        this(session, originClient, false);
+    }
+
+    PhotonInterceptor(PhotonSession session, SdkHttpClient originClient, boolean closeOriginClient) {
+        this.requestContext = new PhotonRequestContext();
+        this.httpClient = new PhotonHttpClient(session, requestContext, originClient, closeOriginClient);
+    }
+
+    /**
+     * Get the HTTP client that attempts Photon before the origin service.
      *
      * <p>This transport must be installed together with this interceptor. Using
-     * the interceptor with the SDK's default transport does not short-circuit the
-     * origin request.
+     * the interceptor with the SDK's default transport bypasses Photon.
      */
     public PhotonHttpClient getHttpClient() {
         return httpClient;
