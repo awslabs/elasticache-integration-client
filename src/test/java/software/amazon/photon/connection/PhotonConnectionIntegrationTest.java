@@ -7,6 +7,7 @@ import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
@@ -17,6 +18,9 @@ import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
 
 import javax.net.ssl.SSLContext;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -28,8 +32,11 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.Lock;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -379,6 +386,154 @@ class PhotonConnectionIntegrationTest {
         } finally {
             conn.close();
         }
+    }
+
+    @Test
+    void request_serverHangs_timesOutAndKillsConnection() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("photon.request");
+
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            PhotonRequest request = new PhotonRequest(
+                    "GET", "https://example.com/item",
+                    Collections.emptyMap(), new byte[0],
+                    new RequestMetadata("dynamodb", "GetItem"));
+
+            assertThrows(PhotonTimeoutError.class, () -> conn.request(request));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_cancelledResponseRetainsFifoPosition() throws Exception {
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        CountDownLatch releaseFirst = new CountDownLatch(1);
+        AtomicInteger sequence = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                firstReceived.countDown();
+                try {
+                    releaseFirst.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new RuntimeException(e);
+                }
+                return Reply.ok(200, Collections.emptyMap(), "cancelled");
+            }
+            return Reply.ok(200, Collections.emptyMap(), "next");
+        });
+
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnection.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
+            Future<PhotonResponse> cancelled = executor.submit(
+                    () -> conn.request(testRequest(), cancellation));
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+
+            cancellation.cancel();
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> cancelled.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonRequestCancellation.CancelledException);
+            assertFalse(conn.isDead());
+
+            releaseFirst.countDown();
+            PhotonResponse next = conn.request(testRequest());
+            assertEquals("next", new String(next.getBody(), StandardCharsets.UTF_8));
+            assertFalse(conn.isDead());
+        } finally {
+            releaseFirst.countDown();
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Lock sendLock = getField(conn, "sendLock", Lock.class);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            sendLock.lock();
+            Future<PhotonResponse> request = executor.submit(() -> conn.request(testRequest()));
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonTimeoutError);
+            assertTrue(conn.isDead());
+        } finally {
+            if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
+                sendLock.unlock();
+            }
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_blockedSocketWrite_timesOutAndKillsConnection() throws Exception {
+        PhotonConnection conn = new PhotonConnection(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Field outputStream = PhotonConnection.class.getDeclaredField("outputStream");
+            outputStream.setAccessible(true);
+            outputStream.set(conn, new OutputStream() {
+                @Override
+                public void write(int value) throws IOException {
+                    blockUntilConnectionDies();
+                }
+
+                @Override
+                public void write(byte[] bytes, int offset, int length) throws IOException {
+                    blockUntilConnectionDies();
+                }
+
+                private void blockUntilConnectionDies() throws IOException {
+                    while (!conn.isDead()) {
+                        try {
+                            Thread.sleep(5);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            throw new IOException(e);
+                        }
+                    }
+                    throw new IOException("socket closed");
+                }
+            });
+
+            assertThrows(PhotonTimeoutError.class, () -> conn.request(testRequest()));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    private static PhotonRequest testRequest() {
+        return new PhotonRequest(
+                "GET", "https://example.com/item",
+                Collections.emptyMap(), new byte[0],
+                new RequestMetadata("dynamodb", "GetItem"));
+    }
+
+    private static <T> T getField(Object target, String name, Class<T> type) throws Exception {
+        Field field = target.getClass().getDeclaredField(name);
+        field.setAccessible(true);
+        return type.cast(field.get(target));
     }
 
     @Test

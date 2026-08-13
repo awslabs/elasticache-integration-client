@@ -7,52 +7,104 @@ import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * Synchronous SDK HTTP transport that serves responses from Photon.
+ * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
- * <p>No origin HTTP request is performed. The unsigned request captured by
- * {@link PhotonInterceptor} is forwarded to the Photon session instead.
+ * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
+ * Photon. Expected Photon failures transparently delegate the original signed
+ * SDK request to the configured origin transport.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
+    private final SdkHttpClient originClient;
+    private final boolean ownsOriginClient;
+    private final AtomicBoolean closed = new AtomicBoolean();
 
-    PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext) {
+    PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext,
+                     SdkHttpClient originClient, boolean ownsOriginClient) {
         this.session = session;
         this.requestContext = requestContext;
+        this.originClient = originClient;
+        this.ownsOriginClient = ownsOriginClient;
     }
 
     @Override
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
         return new ExecutableHttpRequest() {
+            private final AtomicReference<ExecutableHttpRequest> activeOriginRequest = new AtomicReference<>();
+            private final AtomicReference<PhotonRequestCancellation> activePhotonRequest = new AtomicReference<>();
+            private final AtomicBoolean aborted = new AtomicBoolean();
+
             @Override
-            public HttpExecuteResponse call() {
-                PhotonRequest photonRequest = requestContext.get();
-                if (photonRequest == null) {
-                    throw new PhotonError("Photon request was not captured before HTTP execution");
+            public HttpExecuteResponse call() throws IOException {
+                if (aborted.get()) {
+                    throw new IOException("Request was aborted");
                 }
 
-                PhotonResponse photonResponse = session.request(photonRequest);
-                SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
-                HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
-                        .response(sdkResponse);
-                byte[] body = photonResponse.getBody();
-                if (body != null && body.length > 0) {
-                    response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
+                PhotonRequest photonRequest = requestContext.get();
+                if (photonRequest == null) {
+                    throw new IllegalStateException("Photon request was not captured before HTTP execution");
                 }
-                return response.build();
+
+                PhotonRequestCancellation photonCancellation = new PhotonRequestCancellation();
+                activePhotonRequest.set(photonCancellation);
+                if (aborted.get()) {
+                    photonCancellation.cancel();
+                }
+
+                try {
+                    PhotonResponse photonResponse = session.request(photonRequest, photonCancellation);
+                    if (aborted.get()) {
+                        throw new IOException("Request was aborted");
+                    }
+                    SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
+                    HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
+                            .response(sdkResponse);
+                    byte[] body = photonResponse.getBody();
+                    if (body != null && body.length > 0) {
+                        response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
+                    }
+                    return response.build();
+                } catch (PhotonRequestCancellation.CancelledException cancelled) {
+                    throw new IOException("Request was aborted", cancelled);
+                } catch (PhotonError photonFailure) {
+                    if (aborted.get()) {
+                        throw new IOException("Request was aborted", photonFailure);
+                    }
+                    ExecutableHttpRequest originRequest = originClient.prepareRequest(request);
+                    activeOriginRequest.set(originRequest);
+                    if (aborted.get()) {
+                        originRequest.abort();
+                        throw new IOException("Request was aborted");
+                    }
+                    return originRequest.call();
+                } finally {
+                    activePhotonRequest.compareAndSet(photonCancellation, null);
+                }
             }
 
             @Override
             public void abort() {
-                // The SDK may retry after aborting an attempt. Execution completion
-                // or failure hooks clear the request after all attempts finish.
+                aborted.set(true);
+                PhotonRequestCancellation photonRequest = activePhotonRequest.get();
+                if (photonRequest != null) {
+                    photonRequest.cancel();
+                }
+                ExecutableHttpRequest originRequest = activeOriginRequest.get();
+                if (originRequest != null) {
+                    originRequest.abort();
+                }
             }
         };
     }
@@ -64,6 +116,12 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public void close() {
+        if (!closed.compareAndSet(false, true)) {
+            return;
+        }
         requestContext.clear();
+        if (ownsOriginClient) {
+            originClient.close();
+        }
     }
 }

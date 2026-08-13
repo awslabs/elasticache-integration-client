@@ -58,6 +58,10 @@ public class MockCache {
         this.failureAfterReply = failureAfterReply;
     }
 
+    public FailureMode getFailureMode() {
+        return failureMode;
+    }
+
     public List<String> getReceivedCommands() {
         return Collections.unmodifiableList(receivedCommands);
     }
