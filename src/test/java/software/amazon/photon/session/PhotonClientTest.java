@@ -19,6 +19,7 @@ import software.amazon.photon.mock.MockTlsServer;
 import javax.net.ssl.SSLContext;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -172,7 +173,7 @@ class PhotonClientTest {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
-                .configOverrides(Map.of("ttl", 300))
+                .configOverrides(Collections.singletonMap("ttl", 300))
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             

@@ -116,10 +116,6 @@ public final class SdkAdapters {
 
     /**
      * Read all bytes from an input stream.
-     * (Java 11 compatible - InputStream.readAllBytes() is Java 9+)
-     *
-     * TODO: If Java 8 support is added, verify this implementation handles
-     * all edge cases (large streams, empty streams, etc.)
      */
     private static byte[] readAllBytes(InputStream stream) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
