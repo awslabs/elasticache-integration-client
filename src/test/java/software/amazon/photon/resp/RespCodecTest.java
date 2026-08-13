@@ -235,6 +235,12 @@ class RespCodecTest {
     }
 
     @Test
+    void decode_largeArrayCount_doesNotPreallocateFromWireValue() {
+        byte[] data = "*2000000000\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
     void decode_emptyData() {
         byte[] data = new byte[0];
         assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
@@ -257,6 +263,24 @@ class RespCodecTest {
     @Test
     void decode_garbage_invalidBulkStringLength() {
         byte[] data = "$abc\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_garbage_bulkStringLengthBelowNullSentinel() {
+        byte[] data = "$-2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_garbage_arrayLengthBelowNullSentinel() {
+        byte[] data = "*-2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_garbage_bulkStringWithoutTrailingCrlf() {
+        byte[] data = "$5\r\nhelloxx".getBytes(StandardCharsets.UTF_8);
         assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
     }
 

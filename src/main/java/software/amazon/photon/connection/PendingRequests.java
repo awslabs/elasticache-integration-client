@@ -25,7 +25,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class PendingRequests {
 
     /** Default maximum pending requests. */
-    public static final int DEFAULT_MAX_PENDING = 1000;
+    public static final int DEFAULT_MAX_PENDING = 100;
 
     private final Lock lock = new ReentrantLock();
     private final Queue<CompletableFuture<RespValue>> queue = new LinkedList<>();

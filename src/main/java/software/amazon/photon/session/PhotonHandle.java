@@ -1,9 +1,10 @@
 package software.amazon.photon.session;
 
-import software.amazon.awssdk.core.SdkClient;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 
 import javax.net.ssl.SSLContext;
 import java.io.Closeable;
@@ -18,8 +19,8 @@ import java.util.function.Supplier;
  * its associated PhotonConnection. It provides a clean API for setting up
  * Photon with an SDK client.
  *
- * <p>AWS SDK v2 for Java requires interceptors to be configured at client build
- * time, so this handle is used during client construction:
+ * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be
+ * configured at client build time, so this handle is used during construction:
  *
  * <pre>{@code
  * // Create the handle with an IamAuthTokenProvider
@@ -37,9 +38,10 @@ import java.util.function.Supplier;
  * // Open the session
  * handle.open();
  *
- * // Build the SDK client with the interceptor
+ * // Build the SDK client with the Photon-first, origin-fallback transport
  * DynamoDbClient client = DynamoDbClient.builder()
  *     .overrideConfiguration(c -> c.addExecutionInterceptor(handle.getInterceptor()))
+ *     .httpClient(handle.getHttpClient())
  *     .build();
  *
  * // Use the client...
@@ -57,13 +59,16 @@ public class PhotonHandle implements Closeable {
     private final PhotonConnection connection;
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
+    private final PhotonHttpClient httpClient;
     private boolean opened = false;
     private boolean closed = false;
 
-    private PhotonHandle(PhotonConnection connection, PhotonSession session) {
+    private PhotonHandle(PhotonConnection connection, PhotonSession session,
+                         SdkHttpClient originClient, boolean ownsOriginClient) {
         this.connection = connection;
         this.session = session;
-        this.interceptor = new PhotonInterceptor(session);
+        this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
+        this.httpClient = interceptor.getHttpClient();
     }
 
     /**
@@ -71,9 +76,21 @@ public class PhotonHandle implements Closeable {
      *
      * <p>The interceptor should be added during client construction via
      * {@code overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}.
+     * The client must also use {@link #getHttpClient()} as its HTTP transport.
      */
     public PhotonInterceptor getInterceptor() {
         return interceptor;
+    }
+
+    /**
+     * Get the HTTP client that attempts Photon and falls back to the origin service.
+     *
+     * <p>This transport must be installed together with {@link #getInterceptor()}.
+     * Installing only the interceptor bypasses Photon and sends every request
+     * through the SDK's configured origin transport.
+     */
+    public PhotonHttpClient getHttpClient() {
+        return httpClient;
     }
 
     /**
@@ -110,7 +127,11 @@ public class PhotonHandle implements Closeable {
             return;
         }
         closed = true;
-        session.close();
+        try {
+            session.close();
+        } finally {
+            httpClient.close();
+        }
     }
 
     /**
@@ -137,7 +158,9 @@ public class PhotonHandle implements Closeable {
         private Supplier<AuthCredentials> authProvider;
         private Map<String, Object> configOverrides;
         private int connectTimeoutMs = 5000;
-        private int readTimeoutMs = 5000;
+        private int initializationTimeoutMs = 5000;
+        private int requestTimeoutMs = 5000;
+        private SdkHttpClient originHttpClient;
 
         private Builder() {}
 
@@ -198,10 +221,28 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
-         * Set read timeout in milliseconds (default: 5000).
+         * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
          */
-        public Builder readTimeoutMs(int readTimeoutMs) {
-            this.readTimeoutMs = readTimeoutMs;
+        public Builder initializationTimeoutMs(int initializationTimeoutMs) {
+            this.initializationTimeoutMs = initializationTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set the total timeout for each Photon request attempt in milliseconds (default: 5000).
+         */
+        public Builder requestTimeoutMs(int requestTimeoutMs) {
+            this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set a caller-managed HTTP client for origin fallback.
+         *
+         * <p>Photon does not close a caller-provided client.
+         */
+        public Builder originHttpClient(SdkHttpClient originHttpClient) {
+            this.originHttpClient = originHttpClient;
             return this;
         }
 
@@ -228,9 +269,16 @@ public class PhotonHandle implements Closeable {
             }
 
             PhotonConnection connection = new PhotonConnection(
-                    host, port, ssl, connectTimeoutMs, readTimeoutMs);
+                    host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
+                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
             PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
-            return new PhotonHandle(connection, session);
+            SdkHttpClient origin = originHttpClient;
+            boolean ownsOrigin = false;
+            if (origin == null) {
+                origin = ApacheHttpClient.create();
+                ownsOrigin = true;
+            }
+            return new PhotonHandle(connection, session, origin, ownsOrigin);
         }
     }
 }

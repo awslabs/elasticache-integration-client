@@ -1,12 +1,10 @@
 package software.amazon.photon.session;
 
-import software.amazon.awssdk.core.interceptor.ExecutionAttribute;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.SdkExecutionAttribute;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
-import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -34,7 +32,7 @@ public final class SdkAdapters {
     /**
      * Convert an AWS SDK HTTP request to a Photon request.
      *
-     * @param sdkRequest         the SDK request (already signed)
+     * @param sdkRequest         the SDK request before signing
      * @param executionAttributes the execution attributes (for service/operation metadata)
      * @return the Photon request
      */

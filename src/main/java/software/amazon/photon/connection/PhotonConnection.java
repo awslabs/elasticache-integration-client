@@ -31,8 +31,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -64,22 +67,37 @@ import java.util.function.Supplier;
  */
 public class PhotonConnection implements Closeable {
 
-    /** Default read timeout in milliseconds. */
+    /** Default request timeout in milliseconds. */
     public static final int DEFAULT_READ_TIMEOUT_MS = 5000;
+    /** Default initialization handshake timeout in milliseconds. */
+    public static final int DEFAULT_INITIALIZATION_TIMEOUT_MS = 5000;
     /** Default connection timeout in milliseconds. */
     public static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
     /** Default maximum pending requests. */
-    public static final int DEFAULT_MAX_PENDING = 1000;
+    public static final int DEFAULT_MAX_PENDING = 100;
     /** Maximum response size in bytes (16 MB). */
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
+    private static final ScheduledThreadPoolExecutor TIMEOUT_EXECUTOR = createTimeoutExecutor();
+
+    private static ScheduledThreadPoolExecutor createTimeoutExecutor() {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
+                1, runnable -> {
+                    Thread thread = new Thread(runnable, "photon-timeout-watchdog");
+                    thread.setDaemon(true);
+                    return thread;
+                });
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
 
     private final String host;
     private final int port;
     private final SSLContext sslContext;
     private final int connectTimeoutMs;
-    private final int readTimeoutMs;
+    private final int initializationTimeoutMs;
+    private final int requestTimeoutMs;
     private final int maxPending;
 
     // Connection state - guarded by stateLock
@@ -104,7 +122,8 @@ public class PhotonConnection implements Closeable {
      * @param sslContext the SSL context to use for TLS (allows custom trust stores for testing)
      */
     public PhotonConnection(String host, int port, SSLContext sslContext) {
-        this(host, port, sslContext, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_READ_TIMEOUT_MS, DEFAULT_MAX_PENDING);
+        this(host, port, sslContext, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_INITIALIZATION_TIMEOUT_MS,
+                DEFAULT_READ_TIMEOUT_MS, DEFAULT_MAX_PENDING);
     }
 
     /**
@@ -118,7 +137,7 @@ public class PhotonConnection implements Closeable {
      */
     public PhotonConnection(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs) {
-        this(host, port, sslContext, connectTimeoutMs, readTimeoutMs, DEFAULT_MAX_PENDING);
+        this(host, port, sslContext, connectTimeoutMs, readTimeoutMs, readTimeoutMs, DEFAULT_MAX_PENDING);
     }
 
     /**
@@ -133,11 +152,33 @@ public class PhotonConnection implements Closeable {
      */
     public PhotonConnection(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs, int maxPending) {
+        this(host, port, sslContext, connectTimeoutMs, readTimeoutMs, readTimeoutMs, maxPending);
+    }
+
+    /**
+     * Create a connection with independent initialization and request budgets.
+     *
+     * @param host                    the cache host
+     * @param port                    the cache port
+     * @param sslContext              the SSL context
+     * @param connectTimeoutMs        TCP connection timeout in milliseconds
+     * @param initializationTimeoutMs TLS, AUTH, and config timeout in milliseconds
+     * @param requestTimeoutMs        total timeout for each Photon request attempt
+     * @param maxPending              maximum concurrent pending requests
+     */
+    public PhotonConnection(String host, int port, SSLContext sslContext,
+                            int connectTimeoutMs, int initializationTimeoutMs,
+                            int requestTimeoutMs, int maxPending) {
+        requirePositive("connectTimeoutMs", connectTimeoutMs);
+        requirePositive("initializationTimeoutMs", initializationTimeoutMs);
+        requirePositive("requestTimeoutMs", requestTimeoutMs);
+        requirePositive("maxPending", maxPending);
         this.host = host;
         this.port = port;
         this.sslContext = sslContext;
         this.connectTimeoutMs = connectTimeoutMs;
-        this.readTimeoutMs = readTimeoutMs;
+        this.initializationTimeoutMs = initializationTimeoutMs;
+        this.requestTimeoutMs = requestTimeoutMs;
         this.maxPending = maxPending;
     }
 
@@ -171,6 +212,7 @@ public class PhotonConnection implements Closeable {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 plainSocket = new Socket();
                 plainSocket.setTcpNoDelay(true); // Disable Nagle's algorithm
+                plainSocket.setKeepAlive(true);
                 plainSocket.connect(new InetSocketAddress(host, port), connectTimeoutMs);
 
                 // createSocket takes ownership of plainSocket on success (autoClose=true).
@@ -179,7 +221,7 @@ public class PhotonConnection implements Closeable {
                 plainSocket = null; // Transfer ownership succeeded
 
                 socket = sslSocket;
-                socket.setSoTimeout(readTimeoutMs);
+                socket.setSoTimeout(initializationTimeoutMs);
 
                 // Enable hostname verification - validates that the server's certificate
                 // matches the hostname we're connecting to. SSLContext.getDefault() validates
@@ -194,7 +236,7 @@ public class PhotonConnection implements Closeable {
                     throw new IOException("No supported TLS protocols (need TLS 1.2 or higher)");
                 }
                 socket.setEnabledProtocols(enabledProtocols);
-                socket.startHandshake();
+                runWithDeadline(socket::startHandshake, initializationTimeoutMs, "TLS handshake");
 
                 outputStream = socket.getOutputStream();
 
@@ -316,6 +358,15 @@ public class PhotonConnection implements Closeable {
             throw new PhotonConnectionError("Config handshake failed", e);
         }
 
+        // Request timeouts are enforced per future below. A socket timeout here
+        // would kill an otherwise healthy connection simply because it was idle.
+        try {
+            socket.setSoTimeout(0);
+        } catch (IOException e) {
+            markDead();
+            throw new PhotonConnectionError("Failed to configure background reader", e);
+        }
+
         // Start the reader thread
         startReaderThread();
 
@@ -390,13 +441,24 @@ public class PhotonConnection implements Closeable {
      * @throws PhotonTimeoutError if the read times out (connection is then closed)
      */
     public PhotonResponse request(PhotonRequest request) {
+        return request(request, new PhotonRequestCancellation());
+    }
+
+    /**
+     * Send a {@code photon.request} with an external cancellation signal.
+     *
+     * @param request      the request to send
+     * @param cancellation cancellation signal for this request
+     * @return the cache response
+     */
+    public PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
         ensureReady();
 
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         byte[] encoded = RespCodec.encodeCommand(cmd.getCommandName(),
                 cmd.getArgs().toArray(new byte[0][]));
 
-        RespValue reply = sendAndAwait(encoded);
+        RespValue reply = sendAndAwait(encoded, cancellation);
         return PhotonProtocol.parseRequestResponse(reply);
     }
 
@@ -530,8 +592,11 @@ public class PhotonConnection implements Closeable {
      */
     private void sendRawDirect(byte[] data) {
         try {
-            outputStream.write(data);
-            outputStream.flush();
+            long deadlineNanos = deadlineAfter(initializationTimeoutMs);
+            writeWithDeadline(outputStream, data, deadlineNanos, "Initialization write");
+        } catch (PhotonTimeoutError e) {
+            markDead();
+            throw e;
         } catch (IOException e) {
             markDead();
             throw new ConnectionLost("Failed to write to socket", e);
@@ -543,10 +608,35 @@ public class PhotonConnection implements Closeable {
      * Uses the send lock to ensure atomic register+send.
      */
     private RespValue sendAndAwait(byte[] encoded) {
-        CompletableFuture<RespValue> future;
+        return sendAndAwait(encoded, new PhotonRequestCancellation());
+    }
 
-        sendLock.lock();
+    private RespValue sendAndAwait(byte[] encoded, PhotonRequestCancellation cancellation) {
+        if (cancellation.isCancelled()) {
+            throw new PhotonRequestCancellation.CancelledException();
+        }
+
+        CompletableFuture<RespValue> future;
+        long deadlineNanos = deadlineAfter(requestTimeoutMs);
+
+        boolean locked;
         try {
+            locked = sendLock.tryLock(requestTimeoutMs, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new ConnectionLost("Interrupted while waiting to send request", e);
+        }
+        if (!locked) {
+            PhotonTimeoutError timeout = new PhotonTimeoutError(
+                    "Timed out acquiring send lock after " + requestTimeoutMs + "ms");
+            markDead();
+            throw timeout;
+        }
+        try {
+            if (cancellation.isCancelled()) {
+                throw new PhotonRequestCancellation.CancelledException();
+            }
+
             // Must register before sending to maintain FIFO correlation
             future = pending.register();
 
@@ -560,25 +650,40 @@ public class PhotonConnection implements Closeable {
             }
 
             try {
-                out.write(encoded);
-                out.flush();
+                writeWithDeadline(out, encoded, deadlineNanos, "Request write");
+            } catch (PhotonTimeoutError e) {
+                markDead();
+                pending.failAll(e);
+                throw e;
             } catch (IOException e) {
                 // Send failed - mark dead (future will be failed by markDead -> failAll)
                 markDead();
-                throw new ConnectionLost("Failed to write to socket", e);
+                ConnectionLost failure = new ConnectionLost("Failed to write to socket", e);
+                pending.failAll(failure);
+                throw failure;
             }
         } finally {
             sendLock.unlock();
         }
 
+        Runnable cancellationAction = () -> future.completeExceptionally(
+                new PhotonRequestCancellation.CancelledException());
+        cancellation.register(cancellationAction);
+
         // Wait for response
         try {
-            return future.get(readTimeoutMs, TimeUnit.MILLISECONDS);
+            long remainingNanos = remainingNanos(deadlineNanos);
+            if (remainingNanos <= 0) {
+                throw new TimeoutException();
+            }
+            return future.get(remainingNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             // Timeout waiting for response - connection must die for FIFO safety
             markDead();
-            pending.failAll(new PhotonTimeoutError("Read timed out after " + readTimeoutMs + "ms"));
-            throw new PhotonTimeoutError("Read timed out after " + readTimeoutMs + "ms", e);
+            PhotonTimeoutError timeout = new PhotonTimeoutError(
+                    "Photon request timed out after " + requestTimeoutMs + "ms", e);
+            pending.failAll(timeout);
+            throw timeout;
         } catch (ExecutionException e) {
             // Reader thread failed the future - preserve the original exception type
             Throwable cause = e.getCause();
@@ -595,8 +700,113 @@ public class PhotonConnection implements Closeable {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            markDead();
+            pending.failAll(new ConnectionLost("Request interrupted", e));
             throw new ConnectionLost("Request interrupted", e);
+        } finally {
+            cancellation.clear(cancellationAction);
         }
+    }
+
+    private static long deadlineAfter(int timeoutMs) {
+        return System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    }
+
+    private static long remainingNanos(long deadlineNanos) {
+        return deadlineNanos - System.nanoTime();
+    }
+
+    private void writeWithDeadline(OutputStream out, byte[] data, long deadlineNanos,
+                                   String operation) throws IOException {
+        long remainingNanos = remainingNanos(deadlineNanos);
+        if (remainingNanos <= 0) {
+            throw new PhotonTimeoutError(operation + " timed out");
+        }
+
+        AtomicBoolean completed = new AtomicBoolean();
+        AtomicBoolean timedOut = new AtomicBoolean();
+        Socket socketToClose = socket;
+        ScheduledFuture<?> timeout = TIMEOUT_EXECUTOR.schedule(
+                () -> {
+                    if (completed.compareAndSet(false, true)) {
+                        timedOut.set(true);
+                        dead = true;
+                        closeQuietly(socketToClose);
+                    }
+                },
+                remainingNanos,
+                TimeUnit.NANOSECONDS);
+        try {
+            out.write(data);
+            out.flush();
+        } catch (IOException e) {
+            if (timedOut.get()) {
+                throw new PhotonTimeoutError(operation + " timed out", e);
+            }
+            throw e;
+        } finally {
+            if (completed.compareAndSet(false, true)) {
+                timeout.cancel(false);
+            }
+        }
+
+        if (timedOut.get()) {
+            throw new PhotonTimeoutError(operation + " timed out");
+        }
+    }
+
+    private void runWithDeadline(IoOperation operation, int timeoutMs,
+                                 String description) throws IOException {
+        AtomicBoolean completed = new AtomicBoolean();
+        AtomicBoolean timedOut = new AtomicBoolean();
+        Socket socketToClose = socket;
+        ScheduledFuture<?> timeout = TIMEOUT_EXECUTOR.schedule(
+                () -> {
+                    if (completed.compareAndSet(false, true)) {
+                        timedOut.set(true);
+                        dead = true;
+                        closeQuietly(socketToClose);
+                    }
+                },
+                timeoutMs,
+                TimeUnit.MILLISECONDS);
+        try {
+            operation.run();
+        } catch (IOException e) {
+            if (timedOut.get()) {
+                throw new PhotonTimeoutError(
+                        description + " timed out after " + timeoutMs + "ms", e);
+            }
+            throw e;
+        } finally {
+            if (completed.compareAndSet(false, true)) {
+                timeout.cancel(false);
+            }
+        }
+        if (timedOut.get()) {
+            throw new PhotonTimeoutError(description + " timed out after " + timeoutMs + "ms");
+        }
+    }
+
+    private static void requirePositive(String name, int value) {
+        if (value <= 0) {
+            throw new IllegalArgumentException(name + " must be positive: " + value);
+        }
+    }
+
+    private static void closeQuietly(Socket socket) {
+        if (socket != null) {
+            try {
+                socket.close();
+            } catch (IOException ignored) {
+                // Best-effort timeout cancellation.
+            }
+        }
+    }
+
+    @FunctionalInterface
+    private interface IoOperation {
+        void run() throws IOException;
     }
 
     private void closeSocketQuietly() {

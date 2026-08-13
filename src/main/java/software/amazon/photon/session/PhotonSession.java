@@ -2,6 +2,7 @@ package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -17,7 +18,7 @@ import java.util.function.Supplier;
  *
  * <p>A session orchestrates connection bring-up (transport connect → AUTH →
  * the mandatory {@code photon.config} handshake) and exposes a synchronous
- * {@link #request(PhotonRequest)} method for the SDK interceptor to call.
+ * {@link #request(PhotonRequest)} method for the SDK transport to call.
  *
  * <p>Lifecycle: {@code CREATED} → {@code OPEN} → {@code CLOSED}
  *
@@ -159,10 +160,14 @@ public class PhotonSession implements Closeable {
      * @throws PhotonError if the session is not open
      */
     public PhotonResponse request(PhotonRequest request) {
+        return request(request, new PhotonRequestCancellation());
+    }
+
+    PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
         if (state != State.OPEN) {
             throw new PhotonError("request() called on a " + state.name().toLowerCase() + " session");
         }
-        return connection.request(request);
+        return connection.request(request, cancellation);
     }
 
     /**

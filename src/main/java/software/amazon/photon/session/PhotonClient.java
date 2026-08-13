@@ -2,7 +2,9 @@ package software.amazon.photon.session;
 
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.SdkClient;
+import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 
@@ -16,7 +18,8 @@ import java.util.function.Supplier;
  * Factory for creating AWS SDK clients wired up with Photon.
  *
  * <p>This provides a one-liner API that creates an SDK client, connects to Photon,
- * authenticates, performs the config handshake, and installs the interceptor.
+ * authenticates, performs the config handshake, and installs the interceptor
+ * and Photon-first HTTP transport with transparent origin fallback.
  *
  * <p>Usage:
  * <pre>{@code
@@ -109,7 +112,9 @@ public final class PhotonClient {
         private Supplier<AuthCredentials> authProvider;
         private Map<String, Object> configOverrides;
         private int connectTimeoutMs = 5000;
-        private int readTimeoutMs = 5000;
+        private int initializationTimeoutMs = 5000;
+        private int requestTimeoutMs = 5000;
+        private SdkHttpClient originHttpClient;
 
         private Builder() {}
 
@@ -195,10 +200,28 @@ public final class PhotonClient {
         }
 
         /**
-         * Set read timeout in milliseconds (default: 5000).
+         * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
          */
-        public Builder readTimeoutMs(int readTimeoutMs) {
-            this.readTimeoutMs = readTimeoutMs;
+        public Builder initializationTimeoutMs(int initializationTimeoutMs) {
+            this.initializationTimeoutMs = initializationTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set the total timeout for each Photon request attempt in milliseconds (default: 5000).
+         */
+        public Builder requestTimeoutMs(int requestTimeoutMs) {
+            this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set a caller-managed HTTP client for origin fallback.
+         *
+         * <p>Photon does not close a caller-provided client.
+         */
+        public Builder originHttpClient(SdkHttpClient originHttpClient) {
+            this.originHttpClient = originHttpClient;
             return this;
         }
 
@@ -206,8 +229,8 @@ public final class PhotonClient {
          * Build the SDK client with Photon enabled.
          *
          * <p>This connects to Photon, authenticates, performs the config handshake,
-         * installs the interceptor, and returns a {@link Result} containing the
-         * ready-to-use SDK client.
+         * installs the interceptor and HTTP transport, and returns a {@link Result}
+         * containing the ready-to-use SDK client.
          *
          * <p>Example:
          * <pre>{@code
@@ -225,7 +248,8 @@ public final class PhotonClient {
          * @return a Result containing the configured SDK client and Photon handle
          * @throws PhotonError if connection or authentication fails
          */
-        public <B extends AwsClientBuilder<B, C>, C extends SdkClient> Result<C> build(B sdkClientBuilder) {
+        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
+                Result<C> build(B sdkClientBuilder) {
             return build(sdkClientBuilder, null);
         }
 
@@ -249,20 +273,16 @@ public final class PhotonClient {
          * @return a Result containing the configured SDK client and Photon handle
          * @throws PhotonError if connection or authentication fails
          */
-        public <B extends AwsClientBuilder<B, C>, C extends SdkClient> Result<C> build(
+        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient> Result<C> build(
                 B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             
             PhotonHandle handle = buildHandle();
             
             try {
                 handle.open();
-            } catch (Exception e) {
-                try {
-                    handle.close();
-                } catch (Exception closeEx) {
-                    // Preserve the original exception
-                }
-                throw e;
+            } catch (RuntimeException initializationFailure) {
+                handle.close();
+                throw initializationFailure;
             }
 
             // Apply user's SDK configuration and build client - close handle on any failure
@@ -279,6 +299,7 @@ public final class PhotonClient {
 
                 client = sdkClientBuilder
                         .overrideConfiguration(mergedConfig)
+                        .httpClient(handle.getHttpClient())
                         .build();
             } catch (Exception e) {
                 try {
@@ -320,7 +341,9 @@ public final class PhotonClient {
                     .authProvider(authProvider)
                     .configOverrides(configOverrides)
                     .connectTimeoutMs(connectTimeoutMs)
-                    .readTimeoutMs(readTimeoutMs)
+                    .initializationTimeoutMs(initializationTimeoutMs)
+                    .requestTimeoutMs(requestTimeoutMs)
+                    .originHttpClient(originHttpClient)
                     .build();
         }
 

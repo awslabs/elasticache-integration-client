@@ -9,19 +9,31 @@ import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.http.AbortableInputStream;
+import software.amazon.awssdk.http.ExecutableHttpRequest;
+import software.amazon.awssdk.http.HttpExecuteRequest;
+import software.amazon.awssdk.http.HttpExecuteResponse;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
+import software.amazon.photon.mock.ReceivedRequest;
+import software.amazon.photon.mock.Reply;
 
 import javax.net.ssl.SSLContext;
+import java.io.ByteArrayInputStream;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -82,6 +94,70 @@ class PhotonClientTest {
             assertNotNull(result.client());
             assertTrue(result.handle().isOpen());
         }
+    }
+
+    @Test
+    void clientOperation_isServedByPhotonWithoutContactingOrigin() {
+        cache.setReply(Reply.ok(
+                200,
+                Map.of("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
+
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
+
+        ReceivedRequest request = cache.getLastRequest();
+        assertNotNull(request);
+        assertEquals("POST", request.getMethod());
+        assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
+        assertFalse(request.getHeaders().contains("authorization"));
+        assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void clientOperation_reusesCapturedRequestForSdkRetry() {
+        AtomicInteger attempt = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            if (attempt.getAndIncrement() == 0) {
+                return Reply.ok(
+                        500,
+                        Map.of(
+                                "content-type", "application/x-amz-json-1.0",
+                                "x-amzn-errortype", "InternalServerError"),
+                        "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
+            }
+            return Reply.ok(
+                    200,
+                    Map.of("content-type", "application/x-amz-json-1.0"),
+                    "{\"TableNames\":[]}");
+        });
+
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
+
+        assertEquals(2, cache.getRequests().size());
     }
 
     @Test
@@ -156,16 +232,41 @@ class PhotonClientTest {
     }
 
     @Test
-    void builder_connectionFailure_cleansUpAndRethrows() throws Exception {
+    void builder_connectionFailure_propagatesWithoutCallingOrigin() throws Exception {
+        int photonPort = server.getPort();
         server.close(); // Stop the server so connection fails
-        
-        PhotonClient.Builder builder = PhotonClient.builder()
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        assertThrows(PhotonError.class, () -> PhotonClient.builder()
+                .endpoint("localhost:" + photonPort)
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .sslContext(clientSslContext)
+                .connectTimeoutMs(100)
+                .originHttpClient(origin)
+                .build(DynamoDbClient.builder(), sdkConfig));
+
+        assertNull(origin.request.get());
+        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
+    }
+
+    @Test
+    void clientOperation_photonTimeoutFallsBackToOrigin() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("photon.request");
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .connectTimeoutMs(100);
+                .requestTimeoutMs(100)
+                .originHttpClient(origin)
+                .build(DynamoDbClient.builder(), sdkConfig)) {
+            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
+        }
 
-        assertThrows(Exception.class, () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+        assertNotNull(origin.request.get());
+        assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
     }
 
     @Test
@@ -187,7 +288,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .connectTimeoutMs(1000)
-                .readTimeoutMs(2000)
+                .initializationTimeoutMs(2000)
+                .requestTimeoutMs(2000)
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
@@ -224,9 +326,8 @@ class PhotonClientTest {
                 })) {
             
             assertTrue(result.handle().isOpen());
-            // The client should have both the Photon interceptor and our custom interceptor merged
-            // Note: We can't directly inspect the interceptors, but we can verify no exception thrown
-            // and the client was built successfully with both configs
+            result.client().listTables();
+            assertTrue(customInterceptorCalled.get());
         }
     }
 
@@ -242,6 +343,38 @@ class PhotonClientTest {
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
             assertTrue(result.handle().isOpen());
+        }
+    }
+
+    private static final class RecordingOriginClient implements SdkHttpClient {
+        private final AtomicReference<HttpExecuteRequest> request = new AtomicReference<>();
+        private final AtomicInteger closeCount = new AtomicInteger();
+
+        @Override
+        public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
+            this.request.set(request);
+            return new ExecutableHttpRequest() {
+                @Override
+                public HttpExecuteResponse call() {
+                    return HttpExecuteResponse.builder()
+                            .response(SdkHttpFullResponse.builder()
+                                    .statusCode(200)
+                                    .putHeader("content-type", "application/x-amz-json-1.0")
+                                    .build())
+                            .responseBody(AbortableInputStream.create(new ByteArrayInputStream(
+                                    "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8))))
+                            .build();
+                }
+
+                @Override
+                public void abort() {
+                }
+            };
+        }
+
+        @Override
+        public void close() {
+            closeCount.incrementAndGet();
         }
     }
 }
