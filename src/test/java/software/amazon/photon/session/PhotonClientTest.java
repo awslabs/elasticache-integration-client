@@ -30,6 +30,7 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -100,7 +101,7 @@ class PhotonClientTest {
     void clientOperation_isServedByPhotonWithoutContactingOrigin() {
         cache.setReply(Reply.ok(
                 200,
-                Map.of("content-type", "application/x-amz-json-1.0"),
+                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
                 "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
 
         Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
@@ -132,14 +133,14 @@ class PhotonClientTest {
             if (attempt.getAndIncrement() == 0) {
                 return Reply.ok(
                         500,
-                        Map.of(
+                        mapOf(
                                 "content-type", "application/x-amz-json-1.0",
                                 "x-amzn-errortype", "InternalServerError"),
                         "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
             }
             return Reply.ok(
                     200,
-                    Map.of("content-type", "application/x-amz-json-1.0"),
+                    Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
                     "{\"TableNames\":[]}");
         });
 
@@ -274,7 +275,7 @@ class PhotonClientTest {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
-                .configOverrides(Map.of("ttl", 300))
+                .configOverrides(Collections.singletonMap("ttl", 300))
                 .sslContext(clientSslContext)
                 .build(DynamoDbClient.builder(), sdkConfig)) {
             
@@ -376,5 +377,13 @@ class PhotonClientTest {
         public void close() {
             closeCount.incrementAndGet();
         }
+    }
+
+    private static Map<String, String> mapOf(String key1, String value1,
+                                             String key2, String value2) {
+        Map<String, String> values = new HashMap<>();
+        values.put(key1, value1);
+        values.put(key2, value2);
+        return values;
     }
 }

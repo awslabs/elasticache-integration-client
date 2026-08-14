@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.compile.JavaCompile
+
 plugins {
     java
 }
@@ -6,8 +8,8 @@ group = "software.amazon.photon"
 version = "0.1.0-SNAPSHOT"
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_1_8
+    targetCompatibility = JavaVersion.VERSION_1_8
 }
 
 repositories {
@@ -33,13 +35,20 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+tasks.withType<JavaCompile>().configureEach {
+    if (JavaVersion.current().isJava9Compatible) {
+        options.release.set(8)
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
-    
-    // Open internal JDK modules for MockTlsServer's self-signed certificate generation
-    // Required for Java 17+ which enforces strong encapsulation
-    jvmArgs(
-        "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
-        "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
-    )
+
+    if (JavaVersion.current().isJava9Compatible) {
+        // Required for MockTlsServer's reflective certificate generation on Java 17+.
+        jvmArgs(
+            "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
+            "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
+        )
+    }
 }

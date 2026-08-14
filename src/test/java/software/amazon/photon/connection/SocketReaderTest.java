@@ -10,6 +10,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -151,7 +152,7 @@ class SocketReaderTest {
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
         // Register a pending request
-        var future = pending.register();
+        CompletableFuture<RespValue> future = pending.register();
         assertFalse(future.isDone());
 
         // Read and resolve
@@ -217,8 +218,8 @@ class SocketReaderTest {
         };
 
         PendingRequests pending = new PendingRequests();
-        var f1 = pending.register();
-        var f2 = pending.register();
+        CompletableFuture<RespValue> f1 = pending.register();
+        CompletableFuture<RespValue> f2 = pending.register();
 
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
