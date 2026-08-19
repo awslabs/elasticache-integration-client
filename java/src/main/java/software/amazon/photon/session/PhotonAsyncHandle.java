@@ -1,0 +1,249 @@
+package software.amazon.photon.session;
+
+import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
+import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.exception.PhotonError;
+
+import javax.net.ssl.SSLContext;
+import java.io.Closeable;
+import java.security.NoSuchAlgorithmException;
+import java.util.Map;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
+
+/**
+ * Manages the attachment of Photon to an asynchronous AWS SDK client.
+ */
+public final class PhotonAsyncHandle implements Closeable {
+
+    private final PhotonSession session;
+    private final PhotonAsyncInterceptor interceptor;
+    private final PhotonAsyncHttpClient httpClient;
+    private boolean opened;
+    private boolean closed;
+
+    private PhotonAsyncHandle(PhotonSession session,
+                              SdkAsyncHttpClient originClient,
+                              boolean ownsOriginClient,
+                              Executor executor,
+                              ExecutorService ownedExecutor) {
+        this.session = session;
+        this.interceptor = new PhotonAsyncInterceptor(
+                session, originClient, ownsOriginClient, executor, ownedExecutor);
+        this.httpClient = interceptor.getHttpClient();
+    }
+
+    /**
+     * Get the interceptor to install on the SDK client.
+     */
+    public PhotonAsyncInterceptor getInterceptor() {
+        return interceptor;
+    }
+
+    /**
+     * Get the Photon-first asynchronous HTTP transport.
+     */
+    public PhotonAsyncHttpClient getHttpClient() {
+        return httpClient;
+    }
+
+    /**
+     * Get the underlying Photon session.
+     */
+    public PhotonSession getSession() {
+        return session;
+    }
+
+    /**
+     * Open the Photon session.
+     */
+    public void open() {
+        if (opened) {
+            throw new PhotonError("Handle already opened");
+        }
+        if (closed) {
+            throw new PhotonError("Handle already closed");
+        }
+        session.open();
+        opened = true;
+    }
+
+    /**
+     * Close the Photon session and owned async resources. Idempotent.
+     */
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            session.close();
+        } finally {
+            httpClient.close();
+        }
+    }
+
+    /**
+     * Check if the handle is open and ready.
+     */
+    public boolean isOpen() {
+        return opened && !closed && session.isOpen();
+    }
+
+    /**
+     * Create a new async handle builder.
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Builder for asynchronous Photon handles.
+     */
+    public static final class Builder {
+        private String host;
+        private int port = 6379;
+        private SSLContext sslContext;
+        private Supplier<AuthCredentials> authProvider;
+        private Map<String, Object> configOverrides;
+        private int connectTimeoutMs = 5000;
+        private int initializationTimeoutMs = 5000;
+        private int requestTimeoutMs = 5000;
+        private SdkAsyncHttpClient originHttpClient;
+        private Executor executor;
+
+        private Builder() {
+        }
+
+        public Builder host(String host) {
+            this.host = host;
+            return this;
+        }
+
+        public Builder port(int port) {
+            this.port = port;
+            return this;
+        }
+
+        public Builder sslContext(SSLContext sslContext) {
+            this.sslContext = sslContext;
+            return this;
+        }
+
+        public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            this.authProvider = authProvider;
+            return this;
+        }
+
+        public Builder authCredentials(String userId, String authToken) {
+            this.authProvider = () -> new AuthCredentials(userId, authToken);
+            return this;
+        }
+
+        public Builder configOverrides(Map<String, Object> configOverrides) {
+            this.configOverrides = configOverrides;
+            return this;
+        }
+
+        public Builder connectTimeoutMs(int connectTimeoutMs) {
+            this.connectTimeoutMs = connectTimeoutMs;
+            return this;
+        }
+
+        public Builder initializationTimeoutMs(int initializationTimeoutMs) {
+            this.initializationTimeoutMs = initializationTimeoutMs;
+            return this;
+        }
+
+        public Builder requestTimeoutMs(int requestTimeoutMs) {
+            this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set a caller-managed asynchronous HTTP client for origin fallback.
+         */
+        public Builder originHttpClient(SdkAsyncHttpClient originHttpClient) {
+            this.originHttpClient = originHttpClient;
+            return this;
+        }
+
+        /**
+         * Set the caller-managed executor used for blocking Photon requests.
+         */
+        public Builder executor(Executor executor) {
+            this.executor = executor;
+            return this;
+        }
+
+        /**
+         * Build the handle.
+         */
+        public PhotonAsyncHandle build() {
+            if (host == null || host.isEmpty()) {
+                throw new PhotonError("host is required");
+            }
+            if (authProvider == null) {
+                throw new PhotonError("authProvider is required");
+            }
+
+            SSLContext ssl = sslContext;
+            if (ssl == null) {
+                try {
+                    ssl = SSLContext.getDefault();
+                } catch (NoSuchAlgorithmException e) {
+                    throw new PhotonError("Failed to get default SSLContext", e);
+                }
+            }
+
+            PhotonConnection connection = new PhotonConnection(
+                    host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
+                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
+            PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+
+            SdkAsyncHttpClient origin = originHttpClient;
+            boolean ownsOrigin = false;
+            if (origin == null) {
+                origin = NettyNioAsyncHttpClient.create();
+                ownsOrigin = true;
+            }
+
+            Executor requestExecutor = executor;
+            ExecutorService ownedExecutor = null;
+            if (requestExecutor == null) {
+                ownedExecutor = new ThreadPoolExecutor(
+                        0,
+                        PhotonConnection.DEFAULT_MAX_PENDING,
+                        60,
+                        TimeUnit.SECONDS,
+                        new SynchronousQueue<>(),
+                        new PhotonThreadFactory());
+                requestExecutor = ownedExecutor;
+            }
+
+            return new PhotonAsyncHandle(
+                    session, origin, ownsOrigin, requestExecutor, ownedExecutor);
+        }
+    }
+
+    private static final class PhotonThreadFactory implements ThreadFactory {
+        private final AtomicInteger nextId = new AtomicInteger();
+
+        @Override
+        public Thread newThread(Runnable runnable) {
+            Thread thread = new Thread(runnable,
+                    "photon-async-request-" + nextId.incrementAndGet());
+            thread.setDaemon(true);
+            return thread;
+        }
+    }
+}
