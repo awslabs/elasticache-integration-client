@@ -1,0 +1,54 @@
+{
+  "name": "photon-nodejs",
+  "version": "0.0.1",
+  "description": "TypeScript parity prototype for the Photon Node.js client.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/esm/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
+    "test": "vitest run --coverage",
+    "pack:smoke": "npm run build && node scripts/package-smoke.mjs",
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1101.0",
+    "@aws-sdk/nested-clients": "^3.997.41",
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.13.3",
+    "@vitest/coverage-v8": "4.1.10",
+    "eslint": "10.7.0",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.62.1",
+    "vitest": "4.1.10"
+  },
+  "dependencies": {
+    "@aws-sdk/core": "^3.977.1",
+    "@aws-sdk/credential-providers": "^3.1096.0",
+    "@smithy/config-resolver": "^4.6.15",
+    "@smithy/core": "^3.31.0",
+    "@smithy/node-config-provider": "^4.5.15",
+    "@smithy/signature-v4": "^5.6.11",
+    "@smithy/types": "^4.16.1"
+  }
+}
