@@ -4,12 +4,12 @@ on:
   push:
     branches: [main]
     paths:
-      - "**"
+      - "java/**"
       - ".github/workflows/java-ci.yml"
   pull_request:
     branches: [main]
     paths:
-      - "**"
+      - "java/**"
       - ".github/workflows/java-ci.yml"
 
 permissions:
@@ -40,9 +40,11 @@ jobs:
           cache: 'gradle'
 
       - name: Grant execute permission for gradlew
+        working-directory: java
         run: chmod +x gradlew
 
       - name: Build and test
+        working-directory: java
         run: ./gradlew build
 
       - name: Upload test results
@@ -50,5 +52,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-java-${{ matrix.java-version }}
-          path: build/reports/tests/test/
+          path: java/build/reports/tests/test/
           retention-days: 7
