@@ -1,0 +1,27 @@
+# Dependencies and package artifacts
+node_modules/
+*.tgz
+.artifacts/
+
+# Build, test, and coverage output
+dist/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Tool and framework caches
+.cache/
+.eslintcache
+.kiro/
+.mypy_cache/
+.omx/
+.parcel-cache/
+.pnpm-store/
+.pytest_cache/
+.ruff_cache/
+.turbo/
+.vite/
+.yarn/
+
+# Local filesystem noise
+.DS_Store
