@@ -71,8 +71,9 @@ def resolved_config(**overrides) -> dict:
 def body_predicate_config(*tables: str, **overrides) -> dict:
     """The resolved config the proxy emits for a table allowlist.
 
-    One ``body`` predicate per table location, with disjoint operation sets: ``TableName`` for the
-    single-table reads, ``RequestItems`` for the batch reads (see ``photon/config.rs::resolve``).
+    One ``body`` predicate per table location, with disjoint operation sets and an explicit
+    comparison: ``TableName`` holds one name, ``RequestItems`` holds an object keyed by table name
+    (see ``photon/config.rs::resolve``).
     """
     allowlist = sorted(tables)  # proxy sorts (BTreeMap)
     return resolved_config(
@@ -81,13 +82,13 @@ def body_predicate_config(*tables: str, **overrides) -> dict:
                 "type": "body",
                 "service": "dynamodb",
                 "operations": ["GetItem", "Query", "Scan"],
-                "bodyMatch": {"TableName": allowlist},
+                "bodyMatch": {"TableName": {"match": "value", "values": allowlist}},
             },
             {
                 "type": "body",
                 "service": "dynamodb",
                 "operations": ["BatchGetItem"],
-                "bodyMatch": {"RequestItems": allowlist},
+                "bodyMatch": {"RequestItems": {"match": "keys", "values": allowlist}},
             },
         ],
         **overrides,

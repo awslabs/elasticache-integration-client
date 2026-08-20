@@ -41,7 +41,7 @@ BODY_CONFIG = {
     "predicates": [
         {"type": "body", "service": "dynamodb",
          "operations": ["GetItem", "BatchGetItem", "Query", "Scan"],
-         "bodyMatch": {"TableName": ["Sessions", "Users"]}}
+         "bodyMatch": {"TableName": {"match": "value", "values": ["Sessions", "Users"]}}}
     ],
 }
 
@@ -50,7 +50,7 @@ BATCH_CONFIG = {
     **BODY_CONFIG,
     "predicates": [
         {"type": "body", "service": "dynamodb", "operations": ["BatchGetItem"],
-         "bodyMatch": {"RequestItems": ["Sessions", "Users"]}}
+         "bodyMatch": {"RequestItems": {"match": "keys", "values": ["Sessions", "Users"]}}}
     ],
 }
 
@@ -60,9 +60,9 @@ ALLOWLIST_CONFIG = {
     **BODY_CONFIG,
     "predicates": [
         {"type": "body", "service": "dynamodb", "operations": ["GetItem", "Query", "Scan"],
-         "bodyMatch": {"TableName": ["Users"]}},
+         "bodyMatch": {"TableName": {"match": "value", "values": ["Users"]}}},
         {"type": "body", "service": "dynamodb", "operations": ["BatchGetItem"],
-         "bodyMatch": {"RequestItems": ["Users"]}},
+         "bodyMatch": {"RequestItems": {"match": "keys", "values": ["Users"]}}},
     ],
 }
 
@@ -227,8 +227,7 @@ def test_parses_the_body_config_the_proxy_emits():
         BodyPredicate(
             service="dynamodb",
             operations=frozenset({"GetItem", "BatchGetItem", "Query", "Scan"}),
-            # A bare list of values: no mode stated, so comparison follows the body value's shape.
-            body_match=(FieldMatch(field="TableName", mode=None,
+            body_match=(FieldMatch(field="TableName", mode="value",
                                    allowed=frozenset({"Sessions", "Users"})),),
         ),
     )
@@ -336,7 +335,8 @@ def test_batch_body_shape_does_not_satisfy_a_table_name_predicate():
 def test_body_match_fields_are_anded():
     config = {**BODY_CONFIG, "predicates": [
         {"type": "body", "service": "dynamodb", "operations": ["Query"],
-         "bodyMatch": {"TableName": ["Users"], "IndexName": ["by-email"]}}
+         "bodyMatch": {"TableName": {"match": "value", "values": ["Users"]},
+                       "IndexName": {"match": "value", "values": ["by-email"]}}}
     ]}
     predicates = _parse(config)
     both = json.dumps({"TableName": "Users", "IndexName": "by-email"}).encode()
@@ -357,7 +357,7 @@ def test_empty_allowlist_matches_nothing():
     """Every allowlisted table was also excluded: cache nothing, rather than everything."""
     config = {**BODY_CONFIG, "predicates": [
         {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-         "bodyMatch": {"TableName": []}}
+         "bodyMatch": {"TableName": {"match": "value", "values": []}}}
     ]}
     assert route(_parse(config), _get_item("Users")) is False
 
@@ -381,10 +381,10 @@ def test_missing_body_match_drops_the_predicate():
 def test_non_string_allowlist_values_are_filtered_out():
     config = {**BODY_CONFIG, "predicates": [
         {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-         "bodyMatch": {"TableName": ["Users", 7, None]}}
+         "bodyMatch": {"TableName": {"match": "value", "values": ["Users", 7, None]}}}
     ]}
     assert _parse(config)[0].body_match == (
-        FieldMatch(field="TableName", mode=None, allowed=frozenset({"Users"})),
+        FieldMatch(field="TableName", mode="value", allowed=frozenset({"Users"})),
     )
 
 
@@ -426,11 +426,11 @@ def test_explicit_keys_mode_is_parsed_and_applied():
     assert route(predicates, _request("BatchGetItem", body=mixed)) is False
 
 
-def test_explicit_mode_does_not_fall_back_to_shape():
-    """Stating the comparison removes the shape ambiguity the implicit form has.
-
-    Under the implicit form a string-valued RequestItems matches as a single table name; under an
-    explicit `keys` mode it does not, because a string has no keys. Same the other way round.
+def test_a_stated_mode_is_applied_literally():
+    """The comparison is never inferred from the value's shape, which is the point of stating it: a
+    string-valued RequestItems does not match a `keys` comparison (a string has no keys), and an
+    object-valued TableName does not match a `value` comparison. Under shape inference the first of
+    those matched as a single table name.
     """
     keys_mode = _parse(_explicit("RequestItems", "keys", ["Users"],
                                  operations=("BatchGetItem",)))
@@ -477,18 +477,5 @@ def test_non_string_body_match_field_drops_the_predicate():
     predicate that never matches."""
     assert parse_predicates(
         [{"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-          "bodyMatch": {7: ["Users"]}}]
+          "bodyMatch": {7: {"match": "value", "values": ["Users"]}}}]
     ) == ()
-
-
-def test_mixed_implicit_and_explicit_entries_are_anded():
-    config = {**BODY_CONFIG, "predicates": [
-        {"type": "body", "service": "dynamodb", "operations": ["Query"],
-         "bodyMatch": {"TableName": ["Users"],
-                       "IndexName": {"match": "value", "values": ["by-email"]}}}
-    ]}
-    predicates = _parse(config)
-    both = json.dumps({"TableName": "Users", "IndexName": "by-email"}).encode()
-    one = json.dumps({"TableName": "Users", "IndexName": "by-name"}).encode()
-    assert route(predicates, _request("Query", body=both)) is True
-    assert route(predicates, _request("Query", body=one)) is False

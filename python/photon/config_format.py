@@ -37,7 +37,7 @@ ConfigParser = Callable[[dict], ResolvedConfig]
 
 # Highest minor of format 1 this client implements. Only used to tell an operator that the proxy is
 # ahead of the client and some constructs may have been skipped; it never gates parsing.
-_V1_SUPPORTED_MINOR = 1
+_V1_SUPPORTED_MINOR = 0
 
 
 def parse_config(raw: dict) -> ResolvedConfig:

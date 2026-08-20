@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 _TYPE_SERVICE = "service"
 _TYPE_BODY = "body"
 
-# How a `bodyMatch` field's value is compared against its allowlist. The proxy may state this
-# explicitly (`{"match": ..., "values": [...]}`); when it sends a bare list instead, the mode is
-# inferred from the body value's shape — see FieldMatch.
+# How a `bodyMatch` field's value is compared against its allowlist. The proxy always states this
+# (`{"match": ..., "values": [...]}`) rather than leaving it to be inferred from the value's shape, so
+# that a comparison this client does not implement is detectable — see FieldMatch.
 _MATCH_VALUE = "value"   # the body value is one name, and must itself be allowlisted
 _MATCH_KEYS = "keys"     # the body value is an object whose keys are names; all must be allowlisted
 _MATCH_MODES = frozenset({_MATCH_VALUE, _MATCH_KEYS})
@@ -48,38 +48,26 @@ _MAX_BODY_INSPECT_BYTES = 512 * 1024
 class FieldMatch:
     """One `bodyMatch` entry: which body field to read, how to compare it, and what is allowed.
 
-    ``mode`` is ``None`` when the proxy sent a bare list of values rather than an explicit
-    ``{"match": ..., "values": [...]}`` object. In that case the comparison is inferred from the
-    body value's shape — a string is one name, an object names its keys — which is what the current
-    proxy requires. An explicit mode is preferred: it lets the client *detect* a comparison it does
-    not implement (and drop that predicate) instead of guessing from shape, and it removes the
-    ambiguity where a string-valued field that should have been an object matches as a single name.
+    The comparison is always stated by the proxy, never inferred from the body value's shape. That is
+    what lets this client *detect* a comparison it does not implement and drop that predicate, rather
+    than silently applying a different rule — a shape-inferred comparison is indistinguishable from
+    one added later. It also removes the ambiguity where a string-valued field that should have been
+    an object reads as a single name.
     """
 
     field: str
-    mode: str | None
+    mode: str
     allowed: frozenset[str]
 
     def allows(self, value: object) -> bool:
         """Whether ``value`` (the body's value for this field, or None if absent) is allowed."""
         if self.mode == _MATCH_VALUE:
             return isinstance(value, str) and value in self.allowed
-        if self.mode == _MATCH_KEYS:
-            return self._all_keys_allowed(value)
-        # Inferred (no explicit mode): dispatch on the value's shape.
-        if isinstance(value, str):
-            return value in self.allowed
-        return self._all_keys_allowed(value)
-
-    def _all_keys_allowed(self, value: object) -> bool:
-        """Every key of an object must be allowlisted, and there must be at least one.
-
-        This is what makes a multi-table batch all-or-nothing: one key outside the allowlist
-        disqualifies the whole request. An empty object names nothing, so nothing can be shown to be
-        allowlisted.
-        """
+        # _MATCH_KEYS — the only other mode a parsed FieldMatch can hold.
         if not isinstance(value, dict):
             return False
+        # Every key must be allowlisted, and there must be at least one: this is what makes a
+        # multi-table batch all-or-nothing, and an empty object names nothing that could be allowed.
         return bool(value) and all(key in self.allowed for key in value)
 
 
@@ -205,13 +193,9 @@ def _parse_service_and_operations(entry: dict) -> tuple[str | None, frozenset[st
 def _parse_body_match(entry: dict) -> tuple[FieldMatch, ...] | None:
     """Parse ``bodyMatch`` into ANDed :class:`FieldMatch` entries, or None if malformed.
 
-    Two per-field forms are accepted:
+    Each entry states which field to read, how to compare it, and what is allowed::
 
-    - ``{"TableName": ["Users"]}`` — a bare list of allowed values. The comparison is inferred from
-      the body value's shape. This is what the proxy sends today.
-    - ``{"RequestItems": {"match": "keys", "values": ["Users"]}}`` — an explicit comparison. Preferred
-      once the proxy emits it, because a mode this client does not implement is *detectable*: the
-      predicate is dropped rather than evaluated by a guessed rule.
+        "bodyMatch": {"RequestItems": {"match": "keys", "values": ["Users"]}}
 
     An empty ``bodyMatch`` yields ``()``, which makes the ``all()`` in
     :meth:`BodyPredicate.matches` vacuously true — the correct reading of "no body constraint
@@ -237,26 +221,31 @@ def _parse_body_match(entry: dict) -> tuple[FieldMatch, ...] | None:
 
 
 def _parse_field_match(field: str, spec: object) -> FieldMatch | None:
-    """Parse one ``bodyMatch`` entry into a :class:`FieldMatch`, or None if unusable."""
-    if isinstance(spec, list):
-        # Implicit form: no mode stated, so the comparison follows the body value's shape.
-        return FieldMatch(field=field, mode=None, allowed=_string_set(spec))
-    if isinstance(spec, dict):
-        mode = spec.get("match")
-        values = spec.get("values")
-        if mode not in _MATCH_MODES:
-            # A comparison this client does not implement. Detectable precisely because the proxy
-            # stated it — drop the predicate instead of applying some other rule to it.
-            logger.debug("Ignoring body predicate with unsupported match mode %r", mode)
-            return None
-        if not isinstance(values, list):
-            logger.debug("Ignoring body predicate whose 'values' is %s, not a list",
-                         type(values).__name__)
-            return None
-        return FieldMatch(field=field, mode=mode, allowed=_string_set(values))
-    logger.debug("Ignoring body predicate with a bodyMatch entry of type %s",
-                 type(spec).__name__)
-    return None
+    """Parse one ``bodyMatch`` entry into a :class:`FieldMatch`, or None if unusable.
+
+    The entry must state its comparison: ``{"match": "keys", "values": ["Users"]}``. A bare list of
+    values is **not** accepted — inferring the comparison from the body value's shape would make a
+    comparison added later indistinguishable from one this client already implements, which is the
+    failure this format exists to avoid.
+    """
+    if not isinstance(spec, dict):
+        logger.debug(
+            "Ignoring body predicate: bodyMatch entry for %r is %s, expected an object with "
+            "'match' and 'values'", field, type(spec).__name__,
+        )
+        return None
+    mode = spec.get("match")
+    values = spec.get("values")
+    if mode not in _MATCH_MODES:
+        # A comparison this client does not implement. Detectable precisely because the proxy
+        # stated it — drop the predicate instead of applying some other rule to it.
+        logger.debug("Ignoring body predicate with unsupported match mode %r", mode)
+        return None
+    if not isinstance(values, list):
+        logger.debug("Ignoring body predicate whose 'values' is %s, not a list",
+                     type(values).__name__)
+        return None
+    return FieldMatch(field=field, mode=mode, allowed=_string_set(values))
 
 
 def _string_set(values: list) -> frozenset[str]:
