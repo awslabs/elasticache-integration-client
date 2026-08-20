@@ -12,8 +12,9 @@ This package currently ports the Python implementation's:
 - `photon.config` and `photon.request` serialization and parsing;
 - deterministic request-header normalization;
 - a single-connection TCP/TLS transport with FIFO response correlation,
-  bounded response frames, bounded in-flight requests, request timeouts,
-  idempotent close, and injected AUTH credentials;
+  bounded response frames, bounded in-flight requests, bounded send backpressure,
+  differentiated connect/request/initialization timeouts, idempotent close, and
+  injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to
@@ -23,8 +24,7 @@ This package currently ports the Python implementation's:
 Cacheability routing, automatic Photon failover/reconnection, circuit breaking,
 periodic config refresh, and out-of-band responses remain out of scope. The
 middleware has a narrow origin fallback for idempotent requests when Photon
-fails; non-idempotent Photon failures propagate instead of being replayed at the
-origin.
+fails; non-idempotent Photon failures and non-Photon errors propagate.
 
 ## Client
 
@@ -53,9 +53,9 @@ them. Photon strips volatile SigV4 headers only from its copied request model;
 the original signed request remains untouched for origin pass-through. Photon
 errors for idempotent operations therefore return to the SDK's normal origin
 request and retry pipeline. Non-idempotent Photon errors and request validation
-errors propagate. Calling `destroy()` is terminal: it rejects in-flight Photon
-requests without passing shutdown failures to the origin, and repeated calls are
-safe.
+errors propagate. Calling `destroy()` detaches Photon before SDK teardown,
+rejects in-flight Photon requests without passing shutdown failures to the
+origin, and is safe to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`

@@ -224,7 +224,7 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("does not pass request validation failures through to the origin", async () => {
+  it("does not pass Photon request validation failures through to the origin", async () => {
     const session = fakeSession();
     const next = vi.fn<FinalizeHandler<object, object>>(async () => {
       throw new Error("origin must not be called");
@@ -275,7 +275,7 @@ describe("photon middleware", () => {
     expect(next).toHaveBeenCalledOnce();
   });
 
-  it("does not pass shutdown failures through to the origin", async () => {
+  it("does not pass shutdown Photon failures through to the origin", async () => {
     const connectionClosed = new PhotonConnectionLostError("connection closed");
     const session = fakeSession({
       isOpen: false,

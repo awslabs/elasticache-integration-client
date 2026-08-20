@@ -15,8 +15,9 @@ import {
 import { decodeResp, IncompleteFrameError, RespError, encodeResp, type RespValue } from "./resp.js";
 
 const DEFAULT_READ_SIZE = 64 * 1024;
-const DEFAULT_CONNECT_TIMEOUT = 5_000;
-const DEFAULT_REQUEST_TIMEOUT = 5_000;
+const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
+const DEFAULT_REQUEST_TIMEOUT = 100; // Covers the slowest legitimate cache miss (proxy -> DDB -> proxy).
+const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: AUTH and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
 function validatePositiveInteger(value: number, name: string): number {
@@ -153,6 +154,8 @@ export interface PhotonConnectorOptions {
   connectTimeout?: number;
   /** Per-request response timeout in milliseconds. */
   requestTimeout?: number;
+  /** Timeout for AUTH and photon.config initialization commands in milliseconds. */
+  configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
   /** Maximum size requested from a socket read. */
@@ -188,6 +191,7 @@ export class PhotonConnector {
   private readonly useTls: boolean;
   private readonly connectTimeout: number;
   private readonly requestTimeout: number;
+  private readonly configTimeout: number;
   private readonly caCerts: PhotonConnectorOptions["caCerts"];
   private readonly readSize: number;
   private readonly maxResponseSize: number;
@@ -207,6 +211,7 @@ export class PhotonConnector {
     this.useTls = options.tls ?? true;
     this.connectTimeout = options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT;
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
+    this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
     this.maxResponseSize = validatePositiveInteger(
@@ -330,10 +335,9 @@ export class PhotonConnector {
       throw new PhotonConnectionLostError("connection is closed");
     }
 
-    const response = this.send(command, ...args);
-
     try {
-      return await this.waitForResponse(response);
+      const response = this.send(command, ...args);
+      return await this.waitForResponse(response, this.timeoutFor(command));
     } catch (error) {
       if (error instanceof PhotonTimeoutError) {
         // FIFO correlation cannot safely discard a late reply, so one timeout resets the
@@ -351,20 +355,107 @@ export class PhotonConnector {
 
     const frame = encodeResp(command, ...args);
     const response = this.pending.register();
+    const socket = this.socket;
+    if (socket === undefined) {
+      throw new PhotonConnectionLostError("connection is closed");
+    }
+
+    return this.writeAndWait(socket, frame, response);
+  }
+
+  /**
+   * Complete the frame write and await its FIFO-correlated response.
+   *
+   * A failure before the write completes may leave a partial frame on the stream,
+   * so the connection must be closed to protect response correlation. Once the
+   * write phase completes, response failures propagate through the normal path.
+   */
+  private async writeAndWait(
+    socket: ConnectedSocket,
+    frame: Buffer,
+    response: Promise<RespValue>,
+  ): Promise<RespValue> {
+    // This is the local write/drain boundary, not an acknowledgement from the server.
+    let writeCompleted = false;
     try {
       // Node queues socket writes synchronously in call order, so registration and
       // write remain atomic within this event-loop turn without an async lock.
-      const socket = this.socket;
-      if (socket === undefined) {
-        throw new PhotonConnectionLostError("connection is closed");
+      if (!socket.write(frame)) {
+        // Backpressure is reported asynchronously through `drain`; keep waiting bounded.
+        await this.waitForDrain(socket);
       }
-      socket.write(frame);
+      // Errors after this point are response/connection failures, not send failures.
+      writeCompleted = true;
+      return await response;
     } catch (error) {
-      const lost = new PhotonConnectionLostError("send failed", { cause: error });
-      this.markDead(lost);
-      throw lost;
+      if (writeCompleted) throw error;
+      // The frame may be partially written. Reusing the stream could mis-correlate a late
+      // response, so close the connection and fail every pending request.
+      const failure =
+        error instanceof PhotonTimeoutError || error instanceof PhotonConnectionLostError
+          ? error
+          : new PhotonConnectionLostError("send failed", { cause: error });
+      // `close()` rejects this response too; consume that rejection because the send error
+      // is the failure reported to the caller.
+      void response.catch(() => undefined);
+      await this.close();
+      throw failure;
     }
-    return response;
+  }
+
+  /**
+   * Select the response timeout for a command.
+   *
+   * AUTH and photon.config run during connection initialization and use the
+   * larger config timeout. Send/drain waits remain bounded by requestTimeout.
+   */
+  private timeoutFor(command: string): number {
+    // Bring-up commands get a larger response budget; send-side waits stay on requestTimeout.
+    return command === "AUTH" || command === "photon.config"
+      ? this.configTimeout
+      : this.requestTimeout;
+  }
+
+  /**
+   * Wait for Node's writable buffer to drain within the request send budget.
+   *
+   * A drain, socket error, or close settles the wait; all listeners are removed
+   * on either outcome so a late event cannot affect a later request.
+   */
+  private async waitForDrain(socket: ConnectedSocket): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        finishReject(new PhotonTimeoutError(`send timed out after ${this.requestTimeout}ms`));
+      }, this.requestTimeout);
+
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.removeListener("drain", onDrain);
+        socket.removeListener("error", onError);
+        socket.removeListener("close", onClose);
+      };
+      const finishResolve = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const finishReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error);
+      };
+      const onDrain = () => finishResolve();
+      const onError = (error: Error) =>
+        finishReject(new PhotonConnectionLostError("send failed", { cause: error }));
+      const onClose = () => finishReject(new PhotonConnectionLostError("connection closed"));
+
+      socket.once("drain", onDrain);
+      socket.once("error", onError);
+      socket.once("close", onClose);
+    });
   }
 
   private async openTcp(): Promise<Socket> {
@@ -498,11 +589,11 @@ export class PhotonConnector {
     }
   }
 
-  private async waitForResponse(response: Promise<RespValue>): Promise<RespValue> {
+  private async waitForResponse(response: Promise<RespValue>, timeout: number): Promise<RespValue> {
     return new Promise<RespValue>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new PhotonTimeoutError(`request timed out after ${this.requestTimeout}ms`));
-      }, this.requestTimeout);
+        reject(new PhotonTimeoutError(`request timed out after ${timeout}ms`));
+      }, timeout);
 
       response.then(
         (value) => {

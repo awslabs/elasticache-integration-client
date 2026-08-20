@@ -133,11 +133,12 @@ describe("SocketReader limits", () => {
 });
 
 describe("PhotonConnector authentication timeout", () => {
-  it("uses the shared request timeout for AUTH", async () => {
+  it("uses the dedicated config timeout for AUTH", async () => {
     const cache = await startCache({ failure: "hang", failureCommand: "auth" });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
-      requestTimeout: 25,
+      requestTimeout: 5_000,
+      configTimeout: 25,
       authProvider: () => ["test-user", "test-token"],
     });
     await connector.connect();
@@ -155,6 +156,31 @@ describe("PhotonConnector authentication timeout", () => {
     } finally {
       await connector.close();
       await authentication.catch(() => undefined);
+    }
+  });
+});
+
+describe("PhotonConnector initialization timeout", () => {
+  it("uses the dedicated config timeout for photon.config", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "photon.config" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 5_000,
+      configTimeout: 25,
+    });
+    await connector.connect();
+
+    try {
+      await expect(
+        Promise.race([
+          connector.execute("photon.config", Buffer.from("{}")),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("config timeout exceeded")), 100),
+          ),
+        ]),
+      ).rejects.toThrow("request timed out after 25ms");
+    } finally {
+      await connector.close();
     }
   });
 });
@@ -268,6 +294,39 @@ describe("PhotonConnector", () => {
     await expect(response).resolves.toBeInstanceOf(Buffer);
     await connector.close();
     expect(synchronousWriteCount).toBe(1);
+  });
+
+  it("times out and tears down when socket backpressure never clears", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 25,
+    });
+    await connector.connect();
+    const socket = (connector as unknown as { socket: Socket }).socket;
+    vi.spyOn(socket, "write").mockReturnValue(false);
+
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toThrow(
+      "send timed out after 25ms",
+    );
+    expect(socket.destroyed).toBe(true);
+    await connector.close();
+  });
+
+  it("fully tears down after a synchronous send failure", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+    const socket = (connector as unknown as { socket: Socket }).socket;
+    vi.spyOn(socket, "write").mockImplementation(() => {
+      throw new Error("write failed");
+    });
+
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
+      PhotonConnectionLostError,
+    );
+    expect((connector as unknown as { socket?: unknown }).socket).toBeUndefined();
+    await connector.close();
   });
 
   it("runs injected AUTH before the caller sends later commands", async () => {

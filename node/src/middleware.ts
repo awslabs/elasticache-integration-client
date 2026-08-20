@@ -3,8 +3,8 @@
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
  * AWS SigV4 authentication headers, builds a PhotonRequest, calls PhotonSession,
- * and returns a synthetic HttpResponse. For idempotent operations, Photon
- * failures return to the SDK's origin pipeline while preserving its normal
+ * and returns a synthetic HttpResponse. Photon failures for idempotent
+ * operations return to the SDK's origin pipeline while preserving its normal
  * retry and deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
@@ -131,7 +131,7 @@ export function photonMiddleware<Input extends object, Output extends object>(
   service: string,
   session: PhotonSession,
 ): DeserializeMiddleware<Input, Output> {
-  return (next, context) => async (args) => {
+  return (next, context: HandlerExecutionContext) => async (args) => {
     const request = awsToPhotonRequest(args.request, service, context.commandName);
 
     try {
