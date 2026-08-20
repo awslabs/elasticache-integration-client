@@ -125,12 +125,19 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. Any Photon failure therefore degrades to a cache miss.
+        request down the pipeline and keeps the original behavior. That happens for two distinct
+        reasons: the session declined the request (no resolved predicate matched — the normal,
+        per-request steady state, so it is not logged as a warning), or the Photon path failed
+        (degrades to a cache miss, logged).
         Non-Photon exceptions propagate: those are our bugs and should be loud.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
             response = self._session.request(http_request)
+            if response is None:
+                logger.debug("No predicate matched %s; passing through to the service",
+                             http_request.metadata.operation)
+                return None
             return _photon_to_aws_response(request.url, response)
         except PhotonError:
             logger.warning("Photon request failed; passing through to the service", exc_info=True)

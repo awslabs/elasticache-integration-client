@@ -74,7 +74,7 @@ class TestPhotonConnector:
         assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) == 1
         raw = self.conn.execute("photon.config", b'{"k":"v"}')
         cfg = json.loads(raw)
-        assert cfg["version"] == "v1"
+        assert cfg["version"] == "1.0"
         assert cfg["refresh_interval"] == 60
 
     def test_connect_to_nothing_raises(self):

@@ -53,6 +53,29 @@ def test_parse_config_response_missing_fields_default_to_none():
     assert cfg.version is None
     assert cfg.refresh_interval is None
     assert cfg.raw == {"predicates": []}
+    assert cfg.predicates == ()
+
+
+def test_parse_config_response_parses_predicates():
+    """Predicates are parsed into evaluatable objects, not left as raw JSON.
+
+    Evaluation itself is predicates.py's contract (see test_predicates.py); this asserts only that
+    the protocol layer hands them over.
+    """
+    cfg = parse_config_response(
+        b'{"version":"1.0","refresh_interval":60,"predicates":'
+        b'[{"type":"service","service":"dynamodb","operations":["GetItem"]}]}'
+    )
+    assert len(cfg.predicates) == 1
+    assert cfg.predicates[0].operations == frozenset({"GetItem"})
+    # The raw document still survives untouched alongside the parsed form.
+    assert cfg.raw["predicates"][0]["type"] == "service"
+
+
+def test_parse_config_response_rejects_non_array_predicates():
+    """A malformed config document is an error, unlike an entry the client cannot evaluate."""
+    with pytest.raises(PhotonError):
+        parse_config_response(b'{"version":"1.0","predicates":{"type":"service"}}')
 
 
 def test_parse_config_response_rejects_error_frame():

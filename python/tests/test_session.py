@@ -9,12 +9,14 @@ Command building/normalization details are protocol.py's contract and are covere
 test_protocol.py; these tests assert only session behavior (lifecycle + delegation).
 """
 
+import json
+
 import pytest
 
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.session import PhotonSession, parse_endpoint
-from tests.mock import mock_connector
+from tests.mock import body_predicate_config, mock_connector, resolved_config
 
 
 # --- lifecycle: bring-up --------------------------------------------------------
@@ -33,12 +35,14 @@ def test_bring_up_order():
 
 
 def test_resolved_config_stored_on_construction():
-    """The handshake's resolved config is stored by the time construction returns."""
+    """The handshake's resolved config — including its parsed predicates — is stored by the time
+    construction returns."""
     connector = mock_connector()
     session = PhotonSession(connector)
     assert session._config is not None
-    assert session._config.version == "v1"
+    assert session._config.version == "1.0"
     assert session._config.refresh_interval == 60
+    assert len(session._config.predicates) == 1
 
 
 @pytest.mark.parametrize("failing_step", ["authenticate", "execute"])
@@ -55,8 +59,8 @@ def test_failed_bring_up_closes_everything(failing_step):
 # --- request path ---------------------------------------------------------------
 
 def test_request_delegates_to_connector():
-    """request() serializes the photon.request command, forwards it to execute(), and returns
-    the parsed response."""
+    """A request matching a resolved predicate is serialized, forwarded to execute(), and its reply
+    parsed and returned."""
     connector = mock_connector()
     session = PhotonSession(connector)
     request = PhotonRequest(
@@ -73,6 +77,77 @@ def test_request_delegates_to_connector():
     assert args[0] == "photon.request"
     assert len(args[1:]) == 5  # [method, url, headers, body, metadata]
     assert kwargs == {}
+
+
+# --- routing: which requests reach the cache ------------------------------------
+
+def _request(operation="GetItem", service="dynamodb", body=b"{}"):
+    return PhotonRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        headers={},
+        body=body,
+        metadata=RequestMetadata(service=service, operation=operation),
+    )
+
+
+def _wire_commands(connector):
+    """The commands the session actually sent, excluding the constructor's config handshake."""
+    return [call.args[0] for call in connector.execute.call_args_list
+            if call.args[0] != "photon.config"]
+
+
+@pytest.mark.parametrize("request_", [
+    _request("PutItem"),                 # a write: never in a resolved predicate
+    _request("CreateTable"),             # not a cacheable operation at all
+    _request(service="s3"),              # another service
+])
+def test_unmatched_request_is_not_sent_to_the_cache(request_):
+    """No predicate matched: request() returns None and nothing goes on the wire."""
+    connector = mock_connector()
+    session = PhotonSession(connector)
+    assert session.request(request_) is None
+    assert _wire_commands(connector) == []
+
+
+def test_empty_predicate_set_routes_nothing():
+    """A config with no predicates (or none this client understands) passes everything through."""
+    connector = mock_connector(config=resolved_config(predicates=[]))
+    session = PhotonSession(connector)
+    assert session.request(_request("GetItem")) is None
+    assert _wire_commands(connector) == []
+
+
+def test_table_allowlist_routes_only_allowlisted_tables():
+    """With a body predicate, the table in the request body decides cache vs pass-through."""
+    connector = mock_connector(config=body_predicate_config("Users"))
+    session = PhotonSession(connector)
+    allowed = _request(body=json.dumps({"TableName": "Users", "Key": {}}).encode())
+    other = _request(body=json.dumps({"TableName": "Orders", "Key": {}}).encode())
+
+    assert isinstance(session.request(allowed), PhotonResponse)
+    assert session.request(other) is None
+    assert _wire_commands(connector) == ["photon.request"]  # only the allowlisted one
+
+
+def test_batch_read_routes_only_when_every_table_is_allowlisted():
+    """A batch spanning a non-allowlisted table passes through whole (all-or-nothing).
+
+    Exercises the second predicate the proxy emits for an allowlist, which matches on the keys of
+    `RequestItems` rather than a `TableName` string.
+    """
+    connector = mock_connector(config=body_predicate_config("Users", "Sessions"))
+    session = PhotonSession(connector)
+    all_allowed = _request(
+        "BatchGetItem",
+        body=json.dumps({"RequestItems": {"Users": {}, "Sessions": {}}}).encode())
+    mixed = _request(
+        "BatchGetItem",
+        body=json.dumps({"RequestItems": {"Users": {}, "Orders": {}}}).encode())
+
+    assert isinstance(session.request(all_allowed), PhotonResponse)
+    assert session.request(mixed) is None
+    assert _wire_commands(connector) == ["photon.request"]
 
 
 def test_request_after_close_propagates_connector_error():

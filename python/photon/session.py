@@ -4,9 +4,9 @@
 bring-up (transport connect + AUTH + the mandatory ``photon.config`` handshake) on construction,
 and exposes a **synchronous** ``request()`` for the boto3 ``before-send`` hook to call.
 
-Scope: no predicate filtering, no degradation/circuit-breaking/retry/pass-through, and no periodic
-``photon.config`` refresh. The resolved config is fetched once and stored for protocol compliance
-only. Errors propagate.
+Scope: no degradation/circuit-breaking/retry and no periodic ``photon.config`` refresh. Requests are
+routed to the cache only when a resolved predicate matches; everything else is passed through by the
+caller. Errors propagate.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from __future__ import annotations
 from photon.connection import PhotonConnector
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse
+from photon.predicates import route
 from photon.protocol import (
     parse_config_response,
     parse_request_response,
@@ -63,11 +64,21 @@ class PhotonSession:
             self.close()
             raise
 
-    def request(self, request: PhotonRequest) -> PhotonResponse:
-        """Build the ``photon.request`` command, send it, and return the response.
+    def request(self, request: PhotonRequest) -> PhotonResponse | None:
+        """Route ``request`` to the cache and return its response, or None to pass it through.
 
-        Forwards unconditionally (no filtering); connector/protocol errors propagate.
+        ``None`` means no resolved predicate matched: the caller must send the request to the origin
+        service itself. The two outcomes are disjoint — a served request is always a
+        :class:`PhotonResponse`, and every failure raises — so ``None`` unambiguously means
+        "not mine". Connector/protocol errors still propagate.
+
+        ``self._config`` is read exactly once. The whole frozen config object is replaced on
+        refresh, so a single read is a consistent snapshot and an in-flight request never sees a
+        half-applied config.
         """
+        config = self._config
+        if not route(config.predicates, request):
+            return None
         command, args = serialize_request(request)
         return parse_request_response(self._connector.execute(command, *args))
 

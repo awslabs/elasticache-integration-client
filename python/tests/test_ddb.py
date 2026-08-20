@@ -99,6 +99,27 @@ def test_connection_reuse(cache):
     ddb.close()
 
 
+def test_unmatched_operation_never_reaches_the_cache(cache):
+    """A write matches no resolved predicate, so the hook declines and botocore would send it to DDB.
+
+    The event is emitted manually (rather than calling ddb.put_item) so the test stays offline: a
+    declined request falls through to the real AWS endpoint, which is exactly what must not be
+    contacted here. What matters is the handler's answer and that the cache saw nothing.
+    """
+    ddb = photon.client("dynamodb", region_name="us-east-1",
+                        endpoint=cache.endpoint, cache_name="test-cache")
+    requests_before = len(cache.requests)
+
+    request = mock.Mock(method="POST", url="https://dynamodb.us-east-1.amazonaws.com/",
+                        headers={}, body=json.dumps({"TableName": "my-table"}).encode())
+    responses = ddb.meta.events.emit("before-send.dynamodb.PutItem", request=request)
+
+    assert first_non_none_response(responses) is None   # declined: botocore sends it itself
+    assert len(cache.requests) == requests_before       # nothing was routed to the cache
+    assert cache.photon_command_log.count("photon.config") == 1  # handshake still happened
+    ddb.close()
+
+
 def test_close_lifecycle(cache):
     """close() disconnects Photon (nothing reaches the cache afterwards) and is idempotent."""
     ddb = photon.client("dynamodb", region_name="us-east-1",

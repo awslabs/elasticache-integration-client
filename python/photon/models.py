@@ -7,6 +7,10 @@ error taxonomy lives in :mod:`photon.exceptions`.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # import-time cycle: predicates imports PhotonRequest from this module
+    from photon.predicates import Predicate
 
 
 @dataclass(slots=True, frozen=True, kw_only=True)
@@ -39,8 +43,14 @@ class PhotonResponse:
 
 @dataclass(slots=True, frozen=True)
 class ResolvedConfig:
-    """Resolved configuration returned by the ``photon.config`` handshake."""
+    """Resolved configuration returned by the ``photon.config`` handshake.
+
+    Frozen, and ``predicates`` is a tuple, so the whole object can be swapped in one atomic
+    rebind when the config is re-fetched — readers need no lock, they just take a snapshot.
+    """
 
     version: str | None = None
     refresh_interval: int | None = None
     raw: dict | None = None
+    # Ordered, first-match-wins. Empty means "route nothing" — every request passes through.
+    predicates: tuple[Predicate, ...] = ()

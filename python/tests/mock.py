@@ -44,6 +44,54 @@ CODE_PARSE_ERROR = "PARSE_ERROR"
 CODE_UNSUPPORTED = "UNSUPPORTED"
 CODE_UNIMPLEMENTED = "UNIMPLEMENTED"
 CODE_CONFIG_INVALID = "CONFIG_INVALID"
+# The resolved config the real proxy returns for empty overrides — see
+# ElastiCacheProxyRust/src/libproxy/photon/config.rs::resolve. Shape matters to the tests:
+# "version" is the predicate *format* version ("1.0", constant), and a no-allowlist config carries
+# exactly one `service` predicate over the cacheable reads.
+DEFAULT_RESOLVED_CONFIG = {
+    "version": "1.0",
+    "refresh_interval": 60,
+    "ttl": 300,
+    "nttl": 60,
+    "predicates": [
+        {
+            "type": "service",
+            "service": "dynamodb",
+            "operations": ["GetItem", "BatchGetItem", "Query", "Scan"],
+        }
+    ],
+}
+
+
+def resolved_config(**overrides) -> dict:
+    """A copy of :data:`DEFAULT_RESOLVED_CONFIG` with top-level fields replaced."""
+    return {**DEFAULT_RESOLVED_CONFIG, **overrides}
+
+
+def body_predicate_config(*tables: str, **overrides) -> dict:
+    """The resolved config the proxy emits for a table allowlist.
+
+    One ``body`` predicate per table location, with disjoint operation sets: ``TableName`` for the
+    single-table reads, ``RequestItems`` for the batch reads (see ``photon/config.rs::resolve``).
+    """
+    allowlist = sorted(tables)  # proxy sorts (BTreeMap)
+    return resolved_config(
+        predicates=[
+            {
+                "type": "body",
+                "service": "dynamodb",
+                "operations": ["GetItem", "Query", "Scan"],
+                "bodyMatch": {"TableName": allowlist},
+            },
+            {
+                "type": "body",
+                "service": "dynamodb",
+                "operations": ["BatchGetItem"],
+                "bodyMatch": {"RequestItems": allowlist},
+            },
+        ],
+        **overrides,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -219,7 +267,7 @@ class MockCache:
         failure_command: str = "photon.request",  # which command triggers `failure` (e.g. "auth")
         failure_after_reply: bool = False,  # reply normally first, then apply `failure`
     ) -> None:
-        self._config = config or {"version": "v1", "refresh_interval": 60, "predicates": []}
+        self._config = config or DEFAULT_RESOLVED_CONFIG
         self.tls = tls
         self.response_status = response_status
         self.response_headers = response_headers
@@ -499,21 +547,25 @@ class MockClient:
 # --------------------------------------------------------------------------- #
 # Autospec doubles for the layers above the cache
 # --------------------------------------------------------------------------- #
-def mock_connector() -> PhotonConnector:
+def mock_connector(config: Optional[dict] = None) -> PhotonConnector:
     """A ``create_autospec(PhotonConnector)`` double with sensible default replies.
 
     Bound to the real class, so the session is verified against the real connector signatures
     without a network. ``execute`` returns wire-shaped ``RespValue``s (the session does the
     parsing): a JSON bulk string for ``photon.config``, a ``[status, headers, body]`` array
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
+
+    ``config`` replaces the canned resolved config (default: :data:`DEFAULT_RESOLVED_CONFIG`, which
+    routes the DynamoDB reads) — pass one to test a different predicate set.
     """
     conn = create_autospec(PhotonConnector, instance=True)
     # Instance attribute (set in __init__), invisible to autospec; the session reads it.
     conn.config_timeout = 2.0
+    config_reply = json.dumps(config if config is not None else DEFAULT_RESOLVED_CONFIG).encode()
 
     def _execute(command, *args, timeout=None):
         if command == "photon.config":
-            return b'{"version":"v1","refresh_interval":60}'
+            return config_reply
         return [200, b"content-type:application/json", b'{"ok":true}']
 
     conn.execute.side_effect = _execute

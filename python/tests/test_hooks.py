@@ -1,5 +1,6 @@
 """Unit tests for photon.hooks."""
 
+import logging
 from unittest import mock
 
 import pytest
@@ -79,18 +80,41 @@ def test_missing_or_malformed_event_name_raises(event_name):
 
 # --- fall-through: a failed Photon path never reaches the application ----------
 
+def test_declined_request_passes_through_without_warning(caplog):
+    """No predicate matched: the handler returns None so botocore sends the real request.
+
+    A decline is the normal per-request steady state (e.g. a write, or an excluded operation), so it
+    must not be logged as a warning — that would flood a customer's logs.
+    """
+    sdk = MockClient()
+    session = mock_session()
+    session.request.return_value = None
+    hooks.PhotonHandle(sdk, session)
+
+    with caplog.at_level(logging.WARNING, logger="photon.hooks"):
+        assert _emit(sdk) is None
+    session.request.assert_called_once()
+    assert caplog.records == []
+
+
 @pytest.mark.parametrize("error", [
     PhotonError("boom"),
     PhotonConnectionError("connect failed"),
     PhotonTimeoutError("timed out"),
 ])
-def test_photon_failure_passes_through(error):
-    """When the Photon path fails, the handler returns None so botocore sends the real request."""
+def test_photon_failure_passes_through(error, caplog):
+    """When the Photon path fails, the handler returns None so botocore sends the real request.
+
+    Unlike a decline, a failure IS logged — it means the cache did not serve a request it should
+    have (counterpart to test_declined_request_passes_through_without_warning).
+    """
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = error
     hooks.PhotonHandle(sdk, session)
-    assert _emit(sdk) is None
+    with caplog.at_level(logging.WARNING, logger="photon.hooks"):
+        assert _emit(sdk) is None
+    assert len(caplog.records) == 1
 
 
 def test_non_photon_error_propagates():

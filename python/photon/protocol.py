@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
+from photon.predicates import parse_predicates
 from photon.resp import RespError, RespValue
 
 CONFIG_COMMAND = "photon.config"
@@ -82,10 +83,12 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
         raise PhotonError(f"Malformed config JSON: {value!r}") from exc
     if not isinstance(raw, dict):
         raise PhotonError(f"Config JSON must be an object, got {type(raw).__name__}")
+    version = raw.get("version")
     return ResolvedConfig(
-        version=raw.get("version"),
+        version=version,
         refresh_interval=raw.get("refresh_interval"),
         raw=raw,
+        predicates=parse_predicates(raw.get("predicates"), version),
     )
 
 
