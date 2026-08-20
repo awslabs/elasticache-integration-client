@@ -22,8 +22,10 @@ import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -32,6 +34,26 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncHttpClientTest {
+
+    @Test
+    void executorRejectionFallsBackToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        Executor rejectingExecutor = command -> {
+            throw new RejectedExecutionException("at capacity");
+        };
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new ImmediateSession(),
+                preparedContext(),
+                origin,
+                false,
+                rejectingExecutor,
+                null);
+
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
 
     @Test
     void cancellationReachesActivePhotonRequestWithoutOriginFallback() throws Exception {

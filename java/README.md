@@ -46,8 +46,9 @@ request can be replayed safely during origin fallback.
 
 Photon's socket request API is blocking, so the asynchronous adapter runs it on
 a bounded daemon executor. Applications can supply a caller-managed executor
-with `asyncExecutor(Executor)`. Photon closes only transports and executors it
-creates itself.
+with `asyncExecutor(Executor)`. If that executor rejects a request because it is
+at capacity, Photon sends the buffered request through the origin fallback.
+Photon closes only transports and executors it creates itself.
 
 ## Manual lifecycle
 

@@ -21,6 +21,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -78,6 +79,9 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             try {
                 photonFuture = CompletableFuture.supplyAsync(
                         () -> session.request(photonRequest, cancellation), executor);
+            } catch (RejectedExecutionException capacityFailure) {
+                fallbackToOrigin(result, request, body, active);
+                return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);
                 return;
@@ -94,21 +98,7 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
                 Throwable cause = unwrap(photonFailure);
                 if (cause instanceof PhotonError) {
-                    CompletableFuture<Void> originFuture;
-                    try {
-                        originFuture = originClient.execute(copyWithBody(request, body));
-                    } catch (Throwable originFailure) {
-                        fail(result, request.responseHandler(), originFailure);
-                        return;
-                    }
-                    active.set(originFuture);
-                    originFuture.whenComplete((ignored, originFailure) -> {
-                        if (originFailure == null) {
-                            result.complete(null);
-                        } else {
-                            result.completeExceptionally(unwrap(originFailure));
-                        }
-                    });
+                    fallbackToOrigin(result, request, body, active);
                 } else {
                     fail(result, request.responseHandler(), cause);
                 }
@@ -126,6 +116,36 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             }
         });
         return result;
+    }
+
+    private void fallbackToOrigin(CompletableFuture<Void> result,
+                                  AsyncExecuteRequest request,
+                                  byte[] body,
+                                  AtomicReference<CompletableFuture<?>> active) {
+        if (result.isCancelled()) {
+            return;
+        }
+
+        CompletableFuture<Void> originFuture;
+        try {
+            originFuture = originClient.execute(copyWithBody(request, body));
+        } catch (Throwable originFailure) {
+            fail(result, request.responseHandler(), originFailure);
+            return;
+        }
+
+        active.set(originFuture);
+        if (result.isCancelled()) {
+            originFuture.cancel(true);
+            return;
+        }
+        originFuture.whenComplete((ignored, originFailure) -> {
+            if (originFailure == null) {
+                result.complete(null);
+            } else {
+                result.completeExceptionally(unwrap(originFailure));
+            }
+        });
     }
 
     @Override
