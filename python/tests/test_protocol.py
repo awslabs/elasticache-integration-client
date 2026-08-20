@@ -39,12 +39,26 @@ def test_serialize_config_compact_json():
 
 def test_parse_config_response_json_bulk_string():
     """Parses a JSON bulk-string config reply into a ResolvedConfig."""
-    cfg = parse_config_response(b'{"version":"v3","refresh_interval":60,"ttl":300,"predicates":[]}')
+    cfg = parse_config_response(b'{"version":"1.0","refresh_interval":60,"ttl":300,"predicates":[]}')
     assert isinstance(cfg, ResolvedConfig)
-    assert cfg.version == "v3"
+    assert cfg.version == "1.0"
     assert cfg.refresh_interval == 60
     # Unmodeled fields survive on .raw so nothing from the server is silently dropped.
-    assert cfg.raw == {"version": "v3", "refresh_interval": 60, "ttl": 300, "predicates": []}
+    assert cfg.raw == {"version": "1.0", "refresh_interval": 60, "ttl": 300, "predicates": []}
+
+
+def test_parse_config_response_leaves_an_unknown_format_uninterpreted():
+    """Only the version and the raw document are read from a format with no registered parser.
+
+    Even `refresh_interval` is left alone: where it sits is part of the document structure, which is
+    exactly what an unknown format may have changed. A refresher falls back to its own default
+    interval rather than trusting a key it cannot place.
+    """
+    cfg = parse_config_response(b'{"version":"9.0","refresh_interval":60,"predicates":[]}')
+    assert cfg.version == "9.0"
+    assert cfg.refresh_interval is None
+    assert cfg.predicates == ()
+    assert cfg.raw == {"version": "9.0", "refresh_interval": 60, "predicates": []}
 
 
 def test_parse_config_response_missing_fields_default_to_none():

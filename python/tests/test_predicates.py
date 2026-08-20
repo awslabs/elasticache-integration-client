@@ -82,7 +82,7 @@ def _get_item(table="Users"):
 
 
 def _parse(config):
-    return parse_predicates(config.get("predicates"), config.get("version"))
+    return parse_predicates(config.get("predicates"))
 
 
 # --- parsing: service predicate -----------------------------------------------
@@ -116,14 +116,14 @@ def test_service_name_is_lowercased_at_parse_time():
 
 @pytest.mark.parametrize("raw", [None, [], {"predicates": None}.get("predicates")])
 def test_missing_or_empty_predicates_route_nothing(raw):
-    assert parse_predicates(raw, "1.0") == ()
+    assert parse_predicates(raw) == ()
 
 
 @pytest.mark.parametrize("raw", [{}, "service", 7])
 def test_non_array_predicates_is_a_malformed_config(raw):
     """A broken config *document* is an error, unlike an individual entry we cannot evaluate."""
     with pytest.raises(PhotonError):
-        parse_predicates(raw, "1.0")
+        parse_predicates(raw)
 
 
 def test_unknown_predicate_type_is_dropped_not_guessed():
@@ -153,7 +153,7 @@ def test_unknown_entries_are_dropped_and_siblings_kept():
     {"type": "service", "service": 7, "operations": ["GetItem"]},    # wrong type
 ])
 def test_malformed_entries_are_dropped(entry):
-    assert parse_predicates([entry], "1.0") == ()
+    assert parse_predicates([entry]) == ()
 
 
 def test_non_string_operations_are_filtered_out():
@@ -171,21 +171,6 @@ def test_empty_operations_yields_a_predicate_that_never_matches():
     predicates = _parse(config)
     assert len(predicates) == 1
     assert not route(predicates, _request())
-
-
-# --- parsing: format version gate ---------------------------------------------
-
-@pytest.mark.parametrize("version", ["1.0", "1.7", "1", None])
-def test_supported_format_major_is_parsed(version):
-    assert len(parse_predicates(SERVICE_CONFIG["predicates"], version)) == 1
-
-
-@pytest.mark.parametrize("version", ["2.0", "0.9", "v3", "", "nonsense"])
-def test_unsupported_format_major_drops_every_predicate(version, caplog):
-    """A known type whose meaning changed cannot be detected per-entry, so stop routing entirely."""
-    with caplog.at_level("WARNING"):
-        assert parse_predicates(SERVICE_CONFIG["predicates"], version) == ()
-    assert "unsupported" in caplog.text
 
 
 # --- evaluation: service predicate --------------------------------------------
@@ -492,8 +477,7 @@ def test_non_string_body_match_field_drops_the_predicate():
     predicate that never matches."""
     assert parse_predicates(
         [{"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-          "bodyMatch": {7: ["Users"]}}],
-        "1.0",
+          "bodyMatch": {7: ["Users"]}}]
     ) == ()
 
 
@@ -508,32 +492,3 @@ def test_mixed_implicit_and_explicit_entries_are_anded():
     one = json.dumps({"TableName": "Users", "IndexName": "by-name"}).encode()
     assert route(predicates, _request("Query", body=both)) is True
     assert route(predicates, _request("Query", body=one)) is False
-
-
-# --- version handling ---------------------------------------------------------
-
-def test_newer_minor_still_parses_and_is_logged(caplog):
-    """A newer minor is not a gate: additions within a major must be self-describing, so the client
-    drops what it cannot evaluate entry by entry and keeps the rest."""
-    with caplog.at_level("DEBUG", logger="photon.predicates"):
-        predicates = parse_predicates(SERVICE_CONFIG["predicates"], "1.99")
-    assert len(predicates) == 1
-    assert "newer constructs will be skipped" in caplog.text
-
-
-def test_newer_minor_keeps_evaluatable_entries_and_drops_the_rest():
-    """The combination this design exists for: a 1.x proxy using a mode this client lacks."""
-    config = {**BODY_CONFIG, "version": "1.99", "predicates": [
-        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-         "bodyMatch": {"TableName": {"match": "prefix", "values": ["User"]}}},
-        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
-         "bodyMatch": {"TableName": {"match": "value", "values": ["Users"]}}},
-    ]}
-    predicates = _parse(config)
-    assert len(predicates) == 1
-    assert route(predicates, _get_item("Users")) is True
-
-
-@pytest.mark.parametrize("version", ["1", "1.0", "1.1", "1.x", None])
-def test_same_major_is_accepted_whatever_the_minor(version):
-    assert len(parse_predicates(SERVICE_CONFIG["predicates"], version)) == 1

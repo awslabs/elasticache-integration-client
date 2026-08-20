@@ -1,14 +1,17 @@
 """Client-side model and evaluation of the routing predicates returned by ``photon.config``.
 
 The proxy is the authority on what may be cached (see ``design/api-filtering.md``): it merges the
-client's overrides with server policy and returns an ordered predicate list. This module only
-*interprets* that list — it decides, per intercepted request, "route to the cache" or "pass through
-to the origin service". It is pure: no I/O, no session state, no service-specific knowledge.
+client's overrides with server policy and returns an ordered predicate list. This module holds the
+**internal model** — the predicate objects and the routing decision over them — plus the parser for
+the format-1 predicate array. It is pure: no I/O, no session state, no service-specific knowledge.
 
-Two predicate types exist on the wire, and the proxy emits exactly one of them per response
-(``photon/config.rs::resolve``): a ``service`` predicate when the customer set no table allowlist,
-otherwise a ``body`` predicate carrying that allowlist. Evaluation is ordered and first-match-wins
-anyway, because the wire format is a list and a future proxy may send several.
+Version dispatch lives one level up, in :mod:`photon.config_format`: it picks a parser for the
+document it received and hands back this model, so the evaluation below is independent of the wire
+shape and a future format needs no changes here.
+
+Two predicate types exist in format 1, and the proxy emits either one ``service`` predicate or one
+``body`` predicate per table location (``photon/config.rs::resolve``). Evaluation is ordered and
+first-match-wins regardless, because the wire format is a list.
 
 Anything this module cannot interpret is dropped rather than guessed: an unrouted request is merely
 uncached, while a mis-routed one is a correctness bug.
@@ -25,44 +28,6 @@ from photon.exceptions import PhotonError
 from photon.models import PhotonRequest
 
 logger = logging.getLogger(__name__)
-
-# Predicate *schema* version this client understands. The proxy's PREDICATE_FORMAT_VERSION is
-# constant per format — it is NOT a content hash, so it can never be used to detect that a config
-# changed. It is used here for exactly two things: refusing a format whose known constructs may have
-# changed meaning (major), and recording that the proxy may be using constructs newer than this
-# client (minor).
-_SUPPORTED_MAJOR = "1"
-_SUPPORTED_MINOR = 1
-
-
-def _version_supported(version: object) -> bool:
-    """Whether this client can evaluate the given predicate format version.
-
-    A missing version is tolerated (treated as supported); a differing **major** is not. Dropping
-    unknown *entries* already covers new predicate types and new comparison modes safely, but it
-    cannot cover a **known** construct whose meaning changed under a new major — the client would
-    parse it happily and cache the wrong things. So a major bump stops routing entirely instead.
-
-    A newer **minor** is fine and does not gate anything: within a major, additions are required to
-    be self-describing (a new predicate ``type``, or a new ``bodyMatch`` ``match`` mode), so this
-    client detects and drops what it cannot evaluate, entry by entry, and keeps the rest. It is
-    logged so an operator can see why a predicate was skipped.
-    """
-    if version is None:
-        return True
-    major, _, minor = str(version).partition(".")
-    if major != _SUPPORTED_MAJOR:
-        return False
-    try:
-        if int(minor) > _SUPPORTED_MINOR:
-            logger.debug(
-                "photon.config predicate format is %s; this client implements %s.%s, so any "
-                "newer constructs will be skipped",
-                version, _SUPPORTED_MAJOR, _SUPPORTED_MINOR,
-            )
-    except ValueError:
-        pass  # a non-numeric minor tells us nothing; the major already matched
-    return True
 
 _TYPE_SERVICE = "service"
 _TYPE_BODY = "body"
@@ -178,23 +143,22 @@ def route(predicates: Sequence[Predicate], request: PhotonRequest) -> bool:
     return any(predicate.matches(request) for predicate in predicates)
 
 
-def parse_predicates(raw: object, version: object = None) -> tuple[Predicate, ...]:
-    """Parse the ``predicates`` array of a resolved config, preserving wire order.
+def parse_predicates(raw: object) -> tuple[Predicate, ...]:
+    """Parse a **format 1** ``predicates`` array, preserving wire order.
 
-    Returns ``()`` for a missing/empty array or an unsupported format major — both mean "route
+    Called by the format-1 parser in :mod:`photon.config_format`, which owns version dispatch; this
+    function only knows one array shape. Returns ``()`` for a missing or empty array — "route
     nothing", so every request passes straight through to the origin service.
 
+    Entries this client cannot evaluate are dropped rather than guessed at: an unknown predicate
+    ``type``, a malformed entry, or an unsupported ``bodyMatch`` comparison. Their siblings still
+    evaluate, so a proxy using one construct this client does not implement costs only the caching
+    that construct would have enabled.
+
     Raises:
-        PhotonError: If ``predicates`` is present but is not an array (a malformed config document,
-            as opposed to an individual entry this client cannot evaluate).
+        PhotonError: If ``predicates`` is present but is not an array — a malformed document, as
+            opposed to an individual entry this client cannot evaluate.
     """
-    if not _version_supported(version):
-        logger.warning(
-            "photon.config predicate format %r is unsupported (this client supports %s.x); "
-            "no requests will be routed to the cache until the client is upgraded",
-            version, _SUPPORTED_MAJOR,
-        )
-        return ()
     if raw is None:
         return ()
     if not isinstance(raw, list):

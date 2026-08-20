@@ -10,9 +10,9 @@ This module builds the two Photon commands and interprets their replies:
 from __future__ import annotations
 
 import json
+from photon.config_format import parse_config
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
-from photon.predicates import parse_predicates
 from photon.resp import RespError, RespValue
 
 CONFIG_COMMAND = "photon.config"
@@ -69,6 +69,10 @@ def serialize_config(overrides: dict) -> tuple[str, list[bytes]]:
 def parse_config_response(value: RespValue) -> ResolvedConfig:
     """Parse the ``photon.config`` reply (a JSON bulk string) into a ResolvedConfig.
 
+    This layer owns the RESP framing and the JSON decode only. Interpreting the decoded document is
+    :func:`photon.config_format.parse_config`'s job, which selects a parser by the document's format
+    version — so a future format changes nothing here.
+
     The reply is a JSON bulk string; a RESP-array shape is intentionally not supported.
     """
     if isinstance(value, RespError):
@@ -83,13 +87,7 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
         raise PhotonError(f"Malformed config JSON: {value!r}") from exc
     if not isinstance(raw, dict):
         raise PhotonError(f"Config JSON must be an object, got {type(raw).__name__}")
-    version = raw.get("version")
-    return ResolvedConfig(
-        version=version,
-        refresh_interval=raw.get("refresh_interval"),
-        raw=raw,
-        predicates=parse_predicates(raw.get("predicates"), version),
-    )
+    return parse_config(raw)
 
 
 def serialize_request(request: PhotonRequest) -> tuple[str, list[bytes]]:
