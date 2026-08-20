@@ -13,6 +13,7 @@ from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, RequestMetadata
 from photon.predicates import (
     BodyPredicate,
+    FieldMatch,
     ServicePredicate,
     _MAX_BODY_INSPECT_BYTES,
     parse_predicates,
@@ -241,7 +242,9 @@ def test_parses_the_body_config_the_proxy_emits():
         BodyPredicate(
             service="dynamodb",
             operations=frozenset({"GetItem", "BatchGetItem", "Query", "Scan"}),
-            body_match=(("TableName", frozenset({"Sessions", "Users"})),),
+            # A bare list of values: no mode stated, so comparison follows the body value's shape.
+            body_match=(FieldMatch(field="TableName", mode=None,
+                                   allowed=frozenset({"Sessions", "Users"})),),
         ),
     )
 
@@ -395,10 +398,142 @@ def test_non_string_allowlist_values_are_filtered_out():
         {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
          "bodyMatch": {"TableName": ["Users", 7, None]}}
     ]}
-    assert _parse(config)[0].body_match == (("TableName", frozenset({"Users"})),)
+    assert _parse(config)[0].body_match == (
+        FieldMatch(field="TableName", mode=None, allowed=frozenset({"Users"})),
+    )
 
 
 def test_table_name_is_matched_exactly_without_normalization():
     """An ARN in TableName is a different string; the proxy's cache key treats it the same way."""
     arn = "arn:aws:dynamodb:us-east-1:123456789012:table/Users"
     assert route(_parse(BODY_CONFIG), _get_item(arn)) is False
+
+
+# --- explicit match modes (the proxy does not emit these yet) ------------------
+
+def _explicit(field, mode, values, operations=("GetItem",)):
+    """A config whose single body predicate states its comparison explicitly."""
+    return {**BODY_CONFIG, "predicates": [
+        {"type": "body", "service": "dynamodb", "operations": list(operations),
+         "bodyMatch": {field: {"match": mode, "values": list(values)}}}
+    ]}
+
+
+def test_explicit_value_mode_is_parsed_and_applied():
+    predicates = _parse(_explicit("TableName", "value", ["Users"]))
+    assert predicates[0].body_match == (
+        FieldMatch(field="TableName", mode="value", allowed=frozenset({"Users"})),
+    )
+    assert route(predicates, _get_item("Users")) is True
+    assert route(predicates, _get_item("Orders")) is False
+
+
+def test_explicit_keys_mode_is_parsed_and_applied():
+    predicates = _parse(_explicit("RequestItems", "keys", ["Users", "Sessions"],
+                                  operations=("BatchGetItem",)))
+    assert predicates[0].body_match == (
+        FieldMatch(field="RequestItems", mode="keys",
+                   allowed=frozenset({"Users", "Sessions"})),
+    )
+    both = json.dumps({"RequestItems": {"Users": {}, "Sessions": {}}}).encode()
+    mixed = json.dumps({"RequestItems": {"Users": {}, "Orders": {}}}).encode()
+    assert route(predicates, _request("BatchGetItem", body=both)) is True
+    assert route(predicates, _request("BatchGetItem", body=mixed)) is False
+
+
+def test_explicit_mode_does_not_fall_back_to_shape():
+    """Stating the comparison removes the shape ambiguity the implicit form has.
+
+    Under the implicit form a string-valued RequestItems matches as a single table name; under an
+    explicit `keys` mode it does not, because a string has no keys. Same the other way round.
+    """
+    keys_mode = _parse(_explicit("RequestItems", "keys", ["Users"],
+                                 operations=("BatchGetItem",)))
+    string_value = json.dumps({"RequestItems": "Users"}).encode()
+    assert route(keys_mode, _request("BatchGetItem", body=string_value)) is False
+
+    value_mode = _parse(_explicit("TableName", "value", ["Users"]))
+    object_value = json.dumps({"TableName": {"Users": {}}}).encode()
+    assert route(value_mode, _request("GetItem", body=object_value)) is False
+
+
+def test_unsupported_match_mode_drops_only_that_predicate():
+    """A mode this client does not implement is *detectable*, unlike a shape-inferred rule."""
+    config = {**BODY_CONFIG, "predicates": [
+        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
+         "bodyMatch": {"TableName": {"match": "regex", "values": ["Users.*"]}}},
+        SERVICE_CONFIG["predicates"][0],
+    ]}
+    predicates = _parse(config)
+    assert len(predicates) == 1, "the unevaluatable predicate is dropped, its sibling kept"
+    assert isinstance(predicates[0], ServicePredicate)
+
+
+@pytest.mark.parametrize("spec", [
+    {"values": ["Users"]},                        # no mode stated
+    {"match": "value"},                           # no values
+    {"match": "value", "values": "Users"},        # values not a list
+    {"match": None, "values": ["Users"]},
+    "Users",                                      # neither a list nor an object
+    7,
+])
+def test_malformed_explicit_entry_drops_the_whole_predicate(spec):
+    """Never degrade to a service-only match: that would cache un-allowlisted tables."""
+    config = {**BODY_CONFIG, "predicates": [
+        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
+         "bodyMatch": {"TableName": spec}}
+    ]}
+    assert _parse(config) == ()
+
+
+def test_non_string_body_match_field_drops_the_predicate():
+    """Not reachable from json.loads (JSON object keys are always strings), but parse_predicates
+    accepts arbitrary objects, and a field name that cannot be looked up must not silently become a
+    predicate that never matches."""
+    assert parse_predicates(
+        [{"type": "body", "service": "dynamodb", "operations": ["GetItem"],
+          "bodyMatch": {7: ["Users"]}}],
+        "1.0",
+    ) == ()
+
+
+def test_mixed_implicit_and_explicit_entries_are_anded():
+    config = {**BODY_CONFIG, "predicates": [
+        {"type": "body", "service": "dynamodb", "operations": ["Query"],
+         "bodyMatch": {"TableName": ["Users"],
+                       "IndexName": {"match": "value", "values": ["by-email"]}}}
+    ]}
+    predicates = _parse(config)
+    both = json.dumps({"TableName": "Users", "IndexName": "by-email"}).encode()
+    one = json.dumps({"TableName": "Users", "IndexName": "by-name"}).encode()
+    assert route(predicates, _request("Query", body=both)) is True
+    assert route(predicates, _request("Query", body=one)) is False
+
+
+# --- version handling ---------------------------------------------------------
+
+def test_newer_minor_still_parses_and_is_logged(caplog):
+    """A newer minor is not a gate: additions within a major must be self-describing, so the client
+    drops what it cannot evaluate entry by entry and keeps the rest."""
+    with caplog.at_level("DEBUG", logger="photon.predicates"):
+        predicates = parse_predicates(SERVICE_CONFIG["predicates"], "1.99")
+    assert len(predicates) == 1
+    assert "newer constructs will be skipped" in caplog.text
+
+
+def test_newer_minor_keeps_evaluatable_entries_and_drops_the_rest():
+    """The combination this design exists for: a 1.x proxy using a mode this client lacks."""
+    config = {**BODY_CONFIG, "version": "1.99", "predicates": [
+        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
+         "bodyMatch": {"TableName": {"match": "prefix", "values": ["User"]}}},
+        {"type": "body", "service": "dynamodb", "operations": ["GetItem"],
+         "bodyMatch": {"TableName": {"match": "value", "values": ["Users"]}}},
+    ]}
+    predicates = _parse(config)
+    assert len(predicates) == 1
+    assert route(predicates, _get_item("Users")) is True
+
+
+@pytest.mark.parametrize("version", ["1", "1.0", "1.1", "1.x", None])
+def test_same_major_is_accepted_whatever_the_minor(version):
+    assert len(parse_predicates(SERVICE_CONFIG["predicates"], version)) == 1

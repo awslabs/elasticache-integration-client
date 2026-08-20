@@ -26,18 +26,96 @@ from photon.models import PhotonRequest
 
 logger = logging.getLogger(__name__)
 
-# Predicate *schema* version the client understands. The proxy's PREDICATE_FORMAT_VERSION is
-# "1.0" and is constant per format — it is NOT a content hash, so it can never be used to detect
-# that a config changed. It is used here for one thing only: refusing a format whose known types
-# may have changed meaning (see _version_supported).
+# Predicate *schema* version this client understands. The proxy's PREDICATE_FORMAT_VERSION is
+# constant per format — it is NOT a content hash, so it can never be used to detect that a config
+# changed. It is used here for exactly two things: refusing a format whose known constructs may have
+# changed meaning (major), and recording that the proxy may be using constructs newer than this
+# client (minor).
 _SUPPORTED_MAJOR = "1"
+_SUPPORTED_MINOR = 1
+
+
+def _version_supported(version: object) -> bool:
+    """Whether this client can evaluate the given predicate format version.
+
+    A missing version is tolerated (treated as supported); a differing **major** is not. Dropping
+    unknown *entries* already covers new predicate types and new comparison modes safely, but it
+    cannot cover a **known** construct whose meaning changed under a new major — the client would
+    parse it happily and cache the wrong things. So a major bump stops routing entirely instead.
+
+    A newer **minor** is fine and does not gate anything: within a major, additions are required to
+    be self-describing (a new predicate ``type``, or a new ``bodyMatch`` ``match`` mode), so this
+    client detects and drops what it cannot evaluate, entry by entry, and keeps the rest. It is
+    logged so an operator can see why a predicate was skipped.
+    """
+    if version is None:
+        return True
+    major, _, minor = str(version).partition(".")
+    if major != _SUPPORTED_MAJOR:
+        return False
+    try:
+        if int(minor) > _SUPPORTED_MINOR:
+            logger.debug(
+                "photon.config predicate format is %s; this client implements %s.%s, so any "
+                "newer constructs will be skipped",
+                version, _SUPPORTED_MAJOR, _SUPPORTED_MINOR,
+            )
+    except ValueError:
+        pass  # a non-numeric minor tells us nothing; the major already matched
+    return True
 
 _TYPE_SERVICE = "service"
 _TYPE_BODY = "body"
 
+# How a `bodyMatch` field's value is compared against its allowlist. The proxy may state this
+# explicitly (`{"match": ..., "values": [...]}`); when it sends a bare list instead, the mode is
+# inferred from the body value's shape — see FieldMatch.
+_MATCH_VALUE = "value"   # the body value is one name, and must itself be allowlisted
+_MATCH_KEYS = "keys"     # the body value is an object whose keys are names; all must be allowlisted
+_MATCH_MODES = frozenset({_MATCH_VALUE, _MATCH_KEYS})
+
 # Mirrors the proxy's photon_max_request_body_bytes (512 KiB). A larger body is rejected
 # server-side anyway, so parsing it locally only to pass through burns client CPU.
 _MAX_BODY_INSPECT_BYTES = 512 * 1024
+
+
+@dataclass(slots=True, frozen=True)
+class FieldMatch:
+    """One `bodyMatch` entry: which body field to read, how to compare it, and what is allowed.
+
+    ``mode`` is ``None`` when the proxy sent a bare list of values rather than an explicit
+    ``{"match": ..., "values": [...]}`` object. In that case the comparison is inferred from the
+    body value's shape — a string is one name, an object names its keys — which is what the current
+    proxy requires. An explicit mode is preferred: it lets the client *detect* a comparison it does
+    not implement (and drop that predicate) instead of guessing from shape, and it removes the
+    ambiguity where a string-valued field that should have been an object matches as a single name.
+    """
+
+    field: str
+    mode: str | None
+    allowed: frozenset[str]
+
+    def allows(self, value: object) -> bool:
+        """Whether ``value`` (the body's value for this field, or None if absent) is allowed."""
+        if self.mode == _MATCH_VALUE:
+            return isinstance(value, str) and value in self.allowed
+        if self.mode == _MATCH_KEYS:
+            return self._all_keys_allowed(value)
+        # Inferred (no explicit mode): dispatch on the value's shape.
+        if isinstance(value, str):
+            return value in self.allowed
+        return self._all_keys_allowed(value)
+
+    def _all_keys_allowed(self, value: object) -> bool:
+        """Every key of an object must be allowlisted, and there must be at least one.
+
+        This is what makes a multi-table batch all-or-nothing: one key outside the allowlist
+        disqualifies the whole request. An empty object names nothing, so nothing can be shown to be
+        allowlisted.
+        """
+        if not isinstance(value, dict):
+            return False
+        return bool(value) and all(key in self.allowed for key in value)
 
 
 @runtime_checkable
@@ -65,29 +143,21 @@ class ServicePredicate:
 
 @dataclass(slots=True, frozen=True)
 class BodyPredicate:
-    """Service + operation match, plus every ``bodyMatch`` field must hold allowed value(s).
+    """Service + operation match, plus every ``bodyMatch`` entry must hold allowed value(s).
 
     Table-level granularity. The field *names* come from the wire (``TableName``, ``RequestItems``),
-    never from client code, so the client stays service-agnostic.
+    never from client code, so the client stays service-agnostic; how each field is compared is
+    either stated by the proxy or inferred from the body value's shape — see :class:`FieldMatch`.
 
-    A field's shape decides how it is matched, mirroring DynamoDB's own request format:
-
-    - **string** (``TableName`` on single-table reads) — the value must be allowlisted.
-    - **object** (``RequestItems`` on batch reads, keyed by table name) — **every** key must be
-      allowlisted, and there must be at least one.
-
-    The object rule makes batch reads all-or-nothing: a batch spanning an allowlisted and a
-    non-allowlisted table does not match and passes through whole. A single predicate cannot split a
-    batch, and caching only part of one would need per-table handling the proxy does not have.
-
-    Fields are ANDed. The proxy therefore never puts two table locations in one predicate — it emits
-    one predicate per location with disjoint operation sets (``photon/config.rs::resolve``).
+    Entries are ANDed. The proxy therefore never puts two table locations in one predicate: it emits
+    one predicate per location with disjoint operation sets (``photon/config.rs::resolve``), since a
+    `TableName` constraint could never be satisfied by a `BatchGetItem` body.
     """
 
     service: str
     operations: frozenset[str]
-    # ((field, allowed_values), ...) — a tuple, not a dict, to keep the dataclass frozen/hashable.
-    body_match: tuple[tuple[str, frozenset[str]], ...]
+    # A tuple, not a dict, to keep the dataclass frozen/hashable.
+    body_match: tuple[FieldMatch, ...]
 
     def matches(self, request: PhotonRequest) -> bool:
         metadata = request.metadata
@@ -97,8 +167,7 @@ class BodyPredicate:
         body = _parse_body(request.body)
         if body is None:
             return False           # unreadable body ⇒ cannot prove the values are allowed
-        return all(_field_allowed(body.get(field), allowed)
-                   for field, allowed in self.body_match)
+        return all(entry.allows(body.get(entry.field)) for entry in self.body_match)
 
 
 def route(predicates: Sequence[Predicate], request: PhotonRequest) -> bool:
@@ -132,19 +201,6 @@ def parse_predicates(raw: object, version: object = None) -> tuple[Predicate, ..
         raise PhotonError(f"Config 'predicates' must be an array, got {type(raw).__name__}")
     parsed = (_parse_one(entry) for entry in raw)
     return tuple(predicate for predicate in parsed if predicate is not None)
-
-
-def _version_supported(version: object) -> bool:
-    """Whether this client can evaluate the given predicate format version.
-
-    A missing version is tolerated (treated as supported); a differing major is not. Dropping
-    unknown *entries* already covers new predicate types safely, but it cannot cover a **known**
-    type whose meaning changed under a new major — the client would parse it happily and cache the
-    wrong things. So a major bump stops routing entirely instead.
-    """
-    if version is None:
-        return True
-    return str(version).split(".", 1)[0] == _SUPPORTED_MAJOR
 
 
 def _parse_one(entry: object) -> Predicate | None:
@@ -182,44 +238,66 @@ def _parse_service_and_operations(entry: dict) -> tuple[str | None, frozenset[st
     return service.lower(), frozenset(op for op in operations if isinstance(op, str))
 
 
-def _parse_body_match(entry: dict) -> tuple[tuple[str, frozenset[str]], ...] | None:
-    """Parse ``bodyMatch`` into ANDed ``(field, allowed_values)`` pairs, or None if malformed.
+def _parse_body_match(entry: dict) -> tuple[FieldMatch, ...] | None:
+    """Parse ``bodyMatch`` into ANDed :class:`FieldMatch` entries, or None if malformed.
+
+    Two per-field forms are accepted:
+
+    - ``{"TableName": ["Users"]}`` — a bare list of allowed values. The comparison is inferred from
+      the body value's shape. This is what the proxy sends today.
+    - ``{"RequestItems": {"match": "keys", "values": ["Users"]}}`` — an explicit comparison. Preferred
+      once the proxy emits it, because a mode this client does not implement is *detectable*: the
+      predicate is dropped rather than evaluated by a guessed rule.
 
     An empty ``bodyMatch`` yields ``()``, which makes the ``all()`` in
     :meth:`BodyPredicate.matches` vacuously true — the correct reading of "no body constraint
-    stated". A *malformed* one drops the whole predicate instead of degrading to a service-only
-    match: losing the constraint would cache values the customer never allowlisted, which is worse
-    than not caching at all.
+    stated". A *malformed* entry, or an unrecognized ``match`` mode, drops the whole predicate rather
+    than degrading to a service-only match: losing a constraint would cache values the customer never
+    allowlisted, which is worse than not caching at all.
     """
     body_match = entry.get("bodyMatch")
     if not isinstance(body_match, dict):
         logger.debug("Ignoring body predicate with bodyMatch of type %s",
                      type(body_match).__name__)
         return None
-    pairs = tuple(
-        (field, frozenset(value for value in values if isinstance(value, str)))
-        for field, values in body_match.items()
-        if isinstance(field, str) and isinstance(values, list)
-    )
-    if len(pairs) != len(body_match):
-        logger.debug("Ignoring body predicate with malformed bodyMatch entries")
-        return None
-    return pairs
+    parsed: list[FieldMatch] = []
+    for field, spec in body_match.items():
+        if not isinstance(field, str):
+            logger.debug("Ignoring body predicate with a non-string bodyMatch field")
+            return None
+        field_match = _parse_field_match(field, spec)
+        if field_match is None:
+            return None
+        parsed.append(field_match)
+    return tuple(parsed)
 
 
-def _field_allowed(value: object, allowed: frozenset[str]) -> bool:
-    """Whether a body field's value satisfies its allowlist, dispatching on the value's shape.
+def _parse_field_match(field: str, spec: object) -> FieldMatch | None:
+    """Parse one ``bodyMatch`` entry into a :class:`FieldMatch`, or None if unusable."""
+    if isinstance(spec, list):
+        # Implicit form: no mode stated, so the comparison follows the body value's shape.
+        return FieldMatch(field=field, mode=None, allowed=_string_set(spec))
+    if isinstance(spec, dict):
+        mode = spec.get("match")
+        values = spec.get("values")
+        if mode not in _MATCH_MODES:
+            # A comparison this client does not implement. Detectable precisely because the proxy
+            # stated it — drop the predicate instead of applying some other rule to it.
+            logger.debug("Ignoring body predicate with unsupported match mode %r", mode)
+            return None
+        if not isinstance(values, list):
+            logger.debug("Ignoring body predicate whose 'values' is %s, not a list",
+                         type(values).__name__)
+            return None
+        return FieldMatch(field=field, mode=mode, allowed=_string_set(values))
+    logger.debug("Ignoring body predicate with a bodyMatch entry of type %s",
+                 type(spec).__name__)
+    return None
 
-    A string is one name and must itself be allowed. An object names several (its keys) and **all**
-    of them must be allowed — that is what makes a multi-table batch all-or-nothing. An empty object
-    names none, which cannot be shown to be allowlisted, so it does not match. Any other shape
-    (number, list, null, missing field) does not match: the client cannot tell what it names.
-    """
-    if isinstance(value, str):
-        return value in allowed
-    if isinstance(value, dict):
-        return bool(value) and all(key in allowed for key in value)
-    return False
+
+def _string_set(values: list) -> frozenset[str]:
+    """The string members of ``values``. Non-strings cannot name anything, so they are dropped."""
+    return frozenset(value for value in values if isinstance(value, str))
 
 
 def _parse_body(body: object) -> dict | None:
