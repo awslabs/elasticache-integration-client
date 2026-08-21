@@ -17,18 +17,23 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
+import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
+import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
 
 import javax.net.ssl.SSLContext;
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -117,18 +122,23 @@ class PhotonAsyncClientTest {
                 return Reply.ok(
                         200,
                         Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                        "{\"TableNames\":[]}");
+                        "{\"TableNames\":[\"list-tables-response\"]}");
             }
             return Reply.ok(
                     200,
                     Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                    "{}");
+                    "{\"AccountMaxReadCapacityUnits\":123}");
         });
 
         try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = newClient(sdkConfig)) {
-            CompletableFuture<?> listTables = result.client().listTables();
-            CompletableFuture<?> describeLimits = result.client().describeLimits();
+            CompletableFuture<ListTablesResponse> listTables = result.client().listTables();
+            CompletableFuture<DescribeLimitsResponse> describeLimits =
+                    result.client().describeLimits();
             CompletableFuture.allOf(listTables, describeLimits).get(5, TimeUnit.SECONDS);
+
+            assertEquals(Collections.singletonList("list-tables-response"),
+                    listTables.get().tableNames());
+            assertEquals(123L, describeLimits.get().accountMaxReadCapacityUnits());
         }
 
         Set<String> metadata = new HashSet<>();
@@ -204,8 +214,8 @@ class PhotonAsyncClientTest {
                 .buildAsync(DynamoDbAsyncClient.builder(), configurer);
     }
 
-    private static java.util.Map<String, String> headers(String key, String value) {
-        java.util.Map<String, String> headers = new java.util.HashMap<>();
+    private static Map<String, String> headers(String key, String value) {
+        Map<String, String> headers = new HashMap<>();
         headers.put("content-type", "application/x-amz-json-1.0");
         headers.put(key, value);
         return headers;
@@ -221,8 +231,7 @@ class PhotonAsyncClientTest {
             request.set(executeRequest.request());
             CompletableFuture<Void> result = new CompletableFuture<>();
             executeRequest.requestContentPublisher().subscribe(new Subscriber<ByteBuffer>() {
-                private final java.io.ByteArrayOutputStream bytes =
-                        new java.io.ByteArrayOutputStream();
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
                 @Override
                 public void onSubscribe(Subscription subscription) {

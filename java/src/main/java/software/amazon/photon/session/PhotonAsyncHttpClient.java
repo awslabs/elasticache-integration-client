@@ -54,12 +54,16 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
     @Override
     public CompletableFuture<Void> execute(AsyncExecuteRequest request) {
+        // The interceptor records one unsigned Photon request per SDK attempt.
+        // Consume it synchronously before this method crosses any thread boundary.
         PhotonRequest capturedRequest = requestContext.takeAttempt();
         if (capturedRequest == null) {
             return failed(request.responseHandler(),
                     new IllegalStateException("Photon request was not captured before HTTP execution"));
         }
 
+        // Async SDK request bodies are publishers. Buffer once so Photon can use
+        // the bytes and origin fallback can replay the same signed request.
         CompletableFuture<Void> result = new CompletableFuture<>();
         CompletableFuture<byte[]> bodyFuture = collect(request.requestContentPublisher());
         PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
@@ -77,9 +81,11 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             PhotonRequest photonRequest = withBody(capturedRequest, body);
             CompletableFuture<PhotonResponse> photonFuture;
             try {
+                // PhotonSession is blocking, so keep it off the SDK event-loop thread.
                 photonFuture = CompletableFuture.supplyAsync(
                         () -> session.request(photonRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
+                // Executor saturation means Photon cannot accept this attempt.
                 fallbackToOrigin(result, request, body, active);
                 return;
             } catch (Throwable submissionFailure) {
@@ -98,6 +104,8 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
                 Throwable cause = unwrap(photonFailure);
                 if (cause instanceof PhotonError) {
+                    // Expected Photon availability failures preserve SDK behavior
+                    // by delegating the original signed request to the origin.
                     fallbackToOrigin(result, request, body, active);
                 } else {
                     fail(result, request.responseHandler(), cause);
@@ -105,6 +113,8 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             });
         });
 
+        // Cancellation can occur during body collection, Photon execution, or
+        // origin fallback. The active reference identifies the current phase.
         result.whenComplete((ignored, failure) -> {
             if (result.isCancelled()) {
                 cancellation.cancel();
@@ -297,7 +307,7 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                     if (count <= 0) {
                         completed = true;
                         subscriber.onError(new IllegalArgumentException(
-                                "Reactive streams demand must be positive"));
+                                "Subscription request count must be positive"));
                         return;
                     }
                     completed = true;

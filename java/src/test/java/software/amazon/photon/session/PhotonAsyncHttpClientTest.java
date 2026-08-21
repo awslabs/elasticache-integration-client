@@ -12,6 +12,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -75,6 +76,50 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
+    void cancellationWhileCollectingBodyCancelsSubscription() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        BlockingPublisher body = new BlockingPublisher();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new ImmediateSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        CompletableFuture<Void> request = client.execute(executeRequest(body));
+        assertTrue(body.subscribed.await(2, TimeUnit.SECONDS));
+
+        request.cancel(true);
+
+        assertTrue(body.cancelled.await(2, TimeUnit.SECONDS));
+        assertTrue(request.isCancelled());
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void cancellationDuringOriginFallbackCancelsOriginFuture() throws Exception {
+        BlockingOrigin origin = new BlockingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new FailingSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        CompletableFuture<Void> request = client.execute(executeRequest());
+        assertTrue(origin.started.await(2, TimeUnit.SECONDS));
+
+        request.cancel(true);
+
+        assertTrue(origin.result.isCancelled());
+        assertTrue(request.isCancelled());
+        client.close();
+    }
+
+    @Test
     void closeClosesOnlyOwnedResourcesAndIsIdempotent() {
         ImmediateSession session = new ImmediateSession();
         RecordingOrigin callerManaged = new RecordingOrigin();
@@ -118,12 +163,16 @@ class PhotonAsyncHttpClientTest {
     }
 
     private static AsyncExecuteRequest executeRequest() {
+        return executeRequest(new EmptyPublisher());
+    }
+
+    private static AsyncExecuteRequest executeRequest(SdkHttpContentPublisher body) {
         return AsyncExecuteRequest.builder()
                 .request(SdkHttpFullRequest.builder()
                         .method(SdkHttpMethod.POST)
                         .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
                         .build())
-                .requestContentPublisher(new EmptyPublisher())
+                .requestContentPublisher(body)
                 .responseHandler(new NoopResponseHandler())
                 .build();
     }
@@ -153,6 +202,17 @@ class PhotonAsyncHttpClientTest {
         }
     }
 
+    private static final class FailingSession extends PhotonSession {
+        private FailingSession() {
+            super(new PhotonConnection("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new ConnectionLost("cache unavailable");
+        }
+    }
+
     private static final class RecordingOrigin implements SdkAsyncHttpClient {
         private final AtomicInteger executeCount = new AtomicInteger();
         private final AtomicInteger closeCount = new AtomicInteger();
@@ -166,6 +226,46 @@ class PhotonAsyncHttpClientTest {
         @Override
         public void close() {
             closeCount.incrementAndGet();
+        }
+    }
+
+    private static final class BlockingOrigin implements SdkAsyncHttpClient {
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final CompletableFuture<Void> result = new CompletableFuture<>();
+
+        @Override
+        public CompletableFuture<Void> execute(AsyncExecuteRequest request) {
+            started.countDown();
+            return result;
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    private static final class BlockingPublisher implements SdkHttpContentPublisher {
+        private final CountDownLatch subscribed = new CountDownLatch(1);
+        private final CountDownLatch cancelled = new CountDownLatch(1);
+
+        @Override
+        public Optional<Long> contentLength() {
+            return Optional.empty();
+        }
+
+        @Override
+        public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
+            subscriber.onSubscribe(new Subscription() {
+                @Override
+                public void request(long count) {
+                    subscribed.countDown();
+                }
+
+                @Override
+                public void cancel() {
+                    cancelled.countDown();
+                }
+            });
         }
     }
 

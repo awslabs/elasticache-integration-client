@@ -4,7 +4,11 @@ import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.photon.model.PhotonRequest;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
 
 /**
  * AWS SDK v2 interceptor used with {@link PhotonAsyncHttpClient}.
@@ -19,10 +23,10 @@ public final class PhotonAsyncInterceptor implements ExecutionInterceptor {
     private final PhotonAsyncHttpClient httpClient;
 
     PhotonAsyncInterceptor(PhotonSession session,
-                           software.amazon.awssdk.http.async.SdkAsyncHttpClient originClient,
+                           SdkAsyncHttpClient originClient,
                            boolean ownsOriginClient,
-                           java.util.concurrent.Executor executor,
-                           java.util.concurrent.ExecutorService ownedExecutor) {
+                           Executor executor,
+                           ExecutorService ownedExecutor) {
         this.requestContext = new PhotonRequestContext();
         this.httpClient = new PhotonAsyncHttpClient(
                 session, requestContext, originClient, ownsOriginClient, executor, ownedExecutor);
