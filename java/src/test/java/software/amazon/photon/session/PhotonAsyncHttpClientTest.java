@@ -17,8 +17,10 @@ import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 
+import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -29,12 +31,63 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncHttpClientTest {
+
+    @Test
+    void knownOversizedBodyFallsBackBeforeSubscribing() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        TrackingPublisher body = new TrackingPublisher("oversized", true);
+        PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+
+        client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
+        assertEquals(0, body.subscribeCount.get());
+        client.close();
+    }
+
+    @Test
+    void bodyThatCrossesLimitIsCancelledAndReplayedByOrigin() throws Exception {
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        TrackingPublisher body = new TrackingPublisher("oversized", false);
+        PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+
+        client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
+
+        assertEquals(2, body.subscribeCount.get());
+        assertEquals(1, body.cancelCount.get());
+        assertEquals(1, body.collectorDemand.get());
+        assertArrayEquals("oversized".getBytes(StandardCharsets.UTF_8), origin.body);
+        client.close();
+    }
+
+    @Test
+    void collectorSaturationFallsBackWithoutSubscribing() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonRequestContext context = preparedContext();
+        BlockingPublisher admittedBody = new BlockingPublisher();
+        TrackingPublisher overflowBody = new TrackingPublisher("second", true);
+        PhotonAsyncHttpClient client = limitedClient(origin, context, 100, 1);
+
+        CompletableFuture<Void> admitted = client.execute(executeRequest(admittedBody));
+        assertTrue(admittedBody.subscribed.await(2, TimeUnit.SECONDS));
+        prepareAttempt(context);
+
+        client.execute(executeRequest(overflowBody)).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
+        assertEquals(0, overflowBody.subscribeCount.get());
+        admitted.cancel(true);
+        assertTrue(admittedBody.cancelled.await(2, TimeUnit.SECONDS));
+        client.close();
+    }
 
     @Test
     void executorRejectionFallsBackToOrigin() throws Exception {
@@ -148,10 +201,29 @@ class PhotonAsyncHttpClientTest {
 
     private static PhotonRequestContext preparedContext() {
         PhotonRequestContext context = new PhotonRequestContext();
+        prepareAttempt(context);
+        return context;
+    }
+
+    private static void prepareAttempt(PhotonRequestContext context) {
         ExecutionAttributes attributes = new ExecutionAttributes();
         context.capture(photonRequest(), attributes);
         context.prepareAttempt(attributes);
-        return context;
+    }
+
+    private static PhotonAsyncHttpClient limitedClient(SdkAsyncHttpClient origin,
+                                                       PhotonRequestContext context,
+                                                       int maxBodyBytes,
+                                                       int maxCollectors) {
+        return new PhotonAsyncHttpClient(
+                new ImmediateSession(),
+                context,
+                origin,
+                false,
+                Runnable::run,
+                null,
+                maxBodyBytes,
+                maxCollectors);
     }
 
     private static PhotonRequest photonRequest() {
@@ -241,6 +313,95 @@ class PhotonAsyncHttpClientTest {
 
         @Override
         public void close() {
+        }
+    }
+
+    private static final class RecordingBodyOrigin implements SdkAsyncHttpClient {
+        private byte[] body;
+
+        @Override
+        public CompletableFuture<Void> execute(AsyncExecuteRequest request) {
+            CompletableFuture<Void> result = new CompletableFuture<>();
+            request.requestContentPublisher().subscribe(new Subscriber<ByteBuffer>() {
+                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+
+                @Override
+                public void onSubscribe(Subscription subscription) {
+                    subscription.request(Long.MAX_VALUE);
+                }
+
+                @Override
+                public void onNext(ByteBuffer value) {
+                    byte[] chunk = new byte[value.remaining()];
+                    value.get(chunk);
+                    bytes.write(chunk, 0, chunk.length);
+                }
+
+                @Override
+                public void onError(Throwable failure) {
+                    result.completeExceptionally(failure);
+                }
+
+                @Override
+                public void onComplete() {
+                    body = bytes.toByteArray();
+                    result.complete(null);
+                }
+            });
+            return result;
+        }
+
+        @Override
+        public void close() {
+        }
+    }
+
+    private static final class TrackingPublisher implements SdkHttpContentPublisher {
+        private final byte[] body;
+        private final boolean reportsLength;
+        private final AtomicInteger subscribeCount = new AtomicInteger();
+        private final AtomicInteger cancelCount = new AtomicInteger();
+        private final AtomicLong collectorDemand = new AtomicLong();
+
+        private TrackingPublisher(String body, boolean reportsLength) {
+            this.body = body.getBytes(StandardCharsets.UTF_8);
+            this.reportsLength = reportsLength;
+        }
+
+        @Override
+        public Optional<Long> contentLength() {
+            return reportsLength ? Optional.of((long) body.length) : Optional.empty();
+        }
+
+        @Override
+        public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
+            int subscriptionNumber = subscribeCount.incrementAndGet();
+            subscriber.onSubscribe(new Subscription() {
+                private boolean completed;
+
+                @Override
+                public void request(long count) {
+                    if (completed) {
+                        return;
+                    }
+                    if (subscriptionNumber == 1) {
+                        collectorDemand.set(count);
+                    }
+                    subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                    if (!completed) {
+                        completed = true;
+                        subscriber.onComplete();
+                    }
+                }
+
+                @Override
+                public void cancel() {
+                    if (!completed) {
+                        completed = true;
+                        cancelCount.incrementAndGet();
+                    }
+                }
+            });
         }
     }
 

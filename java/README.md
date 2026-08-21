@@ -42,7 +42,11 @@ block SDK event-loop threads while waiting for Photon.
 The default asynchronous origin transport is the SDK Netty HTTP client. Use
 `originAsyncHttpClient(SdkAsyncHttpClient)` to supply a caller-managed origin
 transport. Photon buffers each asynchronous request body so the same signed
-request can be replayed safely during origin fallback.
+request can be replayed safely during origin fallback. Buffering is limited to
+16 MiB per request and eight concurrent collectors by default. Configure these
+limits with `asyncMaxBufferedRequestBytes(int)` and
+`asyncMaxConcurrentBodyCollectors(int)`. A request that exceeds either limit
+bypasses Photon and uses the origin transport.
 
 Photon's socket request API is blocking, so the asynchronous adapter runs it on
 a bounded daemon executor. Applications can supply a caller-managed executor

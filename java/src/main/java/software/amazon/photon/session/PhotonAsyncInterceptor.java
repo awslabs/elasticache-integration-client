@@ -26,10 +26,19 @@ public final class PhotonAsyncInterceptor implements ExecutionInterceptor {
                            SdkAsyncHttpClient originClient,
                            boolean ownsOriginClient,
                            Executor executor,
-                           ExecutorService ownedExecutor) {
+                           ExecutorService ownedExecutor,
+                           int maxBufferedRequestBytes,
+                           int maxConcurrentBodyCollectors) {
         this.requestContext = new PhotonRequestContext();
         this.httpClient = new PhotonAsyncHttpClient(
-                session, requestContext, originClient, ownsOriginClient, executor, ownedExecutor);
+                session,
+                requestContext,
+                originClient,
+                ownsOriginClient,
+                executor,
+                ownedExecutor,
+                maxBufferedRequestBytes,
+                maxConcurrentBodyCollectors);
     }
 
     /**

@@ -22,6 +22,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -36,6 +37,8 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
     private final boolean ownsOriginClient;
     private final Executor executor;
     private final ExecutorService ownedExecutor;
+    private final int maxBufferedRequestBytes;
+    private final Semaphore bodyCollectorPermits;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     PhotonAsyncHttpClient(PhotonSession session,
@@ -44,12 +47,32 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                           boolean ownsOriginClient,
                           Executor executor,
                           ExecutorService ownedExecutor) {
+        this(session,
+                requestContext,
+                originClient,
+                ownsOriginClient,
+                executor,
+                ownedExecutor,
+                PhotonAsyncHandle.DEFAULT_MAX_BUFFERED_REQUEST_BYTES,
+                PhotonAsyncHandle.DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS);
+    }
+
+    PhotonAsyncHttpClient(PhotonSession session,
+                          PhotonRequestContext requestContext,
+                          SdkAsyncHttpClient originClient,
+                          boolean ownsOriginClient,
+                          Executor executor,
+                          ExecutorService ownedExecutor,
+                          int maxBufferedRequestBytes,
+                          int maxConcurrentBodyCollectors) {
         this.session = session;
         this.requestContext = requestContext;
         this.originClient = originClient;
         this.ownsOriginClient = ownsOriginClient;
         this.executor = executor;
         this.ownedExecutor = ownedExecutor;
+        this.maxBufferedRequestBytes = maxBufferedRequestBytes;
+        this.bodyCollectorPermits = new Semaphore(maxConcurrentBodyCollectors);
     }
 
     @Override
@@ -62,16 +85,36 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                     new IllegalStateException("Photon request was not captured before HTTP execution"));
         }
 
-        // Async SDK request bodies are publishers. Buffer once so Photon can use
-        // the bytes and origin fallback can replay the same signed request.
         CompletableFuture<Void> result = new CompletableFuture<>();
-        CompletableFuture<byte[]> bodyFuture = collect(request.requestContentPublisher());
         PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
-        AtomicReference<CompletableFuture<?>> active = new AtomicReference<>(bodyFuture);
+        AtomicReference<CompletableFuture<?>> active = new AtomicReference<>();
+        registerCancellation(result, cancellation, active);
+
+        SdkHttpContentPublisher publisher = request.requestContentPublisher();
+        if (publisher.contentLength()
+                .map(length -> length > maxBufferedRequestBytes)
+                .orElse(false)
+                || !bodyCollectorPermits.tryAcquire()) {
+            // Do not subscribe when the request cannot fit within the configured
+            // buffering budget. The origin transport consumes the original body.
+            fallbackToOrigin(result, request, active);
+            return result;
+        }
+
+        // Async SDK request bodies are publishers. Buffer an admitted body once
+        // so Photon can use the bytes and origin fallback can replay them.
+        CompletableFuture<byte[]> bodyFuture = collect(publisher, maxBufferedRequestBytes);
+        active.set(bodyFuture);
 
         bodyFuture.whenComplete((body, bodyFailure) -> {
+            bodyCollectorPermits.release();
             if (bodyFailure != null) {
-                fail(result, request.responseHandler(), unwrap(bodyFailure));
+                Throwable cause = unwrap(bodyFailure);
+                if (cause instanceof BodyLimitExceededException) {
+                    fallbackToOrigin(result, request, active);
+                } else {
+                    fail(result, request.responseHandler(), cause);
+                }
                 return;
             }
             if (result.isCancelled()) {
@@ -112,25 +155,34 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 }
             });
         });
+        return result;
+    }
 
+    private static void registerCancellation(CompletableFuture<Void> result,
+                                             PhotonRequestCancellation cancellation,
+                                             AtomicReference<CompletableFuture<?>> active) {
         // Cancellation can occur during body collection, Photon execution, or
         // origin fallback. The active reference identifies the current phase.
         result.whenComplete((ignored, failure) -> {
             if (result.isCancelled()) {
                 cancellation.cancel();
-                bodyFuture.cancel(true);
                 CompletableFuture<?> activeFuture = active.get();
                 if (activeFuture != null) {
                     activeFuture.cancel(true);
                 }
             }
         });
-        return result;
     }
 
     private void fallbackToOrigin(CompletableFuture<Void> result,
                                   AsyncExecuteRequest request,
                                   byte[] body,
+                                  AtomicReference<CompletableFuture<?>> active) {
+        fallbackToOrigin(result, copyWithBody(request, body), active);
+    }
+
+    private void fallbackToOrigin(CompletableFuture<Void> result,
+                                  AsyncExecuteRequest originRequest,
                                   AtomicReference<CompletableFuture<?>> active) {
         if (result.isCancelled()) {
             return;
@@ -138,9 +190,9 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
         CompletableFuture<Void> originFuture;
         try {
-            originFuture = originClient.execute(copyWithBody(request, body));
+            originFuture = originClient.execute(originRequest);
         } catch (Throwable originFailure) {
-            fail(result, request.responseHandler(), originFailure);
+            fail(result, originRequest.responseHandler(), originFailure);
             return;
         }
 
@@ -197,38 +249,58 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
         return builder.build();
     }
 
-    private static CompletableFuture<byte[]> collect(Publisher<ByteBuffer> publisher) {
+    private static CompletableFuture<byte[]> collect(Publisher<ByteBuffer> publisher,
+                                                     int maxBufferedRequestBytes) {
         CompletableFuture<byte[]> result = new CompletableFuture<>();
         AtomicReference<Subscription> subscription = new AtomicReference<>();
-        publisher.subscribe(new Subscriber<ByteBuffer>() {
-            private final ByteArrayOutputStream body = new ByteArrayOutputStream();
+        try {
+            publisher.subscribe(new Subscriber<ByteBuffer>() {
+                private final ByteArrayOutputStream body = new ByteArrayOutputStream();
 
-            @Override
-            public void onSubscribe(Subscription value) {
-                if (!subscription.compareAndSet(null, value)) {
-                    value.cancel();
-                    return;
+                @Override
+                public void onSubscribe(Subscription value) {
+                    if (!subscription.compareAndSet(null, value)) {
+                        value.cancel();
+                        return;
+                    }
+                    value.request(1);
                 }
-                value.request(Long.MAX_VALUE);
-            }
 
-            @Override
-            public void onNext(ByteBuffer bytes) {
-                byte[] chunk = new byte[bytes.remaining()];
-                bytes.get(chunk);
-                body.write(chunk, 0, chunk.length);
-            }
+                @Override
+                public void onNext(ByteBuffer bytes) {
+                    int chunkLength = bytes.remaining();
+                    if (chunkLength > maxBufferedRequestBytes - body.size()) {
+                        Subscription value = subscription.get();
+                        if (value != null) {
+                            value.cancel();
+                        }
+                        result.completeExceptionally(new BodyLimitExceededException());
+                        return;
+                    }
 
-            @Override
-            public void onError(Throwable failure) {
-                result.completeExceptionally(failure);
-            }
+                    byte[] chunk = new byte[chunkLength];
+                    bytes.get(chunk);
+                    body.write(chunk, 0, chunk.length);
 
-            @Override
-            public void onComplete() {
-                result.complete(body.toByteArray());
-            }
-        });
+                    Subscription value = subscription.get();
+                    if (value != null && !result.isDone()) {
+                        value.request(1);
+                    }
+                }
+
+                @Override
+                public void onError(Throwable failure) {
+                    result.completeExceptionally(failure);
+                }
+
+                @Override
+                public void onComplete() {
+                    result.complete(body.toByteArray());
+                }
+            });
+        } catch (Throwable failure) {
+            result.completeExceptionally(failure);
+        }
         result.whenComplete((ignored, failure) -> {
             if (result.isCancelled()) {
                 Subscription value = subscription.get();
@@ -238,6 +310,12 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             }
         });
         return result;
+    }
+
+    private static final class BodyLimitExceededException extends RuntimeException {
+        private BodyLimitExceededException() {
+            super("Async request body exceeds the Photon buffering limit");
+        }
     }
 
     private static void deliver(CompletableFuture<Void> result,

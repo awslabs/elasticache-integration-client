@@ -155,6 +155,10 @@ public final class PhotonClient {
         private SdkHttpClient originHttpClient;
         private SdkAsyncHttpClient originAsyncHttpClient;
         private Executor asyncExecutor;
+        private int asyncMaxBufferedRequestBytes =
+                PhotonAsyncHandle.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
+        private int asyncMaxConcurrentBodyCollectors =
+                PhotonAsyncHandle.DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS;
 
         private Builder() {}
 
@@ -281,6 +285,22 @@ public final class PhotonClient {
          */
         public Builder asyncExecutor(Executor asyncExecutor) {
             this.asyncExecutor = asyncExecutor;
+            return this;
+        }
+
+        /**
+         * Set the maximum async request body Photon buffers (default: 16 MiB).
+         */
+        public Builder asyncMaxBufferedRequestBytes(int asyncMaxBufferedRequestBytes) {
+            this.asyncMaxBufferedRequestBytes = asyncMaxBufferedRequestBytes;
+            return this;
+        }
+
+        /**
+         * Set the maximum async request bodies collected concurrently (default: 8).
+         */
+        public Builder asyncMaxConcurrentBodyCollectors(int asyncMaxConcurrentBodyCollectors) {
+            this.asyncMaxConcurrentBodyCollectors = asyncMaxConcurrentBodyCollectors;
             return this;
         }
 
@@ -482,6 +502,8 @@ public final class PhotonClient {
                     .requestTimeoutMs(requestTimeoutMs)
                     .originHttpClient(originAsyncHttpClient)
                     .executor(asyncExecutor)
+                    .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)
+                    .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors)
                     .build();
         }
 

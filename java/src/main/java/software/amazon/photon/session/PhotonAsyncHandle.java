@@ -24,6 +24,9 @@ import java.util.function.Supplier;
  */
 public final class PhotonAsyncHandle implements Closeable {
 
+    public static final int DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 16 * 1024 * 1024;
+    public static final int DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS = 8;
+
     private final PhotonSession session;
     private final PhotonAsyncInterceptor interceptor;
     private final PhotonAsyncHttpClient httpClient;
@@ -34,10 +37,18 @@ public final class PhotonAsyncHandle implements Closeable {
                               SdkAsyncHttpClient originClient,
                               boolean ownsOriginClient,
                               Executor executor,
-                              ExecutorService ownedExecutor) {
+                              ExecutorService ownedExecutor,
+                              int maxBufferedRequestBytes,
+                              int maxConcurrentBodyCollectors) {
         this.session = session;
         this.interceptor = new PhotonAsyncInterceptor(
-                session, originClient, ownsOriginClient, executor, ownedExecutor);
+                session,
+                originClient,
+                ownsOriginClient,
+                executor,
+                ownedExecutor,
+                maxBufferedRequestBytes,
+                maxConcurrentBodyCollectors);
         this.httpClient = interceptor.getHttpClient();
     }
 
@@ -120,6 +131,8 @@ public final class PhotonAsyncHandle implements Closeable {
         private int requestTimeoutMs = 5000;
         private SdkAsyncHttpClient originHttpClient;
         private Executor executor;
+        private int maxBufferedRequestBytes = DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
+        private int maxConcurrentBodyCollectors = DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS;
 
         private Builder() {
         }
@@ -186,6 +199,22 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         /**
+         * Set the maximum async request body Photon buffers (default: 16 MiB).
+         */
+        public Builder maxBufferedRequestBytes(int maxBufferedRequestBytes) {
+            this.maxBufferedRequestBytes = maxBufferedRequestBytes;
+            return this;
+        }
+
+        /**
+         * Set the maximum request bodies collected concurrently (default: 8).
+         */
+        public Builder maxConcurrentBodyCollectors(int maxConcurrentBodyCollectors) {
+            this.maxConcurrentBodyCollectors = maxConcurrentBodyCollectors;
+            return this;
+        }
+
+        /**
          * Build the handle.
          */
         public PhotonAsyncHandle build() {
@@ -194,6 +223,12 @@ public final class PhotonAsyncHandle implements Closeable {
             }
             if (authProvider == null) {
                 throw new PhotonError("authProvider is required");
+            }
+            if (maxBufferedRequestBytes <= 0) {
+                throw new PhotonError("maxBufferedRequestBytes must be positive");
+            }
+            if (maxConcurrentBodyCollectors <= 0) {
+                throw new PhotonError("maxConcurrentBodyCollectors must be positive");
             }
 
             SSLContext ssl = sslContext;
@@ -231,7 +266,13 @@ public final class PhotonAsyncHandle implements Closeable {
             }
 
             return new PhotonAsyncHandle(
-                    session, origin, ownsOrigin, requestExecutor, ownedExecutor);
+                    session,
+                    origin,
+                    ownsOrigin,
+                    requestExecutor,
+                    ownedExecutor,
+                    maxBufferedRequestBytes,
+                    maxConcurrentBodyCollectors);
         }
     }
 
