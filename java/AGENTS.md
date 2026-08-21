@@ -38,7 +38,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 11 compatibility: no records, sealed classes, or pattern matching.
+- Target Java 8 compatibility. CI runs on Java 8, 11, and 17; do not use
+  records, sealed classes, pattern matching, or APIs newer than Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.

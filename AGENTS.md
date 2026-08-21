@@ -1,0 +1,55 @@
+# AGENTS.md
+
+## Scope
+
+- This repository contains language-specific Photon client implementations.
+- Keep changes within the relevant client directory unless the change affects
+  shared documentation or CI.
+- Read the package-specific `AGENTS.md` and `README.md` before editing code in
+  `node/` or `java/`.
+
+## Repository map
+
+- `node/`: TypeScript/Node.js Photon client.
+- `java/`: Java/AWS SDK v2 Photon client.
+- `README.md`: repository-wide overview and client scope.
+- `.github/workflows/`: CI contracts for each client.
+
+## Source of truth
+
+- README files define user-facing behavior and supported feature scope.
+- Build files, lockfiles, tests, and CI define executable toolchain and
+  validation behavior.
+- If this file becomes stale, follow the repository artifacts above and update
+  the affected guidance as part of the same change.
+
+## Validation
+
+Run commands from the client directory they apply to:
+
+- Node: use `npm ci` for clean installs, focused Vitest tests when appropriate,
+  and `npm run verify` for the complete local gate. Use `npm run pack:smoke`
+  when changing package metadata, exports, builds, or published contents.
+- Java: use focused Gradle tests when appropriate and `./gradlew build` for the
+  complete local gate.
+- Before reporting completion, state which validation commands actually ran and
+  which expected checks were not run.
+
+## Shared engineering rules
+
+- Preserve public APIs, wire/protocol behavior, connection and session
+  lifecycles, and security defaults unless the change explicitly revises the
+  contract.
+- Add or update focused regression coverage for changed behavior.
+- Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
+- Never log or commit credentials, IAM tokens, authorization headers, or other
+  secret material.
+- Do not commit generated build, coverage, distribution, cache, or IDE files.
+- Keep changes small, reviewable, and isolated to the intended client.
+
+## Completion checklist
+
+- Relevant package guidance, README, tests, and build configuration agree.
+- Changed behavior has focused regression coverage.
+- Appropriate formatting, static checks, tests, and packaging checks have run.
+- Any validation gap or intentional contract change is called out explicitly.
