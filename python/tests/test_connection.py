@@ -29,7 +29,8 @@ from photon.exceptions import (
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import RespError, RespValue
+from photon.protocol import PUSH_KIND_RESPONSE
+from photon.resp import RespError, RespPush, RespValue
 from tests.mock import MockCache, Reply
 
 
@@ -208,7 +209,7 @@ class TestPhotonConnector:
         )
         with pytest.raises(PhotonConnectionError, match="AUTH timed out"):
             self.conn.authenticate()
-        assert self.conn._closed is True
+        assert self.conn._closed
 
     def test_auth_accepted(self):
         """The RESP +OK reply (decoded to "OK") is accepted.
@@ -543,7 +544,99 @@ class TestPhotonConnector:
         assert conn._pending._max_pending == 7
 
     # ======================================================================== #
-    # 5. Close — teardown
+    # 5. Deferred (out-of-band) responses — HOL blocking removal
+    # ======================================================================== #
+
+    def test_async_response_resolves_via_push(self):
+        """A request the cache defers (request-id reply, then a photon.response push) resolves
+        the blocked caller with the pushed [status, headers, body] — indistinguishable from a
+        synchronous answer."""
+        async_reply = Reply.async_response(42, Reply.ok(status=200, body=b'{"deferred":1}'))
+        self.start_cache(response=async_reply)
+        self.connect_and_handshake()
+        value = self.send_request()
+        assert value == [200, b"content-type:application/x-amz-json-1.0", b'{"deferred":1}']
+
+    def test_async_error_response_delivered_as_value(self):
+        """A push carrying a RespError resolves the deferred caller with the error as a VALUE
+        (raising is the parse_* functions' job), same as a synchronous error reply."""
+        async_reply = Reply.async_response(42, Reply.error("ERR", "origin failed"))
+        self.start_cache(response=async_reply)
+        self.connect_and_handshake()
+        value = self.send_request()
+        assert isinstance(value, RespError)
+        assert value.code == "ERR"
+
+    def test_async_request_does_not_block_later_replies(self):
+        """The point of the feature: a deferred request frees its FIFO slot, so the reply to a
+        LATER request resolves its caller while the deferred caller is still waiting."""
+        replies = [Reply.request_id(1), Reply.ok(body=b"fast")]
+        self.start_cache(response_fn=lambda req: replies.pop(0))
+        self.connect_and_handshake(request_timeout=5.0)
+
+        slow_result: list = []
+        slow_thread = threading.Thread(
+            target=lambda: slow_result.append(self.send_request(body=b"slow"))
+        )
+        slow_thread.start()
+        # Wait until the deferred request reached the cache before sending the fast one,
+        # so the reply order on the wire is deterministic.
+        deadline = time.monotonic() + 2
+        while len(self.cache.requests) < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        fast = self.send_request(body=b"fast")   # resolves while request 1 is still pending
+        assert fast[2] == b"fast"
+        assert slow_thread.is_alive()            # the deferred caller is still blocked
+
+        self.cache.send_push(1, Reply.ok(body=b"slow"))
+        slow_thread.join(timeout=2)
+        assert not slow_thread.is_alive()
+        assert slow_result[0][2] == b"slow"
+
+    def test_async_request_timeout_keeps_connection_alive(self):
+        """A timeout on a deferred request abandons only that request: the connection
+        survives, the late push is dropped with a warning, and the next request works."""
+        replies = [Reply.request_id(1), Reply.ok(body=b"after")]
+        self.start_cache(response_fn=lambda req: replies.pop(0))
+        self.connect_and_handshake(request_timeout=0.3)
+
+        with pytest.raises(PhotonTimeoutError, match="async request timed out"):
+            self.send_request()
+        assert not self.conn._closed           # the connection survived
+
+        self.cache.send_push(1)                   # late push: unknown id, dropped
+        value = self.send_request()               # connection still fully usable
+        assert value[2] == b"after"
+        assert not self.conn._closed
+
+    def test_unknown_push_kind_is_ignored(self):
+        """A push with an unknown kind is logged and dropped (forward compatible); the
+        connection stays alive and the FIFO is untouched. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        conn._handle_push(RespPush(kind=b"photon.config", items=[b"whatever"]))
+        assert not conn._closed
+
+    def test_malformed_push_kills_connection(self):
+        """A push the protocol layer cannot read leaves the whole stream untrustworthy, so the
+        reader marks the connection dead. Payload rules live in parse_response_push."""
+        self.start_cache()
+        self.connect_and_handshake()
+        self.cache.send_push(1, items=[Reply.ok().frame])  # a reply, no request id
+        deadline = time.monotonic() + 2
+        while not self.conn._closed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert self.conn._closed is True
+
+    def test_push_for_unknown_id_is_dropped(self):
+        """A push whose id maps to nothing (caller timed out earlier) is logged and dropped;
+        the connection stays alive. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        conn._handle_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", [200, b"", b""]]))
+        assert not conn._closed
+
+    # ======================================================================== #
+    # 6. Close — teardown
     # ======================================================================== #
 
     def test_close_twice_is_safe(self):

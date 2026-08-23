@@ -34,6 +34,7 @@ from botocore.hooks import HierarchicalEmitter
 
 from photon.connection import PhotonConnector
 from photon.models import PhotonResponse, RequestMetadata
+from photon.protocol import PUSH_KIND_RESPONSE
 from photon.session import PhotonSession
 
 _CRLF = b"\r\n"
@@ -121,6 +122,14 @@ def _error(code: str, message: str) -> bytes:
     return b"-" + text.encode() + _CRLF
 
 
+def _simple_string(data: bytes) -> bytes:
+    return b"+" + data + _CRLF
+
+
+def _push(items: List[bytes]) -> bytes:
+    return b">" + str(len(items)).encode() + _CRLF + b"".join(items)
+
+
 # --------------------------------------------------------------------------- #
 # Replies — the in-scope cache response types
 # --------------------------------------------------------------------------- #
@@ -147,6 +156,22 @@ class Reply:
     def error(cls, code: str = "ERR", message: str = "mock error reply") -> "Reply":
         """A RESP error reply ``-<CODE> <message>``."""
         return cls(_error(code, message))
+
+    @classmethod
+    def async_response(cls, request_id: int, reply: "Reply | None" = None) -> "Reply":
+        """An out-of-band exchange: the request id as a simple string, immediately followed
+        by the ``photon.response`` push carrying ``reply`` (default :meth:`ok`) for that id."""
+        reply = reply or cls.ok()
+        return cls(
+            _simple_string(str(request_id).encode())
+            + _push([_bulk(PUSH_KIND_RESPONSE), _bulk(str(request_id).encode()), reply.frame])
+        )
+
+    @classmethod
+    def request_id(cls, request_id: int) -> "Reply":
+        """Only the request id (simple string); the push never arrives on its own — deliver it
+        later with :meth:`MockCache.send_push`."""
+        return cls(_simple_string(str(request_id).encode()))
 
 
 # --------------------------------------------------------------------------- #
@@ -295,6 +320,7 @@ class MockCache:
         self._ssl_ctx: ssl.SSLContext | None = None
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._client_sock: socket.socket | None = None  # most recent client connection
         self.host: str | None = None
         self.port: int | None = None
         self.cert_path: str | None = None
@@ -405,6 +431,26 @@ class MockCache:
             return self._response
         return Reply.ok(self.response_status, self.response_headers, self.response_body)
 
+    def send_push(
+        self,
+        request_id: int,
+        reply: Reply | None = None,
+        *,
+        kind: bytes = PUSH_KIND_RESPONSE,
+        items: list[bytes] | None = None,
+    ) -> None:
+        """Send a push frame for ``request_id`` on the most recent client connection.
+
+        Delivers the out-of-band half of a :meth:`Reply.request_id` exchange; ``kind`` lets a
+        test send an unknown push kind and ``items`` a payload the client must reject.
+        """
+        if self._client_sock is None:
+            raise RuntimeError("no client connection to push on")
+        reply = reply or Reply.ok()
+        if items is None:
+            items = [_bulk(str(request_id).encode()), reply.frame]
+        self._client_sock.sendall(_push([_bulk(kind), *items]))
+
     # --- synchronous threaded TLS server -------------------------------------
     def start(self) -> None:
         """Start the threaded server on an ephemeral 127.0.0.1 port (plaintext unless ``tls``)."""
@@ -469,6 +515,7 @@ class MockCache:
                 return
         else:
             sock = conn
+        self._client_sock = sock
         try:
             rfile = sock.makefile("rb")
             while not self._stop.is_set():

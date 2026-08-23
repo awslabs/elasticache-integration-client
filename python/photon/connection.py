@@ -5,6 +5,13 @@ loop a function that registers a future for the reply and writes the frame; a re
 same loop turns arriving bytes into RESP values and gives each one to the oldest waiting
 future.
 
+Replies are correlated two ways. Serialized writes + strict RESP request/response ⇒ response
+order equals request order ⇒ FIFO correlation for synchronous replies. When the cache defers a
+request (a cache miss requiring an origin fetch), it replies with a request id and delivers the
+real response later as a RESP3 push keyed by that id; the reader moves the request's future from
+the FIFO into an id-keyed map, so one slow cache miss no longer blocks the pipelined replies
+behind it, and a timeout on such a request no longer kills the connection.
+
 _LoopThread owns the thread and the loop, and lasts exactly as long as the connection.
 """
 
@@ -25,7 +32,10 @@ from photon.exceptions import (
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import IncompleteFrame, RespError, RespValue, decode_resp, encode_resp
+from photon.protocol import PUSH_KIND_RESPONSE, parse_response_push
+from photon.resp import IncompleteFrame, RespError, RespPush, RespValue, decode_resp, encode_resp
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
@@ -34,8 +44,6 @@ _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
 _AUTH_OK = "OK"  # the RESP simple string "+OK", decoded
 _DEFAULT_MAX_PENDING = 100
-
-logger = logging.getLogger(__name__)
 
 
 class _SocketReader:
@@ -499,9 +507,15 @@ class PhotonConnector:
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:
-            # Intentional: one timeout resets the whole connection. close() fails every other
-            # in-flight request too — a late reply would otherwise be FIFO-matched to the
-            # wrong caller.
+            error = PhotonTimeoutError(f"async request timed out after {timeout}s")
+            if self._pending.fail_if_async(reply_future, error):
+                # Deferred request: it holds no FIFO slot, so abandoning it is harmless and
+                # the connection survives. The future is settled either way: 
+                # with ``error``, or with a reply that landed as the timeout fired.
+                return reply_future.result()
+            # Still in the FIFO: a late reply would be FIFO-matched to the wrong caller and
+            # desynchronize every reply behind it, so the connection must die. close() fails
+            # every other in-flight request too.
             self.close()
             raise PhotonTimeoutError(f"request timed out after {timeout}s") from exc
 
@@ -516,8 +530,16 @@ class PhotonConnector:
             while not self._closed:
                 # Block until one complete RESP frame has arrived off the socket.
                 value = await self._reader.read_frame()
-                # Hand it to the oldest waiting caller (FIFO), waking their future.result().
-                self._pending.resolve_oldest_request(value)
+                if isinstance(value, RespPush):
+                    # Out-of-band frame: a deferred request's response, matched by id.
+                    self._handle_push(value)
+                elif isinstance(value, str) and value != _AUTH_OK:
+                    # A request id reply: the cache deferred the oldest request. Move its
+                    # future out of the FIFO (freeing the pipeline slot); the push resolves it.
+                    self._pending.move_head_to_async_responses(value)
+                else:
+                    # Hand it to the oldest waiting caller (FIFO), waking their future.result().
+                    self._pending.resolve_oldest_request(value)
         except PhotonConnectionLost as exc:
             self._mark_closed(exc)
         except PhotonProtocolError as exc:
@@ -531,6 +553,17 @@ class PhotonConnector:
             error = PhotonConnectionLost("socket read failed")
             error.__cause__ = exc
             self._mark_closed(error)
+
+    def _handle_push(self, push: RespPush) -> None:
+        """Route a push by its kind: ``photon.response`` resolves the future mapped to the
+        request id it carries, any other kind is logged and ignored (forward compatible). A
+        structurally broken push raises out of the parse and kills the connection."""
+        if push.kind == PUSH_KIND_RESPONSE:
+            request_id, response = parse_response_push(push)
+            if not self._pending.resolve_async(request_id, response):
+                logger.warning("push for unknown request id (timed out earlier); dropped")
+            return
+        logger.warning("ignoring push with unknown kind %r", push.kind)
 
     def _mark_closed(self, exc: BaseException) -> None:
         """Refuse further sends and fail every waiting caller. Releases nothing."""
