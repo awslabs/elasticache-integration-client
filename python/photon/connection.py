@@ -32,7 +32,7 @@ _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
 _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
-_AUTH_OK = b"OK"  # the RESP simple string "+OK", decoded
+_AUTH_OK = "OK"  # the RESP simple string "+OK", decoded
 _DEFAULT_MAX_PENDING = 100
 
 logger = logging.getLogger(__name__)
@@ -343,7 +343,7 @@ class PhotonConnector:
     def _verify_auth_reply(self, reply: RespValue) -> None:
         """Validate an AUTH reply. Raises PhotonConnectionError on rejection or unexpected shape.
 
-        A success reply is the RESP simple string "+OK" (decoded to b"OK"); anything else is
+        A success reply is the RESP simple string "+OK" (decoded to "OK"); anything else is
         rejected rather than treated as success. The token is never included in error messages.
         """
         if isinstance(reply, RespError):

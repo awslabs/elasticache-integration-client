@@ -15,7 +15,7 @@ from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.resp import RespError, RespValue
 
 CONFIG_COMMAND = "photon.config"
-REQUEST_COMMAND = "photon.request"  # working name; may change before launch
+REQUEST_COMMAND = "photon.request"
 
 # Headers excluded from the normalized form (case-insensitive). Auth/volatile headers must not
 # affect the cache key or be forwarded.
