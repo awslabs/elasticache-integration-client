@@ -313,6 +313,32 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("fails pending requests when a later send backpressure timeout tears down the connection", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "photon.config" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 25, // limits send/drain wait here
+      configTimeout: 5_000, // limits config request wait
+    });
+    await connector.connect();
+
+    const pendingRequest = connector.execute("photon.config", Buffer.from("{}")); // on config request wait
+    await vi.waitFor(() => {
+      expect(cache.photonCommandLog).toContain("photon.config");
+    });
+
+    const socket = (connector as unknown as { socket: Socket }).socket;
+    vi.spyOn(socket, "write").mockReturnValue(false);
+    const timedOutRequest = connector.execute("photon.config", Buffer.from("{}")); // on send/drain wait
+
+    await expect(pendingRequest).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    await expect(timedOutRequest).rejects.toThrow("send timed out after 25ms");
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
+      PhotonConnectionLostError,
+    );
+    await connector.close();
+  });
+
   it("fully tears down after a synchronous send failure", async () => {
     const cache = await startCache();
     const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
