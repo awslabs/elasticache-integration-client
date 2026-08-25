@@ -16,6 +16,7 @@ import {
   PhotonProtocolError,
   PhotonTimeoutError,
 } from "../src/errors.js";
+import { parseRequestResponse } from "../src/protocol.js";
 import { RespError } from "../src/resp.js";
 import { MockCache, Reply } from "./mock-cache.js";
 
@@ -41,6 +42,16 @@ function sourceFrom(chunks: Buffer[]): SocketChunkSource {
   };
 }
 
+function requestArgs(body: string): [Buffer, Buffer, Buffer, Buffer, Buffer] {
+  return [
+    Buffer.from("POST"),
+    Buffer.from("https://x/"),
+    Buffer.alloc(0),
+    Buffer.from(body),
+    Buffer.from("service=s&op=o"),
+  ];
+}
+
 describe("SocketReader", () => {
   it("reassembles partial frames and preserves trailing frames", async () => {
     const first = Buffer.from("+first\r\n");
@@ -49,16 +60,16 @@ describe("SocketReader", () => {
       sourceFrom([first.subarray(0, 3), Buffer.concat([first.subarray(3), second])]),
     );
 
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("first"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("second"));
+    await expect(reader.readFrame()).resolves.toBe("first");
+    await expect(reader.readFrame()).resolves.toBe("second");
   });
 
   it("allows several small frames in one source chunk", async () => {
     const reader = new SocketReader(sourceFrom([Buffer.from("+one\r\n+two\r\n+three\r\n")]), 64, 8);
 
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("one"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("two"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("three"));
+    await expect(reader.readFrame()).resolves.toBe("one");
+    await expect(reader.readFrame()).resolves.toBe("two");
+    await expect(reader.readFrame()).resolves.toBe("three");
   });
 
   it("turns clean EOF into PhotonConnectionLost", async () => {
@@ -89,9 +100,9 @@ describe("PendingRequests", () => {
     pending.resolveOldestRequest(error);
     pending.resolveOldestRequest(Buffer.from("third"));
 
-    await expect(first).resolves.toEqual(Buffer.from("first"));
-    await expect(second).resolves.toBe(error);
-    await expect(third).resolves.toEqual(Buffer.from("third"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+    await expect(second.promise).resolves.toBe(error);
+    await expect(third.promise).resolves.toEqual(Buffer.from("third"));
   });
 
   it("fails every pending request", async () => {
@@ -101,8 +112,8 @@ describe("PendingRequests", () => {
 
     pending.failAll(new PhotonConnectionLost("connection closed"));
 
-    await expect(first).rejects.toBeInstanceOf(PhotonConnectionLost);
-    await expect(second).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(first.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(second.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
   });
 
   it("rejects registrations above the configured capacity", async () => {
@@ -112,12 +123,78 @@ describe("PendingRequests", () => {
     expect(() => pending.registerNewRequest()).toThrow("maximum pending requests");
 
     pending.resolveOldestRequest(Buffer.from("first"));
-    await expect(first).resolves.toEqual(Buffer.from("first"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
   });
 
   it("rejects invalid capacities", () => {
     expect(() => new PendingRequests(0)).toThrow("positive integer");
     expect(() => new PendingRequests(Number.POSITIVE_INFINITY)).toThrow("positive integer");
+  });
+
+  it("moves the oldest FIFO request into the async map", async () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    pending.resolveOldestRequest(Buffer.from("second"));
+
+    await expect(second.promise).resolves.toEqual(Buffer.from("second"));
+    expect(pending.resolveAsync("42", Buffer.from("first"))).toBe(true);
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+  });
+
+  it("rejects duplicate async ids and empty FIFO promotion", () => {
+    const pending = new PendingRequests();
+    const fifoFuture = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    expect(() => pending.moveNextToAsyncResponses("42")).toThrow("without a pending FIFO request");
+
+    const deferredFuture = pending.registerNewRequest();
+    pending.registerNewRequest();
+    expect(() => pending.moveNextToAsyncResponses("42")).toThrow("duplicate async response id");
+    expect(pending.resolveAsync("missing", Buffer.from("ignored"))).toBe(false);
+    expect(pending.removeFromAsync(fifoFuture)).toBe(true);
+    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
+    expect(deferredFuture.settled).toBe(false);
+    pending.resolveOldestRequest(Buffer.from("first"));
+    pending.resolveOldestRequest(Buffer.from("second"));
+  });
+
+  it("removes only an async request by handle identity", () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+
+    expect(pending.removeFromAsync(first)).toBe(false);
+    pending.moveNextToAsyncResponses("42");
+    expect(pending.removeFromAsync(first)).toBe(true);
+    expect(pending.removeFromAsync(first)).toBe(false);
+  });
+
+  it("fails pending FIFO and async requests", async () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    pending.failAll(new PhotonConnectionLost("connection closed"));
+
+    await expect(first.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(second.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+  });
+
+  it("frees FIFO capacity when a request moves to the async map", async () => {
+    const pending = new PendingRequests(1);
+    const first = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    const second = pending.registerNewRequest();
+
+    pending.resolveAsync("42", Buffer.from("first"));
+    pending.resolveOldestRequest(Buffer.from("second"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+    await expect(second.promise).resolves.toEqual(Buffer.from("second"));
   });
 });
 
@@ -281,6 +358,188 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("resolves a later FIFO response before the deferred request push", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 250,
+    });
+    await connector.connect();
+
+    let firstSettled = false;
+    const first = connector.execute("photon.request", ...requestArgs("first"));
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+
+    const second = connector.execute("photon.request", ...requestArgs("second"));
+    const secondResult = await second;
+    expect(secondResult).toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("second"),
+    ]);
+    expect(firstSettled).toBe(false);
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("first")),
+    );
+    await expect(first).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("first"),
+    ]);
+    await connector.close();
+  });
+
+  it.each([42, 9_007_199_254_740_993n])(
+    "resolves an immediate request-id reply followed by a response push for id %s",
+    async (requestId) => {
+      const cache = await startCache({
+        responseFn: () => Reply.asyncResponse(requestId, Reply.ok()),
+      });
+      const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+      await connector.connect();
+
+      await expect(connector.execute("photon.request", ...requestArgs("body"))).resolves.toEqual([
+        200,
+        Buffer.from("content-type:application/x-amz-json-1.0"),
+        Buffer.from('{"Item": {}}'),
+      ]);
+      await connector.close();
+    },
+  );
+
+  it("passes a RespError in a response push through the normal parser path", async () => {
+    const cache = await startCache({
+      responseFn: () => Reply.asyncResponse(42, Reply.error("ERR", "boom")),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const pushedError = await connector.execute("photon.request", ...requestArgs("body"));
+    const expectedError = new RespError("ERR", "boom");
+
+    expect(pushedError).toEqual(expectedError);
+    expect(() => parseRequestResponse(expectedError)).toThrow("photon.request failed: ERR boom");
+    expect(() => parseRequestResponse(pushedError)).toThrow("photon.request failed: ERR boom");
+    await connector.close();
+  });
+
+  it("ignores unknown push kinds and ids while keeping the connection usable", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const first = connector.execute("photon.request", ...requestArgs("first"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    cache.sendPush(42, Reply.ok(), Buffer.from("other.kind"));
+    cache.sendPush(999, Reply.ok(), Buffer.from("photon.response"));
+
+    await expect(connector.execute("photon.request", ...requestArgs("second"))).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("second"),
+    ]);
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("first")),
+    );
+    await expect(first).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("first"),
+    ]);
+    await connector.close();
+  });
+
+  it.each([
+    [">0\r\n", "empty payload"],
+    [">3\r\n:123\r\n:42\r\n$1\r\nx\r\n", "non-bytes kind"],
+    [">2\r\n$15\r\nphoton.response\r\n:42\r\n", "wrong arity"],
+    [">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n$1\r\nx\r\n", "non-integer id"],
+  ])("kills the connection on a malformed push: %s (%s)", async (frame) => {
+    const cache = await startCache({
+      responseFn: () => Reply.requestId(42),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 250,
+    });
+    await connector.connect();
+
+    const request = connector.execute("photon.request", ...requestArgs("body"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    cache.sendRaw(Buffer.from(frame));
+
+    await expect(request).rejects.toBeInstanceOf(PhotonProtocolError);
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
+      PhotonConnectionLost,
+    );
+    await connector.close();
+  });
+
+  it("preserves the connection when a deferred request times out", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 100,
+    });
+    await connector.connect();
+
+    const deferred = connector.execute("photon.request", ...requestArgs("deferred"));
+    const deferredExpectation = expect(deferred).rejects.toThrow("async request timed out");
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    await deferredExpectation;
+
+    await expect(
+      connector.execute("photon.request", ...requestArgs("after-timeout")),
+    ).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("after-timeout"),
+    ]);
+
+    cache.sendPush(42, Reply.ok(), Buffer.from("photon.response"));
+    await expect(
+      connector.execute("photon.request", ...requestArgs("still-usable")),
+    ).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("still-usable"),
+    ]);
+    await connector.close();
+  });
+
   it("queues each frame before execute returns control to the caller", async () => {
     const cache = await startCache();
     const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
@@ -371,6 +630,20 @@ describe("PhotonConnector", () => {
       Buffer.from("test-user"),
       Buffer.from("test-token"),
     ]);
+    await connector.close();
+  });
+
+  it("does not accept a bulk string containing OK as AUTH success", async () => {
+    const cache = await startCache({
+      authResponse: Reply.bulk(Buffer.from("OK")),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await expect(connector.authenticate()).rejects.toThrow("IAM AUTH failed");
     await connector.close();
   });
 

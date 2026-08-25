@@ -16,6 +16,7 @@ import { RespError, type RespValue } from "./resp.js";
  */
 export const CONFIG_COMMAND = "photon.config";
 export const REQUEST_COMMAND = "photon.request";
+export const PUSH_KIND_RESPONSE = Buffer.from("photon.response", "ascii");
 
 const MIN_STATUS = 100;
 const MAX_STATUS = 599;

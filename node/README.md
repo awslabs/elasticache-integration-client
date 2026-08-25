@@ -13,9 +13,11 @@ This package currently ports the Python implementation's:
 - deterministic request-header normalization;
 - compiled CEL predicate evaluation for cacheability routing;
 - a single-connection TCP/TLS transport with FIFO response correlation,
-  bounded response frames, bounded in-flight requests, bounded send backpressure,
-  differentiated connect/request/initialization timeouts, idempotent close, and
-  injected AUTH credentials;
+  request-ID correlation for deferred cache responses delivered through later
+  RESP3 pushes,
+  bounded response frames, bounded positional/FIFO pending requests, bounded
+  send backpressure, differentiated connect/request/initialization timeouts,
+  idempotent close, and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to
@@ -23,10 +25,13 @@ This package currently ports the Python implementation's:
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover/reconnection, circuit breaking, periodic config
-refresh, and out-of-band responses remain out of scope. The middleware sends
-requests with no matching predicate directly to origin and has a narrow origin
-fallback for idempotent requests when Photon fails; non-idempotent Photon
-failures and non-Photon errors propagate.
+refresh remain out of scope. Deferred cache responses are correlated by request
+ID and later `photon.response` pushes, while callers still receive ordinary
+promises. A timeout for a deferred request removes only that request and
+preserves the connection; a FIFO or write timeout remains connection-fatal. The
+middleware sends requests with no matching predicate directly to origin and has
+a narrow origin fallback for idempotent requests when Photon fails;
+non-idempotent Photon failures and non-Photon errors propagate.
 
 ## Request routing
 
