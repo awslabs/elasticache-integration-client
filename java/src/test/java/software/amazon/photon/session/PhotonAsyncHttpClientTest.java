@@ -44,10 +44,12 @@ class PhotonAsyncHttpClientTest {
     void knownOversizedBodyFallsBackBeforeSubscribing() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         TrackingPublisher body = new TrackingPublisher("oversized", true);
+        // The reported 9-byte body exceeds the 4-byte limit; one collector is available.
         PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
 
+        // Origin receives the request directly, so Photon never subscribes to its body.
         assertEquals(1, origin.executeCount.get());
         assertEquals(0, body.subscribeCount.get());
         client.close();
@@ -57,12 +59,15 @@ class PhotonAsyncHttpClientTest {
     void bodyThatCrossesLimitIsCancelledAndReplayedByOrigin() throws Exception {
         RecordingBodyOrigin origin = new RecordingBodyOrigin();
         TrackingPublisher body = new TrackingPublisher("oversized", false);
+        // The publisher omits its length, so the 4-byte limit is enforced while collecting.
         PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
 
+        // Photon cancels its first subscription; origin then subscribes to replay the body.
         assertEquals(2, body.subscribeCount.get());
         assertEquals(1, body.cancelCount.get());
+        // Photon requests one chunk at a time instead of unbounded reactive-streams demand.
         assertEquals(1, body.collectorDemand.get());
         assertArrayEquals("oversized".getBytes(StandardCharsets.UTF_8), origin.body);
         client.close();
@@ -74,6 +79,7 @@ class PhotonAsyncHttpClientTest {
         PhotonRequestContext context = preparedContext();
         BlockingPublisher admittedBody = new BlockingPublisher();
         TrackingPublisher overflowBody = new TrackingPublisher("second", true);
+        // Both bodies fit under 100 bytes, but the blocked request holds the only collector.
         PhotonAsyncHttpClient client = limitedClient(origin, context, 100, 1);
 
         CompletableFuture<Void> admitted = client.execute(executeRequest(admittedBody));
@@ -82,6 +88,7 @@ class PhotonAsyncHttpClientTest {
 
         client.execute(executeRequest(overflowBody)).get(2, TimeUnit.SECONDS);
 
+        // The second request bypasses Photon without subscribing while the permit is occupied.
         assertEquals(1, origin.executeCount.get());
         assertEquals(0, overflowBody.subscribeCount.get());
         admitted.cancel(true);
