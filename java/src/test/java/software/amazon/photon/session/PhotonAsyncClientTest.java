@@ -19,6 +19,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
@@ -36,6 +37,8 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -45,6 +48,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncClientTest {
@@ -203,6 +207,29 @@ class PhotonAsyncClientTest {
         }
 
         assertTrue(callerInterceptorInvoked.get());
+    }
+
+    @Test
+    void asyncHandleSerializesLifecycleOperations() throws Exception {
+        PhotonClient.AsyncResult<DynamoDbAsyncClient> result = newClient(sdkConfig);
+        PhotonAsyncHandle handle = result.handle();
+        ExecutorService closers = Executors.newFixedThreadPool(4);
+
+        try {
+            assertThrows(PhotonError.class, handle::open);
+
+            CompletableFuture<?>[] closeTasks = new CompletableFuture<?>[8];
+            for (int i = 0; i < closeTasks.length; i++) {
+                closeTasks[i] = CompletableFuture.runAsync(handle::close, closers);
+            }
+            CompletableFuture.allOf(closeTasks).get(5, TimeUnit.SECONDS);
+
+            assertFalse(handle.isOpen());
+            assertThrows(PhotonError.class, handle::open);
+        } finally {
+            closers.shutdownNow();
+            result.close();
+        }
     }
 
     private PhotonClient.AsyncResult<DynamoDbAsyncClient> newClient(

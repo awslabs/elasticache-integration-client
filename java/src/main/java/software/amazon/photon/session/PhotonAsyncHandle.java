@@ -21,6 +21,9 @@ import java.util.function.Supplier;
 
 /**
  * Manages the attachment of Photon to an asynchronous AWS SDK client.
+ *
+ * <p>Lifecycle operations are serialized. Requests remain concurrent through
+ * the asynchronous HTTP transport.
  */
 public final class PhotonAsyncHandle implements Closeable {
 
@@ -30,8 +33,7 @@ public final class PhotonAsyncHandle implements Closeable {
     private final PhotonSession session;
     private final PhotonAsyncInterceptor interceptor;
     private final PhotonAsyncHttpClient httpClient;
-    private boolean opened;
-    private boolean closed;
+    private State state = State.CREATED;
 
     private PhotonAsyncHandle(PhotonSession session,
                               SdkAsyncHttpClient originClient,
@@ -76,38 +78,41 @@ public final class PhotonAsyncHandle implements Closeable {
     /**
      * Open the Photon session.
      */
-    public void open() {
-        if (opened) {
+    public synchronized void open() {
+        if (state == State.OPEN) {
             throw new PhotonError("Handle already opened");
         }
-        if (closed) {
+        if (state == State.CLOSED) {
             throw new PhotonError("Handle already closed");
         }
         session.open();
-        opened = true;
+        state = State.OPEN;
     }
 
     /**
      * Close the Photon session and owned async resources. Idempotent.
      */
     @Override
-    public void close() {
-        if (closed) {
+    public synchronized void close() {
+        if (state == State.CLOSED) {
             return;
         }
-        closed = true;
         try {
             session.close();
         } finally {
-            httpClient.close();
+            try {
+                httpClient.close();
+            } finally {
+                state = State.CLOSED;
+            }
         }
     }
 
     /**
      * Check if the handle is open and ready.
      */
-    public boolean isOpen() {
-        return opened && !closed && session.isOpen();
+    public synchronized boolean isOpen() {
+        return state == State.OPEN && session.isOpen();
     }
 
     /**
@@ -218,6 +223,26 @@ public final class PhotonAsyncHandle implements Closeable {
          * Build the handle.
          */
         public PhotonAsyncHandle build() {
+            validateConfiguration();
+
+            PhotonSession session = createSession(resolveSslContext());
+            boolean ownsOriginClient = originHttpClient == null;
+            SdkAsyncHttpClient resolvedOriginClient =
+                    ownsOriginClient ? NettyNioAsyncHttpClient.create() : originHttpClient;
+            ExecutorService ownedExecutor = executor == null ? createDefaultExecutor() : null;
+            Executor resolvedExecutor = executor == null ? ownedExecutor : executor;
+
+            return new PhotonAsyncHandle(
+                    session,
+                    resolvedOriginClient,
+                    ownsOriginClient,
+                    resolvedExecutor,
+                    ownedExecutor,
+                    maxBufferedRequestBytes,
+                    maxConcurrentBodyCollectors);
+        }
+
+        private void validateConfiguration() {
             if (host == null || host.isEmpty()) {
                 throw new PhotonError("host is required");
             }
@@ -230,50 +255,41 @@ public final class PhotonAsyncHandle implements Closeable {
             if (maxConcurrentBodyCollectors <= 0) {
                 throw new PhotonError("maxConcurrentBodyCollectors must be positive");
             }
-
-            SSLContext ssl = sslContext;
-            if (ssl == null) {
-                try {
-                    ssl = SSLContext.getDefault();
-                } catch (NoSuchAlgorithmException e) {
-                    throw new PhotonError("Failed to get default SSLContext", e);
-                }
-            }
-
-            PhotonConnection connection = new PhotonConnection(
-                    host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
-            PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
-
-            SdkAsyncHttpClient origin = originHttpClient;
-            boolean ownsOrigin = false;
-            if (origin == null) {
-                origin = NettyNioAsyncHttpClient.create();
-                ownsOrigin = true;
-            }
-
-            Executor requestExecutor = executor;
-            ExecutorService ownedExecutor = null;
-            if (requestExecutor == null) {
-                ownedExecutor = new ThreadPoolExecutor(
-                        0,
-                        PhotonConnection.DEFAULT_MAX_PENDING,
-                        60,
-                        TimeUnit.SECONDS,
-                        new SynchronousQueue<>(),
-                        new PhotonThreadFactory());
-                requestExecutor = ownedExecutor;
-            }
-
-            return new PhotonAsyncHandle(
-                    session,
-                    origin,
-                    ownsOrigin,
-                    requestExecutor,
-                    ownedExecutor,
-                    maxBufferedRequestBytes,
-                    maxConcurrentBodyCollectors);
         }
+
+        private SSLContext resolveSslContext() {
+            if (sslContext != null) {
+                return sslContext;
+            }
+            try {
+                return SSLContext.getDefault();
+            } catch (NoSuchAlgorithmException e) {
+                throw new PhotonError("Failed to get default SSLContext", e);
+            }
+        }
+
+        private PhotonSession createSession(SSLContext resolvedSslContext) {
+            PhotonConnection connection = new PhotonConnection(
+                    host, port, resolvedSslContext, connectTimeoutMs, initializationTimeoutMs,
+                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
+            return new PhotonSession(connection, authProvider, configOverrides);
+        }
+
+        private static ExecutorService createDefaultExecutor() {
+            return new ThreadPoolExecutor(
+                    0,
+                    PhotonConnection.DEFAULT_MAX_PENDING,
+                    60,
+                    TimeUnit.SECONDS,
+                    new SynchronousQueue<>(),
+                    new PhotonThreadFactory());
+        }
+    }
+
+    private enum State {
+        CREATED,
+        OPEN,
+        CLOSED
     }
 
     private static final class PhotonThreadFactory implements ThreadFactory {
