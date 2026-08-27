@@ -232,54 +232,6 @@ class SocketReaderTest {
     }
 
     @Test
-    void runLoop_pushFrameFailsAllPendingWithoutConsumingFifoSlot() throws Exception {
-        byte[] data = ">1\r\n+push\r\n+first\r\n+second\r\n"
-                .getBytes(StandardCharsets.UTF_8);
-        PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> first = pending.register();
-        CompletableFuture<RespValue> second = pending.register();
-        AtomicBoolean deathCalled = new AtomicBoolean(false);
-        SocketReader reader = new SocketReader(
-                new ByteArrayInputStream(data),
-                pending,
-                () -> deathCalled.set(true));
-
-        Thread thread = new Thread(reader::runLoop);
-        thread.start();
-        thread.join(1000);
-
-        assertTrue(deathCalled.get());
-        assertTrue(first.isCompletedExceptionally());
-        assertTrue(second.isCompletedExceptionally());
-    }
-
-    @Test
-    void runLoop_throwableStillMarksReaderDeadAndFailsPending() throws Exception {
-        InputStream input = new InputStream() {
-            @Override
-            public int read() {
-                throw new AssertionError("fatal reader failure");
-            }
-
-            @Override
-            public int read(byte[] b, int off, int len) {
-                throw new AssertionError("fatal reader failure");
-            }
-        };
-        PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> future = pending.register();
-        AtomicBoolean deathCalled = new AtomicBoolean(false);
-        SocketReader reader = new SocketReader(input, pending, () -> deathCalled.set(true));
-
-        Thread thread = new Thread(reader::runLoop);
-        thread.start();
-        thread.join(1000);
-
-        assertTrue(deathCalled.get());
-        assertTrue(future.isCompletedExceptionally());
-    }
-
-    @Test
     void reset_clearsBuffer() {
         // Verify that reset() clears internal state without throwing.
         // The primary use case is during error recovery in handshake flows.

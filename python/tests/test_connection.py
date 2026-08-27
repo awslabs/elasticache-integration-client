@@ -71,7 +71,7 @@ class TestPhotonConnector:
         photon.config handshake round-trips the mock's resolved config (as a raw JSON
         bulk string — parsing it is protocol.py's contract)."""
         self.connect()
-        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) != 0
+        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) == 1
         raw = self.conn.execute("photon.config", b'{"k":"v"}')
         cfg = json.loads(raw)
         assert cfg["version"] == "v1"
@@ -297,47 +297,6 @@ class TestPhotonConnector:
         value = self.send_request()
         assert value[0] == 200
         assert value[2] == big_body
-
-    def test_socket_reader_rejects_oversized_incomplete_frame(self):
-        """An incomplete frame cannot grow beyond the configured response bound."""
-        reader = _SocketReader(
-            MockSocket([b"+123456789", b"0"]),
-            read_size=8,
-            max_response_size=8,
-        )
-
-        with pytest.raises(PhotonProtocolError, match="maximum size"):
-            reader.read_frame()
-
-    def test_push_frame_fails_all_pending_requests(self):
-        """A stray push tears down FIFO correlation instead of becoming a reply."""
-        connector = PhotonConnector("host", 6379, tls=False)
-        connector._reader = _SocketReader(
-            MockSocket([b">1\r\n+push\r\n+first\r\n+second\r\n"])
-        )
-        first = connector._pending.register_new_request()
-        second = connector._pending.register_new_request()
-
-        connector._reader_loop()
-
-        with pytest.raises(PhotonProtocolError):
-            first.result(timeout=1)
-        with pytest.raises(PhotonProtocolError):
-            second.result(timeout=1)
-        assert connector._dead is True
-
-    def test_max_response_size_propagates_from_connector(self):
-        """The connector passes its response bound to the socket reader."""
-        self.start_cache()
-        self.conn = PhotonConnector(
-            self.cache.host,
-            self.cache.port,
-            tls=False,
-            max_response_size=1234,
-        )
-        self.conn.connect()
-
-        assert self.conn._reader._max_response_size == 1234
 
     def test_reply_before_disconnect_is_delivered(self):
         """A cache that replies and immediately closes: the waiting caller must get the

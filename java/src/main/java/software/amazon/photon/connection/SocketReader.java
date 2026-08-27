@@ -83,7 +83,7 @@ public class SocketReader {
             // Mark dead before failing futures so isDead() is true when callers observe the exception
             onDeath.run();
             pending.failAll(e);
-        } catch (Throwable e) {
+        } catch (Exception e) {
             onDeath.run();
             pending.failAll(new ConnectionLost("Reader thread failed", e));
         }

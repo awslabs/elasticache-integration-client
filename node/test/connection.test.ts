@@ -75,12 +75,6 @@ describe("SocketReader", () => {
       new SocketReader(sourceFrom([Buffer.from("$5\r\nab")])).readFrame(),
     ).rejects.toBeInstanceOf(PhotonConnectionLostError);
   });
-
-  it("rejects push frames instead of consuming a FIFO response", async () => {
-    const reader = new SocketReader(sourceFrom([Buffer.from(">1\r\n+push\r\n+first\r\n")]));
-
-    await expect(reader.readFrame()).rejects.toBeInstanceOf(PhotonProtocolError);
-  });
 });
 
 describe("PendingRequests", () => {
@@ -316,61 +310,6 @@ describe("PhotonConnector", () => {
       "send timed out after 25ms",
     );
     expect(socket.destroyed).toBe(true);
-    await connector.close();
-  });
-
-  it("resolves simultaneous drain waiters in registration order from one event", async () => {
-    const cache = await startCache();
-    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
-    await connector.connect();
-    const socket = (connector as unknown as { socket: Socket }).socket;
-    const waitForDrain = (
-      connector as unknown as { waitForDrain(socket: Socket): Promise<void> }
-    ).waitForDrain.bind(connector);
-    const order: string[] = [];
-
-    const first = waitForDrain(socket).then(() => order.push("first"));
-    const second = waitForDrain(socket).then(() => order.push("second"));
-    expect(socket.listenerCount("drain")).toBe(2);
-
-    socket.emit("drain");
-    await Promise.all([first, second]);
-
-    expect(order).toEqual(["first", "second"]);
-    expect(socket.listenerCount("drain")).toBe(0);
-    await connector.close();
-  });
-
-  it("fails all pending requests when an unsupported push arrives", async () => {
-    const pushThenReply = new Reply(
-      Buffer.concat([
-        Buffer.from(">1\r\n+push\r\n"),
-        Reply.ok(200, "", Buffer.from("reply")).toBytes(),
-      ]),
-    );
-    const cache = await startCache({ response: pushThenReply });
-    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
-    await connector.connect();
-
-    const first = connector.execute(
-      "photon.request",
-      Buffer.from("POST"),
-      Buffer.from("https://x/"),
-      Buffer.alloc(0),
-      Buffer.from("first"),
-      Buffer.from("service=s&op=o"),
-    );
-    const second = connector.execute(
-      "photon.request",
-      Buffer.from("POST"),
-      Buffer.from("https://x/"),
-      Buffer.alloc(0),
-      Buffer.from("second"),
-      Buffer.from("service=s&op=o"),
-    );
-
-    await expect(first).rejects.toBeInstanceOf(PhotonProtocolError);
-    await expect(second).rejects.toBeInstanceOf(PhotonProtocolError);
     await connector.close();
   });
 

@@ -14,7 +14,6 @@ from dataclasses import dataclass
 from photon.exceptions import PhotonProtocolError
 
 _CRLF = b"\r\n"
-DEFAULT_MAX_FRAME_SIZE = 16 * 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -79,71 +78,42 @@ def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     return RespError(code=code, message=message), after_header
 
 
-def _decode_bulk_string(
-    data: bytes,
-    header: bytes,
-    after_header: int,
-    max_frame_size: int,
-) -> tuple[RespValue, int]:
+def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``$`` bulk string, or ``None`` for the ``$-1`` null bulk."""
     length = _parse_int(header, "bulk length")
     if length == -1:
         return None, after_header
-    if length < -1:
-        raise PhotonProtocolError(f"Malformed RESP bulk length: {header!r}")
-    if length > max_frame_size:
-        raise PhotonProtocolError(
-            f"RESP bulk length exceeds maximum frame size of {max_frame_size} bytes"
-        )
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
         raise IncompleteFrame("bulk string body incomplete")
-    if data[end:end + len(_CRLF)] != _CRLF:
-        raise PhotonProtocolError("Malformed RESP bulk string terminator")
     return data[after_header:end], end + 2
 
 
-def _decode_array(
-    data: bytes,
-    header: bytes,
-    after_header: int,
-    max_frame_size: int,
-) -> tuple[RespValue, int]:
-    """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
+def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``*`` array or ``>`` push, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
     if count == -1:
         return None, after_header
-    if count < -1:
-        raise PhotonProtocolError(f"Malformed RESP array length: {header!r}")
-    if count > max_frame_size // 3:
-        raise PhotonProtocolError(
-            f"RESP array length exceeds maximum frame size of {max_frame_size} bytes"
-        )
     items: list[RespValue] = []
     pos = after_header
     for _ in range(count):
-        item, pos = decode_resp(
-            data,
-            pos,
-            max_frame_size=max_frame_size,
-        )  # inner IncompleteFrame propagates
+        item, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
         items.append(item)
     return items, pos
 
 
+# Prefix → decoder dispatch. ``*`` (array) and ``>`` (push) share the same list semantics.
 _DECODERS = {
     b"+": _decode_simple_string,
     b":": _decode_integer,
     b"-": _decode_error,
+    b"$": _decode_bulk_string,
+    b"*": _decode_array,
+    b">": _decode_array,
 }
 
 
-def decode_resp(
-    data: bytes,
-    start: int = 0,
-    *,
-    max_frame_size: int = DEFAULT_MAX_FRAME_SIZE,
-) -> tuple[RespValue, int]:
+def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
     """Decode a single RESP3 value beginning at ``start``.
 
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
@@ -163,22 +133,6 @@ def decode_resp(
     if header_end == -1:
         raise IncompleteFrame("incomplete frame")
     prefix = data[start:start + 1]
-    if prefix == b">":
-        raise PhotonProtocolError("RESP push frames are not supported")
-    if prefix == b"$":
-        return _decode_bulk_string(
-            data,
-            data[start + 1:header_end],
-            header_end + len(_CRLF),
-            max_frame_size,
-        )
-    if prefix == b"*":
-        return _decode_array(
-            data,
-            data[start + 1:header_end],
-            header_end + len(_CRLF),
-            max_frame_size,
-        )
     decoder = _DECODERS.get(prefix)
     if decoder is None:
         raise PhotonProtocolError(f"Unsupported RESP prefix: {prefix!r}")

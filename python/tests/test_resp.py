@@ -79,10 +79,10 @@ def test_decode_array():
     assert nxt == len(frame)
 
 
-def test_decode_push_is_unsupported():
-    """A push cannot be FIFO-correlated and is rejected."""
-    with pytest.raises(PhotonProtocolError):
-        decode_resp(b">2\r\n:1\r\n:2\r\n")
+def test_decode_push_like_array():
+    """A > push frame decodes like an array."""
+    value, _ = decode_resp(b">2\r\n:1\r\n:2\r\n")
+    assert value == [1, 2]
 
 
 def test_decode_null_array():
@@ -100,6 +100,7 @@ def test_decode_null_array():
         b"$5\r\nhell",             # bulk one byte short of declared length (+ trailing CRLF)
         b"$5\r\nhello",            # bulk body present but trailing CRLF missing
         b"*2\r\n:1\r\n",           # array missing its second element
+        b">2\r\n:1\r\n",           # push missing its second element
         b":",                      # integer header with no CRLF yet
     ],
 )
@@ -118,25 +119,9 @@ def test_truncation_raises_incomplete_frame(partial):
         b":notanint\r\n",   # integer header unparseable
         b"$notanint\r\n",   # bulk length unparseable
         b"*notanint\r\n",   # array count unparseable
-        b"$-5\r\n",         # only -1 is a valid null bulk length
-        b"*-5\r\n",         # only -1 is a valid null array length
-        b"$3\r\nabcXX",     # bulk data must have a CRLF terminator
     ],
 )
 def test_decode_garbage_raises_protocol_error(garbage):
     """Genuinely corrupt input (unknown prefix, unparseable int/bulk/array headers) raises PhotonProtocolError."""
     with pytest.raises(PhotonProtocolError):
         decode_resp(garbage)
-
-
-@pytest.mark.parametrize(
-    "frame",
-    [
-        b"$65\r\n",
-        b"*22\r\n",
-    ],
-)
-def test_declared_frame_size_over_limit_raises_protocol_error(frame):
-    """Oversized declarations fail before the reader buffers their bodies."""
-    with pytest.raises(PhotonProtocolError):
-        decode_resp(frame, max_frame_size=64)

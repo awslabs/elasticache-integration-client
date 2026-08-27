@@ -83,10 +83,9 @@ describe("RESP codec", () => {
     ).toEqual([[200, Buffer.from("hdrs"), Buffer.from("body")], 30]);
   });
 
-  it("rejects unsupported push frames", () => {
-    expect(() => decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toThrow(
-      PhotonProtocolError,
-    );
+  it("decodes a push like an array", () => {
+    // A > push frame decodes like an array.
+    expect(decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toEqual([[1, 2], 12]);
   });
 
   it("decodes a null array", () => {
@@ -100,6 +99,7 @@ describe("RESP codec", () => {
     Buffer.from(`$5${CRLF}hell`), // bulk one byte short of declared length (+ trailing CRLF)
     Buffer.from(`$5${CRLF}hello`), // bulk body present but trailing CRLF missing
     Buffer.from(`*2${CRLF}:1${CRLF}`), // array missing its second element
+    Buffer.from(`>2${CRLF}:1${CRLF}`), // push missing its second element
     Buffer.from(":"), // integer header with no CRLF yet
   ])("truncation raises IncompleteFrame: %j", (partial) => {
     // Each kind of partial buffer raises IncompleteFrame.

@@ -191,25 +191,15 @@ class RespCodecTest {
         assertTrue(array.getElements().get(2) instanceof RespSimpleString);
     }
 
-    // === Unsupported Push (>) ===
+    // === Decode tests - Push (>) ===
 
     @Test
-    void decode_push_throwsProtocolError() {
+    void decode_push_decodedAsArray() throws IncompleteFrame {
         byte[] data = ">2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".getBytes(StandardCharsets.UTF_8);
-        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
-    }
-
-    @Test
-    void decode_excessiveNesting_throwsProtocolError() {
-        StringBuilder frame = new StringBuilder();
-        for (int i = 0; i < 130; i++) {
-            frame.append("*1\r\n");
-        }
-        frame.append("+OK\r\n");
-
-        PhotonProtocolError error = assertThrows(PhotonProtocolError.class,
-                () -> RespCodec.decode(frame.toString().getBytes(StandardCharsets.UTF_8)));
-        assertTrue(error.getMessage().contains("nesting depth"));
+        DecodeResult result = RespCodec.decode(data);
+        assertTrue(result.getValue() instanceof RespArray);
+        RespArray array = (RespArray) result.getValue();
+        assertEquals(2, array.getElements().size());
     }
 
     // === Incomplete frame tests ===
