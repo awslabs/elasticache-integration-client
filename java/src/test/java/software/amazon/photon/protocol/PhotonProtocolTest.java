@@ -112,6 +112,24 @@ class PhotonProtocolTest {
         assertEquals("content-type:application/json", resultStr);
     }
 
+    @Test
+    void normalizeHeaders_isIndependentOfDefaultLocale() {
+        Locale originalLocale = Locale.getDefault();
+        try {
+            Locale.setDefault(new Locale("tr", "TR"));
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("If-Match", " value ");
+
+            String result = new String(
+                    PhotonProtocol.normalizeHeaders(headers),
+                    StandardCharsets.UTF_8);
+
+            assertEquals("if-match:value", result);
+        } finally {
+            Locale.setDefault(originalLocale);
+        }
+    }
+
     // === formatMetadata tests ===
 
     @Test

@@ -127,7 +127,7 @@ function decodeBulkString(data: Buffer, header: Buffer, afterHeader: number): [R
   return [data.subarray(afterHeader, end), end + CRLF.length];
 }
 
-/** Decode a `*` array or `>` push, or `null` for the `*-1` null array. */
+/** Decode a `*` array, or `null` for the `*-1` null array. */
 function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
   const count = parseLength(header, "array length");
   if (count === -1) {
@@ -148,14 +148,14 @@ function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespVa
   return [items, position];
 }
 
-// Prefix -> decoder dispatch. `*` (array) and `>` (push) share the same array semantics.
+// Prefix -> decoder dispatch. Push frames are intentionally unsupported because
+// the connector only supports FIFO request/reply correlation.
 const DECODERS: Record<string, Decoder> = {
   "+": decodeSimpleString,
   ":": decodeInteger,
   "-": decodeError,
   $: decodeBulkString,
   "*": decodeArray,
-  ">": decodeArray,
 };
 
 /** Decode a single RESP3 value beginning at `start`. */
@@ -164,7 +164,7 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
     throw new IncompleteFrameError("empty buffer");
   }
 
-  // Read the type prefix (+ - : $ * >)
+  // Read the type prefix (+ - : $ *)
   const prefix = data.subarray(start, start + 1).toString("ascii");
   // Find the end of the header line ("$3", ":42", "+OK", ...)
   const lineEnd = data.indexOf(CRLF, start + 1);

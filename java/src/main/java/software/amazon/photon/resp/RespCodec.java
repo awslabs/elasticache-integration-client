@@ -13,6 +13,7 @@ import java.util.List;
 public final class RespCodec {
 
     private static final byte[] CRLF = new byte[]{'\r', '\n'};
+    private static final int MAX_NESTING_DEPTH = 128;
 
     private RespCodec() {
     }
@@ -82,8 +83,16 @@ public final class RespCodec {
      * @throws PhotonProtocolError if data is malformed / garbage
      */
     public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
+        return decode(data, start, 0);
+    }
+
+    private static DecodeResult decode(byte[] data, int start, int depth) throws IncompleteFrame {
         if (start >= data.length) {
             throw new IncompleteFrame("No data available at position " + start);
+        }
+        if (depth > MAX_NESTING_DEPTH) {
+            throw new PhotonProtocolError(
+                    "RESP nesting depth exceeded maximum of " + MAX_NESTING_DEPTH);
         }
 
         byte prefix = data[start];
@@ -97,10 +106,9 @@ public final class RespCodec {
             case '$':
                 return decodeBulkString(data, start);
             case '*':
-                return decodeArray(data, start);
+                return decodeArray(data, start, depth);
             case '>':
-                // Push type decoded same as array
-                return decodeArray(data, start);
+                throw new PhotonProtocolError("RESP push frames are not supported");
             default:
                 throw new PhotonProtocolError("Unknown RESP prefix: " + (char) prefix + " (0x" + Integer.toHexString(prefix & 0xFF) + ")");
         }
@@ -196,7 +204,7 @@ public final class RespCodec {
         return new DecodeResult(new RespBulkString(value), dataEnd + 2);
     }
 
-    private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrame {
+    private static DecodeResult decodeArray(byte[] data, int start, int depth) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete array length");
@@ -220,7 +228,7 @@ public final class RespCodec {
         List<RespValue> elements = new ArrayList<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
-            DecodeResult element = decode(data, pos);
+            DecodeResult element = decode(data, pos, depth + 1);
             elements.add(element.getValue());
             pos = element.getPosition();
         }

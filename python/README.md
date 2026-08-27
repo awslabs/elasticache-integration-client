@@ -17,7 +17,7 @@ how to run the unit vs. end-to-end tests.
 The library delivers the happy path: intercept → serialize → `photon.config` handshake →
 `photon.request` → return the cached response over a real TLS RESP3 connection, with
 session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connector**
-(`PhotonConnector`) — no Glide or other native dependency.
+(`PhotonConnector`) with bounded response frames — no Glide or other native dependency.
 
 ## Next steps:
 

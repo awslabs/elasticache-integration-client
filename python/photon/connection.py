@@ -23,7 +23,14 @@ from photon.exceptions import (
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import IncompleteFrame, RespError, RespValue, decode_resp, encode_resp
+from photon.resp import (
+    DEFAULT_MAX_FRAME_SIZE,
+    IncompleteFrame,
+    RespError,
+    RespValue,
+    decode_resp,
+    encode_resp,
+)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
@@ -36,9 +43,15 @@ _DEFAULT_MAX_PENDING = 100
 class _SocketReader:
     """Accumulates bytes from ``sock`` and yields one framed RespValue per :meth:`read_frame`."""
 
-    def __init__(self, sock, read_size: int = _DEFAULT_READ_SIZE) -> None:
+    def __init__(
+        self,
+        sock,
+        read_size: int = _DEFAULT_READ_SIZE,
+        max_response_size: int = DEFAULT_MAX_FRAME_SIZE,
+    ) -> None:
         self._sock = sock
         self._read_size = read_size
+        self._max_response_size = max_response_size
         self._buf = b""
 
     def read_frame(self) -> RespValue:
@@ -49,13 +62,25 @@ class _SocketReader:
         """
         while True:
             try:
-                value, consumed = decode_resp(self._buf)
+                value, consumed = decode_resp(
+                    self._buf,
+                    max_frame_size=self._max_response_size,
+                )
             except IncompleteFrame:
-                chunk = self._sock.recv(self._read_size)
+                if len(self._buf) > self._max_response_size:
+                    raise PhotonProtocolError(
+                        f"response exceeded maximum size of {self._max_response_size} bytes"
+                    )
+                remaining = self._max_response_size + 1 - len(self._buf)
+                chunk = self._sock.recv(min(self._read_size, remaining))
                 if not chunk:
                     raise PhotonConnectionLost("connection closed by peer")
                 self._buf += chunk
                 continue
+            if consumed > self._max_response_size:
+                raise PhotonProtocolError(
+                    f"response exceeded maximum size of {self._max_response_size} bytes"
+                )
             self._buf = self._buf[consumed:]  # retain any trailing bytes for the next frame
             return value
 
@@ -111,6 +136,7 @@ class PhotonConnector:
         config_timeout: float = _DEFAULT_CONFIG_TIMEOUT,
         ca_certs: str | None = None,
         socket_read_size: int = _DEFAULT_READ_SIZE,
+        max_response_size: int = DEFAULT_MAX_FRAME_SIZE,
         auth_provider=None,
         max_pending: int = _DEFAULT_MAX_PENDING,
     ) -> None:
@@ -122,6 +148,9 @@ class PhotonConnector:
         self.config_timeout = config_timeout  # read by PhotonSession for the config exchange
         self._ca_certs = ca_certs
         self._read_size = socket_read_size
+        if max_response_size <= 0:
+            raise PhotonError("max_response_size must be positive")
+        self._max_response_size = max_response_size
         self._auth_provider = auth_provider
 
         self._sock: socket.socket | None = None
@@ -145,7 +174,7 @@ class PhotonConnector:
         except OSError as exc:
             raise PhotonConnectionError(f"Failed to connect to {self._host}:{self._port}") from exc
         sock = self._configure_socket(sock)
-        reader = _SocketReader(sock, self._read_size)
+        reader = _SocketReader(sock, self._read_size, self._max_response_size)
         thread = threading.Thread(target=self._reader_loop, name="photon-reader", daemon=True)
 
         # Phase 2: install-or-rollback under the lock. Installing the socket AND starting the
