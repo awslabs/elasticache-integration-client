@@ -7,6 +7,7 @@ import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
+import software.amazon.photon.predicate.PredicateEvaluator;
 
 import java.io.Closeable;
 import java.util.Collections;
@@ -22,9 +23,9 @@ import java.util.function.Supplier;
  *
  * <p>Lifecycle: {@code CREATED} → {@code OPEN} → {@code CLOSED}
  *
- * <p>Scope: no predicate filtering, degradation, circuit breaking, retry,
- * pass-through, or periodic config refresh. The resolved config is fetched
- * once and stored for protocol compliance only. Errors propagate.
+ * <p>Resolved CEL predicates determine which requests are sent to Photon.
+ * Requests with no matching predicate are declined for origin pass-through.
+ * The config is fetched and compiled once; periodic refresh remains out of scope.
  *
  * <p>Usage:
  * <pre>{@code
@@ -57,6 +58,7 @@ public class PhotonSession implements Closeable {
 
     private volatile State state = State.CREATED;
     private ResolvedConfig resolvedConfig;
+    private PredicateEvaluator predicateEvaluator;
 
     /**
      * Create a session with the given connection and auth provider.
@@ -137,6 +139,7 @@ public class PhotonSession implements Closeable {
             AuthCredentials creds = authProvider.get();
             connection.authenticate(creds.getUserId(), creds.getToken());
             resolvedConfig = connection.configureAndStartReader(configOverrides);
+            predicateEvaluator = PredicateEvaluator.compile(resolvedConfig.getRaw());
         } catch (Exception e) {
             // Close on failure to clean up partially-opened state
             try {
@@ -150,13 +153,14 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Send a request to the cache.
+     * Route a request to the cache when a resolved CEL predicate matches.
      *
-     * <p>Requests are forwarded unconditionally (no filtering). Connection
-     * and protocol errors propagate.
+     * <p>A {@code null} return means no predicate matched and the caller should
+     * send the request to the origin service. Connection and protocol errors
+     * still propagate.
      *
      * @param request the request to send
-     * @return the cache response
+     * @return the cache response, or null when Photon declines the request
      * @throws PhotonError if the session is not open
      */
     public PhotonResponse request(PhotonRequest request) {
@@ -166,6 +170,9 @@ public class PhotonSession implements Closeable {
     PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
         if (state != State.OPEN) {
             throw new PhotonError("request() called on a " + state.name().toLowerCase() + " session");
+        }
+        if (!predicateEvaluator.route(request)) {
+            return null;
         }
         return connection.request(request, cancellation);
     }

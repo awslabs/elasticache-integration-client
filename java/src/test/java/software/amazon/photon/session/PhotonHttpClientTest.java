@@ -65,6 +65,21 @@ class PhotonHttpClientTest {
     }
 
     @Test
+    void predicateDeclineDelegatesExactSignedRequest() throws Exception {
+        StubSession session = new StubSession();
+        session.response = null;
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false);
+        HttpExecuteRequest signedRequest = signedRequest();
+
+        HttpExecuteResponse response = client.prepareRequest(signedRequest).call();
+
+        assertEquals(201, response.httpResponse().statusCode());
+        assertSame(signedRequest, origin.request.get());
+        assertEquals(1, session.requestCount.get());
+    }
+
+    @Test
     void unexpectedRuntimeExceptionPropagates() {
         StubSession session = new StubSession();
         session.failure = new IllegalStateException("bug");

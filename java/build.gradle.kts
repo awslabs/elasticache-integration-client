@@ -18,6 +18,8 @@ repositories {
 
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
+    implementation("dev.cel:compiler:0.14.0")
+    implementation("dev.cel:runtime:0.14.0")
 
     // AWS SDK v2 for IAM auth (SigV4 presigning) and ExecutionInterceptor integration
     implementation(platform("software.amazon.awssdk:bom:2.25.16"))
