@@ -71,11 +71,15 @@ class PhotonClientTest {
 
     @Test
     void builder_withEndpoint_parsesHostAndPort() {
+        DynamoDbClientBuilder origin = DynamoDbClient.builder();
+        sdkConfig.accept(origin);
+
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(origin)
+                .build()) {
             
             assertNotNull(result.client());
             assertNotNull(result.handle());
@@ -90,7 +94,8 @@ class PhotonClientTest {
                 .port(server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             
             assertNotNull(result.client());
             assertTrue(result.handle().isOpen());
@@ -114,7 +119,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+                .origin(DynamoDbClient.builder(), unreachableOriginConfig)
+                .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -154,7 +160,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), unreachableOriginConfig)) {
+                .origin(DynamoDbClient.builder(), unreachableOriginConfig)
+                .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -168,7 +175,7 @@ class PhotonClientTest {
                 .host("other-host")
                 .authCredentials(TEST_USER, TEST_TOKEN);
 
-        assertThrows(PhotonError.class, () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+        assertThrows(PhotonError.class, () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
     }
 
     @Test
@@ -177,7 +184,7 @@ class PhotonClientTest {
                 .authCredentials(TEST_USER, TEST_TOKEN);
 
         PhotonError error = assertThrows(PhotonError.class, 
-                () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+                () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
         assertTrue(error.getMessage().contains("endpoint or host is required"));
     }
 
@@ -187,7 +194,7 @@ class PhotonClientTest {
                 .endpoint("cache.example.com:6379");
 
         PhotonError error = assertThrows(PhotonError.class, 
-                () -> builder.build(DynamoDbClient.builder(), sdkConfig));
+                () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
         assertTrue(error.getMessage().contains("authProvider is required"));
     }
 
@@ -197,7 +204,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, "my-static-token")
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             
             assertTrue(result.handle().isOpen());
         }
@@ -209,7 +217,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig);
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build();
 
         assertTrue(result.handle().isOpen());
         
@@ -224,7 +233,8 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig);
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build();
 
         result.close();
         result.close(); // Should not throw
@@ -244,7 +254,8 @@ class PhotonClientTest {
                 .sslContext(clientSslContext)
                 .connectTimeoutMs(100)
                 .originHttpClient(origin)
-                .build(DynamoDbClient.builder(), sdkConfig));
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build());
 
         assertNull(origin.request.get());
         assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
@@ -262,7 +273,8 @@ class PhotonClientTest {
                 .sslContext(clientSslContext)
                 .requestTimeoutMs(100)
                 .originHttpClient(origin)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -277,7 +289,8 @@ class PhotonClientTest {
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .configOverrides(Collections.singletonMap("ttl", 300))
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             
             assertNotNull(result.handle().getSession().getResolvedConfig());
         }
@@ -292,7 +305,8 @@ class PhotonClientTest {
                 .initializationTimeoutMs(2000)
                 .requestTimeoutMs(2000)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             
             assertTrue(result.handle().isOpen());
         }
@@ -321,10 +335,11 @@ class PhotonClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
-                .build(DynamoDbClient.builder(), b -> {
+                .origin(DynamoDbClient.builder(), b -> {
                     sdkConfig.accept(b);  // Apply base config (region, creds, endpoint)
                     b.overrideConfiguration(sdkOverride);  // Add our custom override config
-                })) {
+                })
+                .build()) {
             
             assertTrue(result.handle().isOpen());
             result.client().listTables();
@@ -341,7 +356,8 @@ class PhotonClientTest {
                 .authCredentials(TEST_USER, TEST_TOKEN)
                 .sslContext(clientSslContext)
                 // No sdkOverrideConfiguration set
-                .build(DynamoDbClient.builder(), sdkConfig)) {
+                .origin(DynamoDbClient.builder(), sdkConfig)
+                .build()) {
             
             assertTrue(result.handle().isOpen());
         }

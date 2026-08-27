@@ -26,7 +26,8 @@ import java.util.function.Supplier;
  * PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
  *     .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
  *     .authProvider(iamAuthProvider)
- *     .build(DynamoDbClient.builder());
+ *     .origin(DynamoDbClient.builder())
+ *     .build();
  *
  * try (result) {
  *     ListTablesResponse response = result.client().listTables();
@@ -58,7 +59,8 @@ public final class PhotonClient {
      * to close both resources together. Use try-with-resources:
      *
      * <pre>{@code
-     * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()...build(...)) {
+     * try (PhotonClient.Result<DynamoDbClient> result =
+     *         PhotonClient.builder()...origin(...).build()) {
      *     result.client().listTables();
      * }
      * }</pre>
@@ -226,42 +228,28 @@ public final class PhotonClient {
         }
 
         /**
-         * Build the SDK client with Photon enabled.
-         *
-         * <p>This connects to Photon, authenticates, performs the config handshake,
-         * installs the interceptor and HTTP transport, and returns a {@link Result}
-         * containing the ready-to-use SDK client.
-         *
-         * <p>Example:
-         * <pre>{@code
-         * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-         *         .endpoint("cache.example.com:6379")
-         *         .authProvider(iamAuth)
-         *         .build(DynamoDbClient.builder())) {
-         *     result.client().listTables();
-         * }
-         * }</pre>
+         * Set the origin SDK client builder.
          *
          * @param sdkClientBuilder the SDK client builder (e.g., {@code DynamoDbClient.builder()})
          * @param <B> the SDK client builder type
          * @param <C> the SDK client type
-         * @return a Result containing the configured SDK client and Photon handle
-         * @throws PhotonError if connection or authentication fails
+         * @return a typed builder ready to build the Photon-enabled SDK client
          */
         public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
-                Result<C> build(B sdkClientBuilder) {
-            return build(sdkClientBuilder, null);
+                OriginBuilder<B, C> origin(B sdkClientBuilder) {
+            return origin(sdkClientBuilder, null);
         }
 
         /**
-         * Build the SDK client with Photon enabled and additional SDK configuration.
+         * Set the origin SDK client builder and additional SDK configuration.
          *
          * <p>Example:
          * <pre>{@code
          * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
          *         .endpoint("cache.example.com:6379")
          *         .authProvider(iamAuth)
-         *         .build(DynamoDbClient.builder(), b -> b.region(Region.US_EAST_1))) {
+         *         .origin(DynamoDbClient.builder(), b -> b.region(Region.US_EAST_1))
+         *         .build()) {
          *     result.client().listTables();
          * }
          * }</pre>
@@ -270,14 +258,21 @@ public final class PhotonClient {
          * @param sdkConfigurer additional SDK client configuration (may be null)
          * @param <B> the SDK client builder type
          * @param <C> the SDK client type
-         * @return a Result containing the configured SDK client and Photon handle
-         * @throws PhotonError if connection or authentication fails
+         * @return a typed builder ready to build the Photon-enabled SDK client
          */
-        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient> Result<C> build(
+        public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
+                OriginBuilder<B, C> origin(
                 B sdkClientBuilder, Consumer<B> sdkConfigurer) {
-            
+            if (sdkClientBuilder == null) {
+                throw new NullPointerException("sdkClientBuilder");
+            }
+            return new OriginBuilder<>(this, sdkClientBuilder, sdkConfigurer);
+        }
+
+        private <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
+                Result<C> build(B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             PhotonHandle handle = buildHandle();
-            
+
             try {
                 handle.open();
             } catch (RuntimeException initializationFailure) {
@@ -360,6 +355,40 @@ public final class PhotonClient {
             configBuilder.addExecutionInterceptor(interceptor);
             
             return configBuilder.build();
+        }
+    }
+
+    /**
+     * Typed terminal builder for creating a Photon-enabled SDK client.
+     *
+     * @param <B> the SDK client builder type
+     * @param <C> the SDK client type
+     */
+    public static final class OriginBuilder<
+            B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>,
+            C extends SdkClient> {
+        private final Builder photonBuilder;
+        private final B sdkClientBuilder;
+        private final Consumer<B> sdkConfigurer;
+
+        private OriginBuilder(Builder photonBuilder, B sdkClientBuilder, Consumer<B> sdkConfigurer) {
+            this.photonBuilder = photonBuilder;
+            this.sdkClientBuilder = sdkClientBuilder;
+            this.sdkConfigurer = sdkConfigurer;
+        }
+
+        /**
+         * Build the SDK client with Photon enabled.
+         *
+         * <p>This connects to Photon, authenticates, performs the config handshake,
+         * installs the interceptor and HTTP transport, and returns a {@link Result}
+         * containing the ready-to-use SDK client.
+         *
+         * @return a Result containing the configured SDK client and Photon handle
+         * @throws PhotonError if connection or authentication fails
+         */
+        public Result<C> build() {
+            return photonBuilder.build(sdkClientBuilder, sdkConfigurer);
         }
     }
 }
