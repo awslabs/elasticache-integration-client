@@ -228,7 +228,23 @@ public final class PhotonClient {
         }
 
         /**
-         * Set the origin SDK client builder.
+         * Set the origin SDK client builder for a Photon-enabled client.
+         *
+         * <p>Calling {@link OriginBuilder#build()} on the returned builder connects to
+         * Photon, authenticates, performs the config handshake, installs the interceptor
+         * and HTTP transport, and returns a {@link Result} containing the ready-to-use
+         * SDK client.
+         *
+         * <p>Example:
+         * <pre>{@code
+         * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+         *         .endpoint("cache.example.com:6379")
+         *         .authProvider(iamAuth)
+         *         .origin(DynamoDbClient.builder())
+         *         .build()) {
+         *     result.client().listTables();
+         * }
+         * }</pre>
          *
          * @param sdkClientBuilder the SDK client builder (e.g., {@code DynamoDbClient.builder()})
          * @param <B> the SDK client builder type
