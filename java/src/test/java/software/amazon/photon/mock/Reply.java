@@ -14,19 +14,21 @@ public class Reply {
     private final byte[] body;
     private final String errorCode;
     private final String errorMessage;
+    private final Long requestId;
 
     private Reply(boolean isError, int statusCode, Map<String, String> headers, byte[] body,
-                  String errorCode, String errorMessage) {
+                  String errorCode, String errorMessage, Long requestId) {
         this.isError = isError;
         this.statusCode = statusCode;
         this.headers = headers;
         this.body = body;
         this.errorCode = errorCode;
         this.errorMessage = errorMessage;
+        this.requestId = requestId;
     }
 
     public static Reply ok(int statusCode, Map<String, String> headers, byte[] body) {
-        return new Reply(false, statusCode, headers, body, null, null);
+        return new Reply(false, statusCode, headers, body, null, null, null);
     }
 
     public static Reply ok(int statusCode, Map<String, String> headers, String body) {
@@ -34,7 +36,11 @@ public class Reply {
     }
 
     public static Reply error(String code, String message) {
-        return new Reply(true, 0, null, null, code, message);
+        return new Reply(true, 0, null, null, code, message, null);
+    }
+
+    public static Reply requestId(long requestId) {
+        return new Reply(false, 0, null, null, null, null, requestId);
     }
 
     public boolean isError() {
@@ -59,5 +65,13 @@ public class Reply {
 
     public String getErrorMessage() {
         return errorMessage;
+    }
+
+    public boolean hasRequestId() {
+        return requestId != null;
+    }
+
+    public long getRequestId() {
+        return requestId;
     }
 }

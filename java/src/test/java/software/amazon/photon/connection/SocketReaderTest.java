@@ -3,6 +3,8 @@ package software.amazon.photon.connection;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.resp.RespBulkString;
+import software.amazon.photon.resp.RespError;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
@@ -146,7 +148,7 @@ class SocketReaderTest {
 
     @Test
     void readAndResolve_resolvesPendingFuture() {
-        byte[] data = "+VALUE\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] data = "$5\r\nVALUE\r\n".getBytes(StandardCharsets.UTF_8);
         InputStream input = new ByteArrayInputStream(data);
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
@@ -160,12 +162,12 @@ class SocketReaderTest {
 
         assertTrue(future.isDone());
         RespValue value = future.join();
-        assertEquals("VALUE", new String(((RespSimpleString) value).getValue(), StandardCharsets.UTF_8));
+        assertEquals("VALUE", new String(((RespBulkString) value).getValue(), StandardCharsets.UTF_8));
     }
 
     @Test
     void readAndResolve_noPending_throwsProtocolError() {
-        byte[] data = "+ORPHAN\r\n".getBytes(StandardCharsets.UTF_8);
+        byte[] data = "$6\r\nORPHAN\r\n".getBytes(StandardCharsets.UTF_8);
         InputStream input = new ByteArrayInputStream(data);
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
@@ -173,6 +175,71 @@ class SocketReaderTest {
         // No pending request registered
         PhotonProtocolError e = assertThrows(PhotonProtocolError.class, reader::readAndResolve);
         assertTrue(e.getMessage().contains("no pending request"));
+    }
+
+    @Test
+    void readAndResolve_requestIdThenPush_resolvesDeferredFuture() {
+        byte[] data = ("+42\r\n"
+                + ">3\r\n$15\r\nphoton.response\r\n:42\r\n-ERR origin failed\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        reader.readAndResolve();
+        assertFalse(future.isDone());
+        assertEquals(0, pending.size());
+
+        reader.readAndResolve();
+        assertEquals(new RespError("ERR", "origin failed"), future.join());
+    }
+
+    @Test
+    void readAndResolve_okSimpleString_remainsFifoReply() {
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        SocketReader reader = new SocketReader(
+                new ByteArrayInputStream("+OK\r\n".getBytes(StandardCharsets.UTF_8)),
+                pending, () -> {});
+
+        reader.readAndResolve();
+
+        assertEquals(new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)), future.join());
+    }
+
+    @Test
+    void readAndResolve_unknownPushKindAndId_areIgnored() {
+        byte[] data = (">2\r\n$10\r\nother.kind\r\n:1\r\n"
+                + ">3\r\n$15\r\nphoton.response\r\n:999\r\n+ignored\r\n"
+                + "+OK\r\n").getBytes(StandardCharsets.UTF_8);
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        reader.readAndResolve();
+        reader.readAndResolve();
+        assertFalse(future.isDone());
+
+        reader.readAndResolve();
+        assertEquals(new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)), future.join());
+    }
+
+    @Test
+    void readAndResolve_malformedPushes_throwProtocolError() {
+        String[] frames = {
+                ">0\r\n",
+                ">1\r\n:123\r\n",
+                ">2\r\n$15\r\nphoton.response\r\n:42\r\n",
+                ">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n+value\r\n"
+        };
+
+        for (String frame : frames) {
+            PendingRequests pending = new PendingRequests();
+            SocketReader reader = new SocketReader(
+                    new ByteArrayInputStream(frame.getBytes(StandardCharsets.UTF_8)),
+                    pending, () -> {});
+            assertThrows(PhotonProtocolError.class, reader::readAndResolve, frame);
+        }
     }
 
     @Test

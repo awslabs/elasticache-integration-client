@@ -11,7 +11,7 @@
 
 - `src/main/java/software/amazon/photon/`: production Java modules organized by
   concern:
-  - `connection/`: TCP/TLS socket management, FIFO request correlation.
+  - `connection/`: TCP/TLS socket management, FIFO/request-ID correlation.
   - `session/`: PhotonSession, PhotonClient (SDK integration), PhotonInterceptor.
   - `protocol/`: Photon wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
@@ -39,8 +39,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 8 compatibility. CI runs on Java 8, 11, and 17; do not use
-  records, sealed classes, pattern matching, or APIs newer than Java 8.
+- Target Java 8 source and bytecode compatibility; CI also validates JDK 11 and
+  JDK 17. Do not use language or library APIs introduced after Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
@@ -77,7 +77,8 @@ require the corresponding tests, README, and build checks to change with it.
 - **Connection safety:** flag changes that can mis-correlate FIFO replies or
   leave pending requests unresolved after peer loss, protocol failure, or close.
   Safe path: reject use before connect, register before writing, and reset the
-  whole connection on timeout so late replies cannot match later requests.
+  whole connection for FIFO/send/write timeouts; deferred request-ID timeouts
+  may fail only that request and drop a later push for the removed ID.
 - **Session lifecycle:** flag changes that permit requests before
   `connect → authenticate → photon.config`, use after close, or duplicate
   teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,

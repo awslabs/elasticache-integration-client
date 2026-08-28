@@ -16,6 +16,14 @@ import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
+import software.amazon.photon.protocol.PhotonProtocol;
+import software.amazon.photon.resp.RespArray;
+import software.amazon.photon.resp.RespBulkString;
+import software.amazon.photon.resp.RespError;
+import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespPush;
+import software.amazon.photon.resp.RespSimpleString;
+import software.amazon.photon.resp.RespValue;
 
 import javax.net.ssl.SSLContext;
 import java.io.IOException;
@@ -23,6 +31,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -48,7 +57,7 @@ class PhotonConnectorIntegrationTest {
 
     private static final String TEST_USER = "test-user";
     private static final String TEST_TOKEN = "test-token";
-    
+
     private MockCache cache;
     private MockTlsServer server;
     private SSLContext clientSslContext;
@@ -320,6 +329,165 @@ class PhotonConnectorIntegrationTest {
         }
     }
 
+    @Test
+    void request_deferredResponseDoesNotBlockLaterFifoReply() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                firstReceived.countDown();
+                return Reply.requestId(42);
+            }
+            return Reply.ok(200, Collections.emptyMap(), request.getBody());
+        });
+
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<PhotonResponse> deferred = executor.submit(
+                    () -> conn.request(testRequest("deferred")));
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            Future<PhotonResponse> fast = executor.submit(
+                    () -> conn.request(testRequest("fast")));
+            assertEquals("fast", new String(
+                    fast.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            assertFalse(deferred.isDone());
+
+            server.sendPush(responsePush(42, responseValue("deferred")));
+            assertEquals("deferred", new String(
+                    deferred.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_deferredLargeIdAndPushedError_useNormalParserPath() throws Exception {
+        CountDownLatch requestIdSent = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            requestIdSent.countDown();
+            return Reply.requestId(Long.MAX_VALUE);
+        });
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<PhotonResponse> deferred = executor.submit(() -> conn.request(testRequest()));
+            assertTrue(requestIdSent.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            server.sendPush(responsePush(
+                    Long.MAX_VALUE, new RespError("ERR", "origin failed")));
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> deferred.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonProtocolError);
+            assertTrue(failure.getCause().getMessage().contains("origin failed"));
+            assertFalse(conn.isDead());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_unknownPushKindAndId_areIgnored() throws Exception {
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 1000, PhotonConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            server.sendPush(new RespPush(Collections.singletonList(
+                    bulk("future.push"))));
+            server.sendPush(responsePush(999, responseValue("ignored")));
+
+            PhotonResponse response = conn.request(testRequest());
+
+            assertEquals(200, response.getStatusCode());
+            assertFalse(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_malformedRecognizedPush_killsConnection() throws Exception {
+        CountDownLatch requestIdSent = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            requestIdSent.countDown();
+            return Reply.requestId(42);
+        });
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<PhotonResponse> deferred = executor.submit(() -> conn.request(testRequest()));
+            assertTrue(requestIdSent.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            server.sendRaw(
+                    ">2\r\n$15\r\nphoton.response\r\n:42\r\n"
+                            .getBytes(StandardCharsets.UTF_8));
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> deferred.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonProtocolError);
+            assertTrue(conn.isDead());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_deferredTimeoutKeepsConnectionAliveAndDropsLatePush() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch requestIdSent = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                requestIdSent.countDown();
+                return Reply.requestId(42);
+            }
+            return Reply.ok(200, Collections.emptyMap(), request.getBody());
+        });
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 150, PhotonConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            Future<PhotonResponse> deferred =
+                    executor.submit(() -> conn.request(testRequest("deferred")));
+            assertTrue(requestIdSent.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            ExecutionException failure = assertThrows(
+                    ExecutionException.class, () -> deferred.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof PhotonTimeoutError);
+            assertFalse(conn.isDead());
+
+            server.sendPush(responsePush(42, responseValue("late")));
+            PhotonResponse response = conn.request(testRequest("after"));
+
+            assertEquals("after", new String(response.getBody(), StandardCharsets.UTF_8));
+            assertFalse(conn.isDead());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
     // === Connection state ===
 
     @Test
@@ -460,6 +628,62 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
+    void request_cancelledDeferredResponseReleasesIdAndKeepsConnectionUsable()
+            throws Exception {
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        CountDownLatch secondReceived = new CountDownLatch(1);
+        AtomicInteger sequence = new AtomicInteger();
+        cache.setReplyFunction(request -> {
+            int requestNumber = sequence.getAndIncrement();
+            if (requestNumber == 0) {
+                firstReceived.countDown();
+                return Reply.requestId(42);
+            }
+            if (requestNumber == 1) {
+                secondReceived.countDown();
+                return Reply.requestId(42);
+            }
+            return Reply.ok(200, Collections.emptyMap(), request.getBody());
+        });
+
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 2000, PhotonConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
+            Future<PhotonResponse> cancelled = executor.submit(
+                    () -> conn.request(testRequest("cancelled"), cancellation));
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            cancellation.cancel();
+            ExecutionException cancellationFailure = assertThrows(
+                    ExecutionException.class, () -> cancelled.get(1, TimeUnit.SECONDS));
+            assertTrue(cancellationFailure.getCause()
+                    instanceof PhotonRequestCancellation.CancelledException);
+            assertFalse(conn.isDead());
+
+            Future<PhotonResponse> reusedId = executor.submit(
+                    () -> conn.request(testRequest("reused")));
+            assertTrue(secondReceived.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+            server.sendPush(responsePush(42, responseValue("reused")));
+            assertEquals("reused", new String(
+                    reusedId.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+
+            server.sendPush(responsePush(42, responseValue("late")));
+            PhotonResponse after = conn.request(testRequest("after"));
+            assertEquals("after", new String(after.getBody(), StandardCharsets.UTF_8));
+            assertFalse(conn.isDead());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
     void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
         PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
@@ -525,10 +749,42 @@ class PhotonConnectorIntegrationTest {
     }
 
     private static PhotonRequest testRequest() {
+        return testRequest("");
+    }
+
+    private static PhotonRequest testRequest(String body) {
         return new PhotonRequest(
                 "GET", "https://example.com/item",
-                Collections.emptyMap(), new byte[0],
+                Collections.emptyMap(), body.getBytes(StandardCharsets.UTF_8),
                 new RequestMetadata("dynamodb", "GetItem"));
+    }
+
+    private static RespPush responsePush(long requestId, RespValue response) {
+        List<RespValue> elements = new ArrayList<>();
+        elements.add(bulk(PhotonProtocol.PUSH_KIND_RESPONSE));
+        elements.add(new RespInteger(requestId));
+        elements.add(response);
+        return new RespPush(elements);
+    }
+
+    private static RespArray responseValue(String body) {
+        return new RespArray(Arrays.asList(
+                new RespInteger(200),
+                bulk(""),
+                bulk(body)));
+    }
+
+    private static RespBulkString bulk(String value) {
+        return new RespBulkString(value.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void awaitFifoSize(PhotonConnector conn, int expected) throws Exception {
+        PendingRequests pending = getField(conn, "pending", PendingRequests.class);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (pending.size() != expected && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(expected, pending.size());
     }
 
     private static <T> T getField(Object target, String name, Class<T> type) throws Exception {
@@ -729,7 +985,7 @@ class PhotonConnectorIntegrationTest {
         PhotonConnector conn = new PhotonConnector("127.0.0.1", server.getPort(), clientSslContext);
         
         PhotonConnectionError error = assertThrows(PhotonConnectionError.class, conn::connect);
-        
+
         // The error should be related to certificate/hostname mismatch
         assertTrue(error.getMessage().contains("TLS") || error.getCause() != null,
                 "Should fail due to TLS hostname verification");

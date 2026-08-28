@@ -35,6 +35,7 @@ public final class PhotonProtocol {
 
     public static final String CONFIG_COMMAND = "photon.config";
     public static final String REQUEST_COMMAND = "photon.request";
+    public static final String PUSH_KIND_RESPONSE = "photon.response";
 
     private static final Set<String> EXCLUDED_HEADERS;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();

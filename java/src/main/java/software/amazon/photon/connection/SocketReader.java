@@ -3,23 +3,29 @@ package software.amazon.photon.connection;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
+import software.amazon.photon.protocol.PhotonProtocol;
 import software.amazon.photon.resp.DecodeResult;
 import software.amazon.photon.resp.IncompleteFrame;
+import software.amazon.photon.resp.RespBulkString;
 import software.amazon.photon.resp.RespCodec;
+import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespPush;
+import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
+import java.nio.charset.StandardCharsets;
 
 /**
- * Reads RESP frames from a socket and resolves pending futures in FIFO order.
+ * Reads RESP frames and resolves pending futures by FIFO position or request ID.
  *
  * <p>This class manages the read buffer and frame decoding. It runs in a
  * dedicated reader thread (or can be used synchronously for single-threaded
- * connections). When a complete frame is decoded, it resolves the next
- * pending future from the queue.
+ * connections). Complete frames are routed as positional replies, deferred
+ * request IDs, or response pushes.
  *
  * <p>On any error (timeout, EOF, protocol error), it fails all pending
  * requests and signals the connection to close.
@@ -101,11 +107,45 @@ public class SocketReader {
      */
     public void readAndResolve() {
         RespValue value = readFrame();
+        if (value instanceof RespPush) {
+            handlePush((RespPush) value);
+            return;
+        }
+        if (value instanceof RespSimpleString) {
+            String text = new String(
+                    ((RespSimpleString) value).getValue(), StandardCharsets.UTF_8);
+            if (!"OK".equals(text) && pending.moveNextToAsyncResponses(text)) {
+                return;
+            }
+        }
         boolean resolved = pending.resolveOldestRequest(value);
         if (!resolved) {
             // Unexpected response with no pending request - protocol error
             throw new PhotonProtocolError("Received response with no pending request");
         }
+    }
+
+    private void handlePush(RespPush push) {
+        if (push.getElements().isEmpty()
+                || !(push.getElements().get(0) instanceof RespBulkString)) {
+            throw new PhotonProtocolError("Malformed RESP push payload");
+        }
+
+        String kind = new String(
+                ((RespBulkString) push.getElements().get(0)).getValue(),
+                StandardCharsets.UTF_8);
+        if (!PhotonProtocol.PUSH_KIND_RESPONSE.equals(kind)) {
+            return;
+        }
+        if (push.getElements().size() != 3) {
+            throw new PhotonProtocolError("Malformed photon.response push payload");
+        }
+        if (!(push.getElements().get(1) instanceof RespInteger)) {
+            throw new PhotonProtocolError("Malformed photon.response push request ID");
+        }
+
+        long requestId = ((RespInteger) push.getElements().get(1)).getValue();
+        pending.resolveAsync(Long.toString(requestId), push.getElements().get(2));
     }
 
     /**

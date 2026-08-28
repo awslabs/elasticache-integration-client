@@ -170,6 +170,17 @@ class MockCacheTest {
         assertEquals("miss", error.getMessage());
     }
 
+    @Test
+    void handleRequest_requestIdReply() {
+        cache.setReply(Reply.requestId(Long.MAX_VALUE));
+
+        RespValue response = cache.handle(makeRequestCommand(
+                "GET", "https://example.com", "", new byte[0], "service=s3&op=Get"));
+
+        assertEquals(new RespSimpleString(
+                Long.toString(Long.MAX_VALUE).getBytes(StandardCharsets.UTF_8)), response);
+    }
+
     // === Recording ===
 
     @Test
