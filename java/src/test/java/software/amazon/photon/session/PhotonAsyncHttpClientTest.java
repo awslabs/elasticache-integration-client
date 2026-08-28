@@ -43,7 +43,7 @@ class PhotonAsyncHttpClientTest {
     @Test
     void knownOversizedBodyFallsBackBeforeSubscribing() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
-        TrackingPublisher body = new TrackingPublisher("oversized", true);
+        TrackingPublisher body = new TrackingPublisher("oversized", 9L);
         // The reported 9-byte body exceeds the 4-byte limit; one collector is available.
         PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
 
@@ -56,10 +56,26 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
-    void bodyThatCrossesLimitIsCancelledAndReplayedByOrigin() throws Exception {
+    void unknownLengthBodyFallsBackBeforeSubscribing() throws Exception {
         RecordingBodyOrigin origin = new RecordingBodyOrigin();
-        TrackingPublisher body = new TrackingPublisher("oversized", false);
-        // The publisher omits its length, so the 4-byte limit is enforced while collecting.
+        TrackingPublisher body = new TrackingPublisher("unknown", null);
+        // Unknown lengths are not admitted because Photon cannot bound their collection.
+        PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+
+        client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
+
+        // Only origin subscribes; Photon does not consume any body data.
+        assertEquals(1, body.subscribeCount.get());
+        assertEquals(0, body.cancelCount.get());
+        assertArrayEquals("unknown".getBytes(StandardCharsets.UTF_8), origin.body);
+        client.close();
+    }
+
+    @Test
+    void bodyThatExceedsReportedLengthIsCancelledAndReplayedByOrigin() throws Exception {
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        TrackingPublisher body = new TrackingPublisher("oversized", 4L);
+        // The publisher reports 4 bytes but emits 9, so collection enforces the hard limit.
         PhotonAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
@@ -78,7 +94,7 @@ class PhotonAsyncHttpClientTest {
         RecordingOrigin origin = new RecordingOrigin();
         PhotonRequestContext context = preparedContext();
         BlockingPublisher admittedBody = new BlockingPublisher();
-        TrackingPublisher overflowBody = new TrackingPublisher("second", true);
+        TrackingPublisher overflowBody = new TrackingPublisher("second", 6L);
         // Both bodies fit under 100 bytes, but the blocked request holds the only collector.
         PhotonAsyncHttpClient client = limitedClient(origin, context, 100, 1);
 
@@ -365,19 +381,19 @@ class PhotonAsyncHttpClientTest {
 
     private static final class TrackingPublisher implements SdkHttpContentPublisher {
         private final byte[] body;
-        private final boolean reportsLength;
+        private final Optional<Long> contentLength;
         private final AtomicInteger subscribeCount = new AtomicInteger();
         private final AtomicInteger cancelCount = new AtomicInteger();
         private final AtomicLong collectorDemand = new AtomicLong();
 
-        private TrackingPublisher(String body, boolean reportsLength) {
+        private TrackingPublisher(String body, Long contentLength) {
             this.body = body.getBytes(StandardCharsets.UTF_8);
-            this.reportsLength = reportsLength;
+            this.contentLength = Optional.ofNullable(contentLength);
         }
 
         @Override
         public Optional<Long> contentLength() {
-            return reportsLength ? Optional.of((long) body.length) : Optional.empty();
+            return contentLength;
         }
 
         @Override
@@ -418,7 +434,7 @@ class PhotonAsyncHttpClientTest {
 
         @Override
         public Optional<Long> contentLength() {
-            return Optional.empty();
+            return Optional.of(0L);
         }
 
         @Override

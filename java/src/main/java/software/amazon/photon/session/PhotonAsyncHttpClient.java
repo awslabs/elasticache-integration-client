@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
+    private static final String CLIENT_NAME = "java-photon";
+
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
     private final SdkAsyncHttpClient originClient;
@@ -84,34 +86,55 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             return failed(request.responseHandler(),
                     new IllegalStateException("Photon request was not captured before HTTP execution"));
         }
+        return new RequestExecution(request, capturedRequest).start();
+    }
 
-        CompletableFuture<Void> result = new CompletableFuture<>();
-        PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
-        AtomicReference<CompletableFuture<?>> active = new AtomicReference<>();
-        registerCancellation(result, cancellation, active);
+    private final class RequestExecution {
+        private final AsyncExecuteRequest request;
+        private final PhotonRequest capturedRequest;
+        private final CompletableFuture<Void> result = new CompletableFuture<>();
+        private final PhotonRequestCancellation cancellation = new PhotonRequestCancellation();
+        private final AtomicReference<CompletableFuture<?>> active = new AtomicReference<>();
 
-        SdkHttpContentPublisher publisher = request.requestContentPublisher();
-        if (publisher.contentLength()
-                .map(length -> length > maxBufferedRequestBytes)
-                .orElse(false)
-                || !bodyCollectorPermits.tryAcquire()) {
-            // Do not subscribe when the request cannot fit within the configured
-            // buffering budget. The origin transport consumes the original body.
-            fallbackToOrigin(result, request, active);
+        private RequestExecution(AsyncExecuteRequest request, PhotonRequest capturedRequest) {
+            this.request = request;
+            this.capturedRequest = capturedRequest;
+        }
+
+        private CompletableFuture<Void> start() {
+            registerCancellation();
+
+            SdkHttpContentPublisher publisher = request.requestContentPublisher();
+            boolean tooLargeToBuffer = publisher.contentLength()
+                    .map(length -> length > maxBufferedRequestBytes)
+                    .orElse(true);
+            if (tooLargeToBuffer || !bodyCollectorPermits.tryAcquire()) {
+                // Do not subscribe when the request cannot fit within the configured
+                // buffering budget. The origin transport consumes the original body.
+                fallbackToOrigin(request);
+                return result;
+            }
+
+            collectBody(publisher);
             return result;
         }
 
-        // Async SDK request bodies are publishers. Buffer an admitted body once
-        // so Photon can use the bytes and origin fallback can replay them.
-        CompletableFuture<byte[]> bodyFuture = collect(publisher, maxBufferedRequestBytes);
-        active.set(bodyFuture);
+        private void collectBody(SdkHttpContentPublisher publisher) {
+            // Buffer an admitted body once so Photon can use the bytes and origin
+            // fallback can replay them.
+            CompletableFuture<byte[]> bodyFuture = collect(publisher, maxBufferedRequestBytes);
+            active.set(bodyFuture);
+            bodyFuture.whenComplete((body, bodyFailure) -> {
+                bodyCollectorPermits.release();
+                handleCollectedBody(body, bodyFailure);
+            });
+        }
 
-        bodyFuture.whenComplete((body, bodyFailure) -> {
-            bodyCollectorPermits.release();
+        private void handleCollectedBody(byte[] body, Throwable bodyFailure) {
             if (bodyFailure != null) {
                 Throwable cause = unwrap(bodyFailure);
                 if (cause instanceof BodyLimitExceededException) {
-                    fallbackToOrigin(result, request, active);
+                    fallbackToOrigin(request);
                 } else {
                     fail(result, request.responseHandler(), cause);
                 }
@@ -120,7 +143,10 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             if (result.isCancelled()) {
                 return;
             }
+            submitToPhoton(body);
+        }
 
+        private void submitToPhoton(byte[] body) {
             PhotonRequest photonRequest = withBody(capturedRequest, body);
             CompletableFuture<PhotonResponse> photonFuture;
             try {
@@ -129,7 +155,7 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                         () -> session.request(photonRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
                 // Executor saturation means Photon cannot accept this attempt.
-                fallbackToOrigin(result, request, body, active);
+                fallbackToOrigin(copyWithBody(request, body));
                 return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);
@@ -137,82 +163,76 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
             }
             active.set(photonFuture);
             photonFuture.whenComplete((response, photonFailure) -> {
-                if (result.isCancelled()) {
-                    return;
-                }
-                if (photonFailure == null) {
-                    deliver(result, request.responseHandler(), response);
-                    return;
-                }
+                handlePhotonCompletion(body, response, photonFailure);
+            });
+        }
 
-                Throwable cause = unwrap(photonFailure);
-                if (cause instanceof PhotonError) {
-                    // Expected Photon availability failures preserve SDK behavior
-                    // by delegating the original signed request to the origin.
-                    fallbackToOrigin(result, request, body, active);
-                } else {
-                    fail(result, request.responseHandler(), cause);
+        private void handlePhotonCompletion(byte[] body,
+                                            PhotonResponse response,
+                                            Throwable photonFailure) {
+            if (result.isCancelled()) {
+                return;
+            }
+            if (photonFailure == null) {
+                deliver(result, request.responseHandler(), response);
+                return;
+            }
+
+            Throwable cause = unwrap(photonFailure);
+            if (cause instanceof PhotonError) {
+                // Expected Photon availability failures preserve SDK behavior
+                // by delegating the original signed request to the origin.
+                fallbackToOrigin(copyWithBody(request, body));
+            } else {
+                fail(result, request.responseHandler(), cause);
+            }
+        }
+
+        private void registerCancellation() {
+            // Cancellation can occur during body collection, Photon execution,
+            // or origin fallback. The active reference identifies the phase.
+            result.whenComplete((ignored, failure) -> {
+                if (result.isCancelled()) {
+                    cancellation.cancel();
+                    CompletableFuture<?> activeFuture = active.get();
+                    if (activeFuture != null) {
+                        activeFuture.cancel(true);
+                    }
                 }
             });
-        });
-        return result;
-    }
+        }
 
-    private static void registerCancellation(CompletableFuture<Void> result,
-                                             PhotonRequestCancellation cancellation,
-                                             AtomicReference<CompletableFuture<?>> active) {
-        // Cancellation can occur during body collection, Photon execution, or
-        // origin fallback. The active reference identifies the current phase.
-        result.whenComplete((ignored, failure) -> {
+        private void fallbackToOrigin(AsyncExecuteRequest originRequest) {
             if (result.isCancelled()) {
-                cancellation.cancel();
-                CompletableFuture<?> activeFuture = active.get();
-                if (activeFuture != null) {
-                    activeFuture.cancel(true);
+                return;
+            }
+
+            CompletableFuture<Void> originFuture;
+            try {
+                originFuture = originClient.execute(originRequest);
+            } catch (Throwable originFailure) {
+                fail(result, originRequest.responseHandler(), originFailure);
+                return;
+            }
+
+            active.set(originFuture);
+            if (result.isCancelled()) {
+                originFuture.cancel(true);
+                return;
+            }
+            originFuture.whenComplete((ignored, originFailure) -> {
+                if (originFailure == null) {
+                    result.complete(null);
+                } else {
+                    result.completeExceptionally(unwrap(originFailure));
                 }
-            }
-        });
-    }
-
-    private void fallbackToOrigin(CompletableFuture<Void> result,
-                                  AsyncExecuteRequest request,
-                                  byte[] body,
-                                  AtomicReference<CompletableFuture<?>> active) {
-        fallbackToOrigin(result, copyWithBody(request, body), active);
-    }
-
-    private void fallbackToOrigin(CompletableFuture<Void> result,
-                                  AsyncExecuteRequest originRequest,
-                                  AtomicReference<CompletableFuture<?>> active) {
-        if (result.isCancelled()) {
-            return;
+            });
         }
-
-        CompletableFuture<Void> originFuture;
-        try {
-            originFuture = originClient.execute(originRequest);
-        } catch (Throwable originFailure) {
-            fail(result, originRequest.responseHandler(), originFailure);
-            return;
-        }
-
-        active.set(originFuture);
-        if (result.isCancelled()) {
-            originFuture.cancel(true);
-            return;
-        }
-        originFuture.whenComplete((ignored, originFailure) -> {
-            if (originFailure == null) {
-                result.complete(null);
-            } else {
-                result.completeExceptionally(unwrap(originFailure));
-            }
-        });
     }
 
     @Override
     public String clientName() {
-        return "photon";
+        return CLIENT_NAME;
     }
 
     @Override

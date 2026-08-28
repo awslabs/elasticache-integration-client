@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
+    private static final String CLIENT_NAME = "java-photon";
+
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
     private final SdkHttpClient originClient;
@@ -111,7 +113,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public String clientName() {
-        return "photon";
+        return CLIENT_NAME;
     }
 
     @Override

@@ -57,6 +57,29 @@ public final class PhotonClient {
         return new Builder();
     }
 
+    private abstract static class ManagedResult<C extends SdkClient> implements Closeable {
+        private final C client;
+
+        private ManagedResult(C client) {
+            this.client = client;
+        }
+
+        public C client() {
+            return client;
+        }
+
+        protected abstract void closeHandle();
+
+        @Override
+        public final void close() {
+            try {
+                closeHandle();
+            } finally {
+                client.close();
+            }
+        }
+    }
+
     /**
      * Result of building a Photon-enabled SDK client.
      *
@@ -71,20 +94,12 @@ public final class PhotonClient {
      *
      * @param <C> the SDK client type
      */
-    public static final class Result<C extends SdkClient> implements Closeable {
-        private final C client;
+    public static final class Result<C extends SdkClient> extends ManagedResult<C> {
         private final PhotonHandle handle;
 
         Result(C client, PhotonHandle handle) {
-            this.client = client;
+            super(client);
             this.handle = handle;
-        }
-
-        /**
-         * Get the SDK client.
-         */
-        public C client() {
-            return client;
         }
 
         /**
@@ -94,16 +109,9 @@ public final class PhotonClient {
             return handle;
         }
 
-        /**
-         * Close both the Photon handle and the SDK client.
-         */
         @Override
-        public void close() {
-            try {
-                handle.close();
-            } finally {
-                client.close();
-            }
+        protected void closeHandle() {
+            handle.close();
         }
     }
 
@@ -112,17 +120,12 @@ public final class PhotonClient {
      *
      * @param <C> the asynchronous SDK client type
      */
-    public static final class AsyncResult<C extends SdkClient> implements Closeable {
-        private final C client;
+    public static final class AsyncResult<C extends SdkClient> extends ManagedResult<C> {
         private final PhotonAsyncHandle handle;
 
         AsyncResult(C client, PhotonAsyncHandle handle) {
-            this.client = client;
+            super(client);
             this.handle = handle;
-        }
-
-        public C client() {
-            return client;
         }
 
         public PhotonAsyncHandle handle() {
@@ -130,12 +133,8 @@ public final class PhotonClient {
         }
 
         @Override
-        public void close() {
-            try {
-                handle.close();
-            } finally {
-                client.close();
-            }
+        protected void closeHandle() {
+            handle.close();
         }
     }
 
@@ -438,29 +437,11 @@ public final class PhotonClient {
         }
 
         private PhotonHandle buildHandle() {
-            // Resolve host/port from endpoint if specified
-            String resolvedHost = host;
-            int resolvedPort = port;
-            
-            if (endpoint != null) {
-                if (host != null) {
-                    throw new PhotonError("Cannot specify both endpoint and host");
-                }
-                EndpointParser.ParsedEndpoint parsed = EndpointParser.parseEndpoint(endpoint);
-                resolvedHost = parsed.getHost();
-                resolvedPort = parsed.getPort();
-            }
-
-            if (resolvedHost == null || resolvedHost.isEmpty()) {
-                throw new PhotonError("endpoint or host is required");
-            }
-            if (authProvider == null) {
-                throw new PhotonError("authProvider is required");
-            }
+            EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
             return PhotonHandle.builder()
-                    .host(resolvedHost)
-                    .port(resolvedPort)
+                    .host(resolvedEndpoint.getHost())
+                    .port(resolvedEndpoint.getPort())
                     .sslContext(sslContext)
                     .authProvider(authProvider)
                     .configOverrides(configOverrides)
@@ -472,28 +453,11 @@ public final class PhotonClient {
         }
 
         private PhotonAsyncHandle buildAsyncHandle() {
-            String resolvedHost = host;
-            int resolvedPort = port;
-
-            if (endpoint != null) {
-                if (host != null) {
-                    throw new PhotonError("Cannot specify both endpoint and host");
-                }
-                EndpointParser.ParsedEndpoint parsed = EndpointParser.parseEndpoint(endpoint);
-                resolvedHost = parsed.getHost();
-                resolvedPort = parsed.getPort();
-            }
-
-            if (resolvedHost == null || resolvedHost.isEmpty()) {
-                throw new PhotonError("endpoint or host is required");
-            }
-            if (authProvider == null) {
-                throw new PhotonError("authProvider is required");
-            }
+            EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
             return PhotonAsyncHandle.builder()
-                    .host(resolvedHost)
-                    .port(resolvedPort)
+                    .host(resolvedEndpoint.getHost())
+                    .port(resolvedEndpoint.getPort())
                     .sslContext(sslContext)
                     .authProvider(authProvider)
                     .configOverrides(configOverrides)
@@ -505,6 +469,19 @@ public final class PhotonClient {
                     .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)
                     .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors)
                     .build();
+        }
+
+        private EndpointParser.ParsedEndpoint resolvePhotonEndpoint() {
+            if (endpoint != null && host != null) {
+                throw new PhotonError("Cannot specify both endpoint and host");
+            }
+            if (endpoint != null) {
+                return EndpointParser.parseEndpoint(endpoint);
+            }
+            if (host != null && !host.isEmpty()) {
+                return new EndpointParser.ParsedEndpoint(host, port);
+            }
+            throw new PhotonError("endpoint or host is required");
         }
 
         private <B extends AwsClientBuilder<B, C>, C extends SdkClient> ClientOverrideConfiguration mergeOverrideConfig(
