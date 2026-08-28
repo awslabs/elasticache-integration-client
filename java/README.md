@@ -17,5 +17,4 @@ operations.
 
 Expressions that cannot be compiled are ignored. Evaluation errors, malformed
 or non-object JSON bodies, and bodies larger than 512 KiB count as no match.
-The resolved config is compiled once when the session opens; periodic refresh
-remains out of scope.
+The resolved config is compiled once when the session opens.

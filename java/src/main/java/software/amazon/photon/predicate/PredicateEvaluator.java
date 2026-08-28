@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.cel.common.CelAbstractSyntaxTree;
 import dev.cel.common.CelValidationException;
+import dev.cel.common.types.CelType;
+import dev.cel.common.types.MapType;
 import dev.cel.common.types.SimpleType;
 import dev.cel.compiler.CelCompiler;
 import dev.cel.compiler.CelCompilerBuilder;
@@ -18,13 +20,10 @@ import software.amazon.photon.model.RequestMetadata;
 
 import java.io.IOException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -43,9 +42,9 @@ public final class PredicateEvaluator {
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final TypeReference<Map<String, Object>> MAP_TYPE =
             new TypeReference<Map<String, Object>>() {};
-    private static final Set<String> CONTEXT_VARIABLES = Collections.unmodifiableSet(
-            new LinkedHashSet<>(Arrays.asList(
-                    "service", "operation", "method", "url", "headers", "body")));
+    private static final Map<String, CelType> CONTEXT_VARIABLE_TYPES =
+            contextVariableTypes();
+    private static final Object INVALID_JSON_VALUE = new Object();
     private static final CelRuntime CEL_RUNTIME =
             CelRuntimeFactory.plannerRuntimeBuilder().build();
 
@@ -77,7 +76,16 @@ public final class PredicateEvaluator {
             if (!(expression instanceof String)) {
                 continue;
             }
-            Map<String, Object> variables = stringKeyedMap(entry.get("vars"));
+            Map<String, Object> variables;
+            if (entry.get("vars") instanceof Map) {
+                variables = stringKeyedMap(entry.get("vars"));
+                if (variables == null) {
+                    LOGGER.warning("Ignoring predicate with a non-string variable key");
+                    continue;
+                }
+            } else {
+                variables = Collections.emptyMap();
+            }
             try {
                 compiled.add(compileOne((String) expression, variables));
             } catch (CelValidationException | CelEvaluationException | RuntimeException e) {
@@ -96,6 +104,9 @@ public final class PredicateEvaluator {
             return false;
         }
         Map<String, Object> context = buildContext(request);
+        if (context == null) {
+            return false;
+        }
         for (CompiledPredicate predicate : predicates) {
             if (predicate.matches(context)) {
                 return true;
@@ -111,13 +122,18 @@ public final class PredicateEvaluator {
     private static CompiledPredicate compileOne(
             String expression, Map<String, Object> variables)
             throws CelValidationException, CelEvaluationException {
-        Set<String> names = new LinkedHashSet<>(CONTEXT_VARIABLES);
-        names.addAll(variables.keySet());
-
         CelCompilerBuilder builder = CelCompilerFactory.standardCelCompilerBuilder()
                 .setStandardMacros(CelStandardMacro.STANDARD_MACROS);
-        for (String name : names) {
-            builder.addVar(name, SimpleType.DYN);
+        for (Map.Entry<String, CelType> contextVariable : CONTEXT_VARIABLE_TYPES.entrySet()) {
+            CelType type = variables.containsKey(contextVariable.getKey())
+                    ? SimpleType.DYN
+                    : contextVariable.getValue();
+            builder.addVar(contextVariable.getKey(), type);
+        }
+        for (String name : variables.keySet()) {
+            if (!CONTEXT_VARIABLE_TYPES.containsKey(name)) {
+                builder.addVar(name, SimpleType.DYN);
+            }
         }
         CelCompiler compiler = builder.build();
         CelAbstractSyntaxTree ast = compiler.compile(expression).getAst();
@@ -127,25 +143,32 @@ public final class PredicateEvaluator {
 
     private static Map<String, Object> buildContext(PhotonRequest request) {
         RequestMetadata metadata = request.getMetadata();
+        Map<String, Object> body = parseBody(request.getBody());
+        if (body == null) {
+            return null;
+        }
         Map<String, Object> context = new LinkedHashMap<>();
         context.put("service", metadata.getService());
         context.put("operation", metadata.getOperation());
         context.put("method", request.getMethod());
         context.put("url", request.getUrl());
         context.put("headers", new LinkedHashMap<>(request.getHeaders()));
-        context.put("body", parseBody(request.getBody()));
+        context.put("body", body);
         return context;
     }
 
     private static Map<String, Object> parseBody(byte[] body) {
-        if (body == null || body.length == 0 || body.length > MAX_BODY_INSPECT_BYTES) {
+        if (body == null || body.length == 0) {
             return Collections.emptyMap();
+        }
+        if (body.length > MAX_BODY_INSPECT_BYTES) {
+            return null;
         }
         try {
             Map<String, Object> parsed = OBJECT_MAPPER.readValue(body, MAP_TYPE);
-            return parsed != null ? parsed : Collections.<String, Object>emptyMap();
+            return parsed;
         } catch (IOException | RuntimeException e) {
-            return Collections.emptyMap();
+            return null;
         }
     }
 
@@ -155,25 +178,46 @@ public final class PredicateEvaluator {
         }
         Map<String, Object> copy = new LinkedHashMap<>();
         for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
-            if (entry.getKey() instanceof String) {
-                copy.put((String) entry.getKey(), immutableJsonValue(entry.getValue()));
+            if (!(entry.getKey() instanceof String)) {
+                return null;
             }
+            Object copiedValue = immutableJsonValue(entry.getValue());
+            if (copiedValue == INVALID_JSON_VALUE) {
+                return null;
+            }
+            copy.put((String) entry.getKey(), copiedValue);
         }
         return Collections.unmodifiableMap(copy);
     }
 
     private static Object immutableJsonValue(Object value) {
         if (value instanceof Map) {
-            return stringKeyedMap(value);
+            Map<String, Object> copy = stringKeyedMap(value);
+            return copy != null ? copy : INVALID_JSON_VALUE;
         }
         if (value instanceof List) {
             List<Object> copy = new ArrayList<>();
             for (Object item : (List<?>) value) {
-                copy.add(immutableJsonValue(item));
+                Object copiedItem = immutableJsonValue(item);
+                if (copiedItem == INVALID_JSON_VALUE) {
+                    return INVALID_JSON_VALUE;
+                }
+                copy.add(copiedItem);
             }
             return Collections.unmodifiableList(copy);
         }
         return value;
+    }
+
+    private static Map<String, CelType> contextVariableTypes() {
+        Map<String, CelType> types = new LinkedHashMap<>();
+        types.put("service", SimpleType.STRING);
+        types.put("operation", SimpleType.STRING);
+        types.put("method", SimpleType.STRING);
+        types.put("url", SimpleType.STRING);
+        types.put("headers", MapType.create(SimpleType.STRING, SimpleType.STRING));
+        types.put("body", SimpleType.DYN);
+        return Collections.unmodifiableMap(types);
     }
 
     private static final class CompiledPredicate {

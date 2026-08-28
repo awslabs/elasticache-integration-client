@@ -22,6 +22,8 @@ class PredicateEvaluatorTest {
             "GetItem", "BatchGetItem", "Query", "Scan",
             "PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem",
             "TransactGetItems", "TransactWriteItems");
+    private static final List<String> SINGLE_TABLE_OPERATIONS = Arrays.asList(
+            "GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem");
 
     @Test
     void compilesTheDefaultProxyConfig() {
@@ -51,6 +53,17 @@ class PredicateEvaluatorTest {
     }
 
     @Test
+    void predicateWithNonStringVariableKeyIsDropped() {
+        Map<Object, Object> invalidVariables = new LinkedHashMap<>();
+        invalidVariables.put(7, "value");
+
+        PredicateEvaluator evaluator = PredicateEvaluator.compile(config(
+                predicate("true", invalidVariables)));
+
+        assertEquals(0, evaluator.size());
+    }
+
+    @Test
     void defaultConfigRoutesReadsAndWritesButNotUnsupportedOperations() {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(defaultConfig());
 
@@ -69,8 +82,7 @@ class PredicateEvaluatorTest {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(
                 tableAllowlistConfig("Users"));
 
-        for (String operation : Arrays.asList(
-                "GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem")) {
+        for (String operation : SINGLE_TABLE_OPERATIONS) {
             assertTrue(evaluator.route(request(
                     operation, "dynamodb", "{\"TableName\":\"Users\"}")), operation);
             assertFalse(evaluator.route(request(
@@ -126,12 +138,26 @@ class PredicateEvaluatorTest {
             assertFalse(evaluator.route(request("GetItem", "dynamodb", body)), body);
         }
 
-        byte[] oversized = new byte[PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1];
-        PhotonRequest request = new PhotonRequest(
-                "POST", "https://dynamodb.us-east-1.amazonaws.com/",
-                Collections.emptyMap(), oversized,
-                new RequestMetadata("dynamodb", "GetItem"));
-        assertFalse(evaluator.route(request));
+        byte[] exactBoundary = matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES);
+        byte[] oversized = matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1);
+        assertEquals(PredicateEvaluator.MAX_BODY_INSPECT_BYTES, exactBoundary.length);
+        assertEquals(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1, oversized.length);
+        assertTrue(evaluator.route(request("GetItem", "dynamodb", exactBoundary)));
+        assertFalse(evaluator.route(request("GetItem", "dynamodb", oversized)));
+    }
+
+    @Test
+    void malformedNonObjectAndOversizedBodiesDeclineBodyIndependentPredicates() {
+        PredicateEvaluator evaluator = PredicateEvaluator.compile(defaultConfig());
+
+        assertTrue(evaluator.route(request("GetItem", "dynamodb", new byte[0])));
+        assertFalse(evaluator.route(request(
+                "GetItem", "dynamodb", "not json".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(evaluator.route(request(
+                "GetItem", "dynamodb", "[]".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(evaluator.route(request(
+                "GetItem", "dynamodb",
+                matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1))));
     }
 
     @Test
@@ -176,8 +202,6 @@ class PredicateEvaluatorTest {
 
     private static Map<String, Object> tableAllowlistConfig(String... tables) {
         List<String> allowed = Arrays.asList(tables);
-        List<String> singleOperations = Arrays.asList(
-                "GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem");
         List<String> batchOperations = Arrays.asList("BatchGetItem", "BatchWriteItem");
         List<String> transactionOperations = Arrays.asList(
                 "TransactGetItems", "TransactWriteItems");
@@ -186,7 +210,7 @@ class PredicateEvaluatorTest {
                 predicate(
                         "service == 'dynamodb' && operation in ops "
                                 + "&& has(body.TableName) && body.TableName in allowed",
-                        vars("ops", singleOperations, "allowed", allowed)),
+                        vars("ops", SINGLE_TABLE_OPERATIONS, "allowed", allowed)),
                 predicate(
                         "service == 'dynamodb' && operation in ops "
                                 + "&& has(body.RequestItems) && size(body.RequestItems) > 0 "
@@ -195,6 +219,7 @@ class PredicateEvaluatorTest {
                 predicate(
                         "service == 'dynamodb' && operation in ops "
                                 + "&& has(body.TransactItems) && size(body.TransactItems) > 0 "
+                                // Each transaction item is a map keyed by its operation.
                                 + "&& body.TransactItems.all(i, "
                                 + "i.all(k, i[k].TableName in allowed))",
                         vars("ops", transactionOperations, "allowed", allowed)));
@@ -209,7 +234,7 @@ class PredicateEvaluatorTest {
     }
 
     private static Map<String, Object> predicate(
-            String expression, Map<String, Object> variables) {
+            String expression, Map<?, ?> variables) {
         Map<String, Object> predicate = new LinkedHashMap<>();
         predicate.put("expr", expression);
         predicate.put("vars", variables);
@@ -230,12 +255,25 @@ class PredicateEvaluatorTest {
     }
 
     private static PhotonRequest request(String operation, String service, String body) {
+        return request(operation, service, body.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static PhotonRequest request(String operation, String service, byte[] body) {
         return new PhotonRequest(
                 "POST",
                 "https://dynamodb.us-east-1.amazonaws.com/",
                 Collections.emptyMap(),
-                body.getBytes(StandardCharsets.UTF_8),
+                body,
                 new RequestMetadata(service, operation));
+    }
+
+    private static byte[] matchingBodyOfSize(int size) {
+        String prefix = "{\"TableName\":\"Users\",\"Pad\":\"";
+        String suffix = "\"}";
+        int paddingSize = size - prefix.length() - suffix.length();
+        char[] padding = new char[paddingSize];
+        Arrays.fill(padding, 'x');
+        return (prefix + new String(padding) + suffix).getBytes(StandardCharsets.UTF_8);
     }
 
     private static <K, V> Map<K, V> singletonMap(K key, V value) {

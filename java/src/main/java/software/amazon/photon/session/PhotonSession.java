@@ -25,7 +25,7 @@ import java.util.function.Supplier;
  *
  * <p>Resolved CEL predicates determine which requests are sent to Photon.
  * Requests with no matching predicate are declined for origin pass-through.
- * The config is fetched and compiled once; periodic refresh remains out of scope.
+ * The config is fetched and compiled once.
  *
  * <p>Usage:
  * <pre>{@code
