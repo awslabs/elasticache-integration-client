@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
+    private static final String CLIENT_NAME = "java-photon";
+
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
     private final SdkHttpClient originClient;
@@ -41,6 +43,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
+        PhotonRequest capturedRequest = requestContext.takeAttempt();
         return new ExecutableHttpRequest() {
             private final AtomicReference<ExecutableHttpRequest> activeOriginRequest = new AtomicReference<>();
             private final AtomicReference<PhotonRequestCancellation> activePhotonRequest = new AtomicReference<>();
@@ -52,8 +55,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     throw new IOException("Request was aborted");
                 }
 
-                PhotonRequest photonRequest = requestContext.get();
-                if (photonRequest == null) {
+                if (capturedRequest == null) {
                     throw new IllegalStateException("Photon request was not captured before HTTP execution");
                 }
 
@@ -65,7 +67,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
                 PhotonResponse photonResponse;
                 try {
-                    photonResponse = session.request(photonRequest, photonCancellation);
+                    photonResponse = session.request(capturedRequest, photonCancellation);
                 } catch (PhotonRequestCancellation.CancelledException cancelled) {
                     throw new IOException("Request was aborted", cancelled);
                 } catch (PhotonError photonFailure) {
@@ -120,7 +122,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public String clientName() {
-        return "photon";
+        return CLIENT_NAME;
     }
 
     @Override

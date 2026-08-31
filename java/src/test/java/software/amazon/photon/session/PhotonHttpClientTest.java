@@ -1,6 +1,7 @@
 package software.amazon.photon.session;
 
 import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.http.ExecutableHttpRequest;
 import software.amazon.awssdk.http.HttpExecuteRequest;
@@ -112,11 +113,11 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonRequestContext context = new PhotonRequestContext();
         PhotonHttpClient client = new PhotonHttpClient(session, context, origin, false);
+        prepare(context);
         ExecutableHttpRequest request = client.prepareRequest(signedRequest());
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread caller = new Thread(() -> {
-            context.set(photonRequest());
             try {
                 request.call();
             } catch (Throwable throwable) {
@@ -144,11 +145,11 @@ class PhotonHttpClientTest {
         origin.blockCall = true;
         PhotonRequestContext context = new PhotonRequestContext();
         PhotonHttpClient client = new PhotonHttpClient(session, context, origin, false);
+        prepare(context);
         ExecutableHttpRequest request = client.prepareRequest(signedRequest());
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
         Thread caller = new Thread(() -> {
-            context.set(photonRequest());
             try {
                 request.call();
             } catch (Throwable throwable) {
@@ -187,8 +188,14 @@ class PhotonHttpClientTest {
     private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
                                                boolean ownsOrigin) {
         PhotonRequestContext context = new PhotonRequestContext();
-        context.set(photonRequest());
+        prepare(context);
         return new PhotonHttpClient(session, context, origin, ownsOrigin);
+    }
+
+    private static void prepare(PhotonRequestContext context) {
+        ExecutionAttributes attributes = new ExecutionAttributes();
+        context.capture(photonRequest(), attributes);
+        context.prepareAttempt(attributes);
     }
 
     private static PhotonRequest photonRequest() {

@@ -1,23 +1,39 @@
 package software.amazon.photon.session;
 
+import software.amazon.awssdk.core.interceptor.ExecutionAttribute;
+import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.photon.model.PhotonRequest;
 
 /**
- * Per-client handoff between the synchronous SDK interceptor and HTTP client.
+ * Per-client, per-attempt handoff between an SDK interceptor and HTTP transport.
  */
 final class PhotonRequestContext {
 
-    private final ThreadLocal<PhotonRequest> currentRequest = new ThreadLocal<>();
+    private static final ExecutionAttribute<PhotonRequest> PHOTON_REQUEST =
+            new ExecutionAttribute<>("PhotonRequest");
 
-    void set(PhotonRequest request) {
-        currentRequest.set(request);
+    private final ThreadLocal<PhotonRequest> currentAttempt = new ThreadLocal<>();
+
+    void capture(PhotonRequest request, ExecutionAttributes executionAttributes) {
+        executionAttributes.putAttribute(PHOTON_REQUEST, request);
     }
 
-    PhotonRequest get() {
-        return currentRequest.get();
+    void prepareAttempt(ExecutionAttributes executionAttributes) {
+        PhotonRequest request = executionAttributes.getAttribute(PHOTON_REQUEST);
+        if (request == null) {
+            currentAttempt.remove();
+        } else {
+            currentAttempt.set(request);
+        }
+    }
+
+    PhotonRequest takeAttempt() {
+        PhotonRequest request = currentAttempt.get();
+        currentAttempt.remove();
+        return request;
     }
 
     void clear() {
-        currentRequest.remove();
+        currentAttempt.remove();
     }
 }
