@@ -35,8 +35,6 @@ import java.util.logging.Logger;
  */
 public final class PredicateEvaluator {
 
-    static final int MAX_BODY_INSPECT_BYTES = 512 * 1024;
-
     private static final Logger LOGGER = Logger.getLogger(PredicateEvaluator.class.getName());
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
@@ -160,9 +158,6 @@ public final class PredicateEvaluator {
     private static Map<String, Object> parseBody(byte[] body) {
         if (body == null || body.length == 0) {
             return Collections.emptyMap();
-        }
-        if (body.length > MAX_BODY_INSPECT_BYTES) {
-            return null;
         }
         try {
             Map<String, Object> parsed = OBJECT_MAPPER.readValue(body, MAP_TYPE);

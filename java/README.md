@@ -21,9 +21,9 @@ transport without a cache round trip. This supports the proxy's read-through
 and write-through routing, including table allowlists for batch and transaction
 operations.
 
-Expressions that cannot be compiled are ignored. Evaluation errors, malformed
-or non-object JSON bodies, and bodies larger than 512 KiB count as no match.
-The resolved config is compiled once when the session opens.
+Expressions that cannot be compiled are ignored. Evaluation errors and
+malformed or non-object JSON bodies count as no match. The resolved config is
+compiled once when the session opens.
 
 ## Synchronous client
 

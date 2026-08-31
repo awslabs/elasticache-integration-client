@@ -128,7 +128,7 @@ class PredicateEvaluatorTest {
     }
 
     @Test
-    void uninspectableAndOversizedBodiesDoNotRoute() {
+    void uninspectableBodiesDoNotRoute() {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(
                 tableAllowlistConfig("Users"));
 
@@ -137,17 +137,20 @@ class PredicateEvaluatorTest {
                 "{\"TableName\":\"Users\"} trailing")) {
             assertFalse(evaluator.route(request("GetItem", "dynamodb", body)), body);
         }
-
-        byte[] exactBoundary = matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES);
-        byte[] oversized = matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1);
-        assertEquals(PredicateEvaluator.MAX_BODY_INSPECT_BYTES, exactBoundary.length);
-        assertEquals(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1, oversized.length);
-        assertTrue(evaluator.route(request("GetItem", "dynamodb", exactBoundary)));
-        assertFalse(evaluator.route(request("GetItem", "dynamodb", oversized)));
     }
 
     @Test
-    void malformedNonObjectAndOversizedBodiesDeclineBodyIndependentPredicates() {
+    void largeValidBodiesAreEvaluatedByPredicates() {
+        PredicateEvaluator evaluator = PredicateEvaluator.compile(
+                tableAllowlistConfig("Users"));
+        byte[] largeBody = matchingBodyOfSize(600 * 1024);
+
+        assertEquals(600 * 1024, largeBody.length);
+        assertTrue(evaluator.route(request("GetItem", "dynamodb", largeBody)));
+    }
+
+    @Test
+    void malformedAndNonObjectBodiesDeclineBodyIndependentPredicates() {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(defaultConfig());
 
         assertTrue(evaluator.route(request("GetItem", "dynamodb", new byte[0])));
@@ -155,9 +158,6 @@ class PredicateEvaluatorTest {
                 "GetItem", "dynamodb", "not json".getBytes(StandardCharsets.UTF_8))));
         assertFalse(evaluator.route(request(
                 "GetItem", "dynamodb", "[]".getBytes(StandardCharsets.UTF_8))));
-        assertFalse(evaluator.route(request(
-                "GetItem", "dynamodb",
-                matchingBodyOfSize(PredicateEvaluator.MAX_BODY_INSPECT_BYTES + 1))));
     }
 
     @Test
