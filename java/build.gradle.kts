@@ -27,6 +27,7 @@ dependencies {
     implementation("software.amazon.awssdk:aws-core")
     implementation("software.amazon.awssdk:http-client-spi")
     implementation("software.amazon.awssdk:apache-client")
+    implementation("software.amazon.awssdk:netty-nio-client")
 
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")

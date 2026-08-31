@@ -38,6 +38,12 @@ public final class SdkAdapters {
      */
     public static PhotonRequest toPhotonRequest(SdkHttpFullRequest sdkRequest,
                                                   ExecutionAttributes executionAttributes) {
+        return toPhotonRequest(sdkRequest, executionAttributes, extractBody(sdkRequest));
+    }
+
+    static PhotonRequest toPhotonRequest(SdkHttpFullRequest sdkRequest,
+                                         ExecutionAttributes executionAttributes,
+                                         byte[] body) {
         // Extract method and URL
         String method = sdkRequest.method().name();
         String url = sdkRequest.getUri().toString();
@@ -52,9 +58,6 @@ public final class SdkAdapters {
                 headers.put(key, String.join(", ", values));
             }
         }
-
-        // Extract body
-        byte[] body = extractBody(sdkRequest);
 
         // Extract metadata from execution attributes
         RequestMetadata metadata = extractMetadata(executionAttributes);

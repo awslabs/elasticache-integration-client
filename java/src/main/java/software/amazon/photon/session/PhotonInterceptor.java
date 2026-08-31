@@ -97,8 +97,14 @@ public class PhotonInterceptor implements ExecutionInterceptor {
                                                   ExecutionAttributes executionAttributes) {
         SdkHttpFullRequest sdkRequest = (SdkHttpFullRequest) context.httpRequest();
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, executionAttributes);
-        requestContext.set(photonRequest);
+        requestContext.capture(photonRequest, executionAttributes);
         return sdkRequest;
+    }
+
+    @Override
+    public void beforeTransmission(Context.BeforeTransmission context,
+                                   ExecutionAttributes executionAttributes) {
+        requestContext.prepareAttempt(executionAttributes);
     }
 
     @Override

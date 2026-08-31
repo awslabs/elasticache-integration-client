@@ -104,6 +104,13 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionError):
             self.conn.connect()
 
+    def test_tls_verify_false_connects_untrusted(self):
+        """verify=False connects to a cert the default CA store does not trust, and the
+        request path works. The opt-out for self-signed test rigs."""
+        self.start_cache(tls=True)
+        self.connect_and_handshake(tls=True, verify=False)  # no ca_certs on purpose
+        assert self.send_request()[0] == 200
+
     def test_send_before_connect_raises(self):
         """Sending before connect() raises PhotonError (no socket yet — distinct from
         PhotonConnectionLost, which means a connection existed and died)."""

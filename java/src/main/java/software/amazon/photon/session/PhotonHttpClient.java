@@ -25,6 +25,8 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
+    private static final String CLIENT_NAME = "java-photon";
+
     private final PhotonSession session;
     private final PhotonRequestContext requestContext;
     private final SdkHttpClient originClient;
@@ -41,6 +43,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
+        PhotonRequest capturedRequest = requestContext.takeAttempt();
         return new ExecutableHttpRequest() {
             private final AtomicReference<ExecutableHttpRequest> activeOriginRequest = new AtomicReference<>();
             private final AtomicReference<PhotonRequestCancellation> activePhotonRequest = new AtomicReference<>();
@@ -52,8 +55,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     throw new IOException("Request was aborted");
                 }
 
-                PhotonRequest photonRequest = requestContext.get();
-                if (photonRequest == null) {
+                if (capturedRequest == null) {
                     throw new IllegalStateException("Photon request was not captured before HTTP execution");
                 }
 
@@ -64,7 +66,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
                 }
 
                 try {
-                    PhotonResponse photonResponse = session.request(photonRequest, photonCancellation);
+                    PhotonResponse photonResponse = session.request(capturedRequest, photonCancellation);
                     if (aborted.get()) {
                         throw new IOException("Request was aborted");
                     }
@@ -111,7 +113,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
 
     @Override
     public String clientName() {
-        return "photon";
+        return CLIENT_NAME;
     }
 
     @Override

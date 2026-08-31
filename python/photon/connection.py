@@ -110,6 +110,7 @@ class PhotonConnector:
         request_timeout: float = _DEFAULT_REQUEST_TIMEOUT,
         config_timeout: float = _DEFAULT_CONFIG_TIMEOUT,
         ca_certs: str | None = None,
+        verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
         auth_provider=None,
         max_pending: int = _DEFAULT_MAX_PENDING,
@@ -121,6 +122,7 @@ class PhotonConnector:
         self._request_timeout = request_timeout
         self.config_timeout = config_timeout  # read by PhotonSession for the config exchange
         self._ca_certs = ca_certs
+        self._verify = verify
         self._read_size = socket_read_size
         self._auth_provider = auth_provider
 
@@ -202,9 +204,10 @@ class PhotonConnector:
         if self._tls:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-            ctx.check_hostname = True
-            ctx.verify_mode = ssl.CERT_REQUIRED
-            if self._ca_certs:
+            if not self._verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            elif self._ca_certs:
                 ctx.load_verify_locations(self._ca_certs)
             else:
                 ctx.load_default_certs()
