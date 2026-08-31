@@ -57,10 +57,9 @@ errors propagate. Calling `destroy()` detaches Photon before SDK teardown,
 rejects in-flight Photon requests without passing shutdown failures to the
 origin, and is safe to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
-Node.js AWS configuration. `clientConfig` and `connectionOptions` are
+Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`
-option. The previous `connectorOptions` spelling remains supported as a
-deprecated alias.
+option.
 
 Authentication, transport, protocol, and middleware implementation details are
 internal to the package. Overrides use standard JSON-compatible values;
