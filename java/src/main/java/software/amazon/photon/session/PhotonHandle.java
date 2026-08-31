@@ -156,7 +156,7 @@ public class PhotonHandle implements Closeable {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
-        private Map<String, Object> configOverrides;
+        private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
@@ -207,9 +207,19 @@ public class PhotonHandle implements Closeable {
         /**
          * Set config overrides (optional).
          */
-        public Builder configOverrides(Map<String, Object> configOverrides) {
-            this.configOverrides = configOverrides;
+        public Builder overrides(Map<String, Object> overrides) {
+            this.overrides = overrides;
             return this;
+        }
+
+        /**
+         * Set config overrides (optional).
+         *
+         * @deprecated use {@link #overrides(Map)}
+         */
+        @Deprecated
+        public Builder configOverrides(Map<String, Object> overrides) {
+            return overrides(overrides);
         }
 
         /**
@@ -270,8 +280,8 @@ public class PhotonHandle implements Closeable {
 
             PhotonConnection connection = new PhotonConnection(
                     host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
-            PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+            PhotonSession session = new PhotonSession(connection, authProvider, overrides);
             SdkHttpClient origin = originHttpClient;
             boolean ownsOrigin = false;
             if (origin == null) {

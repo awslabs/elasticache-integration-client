@@ -33,7 +33,7 @@ describe("Photon package entry point", () => {
       "PhotonError",
       "PhotonProtocolError",
       "PhotonTimeoutError",
-      "PhotonConnector",
+      "PhotonConnection",
       "DEFAULT_USER_ID",
       "IamAuthTokenProvider",
       "TOKEN_EXPIRY_SECONDS",

@@ -1,6 +1,6 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.resp.RespValue;
 
 import java.util.LinkedList;
@@ -25,30 +25,35 @@ import java.util.concurrent.locks.ReentrantLock;
 public class PendingRequests {
 
     /** Default maximum pending requests. */
-    public static final int DEFAULT_MAX_PENDING = 100;
+    public static final int DEFAULT_MAX_PENDING_REQUESTS = 100;
+    /**
+     * @deprecated use {@link #DEFAULT_MAX_PENDING_REQUESTS}
+     */
+    @Deprecated
+    public static final int DEFAULT_MAX_PENDING = DEFAULT_MAX_PENDING_REQUESTS;
 
     private final Lock lock = new ReentrantLock();
     private final Queue<CompletableFuture<RespValue>> queue = new LinkedList<>();
-    private final int maxPending;
+    private final int maxPendingRequests;
     private volatile boolean closed = false;
 
     /**
      * Create a pending requests queue with default max size.
      */
     public PendingRequests() {
-        this(DEFAULT_MAX_PENDING);
+        this(DEFAULT_MAX_PENDING_REQUESTS);
     }
 
     /**
      * Create a pending requests queue with a custom max size.
      *
-     * @param maxPending maximum number of pending requests (must be positive)
+     * @param maxPendingRequests maximum number of pending requests (must be positive)
      */
-    public PendingRequests(int maxPending) {
-        if (maxPending <= 0) {
-            throw new IllegalArgumentException("maxPending must be positive: " + maxPending);
+    public PendingRequests(int maxPendingRequests) {
+        if (maxPendingRequests <= 0) {
+            throw new IllegalArgumentException("maxPendingRequests must be positive: " + maxPendingRequests);
         }
-        this.maxPending = maxPending;
+        this.maxPendingRequests = maxPendingRequests;
     }
 
     /**
@@ -59,16 +64,16 @@ public class PendingRequests {
      * send lock.
      *
      * @return a future that will be completed when the response arrives
-     * @throws ConnectionLost if the queue is closed or at capacity
+     * @throws PhotonConnectionLostError if the queue is closed or at capacity
      */
     public CompletableFuture<RespValue> register() {
         lock.lock();
         try {
             if (closed) {
-                throw new ConnectionLost("Connection is closed");
+                throw new PhotonConnectionLostError("Connection is closed");
             }
-            if (queue.size() >= maxPending) {
-                throw new ConnectionLost("Too many pending requests (max=" + maxPending + ")");
+            if (queue.size() >= maxPendingRequests) {
+                throw new PhotonConnectionLostError("Too many pending requests (max=" + maxPendingRequests + ")");
             }
             CompletableFuture<RespValue> future = new CompletableFuture<>();
             queue.add(future);

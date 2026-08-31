@@ -1,10 +1,10 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.resp.DecodeResult;
-import software.amazon.photon.resp.IncompleteFrame;
+import software.amazon.photon.resp.IncompleteFrameError;
 import software.amazon.photon.resp.RespCodec;
 import software.amazon.photon.resp.RespValue;
 
@@ -79,13 +79,13 @@ public class SocketReader {
             while (true) {
                 readAndResolve();
             }
-        } catch (ConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
+        } catch (PhotonConnectionLostError | PhotonTimeoutError | PhotonProtocolError e) {
             // Mark dead before failing futures so isDead() is true when callers observe the exception
             onDeath.run();
             pending.failAll(e);
         } catch (Exception e) {
             onDeath.run();
-            pending.failAll(new ConnectionLost("Reader thread failed", e));
+            pending.failAll(new PhotonConnectionLostError("Reader thread failed", e));
         }
     }
 
@@ -96,7 +96,7 @@ public class SocketReader {
      * for synchronous use.
      *
      * @throws PhotonTimeoutError if the read times out
-     * @throws ConnectionLost if the socket closes or fails
+     * @throws PhotonConnectionLostError if the socket closes or fails
      * @throws PhotonProtocolError if the response exceeds max size
      */
     public void readAndResolve() {
@@ -115,7 +115,7 @@ public class SocketReader {
      *
      * @return the decoded RESP value
      * @throws PhotonTimeoutError if the read times out
-     * @throws ConnectionLost if the socket closes or fails
+     * @throws PhotonConnectionLostError if the socket closes or fails
      * @throws PhotonProtocolError if the response exceeds max size
      */
     public RespValue readFrame() {
@@ -132,7 +132,7 @@ public class SocketReader {
                         compactBuffer();
                     }
                     return result.getValue();
-                } catch (IncompleteFrame e) {
+                } catch (IncompleteFrameError e) {
                     // Need more data, fall through to read
                 }
             }
@@ -144,11 +144,11 @@ public class SocketReader {
             } catch (SocketTimeoutException e) {
                 throw new PhotonTimeoutError("Read timed out", e);
             } catch (IOException e) {
-                throw new ConnectionLost("Socket read failed", e);
+                throw new PhotonConnectionLostError("Socket read failed", e);
             }
 
             if (bytesRead < 0) {
-                throw new ConnectionLost("Connection closed by server (EOF)");
+                throw new PhotonConnectionLostError("Connection closed by server (EOF)");
             }
 
             if (buffer.size() + bytesRead > maxResponseSize) {

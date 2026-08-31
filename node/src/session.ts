@@ -1,7 +1,7 @@
 /**
  * PhotonSession: connection bring-up and the asynchronous request API.
  *
- * A session owns one PhotonConnector, performs transport connect, AUTH, and
+ * A session owns one PhotonConnection, performs transport connect, AUTH, and
  * the mandatory photon.config handshake, and exposes request() for the AWS SDK
  * middleware to call.
  *
@@ -10,7 +10,7 @@
  * for protocol compliance only. The middleware may pass idempotent Photon
  * failures through to the origin, while direct session errors propagate.
  */
-import type { PhotonConnector } from "./connection.js";
+import type { PhotonConnection } from "./connection.js";
 import { PhotonError } from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
 import {
@@ -60,7 +60,7 @@ export class PhotonSession {
   private state: SessionState = "created";
 
   constructor(
-    private readonly connector: PhotonConnector,
+    private readonly connection: PhotonConnection,
     private readonly overrides: Readonly<Record<string, unknown>> = {},
   ) {}
 
@@ -78,11 +78,11 @@ export class PhotonSession {
       throw new PhotonError(`open() called on a ${this.state} session`);
     }
 
-    await this.connector.connect();
+    await this.connection.connect();
     try {
-      await this.connector.authenticate();
+      await this.connection.authenticate();
       const [command, args] = serializeConfig(this.overrides);
-      const config = parseConfigResponse(await this.connector.execute(command, ...args));
+      const config = parseConfigResponse(await this.connection.execute(command, ...args));
       if (this.state !== "created") {
         throw new PhotonError("session closed during open()");
       }
@@ -102,27 +102,27 @@ export class PhotonSession {
    * Build photon.request, send it, and return the parsed response.
    *
    * Requests before open are rejected at the session boundary. Once opened,
-   * connector and protocol errors propagate, including after close.
+   * connection and protocol errors propagate, including after close.
    */
   async request(request: PhotonRequest): Promise<PhotonResponse> {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
     }
     const [command, args] = serializeRequest(request);
-    return parseRequestResponse(await this.connector.execute(command, ...args));
+    return parseRequestResponse(await this.connection.execute(command, ...args));
   }
 
-  /** Close the connector and mark the session CLOSED. Idempotent. */
+  /** Close the connection and mark the session CLOSED. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closed";
-    await this.connector.close();
+    await this.connection.close();
   }
 
   /** Synchronous Node.js teardown used by AWS SDK client destroy(). */
   destroy(): void {
     if (this.state === "closed") return;
     this.state = "closed";
-    this.connector.destroy();
+    this.connection.destroy();
   }
 }

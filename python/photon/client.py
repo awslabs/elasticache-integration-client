@@ -5,7 +5,7 @@ from __future__ import annotations
 import boto3
 
 from photon.auth import build_cache_auth_provider
-from photon.connection import PhotonConnector
+from photon.connection import PhotonConnection
 from photon.hooks import PhotonHandle
 from photon.session import PhotonSession, parse_endpoint
 
@@ -39,11 +39,11 @@ def client(service: str, *, endpoint: str, cache_name: str,
     auth_provider = build_cache_auth_provider(
         cache_name=cache_name, user_id=user_id, region=region_name
     )
-    connector = PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
+    connection = PhotonConnection(host, port, verify=verify, ca_certs=ca_certs,
                                 auth_provider=auth_provider)
     # The session connects (IAM auth + photon.config handshake) before the hook is installed,
     # so the first intercepted request already has a ready session.
-    session = PhotonSession(connector, overrides=overrides or None)
+    session = PhotonSession(connection, overrides=overrides or None)
     PhotonHandle(sdk_client, session)
 
     return sdk_client

@@ -3,9 +3,9 @@
 Three layers:
 1. AWS credential source — the caller's botocore session (standard chain).
 2. Token minter — ``generate_iam_auth_token``: SigV4-presigns an ``elasticache:connect`` request.
-3. Provider — ``IamAuthTokenProvider``: a callable ``() -> (user_id, token)`` held by the connector.
+3. Provider — ``IamAuthTokenProvider``: a callable ``() -> (user_id, token)`` held by the connection.
 
-The connector calls the provider at connect time (and later for refresh); the provider re-resolves
+The connection calls the provider at connect time (and later for refresh); the provider re-resolves
 credentials and mints a fresh token on every invocation.
 """
 

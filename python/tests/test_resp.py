@@ -5,18 +5,23 @@ import pytest
 from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.resp import (
     IncompleteFrame,
+    IncompleteFrameError,
     RespError,
     decode_resp,
     encode_resp,
 )
 
 
-# --- AC1: codec API + IncompleteFrame is a plain Exception --------------------
+# --- AC1: codec API + IncompleteFrameError is a plain Exception --------------------
 
 def test_incomplete_frame_is_not_photon_error():
-    """IncompleteFrame ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
-    assert issubclass(IncompleteFrame, Exception)
-    assert not issubclass(IncompleteFrame, PhotonError)
+    """IncompleteFrameError ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
+    assert issubclass(IncompleteFrameError, Exception)
+    assert not issubclass(IncompleteFrameError, PhotonError)
+
+
+def test_legacy_incomplete_frame_name_is_an_alias():
+    assert IncompleteFrame is IncompleteFrameError
 
 
 # --- AC2: encode/decode_resp round-trip --------------------------------------------
@@ -90,7 +95,7 @@ def test_decode_null_array():
     assert decode_resp(b"*-1\r\n") == (None, 5)
 
 
-# --- AC4: truncation raises IncompleteFrame -----------------------------------
+# --- AC4: truncation raises IncompleteFrameError -----------------------------------
 
 @pytest.mark.parametrize(
     "partial",
@@ -105,8 +110,8 @@ def test_decode_null_array():
     ],
 )
 def test_truncation_raises_incomplete_frame(partial):
-    """Each kind of partial buffer (empty, missing CRLF, short bulk, missing bulk trailing CRLF, missing array/push element, bare :) raises IncompleteFrame."""
-    with pytest.raises(IncompleteFrame):
+    """Each kind of partial buffer (empty, missing CRLF, short bulk, missing bulk trailing CRLF, missing array/push element, bare :) raises IncompleteFrameError."""
+    with pytest.raises(IncompleteFrameError):
         decode_resp(partial)
 
 

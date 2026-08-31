@@ -1,4 +1,4 @@
-"""Unit tests for photon.connection, organized by the five paths of the connector contract:"""
+"""Unit tests for photon.connection, organized by the five paths of the connection contract:"""
 
 import json
 import socket as _socket
@@ -8,9 +8,14 @@ from unittest import mock
 
 import pytest
 
-from photon.connection import PhotonConnector, _PendingRequests, _SocketReader
+from photon.connection import (
+    PhotonConnection,
+    PhotonConnector,
+    _PendingRequests,
+    _SocketReader,
+)
 from photon.exceptions import (
-    PhotonConnectionLost,
+    PhotonConnectionLostError,
     PhotonConnectionError,
     PhotonError,
     PhotonProtocolError,
@@ -20,14 +25,17 @@ from photon.resp import RespError, RespValue
 from tests.mock import MockCache, MockSocket, Reply
 
 
-class TestPhotonConnector:
-    """The connector contract (live MockCache, plaintext and TLS) plus internals."""
+class TestPhotonConnection:
+    """The connection contract (live MockCache, plaintext and TLS) plus internals."""
 
     # Defaults for tests that never start a cache / connect; helpers assign
     # instance attributes that shadow these. pytest creates a fresh instance
     # per test, so nothing is shared between tests.
     cache: MockCache | None = None
-    conn: PhotonConnector | None = None
+    conn: PhotonConnection | None = None
+
+    def test_legacy_connector_name_is_an_alias(self):
+        assert PhotonConnector is PhotonConnection
 
     def teardown_method(self):
         # ALWAYS runs (pass or fail): a failing assertion cannot leak the cache
@@ -49,7 +57,7 @@ class TestPhotonConnector:
         """Create + connect ``self.conn`` (default cache, and plaintext unless ``tls=True``)."""
         if self.cache is None:
             self.start_cache()
-        self.conn = PhotonConnector(self.cache.host, self.cache.port, tls=tls, **kwargs)
+        self.conn = PhotonConnection(self.cache.host, self.cache.port, tls=tls, **kwargs)
         self.conn.connect()
 
     def connect_and_handshake(self, **kwargs) -> None:
@@ -71,7 +79,7 @@ class TestPhotonConnector:
         photon.config handshake round-trips the mock's resolved config (as a raw JSON
         bulk string — parsing it is protocol.py's contract)."""
         self.connect()
-        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) == 1
+        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) != 0
         raw = self.conn.execute("photon.config", b'{"k":"v"}')
         cfg = json.loads(raw)
         assert cfg["version"] == "v1"
@@ -84,7 +92,7 @@ class TestPhotonConnector:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        conn = PhotonConnector("127.0.0.1", port, connect_timeout=1.0)
+        conn = PhotonConnection("127.0.0.1", port, connect_timeout=1.0)
         with pytest.raises(PhotonConnectionError):
             conn.connect()
 
@@ -100,7 +108,7 @@ class TestPhotonConnector:
         """With the default CA store (which does not trust the mock's self-signed cert),
         the handshake must fail — never connect insecurely."""
         self.start_cache(tls=True)
-        self.conn = PhotonConnector(self.cache.host, self.cache.port)  # tls=True, no ca_certs
+        self.conn = PhotonConnection(self.cache.host, self.cache.port)  # tls=True, no ca_certs
         with pytest.raises(PhotonConnectionError):
             self.conn.connect()
 
@@ -113,9 +121,9 @@ class TestPhotonConnector:
 
     def test_send_before_connect_raises(self):
         """Sending before connect() raises PhotonError (no socket yet — distinct from
-        PhotonConnectionLost, which means a connection existed and died)."""
+        PhotonConnectionLostError, which means a connection existed and died)."""
         self.start_cache()
-        conn = PhotonConnector(self.cache.host, self.cache.port, tls=False)
+        conn = PhotonConnection(self.cache.host, self.cache.port, tls=False)
         with pytest.raises(PhotonError):
             conn.execute("photon.config", b"{}")
 
@@ -138,7 +146,7 @@ class TestPhotonConnector:
     def test_auth_accepted(self):
         """The RESP +OK reply (decoded to b"OK") is accepted.
         Internals: _verify_auth_reply is pure reply validation, tested directly."""
-        conn = PhotonConnector("host", 6379, tls=False)
+        conn = PhotonConnection("host", 6379, tls=False)
         conn._verify_auth_reply(b"OK")  # must not raise
         assert conn._dead is False
 
@@ -146,7 +154,7 @@ class TestPhotonConnector:
         """An -ERR AUTH reply raises PhotonConnectionError AND marks the connection dead:
         an unauthenticated connection has no valid next use. The token never appears in
         the message. Internals: _verify_auth_reply tested directly."""
-        conn = PhotonConnector("host", 6379, tls=False)
+        conn = PhotonConnection("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError) as excinfo:
             conn._verify_auth_reply(RespError("invalid-iam-credentials", "nope"))
         assert "invalid-iam-credentials" in str(excinfo.value)
@@ -155,7 +163,7 @@ class TestPhotonConnector:
     def test_auth_unexpected_reply_kills_connection(self):
         """A non-error, non-OK AUTH reply is rejected and marks the connection dead.
         Internals: _verify_auth_reply tested directly."""
-        conn = PhotonConnector("host", 6379, tls=False)
+        conn = PhotonConnection("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError):
             conn._verify_auth_reply(123)
         assert conn._dead is True
@@ -227,15 +235,15 @@ class TestPhotonConnector:
         assert self.conn._dead is True
 
     def test_send_on_dead_connection_fails_fast(self):
-        """Once dead, a new send fails PhotonConnectionLost immediately — it must not sit out
+        """Once dead, a new send fails PhotonConnectionLostError immediately — it must not sit out
         the full request timeout."""
         self.start_cache(failure="drop")
         # Generous request_timeout so a fast failure is distinguishable from a timeout wait.
         self.connect_and_handshake(request_timeout=5.0)
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             self.send_request()  # server drops -> dead
         start = time.monotonic()
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             self.send_request()
         assert time.monotonic() - start < 1.0  # dead-check fired, not the 5s timeout
 
@@ -269,7 +277,7 @@ class TestPhotonConnector:
         self.connect_and_handshake(request_timeout=0.3)
         self.conn._sock = mock.Mock(wraps=self.conn._sock)
         self.conn._sock.sendall.side_effect = OSError("broken pipe")
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             self.send_request()
         assert self.conn._dead is True
         assert self.conn._closed is True       # full teardown ran, not just _mark_dead
@@ -313,7 +321,7 @@ class TestPhotonConnector:
         self.connect_and_handshake()
         value = self.send_request()         # reply arrives despite the FIN right behind it
         assert value[0] == 200
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             self.send_request()             # death detected on the next use
 
     def test_replies_routed_fifo(self):
@@ -321,13 +329,13 @@ class TestPhotonConnector:
         RespError is delivered as a future's RESULT (a value), not raised — the caller-facing
         parse_* functions raise on it later. Internals: _PendingRequests."""
         pending = _PendingRequests()
-        f1 = pending.register_new_request()
-        f2 = pending.register_new_request()
-        f3 = pending.register_new_request()
+        f1 = pending.register()
+        f2 = pending.register()
+        f3 = pending.register()
         err = RespError("ERR", "boom")
-        pending.resolve_oldest_request(b"v1")
-        pending.resolve_oldest_request(err)
-        pending.resolve_oldest_request(b"v3")
+        pending.resolve_next(b"v1")
+        pending.resolve_next(err)
+        pending.resolve_next(b"v3")
         assert f1.result(timeout=1) == b"v1"
         assert f2.result(timeout=1) is err  # delivered as a value, not raised
         assert f3.result(timeout=1) == b"v3"
@@ -335,33 +343,47 @@ class TestPhotonConnector:
     def test_max_pending_rejects_when_full(self):
         """At the cap, registering fails fast with PhotonError and the queue is unchanged;
         resolving a request frees a slot. Internals: _PendingRequests."""
-        pending = _PendingRequests(max_pending=2)
-        pending.register_new_request()
-        pending.register_new_request()
+        pending = _PendingRequests(max_pending_requests=2)
+        pending.register()
+        pending.register()
         with pytest.raises(PhotonError):
-            pending.register_new_request()
-        pending.resolve_oldest_request(b"v1")   # frees one slot
-        pending.register_new_request()          # fits again
+            pending.register()
+        pending.resolve_next(b"v1")   # frees one slot
+        pending.register()          # fits again
 
-    def test_max_pending_propagates_from_connector(self):
-        """The connector passes its max_pending through to the pending queue."""
-        conn = PhotonConnector("h", 1, tls=False, max_pending=7)
-        assert conn._pending._max_pending == 7
+    def test_max_pending_requests_propagates_from_connection(self):
+        """The connection passes its pending-request limit to the pending queue."""
+        conn = PhotonConnection("h", 1, tls=False, max_pending_requests=7)
+        assert conn._pending._max_pending_requests == 7
+
+    def test_legacy_max_pending_keyword_remains_supported(self):
+        conn = PhotonConnection("h", 1, tls=False, max_pending=7)
+        assert conn._pending._max_pending_requests == 7
+
+    def test_rejects_both_pending_limit_keywords(self):
+        with pytest.raises(TypeError):
+            PhotonConnection(
+                "h",
+                1,
+                tls=False,
+                max_pending_requests=7,
+                max_pending=7,
+            )
 
     # ======================================================================== #
     # 5. Close — teardown
     # ======================================================================== #
 
     def test_close_twice_is_safe(self):
-        """Calling close() twice on a connected connector does not raise."""
+        """Calling close() twice on a connected connection does not raise."""
         self.connect()
         self.conn.close()
         self.conn.close()
 
     def test_close_during_connect_does_not_leak_the_socket(self):
         """close() racing connect(): connect() must dispose of the fresh socket and raise,
-        not install it on the closed connector (where close() could never release it)."""
-        conn = PhotonConnector("h", 1, tls=False)
+        not install it on the closed connection (where close() could never release it)."""
+        conn = PhotonConnection("h", 1, tls=False)
         connect_entered = threading.Event()
         close_done = threading.Event()
         fresh_sock = mock.Mock(name="fresh-socket")
@@ -396,7 +418,7 @@ class TestPhotonConnector:
 
     def test_close_stops_and_forgets_the_reader_thread(self):
         """After close(), the reader thread has terminated and all connection state is
-        nulled: nothing owned by the connector outlives close()."""
+        nulled: nothing owned by the connection outlives close()."""
         self.connect()
         thread = self.conn._reader_thread
         assert thread.is_alive()
@@ -406,16 +428,16 @@ class TestPhotonConnector:
         assert self.conn._sock is None
 
     def test_execute_after_close_raises_connection_lost(self):
-        """execute() on a closed connector reports PhotonConnectionLost, not the misleading
+        """execute() on a closed connection reports PhotonConnectionLostError, not the misleading
         "used before connect()" error (close() nulls the socket)."""
         self.connect()
         self.conn.close()
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             self.conn.execute("photon.request", b"x")
 
     def test_close_fails_pending_requests(self):
         """close() while a caller is blocked waiting for a reply: the caller gets
-        PhotonConnectionLost promptly — it must not hang until its request timeout."""
+        PhotonConnectionLostError promptly — it must not hang until its request timeout."""
         self.start_cache(failure="hang")
         self.connect_and_handshake(request_timeout=10.0)
 
@@ -425,7 +447,7 @@ class TestPhotonConnector:
             try:
                 self.send_request()
                 outcome.append("returned")
-            except PhotonConnectionLost:
+            except PhotonConnectionLostError:
                 outcome.append("connection-lost")
             except Exception as exc:  # noqa: BLE001
                 outcome.append(exc)
@@ -445,16 +467,16 @@ class TestPhotonConnector:
         escape close(); teardown still completes and pending requests are still failed.
         Internals: a mock socket forces the error (a real socket can't fail mid-close
         deterministically)."""
-        conn = PhotonConnector("host", 6379, tls=False)
+        conn = PhotonConnection("host", 6379, tls=False)
         sock = mock.Mock()
         getattr(sock, failing_method).side_effect = OSError("already closed")
         conn._sock = sock
-        fut = conn._pending.register_new_request()
+        fut = conn._pending.register()
 
         conn.close()  # must not raise
 
         sock.shutdown.assert_called_once()
         sock.close.assert_called_once()
-        with pytest.raises(PhotonConnectionLost):
+        with pytest.raises(PhotonConnectionLostError):
             fut.result(timeout=1)  # pending caller still failed
         conn.close()  # still idempotent

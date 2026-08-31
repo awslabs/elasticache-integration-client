@@ -28,7 +28,7 @@ import java.util.function.Supplier;
  *
  * <p>Usage:
  * <pre>{@code
- * PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+ * PhotonSession session = new PhotonSession(connection, authProvider, overrides);
  * session.open();
  * try {
  *     PhotonResponse response = session.request(photonRequest);
@@ -53,7 +53,7 @@ public class PhotonSession implements Closeable {
 
     private final PhotonConnection connection;
     private final Supplier<AuthCredentials> authProvider;
-    private final Map<String, Object> configOverrides;
+    private final Map<String, Object> overrides;
 
     private volatile State state = State.CREATED;
     private ResolvedConfig resolvedConfig;
@@ -63,13 +63,13 @@ public class PhotonSession implements Closeable {
      *
      * @param connection      the underlying connection (not yet connected)
      * @param authProvider    supplies the AUTH credentials (userId + token)
-     * @param configOverrides optional config overrides (may be null)
+     * @param overrides optional config overrides (may be null)
      */
     public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider,
-                         Map<String, Object> configOverrides) {
+                         Map<String, Object> overrides) {
         this.connection = connection;
         this.authProvider = authProvider;
-        this.configOverrides = configOverrides != null ? configOverrides : Collections.emptyMap();
+        this.overrides = overrides != null ? overrides : Collections.emptyMap();
     }
 
     /**
@@ -78,11 +78,11 @@ public class PhotonSession implements Closeable {
      * @param connection      the underlying connection (not yet connected)
      * @param userId          the user ID for AUTH
      * @param authToken       the AUTH token
-     * @param configOverrides optional config overrides (may be null)
+     * @param overrides optional config overrides (may be null)
      */
     public PhotonSession(PhotonConnection connection, String userId, String authToken,
-                         Map<String, Object> configOverrides) {
-        this(connection, () -> new AuthCredentials(userId, authToken), configOverrides);
+                         Map<String, Object> overrides) {
+        this(connection, () -> new AuthCredentials(userId, authToken), overrides);
     }
 
     /**
@@ -136,7 +136,7 @@ public class PhotonSession implements Closeable {
         try {
             AuthCredentials creds = authProvider.get();
             connection.authenticate(creds.getUserId(), creds.getToken());
-            resolvedConfig = connection.configureAndStartReader(configOverrides);
+            resolvedConfig = connection.configureAndStartReader(overrides);
         } catch (Exception e) {
             // Close on failure to clean up partially-opened state
             try {

@@ -2,6 +2,7 @@ package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
@@ -21,6 +22,11 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for PendingRequests.
  */
 class PendingRequestsTest {
+
+    @Test
+    void connectionLostCanonicalTypePreservesLegacyCatchCompatibility() {
+        assertTrue(ConnectionLost.class.isAssignableFrom(PhotonConnectionLostError.class));
+    }
 
     @Test
     void register_returnsFuture() {
@@ -74,7 +80,7 @@ class PendingRequestsTest {
         CompletableFuture<RespValue> f2 = pending.register();
         CompletableFuture<RespValue> f3 = pending.register();
 
-        ConnectionLost cause = new ConnectionLost("test failure");
+        PhotonConnectionLostError cause = new PhotonConnectionLostError("test failure");
         pending.failAll(cause);
 
         assertTrue(f1.isCompletedExceptionally());
@@ -90,16 +96,16 @@ class PendingRequestsTest {
         PendingRequests pending = new PendingRequests();
         assertFalse(pending.isClosed());
 
-        pending.failAll(new ConnectionLost("test"));
+        pending.failAll(new PhotonConnectionLostError("test"));
         assertTrue(pending.isClosed());
     }
 
     @Test
     void register_afterFailAll_throwsConnectionLost() {
         PendingRequests pending = new PendingRequests();
-        pending.failAll(new ConnectionLost("test"));
+        pending.failAll(new PhotonConnectionLostError("test"));
 
-        assertThrows(ConnectionLost.class, pending::register);
+        assertThrows(PhotonConnectionLostError.class, pending::register);
     }
 
     @Test
@@ -110,7 +116,7 @@ class PendingRequestsTest {
         pending.register();
 
         // Third should fail
-        ConnectionLost e = assertThrows(ConnectionLost.class, pending::register);
+        PhotonConnectionLostError e = assertThrows(PhotonConnectionLostError.class, pending::register);
         assertTrue(e.getMessage().contains("Too many pending"));
         assertTrue(e.getMessage().contains("max=2"));
     }
@@ -123,7 +129,7 @@ class PendingRequestsTest {
         pending.register();
 
         // At capacity
-        assertThrows(ConnectionLost.class, pending::register);
+        assertThrows(PhotonConnectionLostError.class, pending::register);
 
         // Resolve one
         pending.resolveNext(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));

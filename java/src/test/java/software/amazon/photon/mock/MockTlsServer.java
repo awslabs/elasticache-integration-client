@@ -100,7 +100,7 @@ public class MockTlsServer implements Closeable {
                                 return;
                             }
                         }
-                    } catch (IncompleteFrame e) {
+                    } catch (IncompleteFrameError e) {
                         // Need more data
                         break;
                     }

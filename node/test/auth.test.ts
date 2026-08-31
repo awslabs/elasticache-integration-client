@@ -9,7 +9,7 @@ import {
   generateIamAuthToken,
   resolveAuthParams,
 } from "../src/auth.js";
-import { PhotonConnector } from "../src/connection.js";
+import { PhotonConnection } from "../src/connection.js";
 
 const credentials = {
   accessKeyId: "AKIAIOSFODNN7EXAMPLE",
@@ -138,20 +138,20 @@ describe("IamAuthTokenProvider", () => {
     expect(credentialProvider).toHaveBeenCalledTimes(2);
   });
 
-  it("can be passed directly to the connector", async () => {
+  it("can be passed directly to the connection", async () => {
     const provider = new IamAuthTokenProvider({
       cacheName: "my-cache",
       userId: "my-user",
       region: "us-east-1",
       credentials: async () => credentials,
     });
-    const connector = new PhotonConnector("my-cache", 443, {
+    const connection = new PhotonConnection("my-cache", 443, {
       tls: false,
       authProvider: provider,
     });
-    const execute = vi.spyOn(connector, "execute").mockResolvedValue(Buffer.from("OK"));
+    const execute = vi.spyOn(connection, "execute").mockResolvedValue(Buffer.from("OK"));
 
-    await connector.authenticate();
+    await connection.authenticate();
 
     expect(execute).toHaveBeenCalledWith("AUTH", Buffer.from("my-user"), expect.any(Buffer));
   });
@@ -160,7 +160,7 @@ describe("IamAuthTokenProvider", () => {
 // --- buildCacheAuthProvider tests --------------------------------------------
 
 describe("buildCacheAuthProvider", () => {
-  it("returns a connector-compatible callback", async () => {
+  it("returns a connection-compatible callback", async () => {
     const provider = await buildCacheAuthProvider({
       cacheName: "my-cache",
       region: "eu-west-1",

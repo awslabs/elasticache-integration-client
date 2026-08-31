@@ -130,7 +130,7 @@ public final class PhotonAsyncHandle implements Closeable {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
-        private Map<String, Object> configOverrides;
+        private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
@@ -167,9 +167,17 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
-        public Builder configOverrides(Map<String, Object> configOverrides) {
-            this.configOverrides = configOverrides;
+        public Builder overrides(Map<String, Object> overrides) {
+            this.overrides = overrides;
             return this;
+        }
+
+        /**
+         * @deprecated use {@link #overrides(Map)}
+         */
+        @Deprecated
+        public Builder configOverrides(Map<String, Object> overrides) {
+            return overrides(overrides);
         }
 
         public Builder connectTimeoutMs(int connectTimeoutMs) {
@@ -271,14 +279,14 @@ public final class PhotonAsyncHandle implements Closeable {
         private PhotonSession createSession(SSLContext resolvedSslContext) {
             PhotonConnection connection = new PhotonConnection(
                     host, port, resolvedSslContext, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
-            return new PhotonSession(connection, authProvider, configOverrides);
+                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+            return new PhotonSession(connection, authProvider, overrides);
         }
 
         private static ExecutorService createDefaultExecutor() {
             return new ThreadPoolExecutor(
                     0,
-                    PhotonConnection.DEFAULT_MAX_PENDING,
+                    PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS,
                     60,
                     TimeUnit.SECONDS,
                     new SynchronousQueue<>(),

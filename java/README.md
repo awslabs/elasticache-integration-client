@@ -56,6 +56,10 @@ with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
 
+Configuration sent during the `photon.config` handshake uses the
+`overrides(Map<String, Object>)` builder method. The previous
+`configOverrides(...)` spelling remains available as a deprecated alias.
+
 ## Manual lifecycle
 
 `PhotonHandle` and `PhotonAsyncHandle` expose the interceptor and matching HTTP

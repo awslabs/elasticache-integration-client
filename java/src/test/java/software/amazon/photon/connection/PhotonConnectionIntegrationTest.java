@@ -4,7 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
@@ -91,20 +91,33 @@ class PhotonConnectionIntegrationTest {
             conn.connect();
             // Connection established but not authenticated
             assertTrue(conn.isConnected());
-            assertNull(conn.getConfig());
+            assertNull(conn.getResolvedConfig());
 
             // Step 2: AUTH
             conn.authenticate(TEST_USER, "my-auth-token");
             assertTrue(conn.isConnected());
-            assertNull(conn.getConfig()); // Still no config until step 3
+            assertNull(conn.getResolvedConfig()); // Still no config until step 3
 
             // Step 3: Configure and start reader
             ResolvedConfig config = conn.configureAndStartReader(Collections.emptyMap());
             assertNotNull(config);
             assertEquals("1.0", config.getVersion());
+            assertSame(config, conn.getResolvedConfig());
+            assertSame(config, conn.getConfig());
         } finally {
             conn.close();
         }
+    }
+
+    @Test
+    void canonicalAndLegacyConnectionNamesRemainAvailable() throws Exception {
+        assertEquals(
+                PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS,
+                PhotonConnection.DEFAULT_MAX_PENDING);
+        assertNotNull(PhotonConnection.class.getMethod(
+                "execute", String.class, byte[][].class));
+        assertNotNull(PhotonConnection.class.getMethod(
+                "sendCommand", String.class, byte[][].class));
     }
 
     @Test
@@ -354,7 +367,7 @@ class PhotonConnectionIntegrationTest {
                 new RequestMetadata("dynamodb", "GetItem")
         );
 
-        assertThrows(ConnectionLost.class, () -> conn.request(request));
+        assertThrows(PhotonConnectionLostError.class, () -> conn.request(request));
     }
 
     @Test
@@ -382,7 +395,7 @@ class PhotonConnectionIntegrationTest {
                     new RequestMetadata("dynamodb", "GetItem")
             );
 
-            assertThrows(ConnectionLost.class, () -> conn.request(request));
+            assertThrows(PhotonConnectionLostError.class, () -> conn.request(request));
         } finally {
             conn.close();
         }
@@ -395,7 +408,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -432,7 +445,7 @@ class PhotonConnectionIntegrationTest {
 
         PhotonConnection conn = new PhotonConnection(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 2000, PhotonConnection.DEFAULT_MAX_PENDING);
+                5000, 5000, 2000, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -462,7 +475,7 @@ class PhotonConnectionIntegrationTest {
     void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
         PhotonConnection conn = new PhotonConnection(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Lock sendLock = getField(conn, "sendLock", Lock.class);
         try {
@@ -487,7 +500,7 @@ class PhotonConnectionIntegrationTest {
     void request_blockedSocketWrite_timesOutAndKillsConnection() throws Exception {
         PhotonConnection conn = new PhotonConnection(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING);
+                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             Field outputStream = PhotonConnection.class.getDeclaredField("outputStream");
@@ -541,7 +554,7 @@ class PhotonConnectionIntegrationTest {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         try {
             ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
-            assertEquals(config, conn.getConfig());
+            assertEquals(config, conn.getResolvedConfig());
         } finally {
             conn.close();
         }
@@ -702,7 +715,7 @@ class PhotonConnectionIntegrationTest {
     @Test
     void authenticate_beforeConnect_throwsConnectionLost() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        assertThrows(ConnectionLost.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
+        assertThrows(PhotonConnectionLostError.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
     }
 
     @Test

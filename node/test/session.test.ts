@@ -3,9 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import { PhotonError } from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
-import type { PhotonConnector } from "../src/connection.js";
+import type { PhotonConnection } from "../src/connection.js";
 
-function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
+function fakeConnection(overrides: Partial<PhotonConnection> = {}): PhotonConnection {
   return {
     connect: vi.fn(async () => undefined),
     authenticate: vi.fn(async () => undefined),
@@ -17,12 +17,12 @@ function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnecto
     close: vi.fn(async () => undefined),
     destroy: vi.fn(() => undefined),
     ...overrides,
-  } as unknown as PhotonConnector;
+  } as unknown as PhotonConnection;
 }
 
 describe("PhotonSession", () => {
   it("reports whether the session is open", async () => {
-    const session = new PhotonSession(fakeConnector());
+    const session = new PhotonSession(fakeConnection());
 
     expect(session.isOpen).toBe(false);
     await session.open();
@@ -32,22 +32,22 @@ describe("PhotonSession", () => {
   });
 
   it("opens in lifecycle order and stores the resolved config", async () => {
-    const connector = fakeConnector();
-    const session = new PhotonSession(connector, { ttl: 300 });
+    const connection = fakeConnection();
+    const session = new PhotonSession(connection, { ttl: 300 });
     expect(session.resolvedConfig).toBeUndefined();
 
     await session.open();
 
-    expect(connector.connect).toHaveBeenCalledOnce();
-    expect(connector.authenticate).toHaveBeenCalledOnce();
-    expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
+    expect(connection.connect).toHaveBeenCalledOnce();
+    expect(connection.authenticate).toHaveBeenCalledOnce();
+    expect(connection.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
     expect(session.resolvedConfig).toEqual(expect.any(ResolvedConfig));
     expect(session.resolvedConfig.raw).toEqual({ version: "v1", refresh_interval: 60 });
-    const connectOrder = (connector.connect as ReturnType<typeof vi.fn>).mock
+    const connectOrder = (connection.connect as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
-    const authenticateOrder = (connector.authenticate as ReturnType<typeof vi.fn>).mock
+    const authenticateOrder = (connection.authenticate as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
-    const executeOrder = (connector.execute as ReturnType<typeof vi.fn>).mock
+    const executeOrder = (connection.execute as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
     if (
       connectOrder === undefined ||
@@ -61,8 +61,8 @@ describe("PhotonSession", () => {
   });
 
   it("serializes requests, delegates execution, and parses PhotonResponse", async () => {
-    const connector = fakeConnector();
-    const session = new PhotonSession(connector);
+    const connection = fakeConnection();
+    const session = new PhotonSession(connection);
     await session.open();
     const request = new PhotonRequest({
       method: "POST",
@@ -78,7 +78,7 @@ describe("PhotonSession", () => {
         body: Buffer.from("ok"),
       }),
     );
-    expect(connector.execute).toHaveBeenLastCalledWith(
+    expect(connection.execute).toHaveBeenLastCalledWith(
       "photon.request",
       Buffer.from("POST"),
       Buffer.from("https://x/"),
@@ -92,7 +92,7 @@ describe("PhotonSession", () => {
     "closes and rethrows when %s fails",
     async (failure) => {
       const original = new Error(failure);
-      const connector = fakeConnector({
+      const connection = fakeConnection({
         connect: vi.fn(async () => {
           if (failure === "connect") throw original;
         }),
@@ -105,9 +105,9 @@ describe("PhotonSession", () => {
         }),
       });
 
-      const session = new PhotonSession(connector);
+      const session = new PhotonSession(connection);
       await expect(session.open()).rejects.toBe(original);
-      expect(connector.close).toHaveBeenCalledTimes(failure === "connect" ? 0 : 1);
+      expect(connection.close).toHaveBeenCalledTimes(failure === "connect" ? 0 : 1);
     },
   );
 
@@ -116,50 +116,50 @@ describe("PhotonSession", () => {
     const config = new Promise<Buffer>((resolve) => {
       resolveConfig = resolve;
     });
-    const connector = fakeConnector({
+    const connection = fakeConnection({
       connect: vi.fn(),
       authenticate: vi.fn(),
       execute: vi.fn(() => config),
     });
-    const session = new PhotonSession(connector);
+    const session = new PhotonSession(connection);
     const opening = session.open();
 
     await vi.waitFor(() => {
-      expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from("{}"));
+      expect(connection.execute).toHaveBeenCalledWith("photon.config", Buffer.from("{}"));
     });
     resolveConfig(Buffer.from('{"version":"v1"}'));
     session.destroy();
 
     await expect(opening).rejects.toThrow("session closed during open()");
     expect(session.isOpen).toBe(false);
-    expect(connector.destroy).toHaveBeenCalledOnce();
+    expect(connection.destroy).toHaveBeenCalledOnce();
   });
 
   it("makes close idempotent and destroy synchronous/idempotent", async () => {
-    const connector = fakeConnector();
-    const session = new PhotonSession(connector);
+    const connection = fakeConnection();
+    const session = new PhotonSession(connection);
     await session.open();
 
     await session.close();
     await session.close();
-    expect(connector.close).toHaveBeenCalledOnce();
+    expect(connection.close).toHaveBeenCalledOnce();
 
-    const destroyConnector = fakeConnector();
-    const destroySession = new PhotonSession(destroyConnector);
+    const destroyConnection = fakeConnection();
+    const destroySession = new PhotonSession(destroyConnection);
     await destroySession.open();
     destroySession.destroy();
     destroySession.destroy();
 
-    expect(destroyConnector.destroy).toHaveBeenCalledOnce();
+    expect(destroyConnection.destroy).toHaveBeenCalledOnce();
   });
 
-  it("delegates requests after close to the connector", async () => {
-    const connector = fakeConnector();
-    const session = new PhotonSession(connector);
+  it("delegates requests after close to the connection", async () => {
+    const connection = fakeConnection();
+    const session = new PhotonSession(connection);
     await session.open();
     await session.close();
-    vi.mocked(connector.execute).mockClear();
-    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("connection is closed"));
+    vi.mocked(connection.execute).mockClear();
+    vi.mocked(connection.execute).mockRejectedValue(new PhotonError("connection is closed"));
 
     await expect(
       session.request(
@@ -170,12 +170,12 @@ describe("PhotonSession", () => {
         }),
       ),
     ).rejects.toThrow("connection is closed");
-    expect(connector.execute).toHaveBeenCalledOnce();
+    expect(connection.execute).toHaveBeenCalledOnce();
   });
 
   it("enforces the CREATED -> OPEN -> CLOSED lifecycle", async () => {
-    const connector = fakeConnector();
-    const session = new PhotonSession(connector);
+    const connection = fakeConnection();
+    const session = new PhotonSession(connection);
     const request = new PhotonRequest({
       method: "POST",
       url: "https://x/",

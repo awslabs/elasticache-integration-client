@@ -1,8 +1,8 @@
 """Unit tests for the contract logic in tests/mock.py.
 
-Only covers what the connector/integration tests don't already exercise by *using* the mock:
+Only covers what the connection/integration tests don't already exercise by *using* the mock:
 ``MockCache.handle`` command-shape validation. The reply builders, reply selection,
-``MockSocket``, and the TLS handshake are all exercised through the connector tests in
+``MockSocket``, and the TLS handshake are all exercised through the connection tests in
 test_connection.py and test_ddb.py.
 """
 

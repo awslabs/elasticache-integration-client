@@ -11,6 +11,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RespCodecTest {
 
+    @Test
+    void incompleteFrameCanonicalTypePreservesLegacyCatchCompatibility() {
+        assertTrue(IncompleteFrame.class.isAssignableFrom(IncompleteFrameError.class));
+    }
+
     // === Encode tests ===
 
     @Test
@@ -50,7 +55,7 @@ class RespCodecTest {
     // === Decode tests - Simple String ===
 
     @Test
-    void decode_simpleString() throws IncompleteFrame {
+    void decode_simpleString() throws IncompleteFrameError {
         byte[] data = "+OK\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespSimpleString);
@@ -59,7 +64,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_simpleString_empty() throws IncompleteFrame {
+    void decode_simpleString_empty() throws IncompleteFrameError {
         byte[] data = "+\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespSimpleString);
@@ -69,7 +74,7 @@ class RespCodecTest {
     // === Decode tests - Integer ===
 
     @Test
-    void decode_integer() throws IncompleteFrame {
+    void decode_integer() throws IncompleteFrameError {
         byte[] data = ":42\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespInteger);
@@ -77,7 +82,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_negativeInteger() throws IncompleteFrame {
+    void decode_negativeInteger() throws IncompleteFrameError {
         byte[] data = ":-1\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespInteger);
@@ -85,7 +90,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_zero() throws IncompleteFrame {
+    void decode_zero() throws IncompleteFrameError {
         byte[] data = ":0\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespInteger);
@@ -95,7 +100,7 @@ class RespCodecTest {
     // === Decode tests - Error ===
 
     @Test
-    void decode_error() throws IncompleteFrame {
+    void decode_error() throws IncompleteFrameError {
         byte[] data = "-ERR something went wrong\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespError);
@@ -105,7 +110,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_error_noMessage() throws IncompleteFrame {
+    void decode_error_noMessage() throws IncompleteFrameError {
         byte[] data = "-ERR\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespError);
@@ -117,7 +122,7 @@ class RespCodecTest {
     // === Decode tests - Bulk String ===
 
     @Test
-    void decode_bulkString() throws IncompleteFrame {
+    void decode_bulkString() throws IncompleteFrameError {
         byte[] data = "$5\r\nhello\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespBulkString);
@@ -125,7 +130,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_bulkString_empty() throws IncompleteFrame {
+    void decode_bulkString_empty() throws IncompleteFrameError {
         byte[] data = "$0\r\n\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespBulkString);
@@ -133,7 +138,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_nullBulkString() throws IncompleteFrame {
+    void decode_nullBulkString() throws IncompleteFrameError {
         byte[] data = "$-1\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespNull);
@@ -142,7 +147,7 @@ class RespCodecTest {
     // === Decode tests - Array ===
 
     @Test
-    void decode_array() throws IncompleteFrame {
+    void decode_array() throws IncompleteFrameError {
         byte[] data = "*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespArray);
@@ -153,7 +158,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_emptyArray() throws IncompleteFrame {
+    void decode_emptyArray() throws IncompleteFrameError {
         byte[] data = "*0\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespArray);
@@ -162,14 +167,14 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_nullArray() throws IncompleteFrame {
+    void decode_nullArray() throws IncompleteFrameError {
         byte[] data = "*-1\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespNull);
     }
 
     @Test
-    void decode_nestedArray() throws IncompleteFrame {
+    void decode_nestedArray() throws IncompleteFrameError {
         byte[] data = "*2\r\n*1\r\n:1\r\n*1\r\n:2\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespArray);
@@ -180,7 +185,7 @@ class RespCodecTest {
     }
 
     @Test
-    void decode_mixedArray() throws IncompleteFrame {
+    void decode_mixedArray() throws IncompleteFrameError {
         byte[] data = "*3\r\n:1\r\n$5\r\nhello\r\n+OK\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespArray);
@@ -194,7 +199,7 @@ class RespCodecTest {
     // === Decode tests - Push (>) ===
 
     @Test
-    void decode_push_decodedAsArray() throws IncompleteFrame {
+    void decode_push_decodedAsArray() throws IncompleteFrameError {
         byte[] data = ">2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespArray);
@@ -207,43 +212,43 @@ class RespCodecTest {
     @Test
     void decode_truncated_simpleString() {
         byte[] data = "+OK".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_truncated_bulkString_noData() {
         byte[] data = "$5\r\n".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_truncated_bulkString_partialData() {
         byte[] data = "$5\r\nhel".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_truncated_integer() {
         byte[] data = ":42".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_truncated_array() {
         byte[] data = "*2\r\n$3\r\nfoo\r\n".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_largeArrayCount_doesNotPreallocateFromWireValue() {
         byte[] data = "*2000000000\r\n".getBytes(StandardCharsets.UTF_8);
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     @Test
     void decode_emptyData() {
         byte[] data = new byte[0];
-        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+        assertThrows(IncompleteFrameError.class, () -> RespCodec.decode(data));
     }
 
     // === Garbage / protocol error tests ===
@@ -287,7 +292,7 @@ class RespCodecTest {
     // === Round trip tests ===
 
     @Test
-    void roundTrip_command() throws IncompleteFrame {
+    void roundTrip_command() throws IncompleteFrameError {
         byte[] encoded = RespCodec.encodeCommand("photon.request",
                 "GET".getBytes(StandardCharsets.UTF_8),
                 "https://example.com".getBytes(StandardCharsets.UTF_8));
@@ -305,7 +310,7 @@ class RespCodecTest {
     }
 
     @Test
-    void roundTrip_binaryData() throws IncompleteFrame {
+    void roundTrip_binaryData() throws IncompleteFrameError {
         byte[] binaryData = new byte[]{0x00, 0x01, 0x02, (byte) 0xFF, (byte) 0xFE};
         byte[] encoded = RespCodec.encodeCommand("CMD", binaryData);
         DecodeResult result = RespCodec.decode(encoded);

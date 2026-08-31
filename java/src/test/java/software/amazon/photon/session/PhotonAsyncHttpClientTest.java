@@ -12,7 +12,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnection;
 import software.amazon.photon.connection.PhotonRequestCancellation;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -304,7 +304,7 @@ class PhotonAsyncHttpClientTest {
 
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
-            throw new ConnectionLost("cache unavailable");
+            throw new PhotonConnectionLostError("cache unavailable");
         }
     }
 

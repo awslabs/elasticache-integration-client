@@ -63,7 +63,7 @@ describe("public client", () => {
       endpoint: cache.endpoint,
       cacheName: "test-cache",
       region: "us-east-1",
-      connectorOptions: { tls: false },
+      connectionOptions: { tls: false },
       clientConfig: {
         endpoint: "http://127.0.0.1:1",
         credentials: {
@@ -166,7 +166,7 @@ describe("public DynamoDB client", () => {
       endpoint: cache.endpoint,
       cacheName: "test-cache",
       region: "us-east-1",
-      connectorOptions: { tls: false },
+      connectionOptions: { tls: false },
       clientConfig: {
         endpoint: "http://127.0.0.1:1",
         credentials: {
@@ -239,7 +239,7 @@ describe("public DynamoDB client", () => {
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
       region: "us-east-1",
-      connectorOptions: { tls: false, requestTimeout: 5_000 },
+      connectionOptions: { tls: false, requestTimeout: 5_000 },
       clientConfig: {
         endpoint: "http://127.0.0.1:1",
         credentials: {

@@ -5,7 +5,7 @@ import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from "@smit
 
 const mocks = vi.hoisted(() => ({
   buildCacheAuthProvider: vi.fn(),
-  connector: vi.fn(),
+  connection: vi.fn(),
   session: { open: vi.fn(), destroy: vi.fn() },
   sessionConstructor: vi.fn(),
   handle: { install: vi.fn() },
@@ -17,9 +17,9 @@ vi.mock("../src/auth.js", () => ({
 }));
 
 vi.mock("../src/connection.js", () => ({
-  PhotonConnector: class {
+  PhotonConnection: class {
     constructor(...args: unknown[]) {
-      mocks.connector(...args);
+      mocks.connection(...args);
     }
   },
 }));
@@ -81,7 +81,7 @@ function setup() {
   createdClients.length = 0;
   for (const mock of [
     mocks.buildCacheAuthProvider,
-    mocks.connector,
+    mocks.connection,
     mocks.session.open,
     mocks.session.destroy,
     mocks.sessionConstructor,
@@ -101,7 +101,7 @@ const options = {
   userId: "iam-user",
   overrides: { timeout: 42 },
   clientConfig: { credentials },
-  connectorOptions: { tls: false, requestTimeout: 1234 },
+  connectionOptions: { tls: false, requestTimeout: 1234 },
 };
 
 describe("client", () => {
@@ -123,7 +123,7 @@ describe("client", () => {
     });
     const authOptions = mocks.buildCacheAuthProvider.mock.calls[0]![0];
     await expect(authOptions.credentials()).resolves.toBe(credentials);
-    expect(mocks.connector).toHaveBeenCalledWith("cache.example.com", 6379, {
+    expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       tls: false,
       requestTimeout: 1234,
       authProvider: "auth-provider",
@@ -132,6 +132,23 @@ describe("client", () => {
     expect(mocks.session.open).toHaveBeenCalledOnce();
     expect(mocks.handleConstructor).toHaveBeenCalledWith(sdkClient, mocks.session, "dynamodb");
     expect(mocks.handle.install).toHaveBeenCalledOnce();
+  });
+
+  it("supports the legacy connectorOptions name", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, {
+      endpoint: options.endpoint,
+      cacheName: options.cacheName,
+      clientConfig: { credentials },
+      connectorOptions: { tls: false, requestTimeout: 4321 },
+    });
+
+    expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
+      tls: false,
+      requestTimeout: 4321,
+      authProvider: "auth-provider",
+    });
   });
 
   it("allows region and userId to resolve from the environment", async () => {

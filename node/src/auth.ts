@@ -6,9 +6,9 @@
  * 2. Token minter: `generateIamAuthToken`, which SigV4-presigns an
  *    `elasticache:connect` request.
  * 3. Provider: `IamAuthTokenProvider`, which supplies `(userId, token)`
- *    credentials to the connector.
+ *    credentials to the connection.
  *
- * The connector calls the provider at connect/authentication time. The
+ * The connection calls the provider at connect/authentication time. The
  * provider re-resolves credentials and mints a fresh token on every call.
  */
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";

@@ -147,7 +147,7 @@ export class PendingRequests {
   }
 }
 
-export interface PhotonConnectorOptions {
+export interface PhotonConnectionOptions {
   /** Use TLS with hostname verification. Defaults to `true`. */
   tls?: boolean;
   /** TCP/TLS establishment timeout in milliseconds. */
@@ -168,6 +168,9 @@ export interface PhotonConnectorOptions {
   authProvider?: AuthProvider;
 }
 
+/** @deprecated Use `PhotonConnectionOptions`. */
+export type PhotonConnectorOptions = PhotonConnectionOptions;
+
 /**
  * A callback or provider object that supplies credentials for `AUTH`.
  *
@@ -185,17 +188,17 @@ type ConnectedSocket = Socket | TLSSocket;
  * Timeouts close the connection because accepting a late response would make FIFO
  * correlation unsafe for every request sent afterward.
  */
-export class PhotonConnector {
+export class PhotonConnection {
   private readonly host: string;
   private readonly port: number;
   private readonly useTls: boolean;
   private readonly connectTimeout: number;
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
-  private readonly caCerts: PhotonConnectorOptions["caCerts"];
+  private readonly caCerts: PhotonConnectionOptions["caCerts"];
   private readonly readSize: number;
   private readonly maxResponseSize: number;
-  private readonly authProvider: PhotonConnectorOptions["authProvider"];
+  private readonly authProvider: PhotonConnectionOptions["authProvider"];
 
   private socket: ConnectedSocket | undefined;
   // Kept while the reader is active so close() can still await it after destroy().
@@ -205,7 +208,7 @@ export class PhotonConnector {
   private dead = false;
   private closed = false;
 
-  constructor(host: string, port: number, options: PhotonConnectorOptions = {}) {
+  constructor(host: string, port: number, options: PhotonConnectionOptions = {}) {
     this.host = host;
     this.port = port;
     this.useTls = options.tls ?? true;
@@ -225,13 +228,13 @@ export class PhotonConnector {
   /** Open the socket, perform TLS when enabled, and start the background reader. */
   async connect(): Promise<void> {
     if (this.closed) {
-      throw new PhotonError("PhotonConnector used after close()");
+      throw new PhotonError("PhotonConnection used after close()");
     }
     if (this.socket !== undefined) {
-      throw new PhotonError("PhotonConnector is already connected");
+      throw new PhotonError("PhotonConnection is already connected");
     }
     if (this.connecting) {
-      throw new PhotonError("PhotonConnector is already connecting");
+      throw new PhotonError("PhotonConnection is already connecting");
     }
 
     this.connecting = true;
@@ -245,7 +248,7 @@ export class PhotonConnector {
       socket.setTimeout(0);
       if (this.closed) {
         socket.destroy();
-        throw new PhotonConnectionError("PhotonConnector closed during connect()");
+        throw new PhotonConnectionError("PhotonConnection closed during connect()");
       }
       this.socket = socket;
       this.dead = false;
@@ -329,7 +332,7 @@ export class PhotonConnector {
       if (this.closed) {
         throw new PhotonConnectionLostError("connection is closed");
       }
-      throw new PhotonError("PhotonConnector used before connect()");
+      throw new PhotonError("PhotonConnection used before connect()");
     }
     if (this.dead) {
       throw new PhotonConnectionLostError("connection is closed");
@@ -608,3 +611,8 @@ export class PhotonConnector {
     });
   }
 }
+
+/** @deprecated Use `PhotonConnection`. */
+export const PhotonConnector = PhotonConnection;
+/** @deprecated Use `PhotonConnection`. */
+export type PhotonConnector = PhotonConnection;

@@ -3,11 +3,11 @@
 Drive the full client path:
 
     photon.client("dynamodb") -> boto3 GetItem -> before-send hook -> PhotonSession
-        -> real PhotonConnector (verifying TLS) -> MockCache -> response
+        -> real PhotonConnection (verifying TLS) -> MockCache -> response
 
-These exercise the **real** pure-Python ``PhotonConnector`` over **verifying TLS** (not a double) —
+These exercise the **real** pure-Python ``PhotonConnection`` over **verifying TLS** (not a double) —
 the one place in the suite that does so. The mock cache is started with ``tls=True`` so it mints a
-self-signed cert, which the client trusts via ``SSL_CERT_FILE`` (honored by the connector's
+self-signed cert, which the client trusts via ``SSL_CERT_FILE`` (honored by the connection's
 default ``load_default_certs()`` path). No real cache or DynamoDB is contacted.
 
 How the mock behaves: ``MockCache`` is a recorder + answering machine — it speaks RESP but knows
@@ -19,7 +19,7 @@ receives, and the recording shows what the client sent.
 
 Scaffolding (mock cache lifecycle, TLS trust, dummy credentials) lives in fixtures; each test
 body contains only what a real application would write. Per-test client teardown on assertion
-failure is not needed: the connector's reader is a daemon thread and ``cache.stop()`` closes the
+failure is not needed: the connection's reader is a daemon thread and ``cache.stop()`` closes the
 transport; ``test_close_lifecycle`` covers teardown explicitly.
 """
 
@@ -72,7 +72,7 @@ def test_get_item(cache):
     method, url, headers, req_body, metadata = cache.last_request_args[:5]
     assert method == b"POST"
     # The SDK's request URL is the real DynamoDB endpoint (the cache endpoint is only where
-    # the connector connects).
+    # the connection connects).
     assert url == b"https://dynamodb.us-east-1.amazonaws.com/"
     # Signal headers preserved and normalized (lowercased names).
     assert b"x-amz-target:DynamoDB_20120810.GetItem" in headers

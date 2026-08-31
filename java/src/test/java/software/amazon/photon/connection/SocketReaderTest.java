@@ -1,7 +1,7 @@
 package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
@@ -100,7 +100,7 @@ class SocketReaderTest {
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
-        ConnectionLost e = assertThrows(ConnectionLost.class, reader::readFrame);
+        PhotonConnectionLostError e = assertThrows(PhotonConnectionLostError.class, reader::readFrame);
         assertTrue(e.getMessage().contains("EOF"));
     }
 
@@ -121,7 +121,7 @@ class SocketReaderTest {
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
-        ConnectionLost e = assertThrows(ConnectionLost.class, reader::readFrame);
+        PhotonConnectionLostError e = assertThrows(PhotonConnectionLostError.class, reader::readFrame);
         assertTrue(e.getMessage().contains("read failed"));
     }
 
