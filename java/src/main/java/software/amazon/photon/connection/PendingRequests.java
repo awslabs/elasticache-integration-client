@@ -26,11 +26,6 @@ public class PendingRequests {
 
     /** Default maximum pending requests. */
     public static final int DEFAULT_MAX_PENDING_REQUESTS = 100;
-    /**
-     * @deprecated use {@link #DEFAULT_MAX_PENDING_REQUESTS}
-     */
-    @Deprecated
-    public static final int DEFAULT_MAX_PENDING = DEFAULT_MAX_PENDING_REQUESTS;
 
     private final Lock lock = new ReentrantLock();
     private final Queue<CompletableFuture<RespValue>> queue = new LinkedList<>();

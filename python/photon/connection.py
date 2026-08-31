@@ -115,18 +115,8 @@ class PhotonConnection:
         verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
         auth_provider=None,
-        max_pending_requests: int | None = None,
-        max_pending: int | None = None,
+        max_pending_requests: int = _DEFAULT_MAX_PENDING_REQUESTS,
     ) -> None:
-        if max_pending_requests is not None and max_pending is not None:
-            raise TypeError("specify only one of max_pending_requests or max_pending")
-        pending_limit = (
-            max_pending_requests
-            if max_pending_requests is not None
-            else max_pending
-            if max_pending is not None
-            else _DEFAULT_MAX_PENDING_REQUESTS
-        )
         self._host = host
         self._port = port
         self._tls = tls
@@ -141,7 +131,7 @@ class PhotonConnection:
         self._sock: socket.socket | None = None
         self._reader: _SocketReader | None = None
         self._reader_thread: threading.Thread | None = None
-        self._pending = _PendingRequests(pending_limit)
+        self._pending = _PendingRequests(max_pending_requests)
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._dead = False
@@ -351,7 +341,3 @@ class PhotonConnection:
     def _mark_dead(self, exc: BaseException) -> None:
         self._dead = True
         self._pending.fail_all(exc)
-
-
-# Backward-compatible alias for the original public name.
-PhotonConnector = PhotonConnection

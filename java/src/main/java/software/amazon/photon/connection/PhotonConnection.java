@@ -75,11 +75,6 @@ public class PhotonConnection implements Closeable {
     public static final int DEFAULT_CONNECT_TIMEOUT_MS = 5000;
     /** Default maximum pending requests. */
     public static final int DEFAULT_MAX_PENDING_REQUESTS = 100;
-    /**
-     * @deprecated use {@link #DEFAULT_MAX_PENDING_REQUESTS}
-     */
-    @Deprecated
-    public static final int DEFAULT_MAX_PENDING = DEFAULT_MAX_PENDING_REQUESTS;
     /** Maximum response size in bytes (16 MB). */
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
@@ -482,16 +477,6 @@ public class PhotonConnection implements Closeable {
         return sendAndAwait(encoded);
     }
 
-    /**
-     * Send a raw command and return the raw RESP response.
-     *
-     * @deprecated use {@link #execute(String, byte[]...)}
-     */
-    @Deprecated
-    public RespValue sendCommand(String command, byte[]... args) {
-        return execute(command, args);
-    }
-
     // =========================================================================
     // State queries
     // =========================================================================
@@ -501,16 +486,6 @@ public class PhotonConnection implements Closeable {
      */
     public ResolvedConfig getResolvedConfig() {
         return resolvedConfig;
-    }
-
-    /**
-     * Get the resolved config from the last successful handshake.
-     *
-     * @deprecated use {@link #getResolvedConfig()}
-     */
-    @Deprecated
-    public ResolvedConfig getConfig() {
-        return getResolvedConfig();
     }
 
     /**

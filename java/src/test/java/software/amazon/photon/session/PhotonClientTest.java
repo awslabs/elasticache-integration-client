@@ -297,12 +297,6 @@ class PhotonClientTest {
     }
 
     @Test
-    void builder_legacyConfigOverrides_remainsAvailable() {
-        PhotonClient.Builder builder = PhotonClient.builder();
-        assertSame(builder, builder.configOverrides(Collections.singletonMap("ttl", 300)));
-    }
-
-    @Test
     void builder_withTimeouts_appliesTimeouts() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())

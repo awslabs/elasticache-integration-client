@@ -213,16 +213,6 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
-         * Set config overrides (optional).
-         *
-         * @deprecated use {@link #overrides(Map)}
-         */
-        @Deprecated
-        public Builder configOverrides(Map<String, Object> overrides) {
-            return overrides(overrides);
-        }
-
-        /**
          * Set connect timeout in milliseconds (default: 5000).
          */
         public Builder connectTimeoutMs(int connectTimeoutMs) {

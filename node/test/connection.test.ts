@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   PhotonConnection,
-  PhotonConnector,
   PendingRequests,
   SocketReader,
   type SocketChunkSource,
@@ -187,10 +186,6 @@ describe("PhotonConnection initialization timeout", () => {
 });
 
 describe("PhotonConnection", () => {
-  it("keeps PhotonConnector as a compatibility alias", () => {
-    expect(PhotonConnector).toBe(PhotonConnection);
-  });
-
   it("rejects use before connect", async () => {
     const connection = new PhotonConnection("127.0.0.1", 1, { tls: false });
 

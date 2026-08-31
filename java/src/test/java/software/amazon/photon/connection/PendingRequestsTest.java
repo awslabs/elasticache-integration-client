@@ -1,7 +1,6 @@
 package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.ConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionLostError;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
@@ -22,11 +21,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * Unit tests for PendingRequests.
  */
 class PendingRequestsTest {
-
-    @Test
-    void connectionLostCanonicalTypePreservesLegacyCatchCompatibility() {
-        assertTrue(ConnectionLost.class.isAssignableFrom(PhotonConnectionLostError.class));
-    }
 
     @Test
     void register_returnsFuture() {
@@ -101,7 +95,7 @@ class PendingRequestsTest {
     }
 
     @Test
-    void register_afterFailAll_throwsConnectionLost() {
+    void register_afterFailAll_throwsPhotonConnectionLostError() {
         PendingRequests pending = new PendingRequests();
         pending.failAll(new PhotonConnectionLostError("test"));
 
@@ -109,7 +103,7 @@ class PendingRequestsTest {
     }
 
     @Test
-    void register_atCapacity_throwsConnectionLost() {
+    void register_atCapacity_throwsPhotonConnectionLostError() {
         PendingRequests pending = new PendingRequests(2);
 
         pending.register();

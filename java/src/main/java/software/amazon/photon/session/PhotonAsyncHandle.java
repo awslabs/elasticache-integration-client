@@ -172,14 +172,6 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
-        /**
-         * @deprecated use {@link #overrides(Map)}
-         */
-        @Deprecated
-        public Builder configOverrides(Map<String, Object> overrides) {
-            return overrides(overrides);
-        }
-
         public Builder connectTimeoutMs(int connectTimeoutMs) {
             this.connectTimeoutMs = connectTimeoutMs;
             return this;

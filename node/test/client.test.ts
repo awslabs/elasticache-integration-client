@@ -134,23 +134,6 @@ describe("client", () => {
     expect(mocks.handle.install).toHaveBeenCalledOnce();
   });
 
-  it("supports the legacy connectorOptions name", async () => {
-    setup();
-
-    await client("dynamodb", FakeClient, {
-      endpoint: options.endpoint,
-      cacheName: options.cacheName,
-      clientConfig: { credentials },
-      connectorOptions: { tls: false, requestTimeout: 4321 },
-    });
-
-    expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
-      tls: false,
-      requestTimeout: 4321,
-      authProvider: "auth-provider",
-    });
-  });
-
   it("allows region and userId to resolve from the environment", async () => {
     setup();
 

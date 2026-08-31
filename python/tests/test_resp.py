@@ -4,7 +4,6 @@ import pytest
 
 from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.resp import (
-    IncompleteFrame,
     IncompleteFrameError,
     RespError,
     decode_resp,
@@ -18,12 +17,6 @@ def test_incomplete_frame_is_not_photon_error():
     """IncompleteFrameError ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
     assert issubclass(IncompleteFrameError, Exception)
     assert not issubclass(IncompleteFrameError, PhotonError)
-
-
-def test_legacy_incomplete_frame_name_is_an_alias():
-    assert IncompleteFrame is IncompleteFrameError
-
-
 # --- AC2: encode/decode_resp round-trip --------------------------------------------
 
 def test_encode_decode_round_trip():

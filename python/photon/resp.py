@@ -33,12 +33,6 @@ RespValue = int | bytes | list["RespValue"] | RespError | None
 
 class IncompleteFrameError(Exception):
     """Raised by :func:`decode_resp` when the buffer holds only a partial frame (need more bytes)."""
-
-
-# Backward-compatible alias for the original public name.
-IncompleteFrame = IncompleteFrameError
-
-
 def encode_resp(command: str, *args: bytes) -> bytes:
     r"""Encode a command and its binary args as one RESP3 frame, ready for the socket::
 

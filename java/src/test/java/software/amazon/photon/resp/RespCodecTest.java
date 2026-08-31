@@ -11,11 +11,6 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class RespCodecTest {
 
-    @Test
-    void incompleteFrameCanonicalTypePreservesLegacyCatchCompatibility() {
-        assertTrue(IncompleteFrame.class.isAssignableFrom(IncompleteFrameError.class));
-    }
-
     // === Encode tests ===
 
     @Test

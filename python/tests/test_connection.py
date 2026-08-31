@@ -10,7 +10,6 @@ import pytest
 
 from photon.connection import (
     PhotonConnection,
-    PhotonConnector,
     _PendingRequests,
     _SocketReader,
 )
@@ -33,9 +32,6 @@ class TestPhotonConnection:
     # per test, so nothing is shared between tests.
     cache: MockCache | None = None
     conn: PhotonConnection | None = None
-
-    def test_legacy_connector_name_is_an_alias(self):
-        assert PhotonConnector is PhotonConnection
 
     def teardown_method(self):
         # ALWAYS runs (pass or fail): a failing assertion cannot leak the cache
@@ -355,20 +351,6 @@ class TestPhotonConnection:
         """The connection passes its pending-request limit to the pending queue."""
         conn = PhotonConnection("h", 1, tls=False, max_pending_requests=7)
         assert conn._pending._max_pending_requests == 7
-
-    def test_legacy_max_pending_keyword_remains_supported(self):
-        conn = PhotonConnection("h", 1, tls=False, max_pending=7)
-        assert conn._pending._max_pending_requests == 7
-
-    def test_rejects_both_pending_limit_keywords(self):
-        with pytest.raises(TypeError):
-            PhotonConnection(
-                "h",
-                1,
-                tls=False,
-                max_pending_requests=7,
-                max_pending=7,
-            )
 
     # ======================================================================== #
     # 5. Close — teardown

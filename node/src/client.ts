@@ -17,8 +17,6 @@ export interface PhotonClientOptions<TConfig extends object> {
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
   connectionOptions?: Omit<PhotonConnectionOptions, "authProvider">;
-  /** @deprecated Use `connectionOptions`. */
-  connectorOptions?: Omit<PhotonConnectionOptions, "authProvider">;
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
 }
@@ -92,10 +90,8 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     userId,
     clientConfig,
     connectionOptions,
-    connectorOptions,
     overrides = {},
   } = options;
-  const resolvedConnectionOptions = connectionOptions ?? connectorOptions;
   const sdkClient = new ClientCtor({
     ...clientConfig,
     ...(region === undefined ? {} : { region }),
@@ -106,9 +102,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       cacheName,
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
-      ...(resolvedConnectionOptions === undefined
-        ? {}
-        : { connectionOptions: resolvedConnectionOptions }),
+      ...(connectionOptions === undefined ? {} : { connectionOptions }),
       overrides,
     });
   } catch (error) {

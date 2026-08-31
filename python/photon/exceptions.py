@@ -20,11 +20,5 @@ class PhotonProtocolError(PhotonError):
 
 class PhotonConnectionLostError(PhotonError):
     """The socket died mid-flight; pending requests are failed."""
-
-
-# Backward-compatible alias for the original public name.
-PhotonConnectionLost = PhotonConnectionLostError
-
-
 class PhotonTimeoutError(PhotonError):
     """A request exceeded its per-request timeout (named to avoid shadowing the builtin)."""

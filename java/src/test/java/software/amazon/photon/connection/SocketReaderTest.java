@@ -94,7 +94,7 @@ class SocketReaderTest {
     }
 
     @Test
-    void readFrame_eof_throwsConnectionLost() {
+    void readFrame_eof_throwsPhotonConnectionLostError() {
         // Empty stream (immediate EOF)
         InputStream input = new ByteArrayInputStream(new byte[0]);
         PendingRequests pending = new PendingRequests();
@@ -105,7 +105,7 @@ class SocketReaderTest {
     }
 
     @Test
-    void readFrame_ioError_throwsConnectionLost() {
+    void readFrame_ioError_throwsPhotonConnectionLostError() {
         InputStream input = new InputStream() {
             @Override
             public int read() throws IOException {

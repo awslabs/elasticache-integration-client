@@ -168,9 +168,6 @@ export interface PhotonConnectionOptions {
   authProvider?: AuthProvider;
 }
 
-/** @deprecated Use `PhotonConnectionOptions`. */
-export type PhotonConnectorOptions = PhotonConnectionOptions;
-
 /**
  * A callback or provider object that supplies credentials for `AUTH`.
  *
@@ -611,8 +608,3 @@ export class PhotonConnection {
     });
   }
 }
-
-/** @deprecated Use `PhotonConnection`. */
-export const PhotonConnector = PhotonConnection;
-/** @deprecated Use `PhotonConnection`. */
-export type PhotonConnector = PhotonConnection;

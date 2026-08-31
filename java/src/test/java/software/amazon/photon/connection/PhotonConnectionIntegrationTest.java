@@ -103,21 +103,9 @@ class PhotonConnectionIntegrationTest {
             assertNotNull(config);
             assertEquals("1.0", config.getVersion());
             assertSame(config, conn.getResolvedConfig());
-            assertSame(config, conn.getConfig());
         } finally {
             conn.close();
         }
-    }
-
-    @Test
-    void canonicalAndLegacyConnectionNamesRemainAvailable() throws Exception {
-        assertEquals(
-                PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS,
-                PhotonConnection.DEFAULT_MAX_PENDING);
-        assertNotNull(PhotonConnection.class.getMethod(
-                "execute", String.class, byte[][].class));
-        assertNotNull(PhotonConnection.class.getMethod(
-                "sendCommand", String.class, byte[][].class));
     }
 
     @Test
@@ -356,7 +344,7 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
-    void request_afterClose_throwsConnectionLost() {
+    void request_afterClose_throwsPhotonConnectionLostError() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         conn.close();
@@ -381,7 +369,7 @@ class PhotonConnectionIntegrationTest {
     // === Drop failure mode ===
 
     @Test
-    void request_serverDropsConnection_throwsConnectionLost() {
+    void request_serverDropsConnection_throwsPhotonConnectionLostError() {
         cache.setFailureMode(MockCache.FailureMode.DROP);
         cache.setFailureCommand("photon.request");
 
@@ -663,7 +651,7 @@ class PhotonConnectionIntegrationTest {
     // === PendingRequests bounds ===
 
     @Test
-    void request_exceedingMaxPending_throwsConnectionLost() throws Exception {
+    void request_exceedingMaxPending_throwsPhotonConnectionLostError() throws Exception {
         // Create connection with very low max pending
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext,
                 5000, 5000, 2);
@@ -713,7 +701,7 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
-    void authenticate_beforeConnect_throwsConnectionLost() {
+    void authenticate_beforeConnect_throwsPhotonConnectionLostError() {
         PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
         assertThrows(PhotonConnectionLostError.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
     }
