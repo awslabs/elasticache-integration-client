@@ -134,6 +134,7 @@ public final class PhotonAsyncHandle implements Closeable {
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
+        private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private SdkAsyncHttpClient originHttpClient;
         private Executor executor;
         private int maxBufferedRequestBytes = DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
@@ -184,6 +185,17 @@ public final class PhotonAsyncHandle implements Closeable {
 
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set reconnect and circuit-breaker behavior.
+         */
+        public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+            if (reconnectPolicy == null) {
+                throw new NullPointerException("reconnectPolicy");
+            }
+            this.reconnectPolicy = reconnectPolicy;
             return this;
         }
 
@@ -269,10 +281,14 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         private PhotonSession createSession(SSLContext resolvedSslContext) {
-            PhotonConnection connection = new PhotonConnection(
-                    host, port, resolvedSslContext, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
-            return new PhotonSession(connection, authProvider, configOverrides);
+            return new PhotonSession(
+                    () -> new PhotonConnection(
+                            host, port, resolvedSslContext, connectTimeoutMs,
+                            initializationTimeoutMs, requestTimeoutMs,
+                            PhotonConnection.DEFAULT_MAX_PENDING),
+                    authProvider,
+                    configOverrides,
+                    reconnectPolicy);
         }
 
         private static ExecutorService createDefaultExecutor() {

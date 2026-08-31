@@ -56,6 +56,36 @@ with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
 
+## Reconnection and circuit breaking
+
+Sync and async clients share the same recovery behavior. When a connection is
+lost, one caller performs recovery while concurrent callers wait for that
+single attempt. Recovery creates a new TLS connection, resolves fresh
+credentials, repeats `AUTH` and `photon.config`, and uses exponential backoff
+with full jitter between a bounded number of attempts.
+
+The request that discovers a broken connection is not replayed through Photon
+because it may already have been processed. It follows the normal signed origin
+fallback path. Requests admitted after recovery use the new Photon connection.
+
+Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
+
+```java
+.reconnectPolicy(ReconnectPolicy.builder()
+        .maxReconnectAttempts(3)
+        .baseDelayMs(100)
+        .maxDelayMs(5_000)
+        .circuitFailureThreshold(3)
+        .circuitOpenDurationMs(30_000)
+        .build())
+```
+
+After the configured number of failed recovery cycles, the circuit enters
+`OPEN` and requests use origin fallback without attempting Photon. When the
+open duration expires, one caller performs a `HALF_OPEN` recovery probe.
+Success returns the circuit to `CLOSED`; failure reopens it. The current state
+is available from `PhotonSession.getCircuitState()`.
+
 ## Manual lifecycle
 
 `PhotonHandle` and `PhotonAsyncHandle` expose the interceptor and matching HTTP

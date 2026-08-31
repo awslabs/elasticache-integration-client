@@ -20,6 +20,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
@@ -280,6 +281,41 @@ class PhotonClientTest {
 
         assertNotNull(origin.request.get());
         assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
+    }
+
+    @Test
+    void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        cache.setReply(Reply.ok(
+                200,
+                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[\"reconnected\"]}"));
+        AtomicInteger credentials = new AtomicInteger();
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+             PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                     .endpoint("localhost:" + proxy.getPort())
+                     .authProvider(() -> new software.amazon.photon.auth.AuthCredentials(
+                             TEST_USER, "token-" + credentials.incrementAndGet()))
+                     .sslContext(clientSslContext)
+                     .originHttpClient(origin)
+                     .reconnectPolicy(ReconnectPolicy.builder()
+                             .maxReconnectAttempts(3)
+                             .baseDelayMs(1)
+                             .maxDelayMs(2)
+                             .circuitFailureThreshold(2)
+                             .circuitOpenDurationMs(50)
+                             .build())
+                     .origin(DynamoDbClient.builder(), sdkConfig)
+                     .build()) {
+            proxy.disconnectClients();
+
+            result.client().listTables();
+            assertEquals(Collections.singletonList("reconnected"),
+                    result.client().listTables().tableNames());
+            assertEquals(2, credentials.get());
+            assertEquals(2, proxy.getAcceptedConnections());
+        }
     }
 
     @Test

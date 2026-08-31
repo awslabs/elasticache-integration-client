@@ -56,16 +56,14 @@ import java.util.function.Supplier;
  */
 public class PhotonHandle implements Closeable {
 
-    private final PhotonConnection connection;
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
     private final PhotonHttpClient httpClient;
     private boolean opened = false;
     private boolean closed = false;
 
-    private PhotonHandle(PhotonConnection connection, PhotonSession session,
-                         SdkHttpClient originClient, boolean ownsOriginClient) {
-        this.connection = connection;
+    private PhotonHandle(PhotonSession session, SdkHttpClient originClient,
+                         boolean ownsOriginClient) {
         this.session = session;
         this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
@@ -160,6 +158,7 @@ public class PhotonHandle implements Closeable {
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
+        private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private SdkHttpClient originHttpClient;
 
         private Builder() {}
@@ -237,6 +236,17 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
+         * Set reconnect and circuit-breaker behavior.
+         */
+        public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+            if (reconnectPolicy == null) {
+                throw new NullPointerException("reconnectPolicy");
+            }
+            this.reconnectPolicy = reconnectPolicy;
+            return this;
+        }
+
+        /**
          * Set a caller-managed HTTP client for origin fallback.
          *
          * <p>Photon does not close a caller-provided client.
@@ -268,17 +278,21 @@ public class PhotonHandle implements Closeable {
                 }
             }
 
-            PhotonConnection connection = new PhotonConnection(
-                    host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING);
-            PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+            SSLContext resolvedSsl = ssl;
+            PhotonSession session = new PhotonSession(
+                    () -> new PhotonConnection(
+                            host, port, resolvedSsl, connectTimeoutMs, initializationTimeoutMs,
+                            requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING),
+                    authProvider,
+                    configOverrides,
+                    reconnectPolicy);
             SdkHttpClient origin = originHttpClient;
             boolean ownsOrigin = false;
             if (origin == null) {
                 origin = ApacheHttpClient.create();
                 ownsOrigin = true;
             }
-            return new PhotonHandle(connection, session, origin, ownsOrigin);
+            return new PhotonHandle(session, origin, ownsOrigin);
         }
     }
 }

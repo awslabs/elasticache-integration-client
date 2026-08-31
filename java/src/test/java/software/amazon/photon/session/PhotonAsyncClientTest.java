@@ -21,6 +21,7 @@ import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
@@ -181,6 +182,40 @@ class PhotonAsyncClientTest {
         assertTrue(origin.request.get().firstMatchingHeader("Authorization").isPresent());
         assertTrue(origin.body.get().length > 0);
         assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
+    }
+
+    @Test
+    void asyncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        cache.setReply(Reply.ok(
+                200,
+                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[\"reconnected\"]}"));
+        AtomicInteger credentials = new AtomicInteger();
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
+
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+             PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+                     .endpoint("localhost:" + proxy.getPort())
+                     .authProvider(() -> new software.amazon.photon.auth.AuthCredentials(
+                             "test-user", "token-" + credentials.incrementAndGet()))
+                     .sslContext(clientSslContext)
+                     .originAsyncHttpClient(origin)
+                     .reconnectPolicy(ReconnectPolicy.builder()
+                             .maxReconnectAttempts(3)
+                             .baseDelayMs(1)
+                             .maxDelayMs(2)
+                             .circuitFailureThreshold(2)
+                             .circuitOpenDurationMs(50)
+                             .build())
+                     .buildAsync(DynamoDbAsyncClient.builder(), sdkConfig)) {
+            proxy.disconnectClients();
+
+            result.client().listTables().get(5, TimeUnit.SECONDS);
+            assertEquals(Collections.singletonList("reconnected"),
+                    result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
+            assertEquals(2, credentials.get());
+            assertEquals(2, proxy.getAcceptedConnections());
+        }
     }
 
     @Test
