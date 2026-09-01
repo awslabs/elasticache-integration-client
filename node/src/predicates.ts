@@ -1,3 +1,5 @@
+import { TextDecoder } from "node:util";
+
 import { Environment, type ParseResult } from "@marcbachmann/cel-js";
 
 import type { PhotonRequest } from "./models.js";
@@ -16,6 +18,8 @@ const REQUEST_VARIABLES = {
   body: "dyn",
 } as const;
 
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -23,7 +27,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function parseBody(body: Buffer | string | null): Record<string, unknown> | undefined {
   if (body === null || body.length === 0) return {};
   try {
-    const parsed: unknown = JSON.parse(Buffer.isBuffer(body) ? body.toString("utf8") : body);
+    const parsed: unknown = JSON.parse(Buffer.isBuffer(body) ? STRICT_UTF8.decode(body) : body);
     return isRecord(parsed) ? parsed : undefined;
   } catch {
     return undefined;
@@ -48,7 +52,8 @@ function compilePredicate(entry: unknown): CompiledPredicate | undefined {
 
     const expression = environment.parse(entry.expr);
     const checked = expression.check();
-    if (!checked.valid || checked.type !== "bool") return undefined;
+    // Dynamic expressions may produce a bool; route() still requires the runtime result to be true.
+    if (!checked.valid || (checked.type !== "bool" && checked.type !== "dyn")) return undefined;
     return { expression, variables: { ...variables } };
   } catch {
     return undefined;

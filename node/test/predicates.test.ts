@@ -28,11 +28,11 @@ function evaluator(...predicates: unknown[]): PredicateEvaluator {
 function request(
   operation: string,
   body: Buffer | string | null = "{}",
-  options: { service?: string; headers?: Record<string, string> } = {},
+  options: { service?: string; url?: string; headers?: Record<string, string> } = {},
 ): PhotonRequest {
   return new PhotonRequest({
     method: "POST",
-    url: "https://dynamodb.us-east-1.amazonaws.com/",
+    url: options.url ?? "https://dynamodb.us-east-1.amazonaws.com/",
     headers: options.headers,
     body,
     metadata: new RequestMetadata({
@@ -125,11 +125,26 @@ describe("PredicateEvaluator", () => {
     );
   });
 
+  it("accepts dynamic predicates but rejects statically non-boolean predicates", () => {
+    expect(evaluator(predicate("enabled", { enabled: true })).route(request("GetItem"))).toBe(true);
+    expect(evaluator(predicate("enabled", { enabled: false })).route(request("GetItem"))).toBe(
+      false,
+    );
+    expect(evaluator(predicate("value", { value: 1 })).route(request("GetItem"))).toBe(false);
+    expect(evaluator(predicate("1")).route(request("GetItem"))).toBe(false);
+  });
+
   it("treats malformed and non-object bodies as no match", () => {
     const predicates = defaultEvaluator();
 
     expect(predicates.route(request("GetItem", ""))).toBe(true);
-    for (const body of ["not json", "[]", "null", '{"TableName":"Users"} trailing']) {
+    for (const body of [
+      "not json",
+      "[]",
+      "null",
+      '{"TableName":"Users"} trailing',
+      Buffer.from([...Buffer.from('{"TableName":"Users","invalid":"'), 0xff, ...Buffer.from('"}')]),
+    ]) {
       expect(predicates.route(request("GetItem", body)), body).toBe(false);
     }
   });
@@ -145,6 +160,14 @@ describe("PredicateEvaluator", () => {
     );
 
     expect(predicates.route(request("GetItem", "{}", { headers: { "x-test": "yes" } }))).toBe(true);
+    expect(
+      predicates.route(
+        request("GetItem", "{}", {
+          headers: { "x-test": "yes" },
+          url: "https://s3.us-east-1.amazonaws.com/",
+        }),
+      ),
+    ).toBe(false);
     expect(predicates.route(request("PutItem", "{}", { headers: { "x-test": "yes" } }))).toBe(
       false,
     );
