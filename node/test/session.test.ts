@@ -11,7 +11,9 @@ function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnecto
     authenticate: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string) =>
       command === "photon.config"
-        ? Buffer.from('{"version":"v1","refresh_interval":60}')
+        ? Buffer.from(
+            '{"version":"v1","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+          )
         : [200, Buffer.from("content-type:application/json"), Buffer.from("ok")],
     ),
     close: vi.fn(async () => undefined),
@@ -42,7 +44,11 @@ describe("PhotonSession", () => {
     expect(connector.authenticate).toHaveBeenCalledOnce();
     expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
     expect(session.resolvedConfig).toEqual(expect.any(ResolvedConfig));
-    expect(session.resolvedConfig.raw).toEqual({ version: "v1", refresh_interval: 60 });
+    expect(session.resolvedConfig.raw).toEqual({
+      version: "v1",
+      refresh_interval: 60,
+      predicates: [{ expr: "true", vars: {} }],
+    });
     const connectOrder = (connector.connect as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
     const authenticateOrder = (connector.authenticate as ReturnType<typeof vi.fn>).mock
@@ -67,7 +73,7 @@ describe("PhotonSession", () => {
     const request = new PhotonRequest({
       method: "POST",
       url: "https://x/",
-      body: "body",
+      body: '{"value":"body"}',
       metadata: new RequestMetadata({ service: "svc", operation: "Test" }),
     });
 
@@ -83,9 +89,34 @@ describe("PhotonSession", () => {
       Buffer.from("POST"),
       Buffer.from("https://x/"),
       Buffer.alloc(0),
-      Buffer.from("body"),
+      Buffer.from('{"value":"body"}'),
       Buffer.from("service=svc&op=Test"),
     );
+  });
+
+  it("declines unmatched requests without a cache round trip", async () => {
+    const connector = fakeConnector({
+      execute: vi.fn(async (command: string) =>
+        command === "photon.config"
+          ? Buffer.from('{"predicates":[{"expr":"operation == \'GetItem\'","vars":{}}]}')
+          : [200, Buffer.alloc(0), Buffer.alloc(0)],
+      ),
+    });
+    const session = new PhotonSession(connector);
+    await session.open();
+    vi.mocked(connector.execute).mockClear();
+
+    await expect(
+      session.request(
+        new PhotonRequest({
+          method: "POST",
+          url: "https://x/",
+          body: "{}",
+          metadata: new RequestMetadata({ service: "svc", operation: "PutItem" }),
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(connector.execute).not.toHaveBeenCalled();
   });
 
   it.each(["connect", "authenticate", "config"])(

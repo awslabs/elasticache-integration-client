@@ -14,6 +14,7 @@
 - `test/mock-cache.ts`: reusable local plaintext/TLS Photon mock.
 - `scripts/`: build, cleanup, and package smoke-test tooling.
 - `src/index.ts`: public package export boundary.
+- `src/predicates.ts`: compiled CEL request-routing predicates.
 - `.github/workflows/node-ci.yml`: CI validation on Node.js 22 and 24.
 
 ## Validation

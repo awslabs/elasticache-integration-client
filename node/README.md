@@ -11,6 +11,7 @@ This package currently ports the Python implementation's:
 - binary-safe RESP3 command encoding and decoding;
 - `photon.config` and `photon.request` serialization and parsing;
 - deterministic request-header normalization;
+- compiled CEL predicate evaluation for cacheability routing;
 - a single-connection TCP/TLS transport with FIFO response correlation,
   bounded response frames, bounded in-flight requests, bounded send backpressure,
   differentiated connect/request/initialization timeouts, idempotent close, and
@@ -21,10 +22,24 @@ This package currently ports the Python implementation's:
   the origin;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
-Cacheability routing, automatic Photon failover/reconnection, circuit breaking,
-periodic config refresh, and out-of-band responses remain out of scope. The
-middleware has a narrow origin fallback for idempotent requests when Photon
-fails; non-idempotent Photon failures and non-Photon errors propagate.
+Automatic Photon failover/reconnection, circuit breaking, periodic config
+refresh, and out-of-band responses remain out of scope. The middleware sends
+requests with no matching predicate directly to origin and has a narrow origin
+fallback for idempotent requests when Photon fails; non-idempotent Photon
+failures and non-Photon errors propagate.
+
+## Request routing
+
+Opening a Photon session compiles the CEL predicates returned by
+`photon.config`. Expressions can use the request's `service`, `operation`,
+`method`, `url`, `headers`, and parsed JSON `body`, plus arbitrary values bound
+by the predicate's `vars` object.
+
+A request is sent to Photon when any predicate evaluates to `true`. Otherwise,
+the original signed SDK request continues to the configured origin transport
+without a cache round trip. Invalid predicates are ignored independently.
+Evaluation errors and malformed or non-object JSON bodies count as no match.
+The resolved config is compiled once when the session opens.
 
 ## Client
 
