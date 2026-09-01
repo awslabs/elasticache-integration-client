@@ -125,12 +125,15 @@ describe("PredicateEvaluator", () => {
     );
   });
 
-  it("accepts dynamic predicates but rejects statically non-boolean predicates", () => {
+  it("routes only when the runtime result is exactly true", () => {
     expect(evaluator(predicate("enabled", { enabled: true })).route(request("GetItem"))).toBe(true);
     expect(evaluator(predicate("enabled", { enabled: false })).route(request("GetItem"))).toBe(
       false,
     );
     expect(evaluator(predicate("value", { value: 1 })).route(request("GetItem"))).toBe(false);
+    expect(evaluator(predicate("value", { value: "non-empty" })).route(request("GetItem"))).toBe(
+      false,
+    );
     expect(evaluator(predicate("1")).route(request("GetItem"))).toBe(false);
   });
 

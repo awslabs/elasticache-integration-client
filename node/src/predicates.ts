@@ -52,8 +52,7 @@ function compilePredicate(entry: unknown): CompiledPredicate | undefined {
 
     const expression = environment.parse(entry.expr);
     const checked = expression.check();
-    // Dynamic expressions may produce a bool; route() still requires the runtime result to be true.
-    if (!checked.valid || (checked.type !== "bool" && checked.type !== "dyn")) return undefined;
+    if (!checked.valid) return undefined;
     return { expression, variables: { ...variables } };
   } catch {
     return undefined;
