@@ -1,7 +1,8 @@
 package software.amazon.photon.resp;
 
 /**
- * Raised when a buffer contains only part of a RESP frame.
+ * Raised when data is incomplete (not enough bytes for a full RESP frame).
+ * NOT a subclass of PhotonError - this is a flow-control signal.
  */
 public class IncompleteFrameError extends Exception {
 

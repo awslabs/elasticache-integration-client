@@ -8,7 +8,7 @@ const CRLF = "\r\n";
 
 describe("RESP codec", () => {
   it("incomplete frame is not a PhotonError", () => {
-    // IncompleteFrame ("need more bytes") must be a plain Error, not a PhotonError,
+    // IncompleteFrameError ("need more bytes") must be a plain Error, not a PhotonError,
     // so an incremental reader can distinguish truncation from corruption.
     const error = new IncompleteFrameError("partial");
 
@@ -101,8 +101,8 @@ describe("RESP codec", () => {
     Buffer.from(`*2${CRLF}:1${CRLF}`), // array missing its second element
     Buffer.from(`>2${CRLF}:1${CRLF}`), // push missing its second element
     Buffer.from(":"), // integer header with no CRLF yet
-  ])("truncation raises IncompleteFrame: %j", (partial) => {
-    // Each kind of partial buffer raises IncompleteFrame.
+  ])("truncation raises IncompleteFrameError: %j", (partial) => {
+    // Each kind of partial buffer raises IncompleteFrameError.
     expect(() => decodeResp(partial)).toThrow(IncompleteFrameError);
   });
 
