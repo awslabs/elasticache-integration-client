@@ -18,6 +18,7 @@ import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTcpProxy;
@@ -289,14 +290,14 @@ class PhotonClientTest {
                 200,
                 Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
                 "{\"TableNames\":[\"reconnected\"]}"));
-        AtomicInteger credentials = new AtomicInteger();
+        AtomicInteger credentialsCallCount = new AtomicInteger();
         RecordingOriginClient origin = new RecordingOriginClient();
 
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
              PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                      .endpoint("localhost:" + proxy.getPort())
-                     .authProvider(() -> new software.amazon.photon.auth.AuthCredentials(
-                             TEST_USER, "token-" + credentials.incrementAndGet()))
+                     .authProvider(() -> new AuthCredentials(
+                             TEST_USER, "token-" + credentialsCallCount.incrementAndGet()))
                      .sslContext(clientSslContext)
                      .originHttpClient(origin)
                      .reconnectPolicy(ReconnectPolicy.builder()
@@ -313,7 +314,7 @@ class PhotonClientTest {
             result.client().listTables();
             assertEquals(Collections.singletonList("reconnected"),
                     result.client().listTables().tableNames());
-            assertEquals(2, credentials.get());
+            assertEquals(2, credentialsCallCount.get());
             assertEquals(2, proxy.getAcceptedConnections());
         }
     }

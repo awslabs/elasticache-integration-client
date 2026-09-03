@@ -26,24 +26,53 @@ import java.util.function.Supplier;
 /**
  * Owns the active Photon connection and recovers it after transport failure.
  *
+ * <p>A session orchestrates connection bring-up (transport connect, AUTH, and
+ * the mandatory {@code photon.config} handshake) and exposes a synchronous
+ * {@link #request(PhotonRequest)} method for the SDK transport to call.
+ *
+ * <p>Lifecycle: {@code CREATED} to {@code OPEN} to {@code CLOSED}.
+ *
  * <p>Recovery is single-flight. Each bounded reconnect attempt creates a new
  * connection, resolves fresh authentication credentials, and repeats the
  * mandatory configuration handshake. Failed requests are not replayed because
  * the server may have processed them before the connection was lost.
+ *
+ * <p>Usage:
+ * <pre>{@code
+ * PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+ * session.open();
+ * try {
+ *     PhotonResponse response = session.request(photonRequest);
+ * } finally {
+ *     session.close();
+ * }
+ * }</pre>
  */
 public class PhotonSession implements Closeable {
 
     private static final AtomicInteger RECOVERY_THREAD_IDS = new AtomicInteger();
 
+    /**
+     * Session lifecycle state.
+     */
     public enum State {
+        /** Session created but not yet opened. */
         CREATED,
+        /** Session is open and ready for requests. */
         OPEN,
+        /** Session is closed and cannot be reopened. */
         CLOSED
     }
 
+    /**
+     * Recovery circuit state.
+     */
     public enum CircuitState {
+        /** Recovery attempts are allowed. */
         CLOSED,
+        /** Recovery attempts are blocked until the configured open duration expires. */
         OPEN,
+        /** One recovery probe is allowed to determine whether the circuit can close. */
         HALF_OPEN
     }
 
@@ -69,6 +98,17 @@ public class PhotonSession implements Closeable {
     private int consecutiveRecoveryFailures;
     private long circuitOpenUntilNanos;
 
+    /**
+     * Create a session with the given connection and auth provider.
+     *
+     * <p>A session constructed with a concrete connection cannot reconnect
+     * because it has no connection factory.
+     *
+     * @param connection      the underlying connection (not yet connected)
+     * @param authProvider    supplies fresh AUTH credentials
+     * @param configOverrides optional config overrides (may be null)
+     * @throws NullPointerException if connection or authProvider is null
+     */
     public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider,
                          Map<String, Object> configOverrides) {
         this(singleConnectionFactory(connection), authProvider, configOverrides,
@@ -91,51 +131,101 @@ public class PhotonSession implements Closeable {
         this.reconnectPolicy = reconnectPolicy != null ? reconnectPolicy : ReconnectPolicy.defaults();
     }
 
+    /**
+     * Create a session with the given connection and static auth credentials.
+     *
+     * @param connection      the underlying connection (not yet connected)
+     * @param userId          the user ID for AUTH
+     * @param authToken       the AUTH token
+     * @param configOverrides optional config overrides (may be null)
+     */
     public PhotonSession(PhotonConnection connection, String userId, String authToken,
                          Map<String, Object> configOverrides) {
         this(connection, () -> new AuthCredentials(userId, authToken), configOverrides);
     }
 
+    /**
+     * Create a session with default config overrides.
+     *
+     * @param connection   the underlying connection
+     * @param authProvider supplies the AUTH credentials
+     */
     public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider) {
         this(connection, authProvider, null);
     }
 
+    /**
+     * Create a session with default config overrides and static auth credentials.
+     *
+     * @param connection the underlying connection
+     * @param userId     the user ID for AUTH
+     * @param authToken  the AUTH token
+     */
     public PhotonSession(PhotonConnection connection, String userId, String authToken) {
         this(connection, userId, authToken, null);
     }
 
+    /**
+     * Get the current session lifecycle state.
+     *
+     * @return the current lifecycle state
+     */
     public State getState() {
         return state;
     }
 
+    /**
+     * Get the current recovery circuit state.
+     *
+     * @return the current circuit state
+     */
     public CircuitState getCircuitState() {
         return circuitState;
     }
 
+    /**
+     * Get the resolved configuration from the config handshake.
+     *
+     * @return the resolved config, or null if the session has not opened
+     */
     public ResolvedConfig getResolvedConfig() {
         return resolvedConfig;
     }
 
+    /**
+     * Open the session: connect, authenticate, and perform the config handshake.
+     *
+     * @throws PhotonError if already opened/closed or if any handshake step fails
+     */
     public void open() {
         synchronized (lifecycleLock) {
             if (state != State.CREATED) {
                 throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
             }
 
-            PhotonConnection initial = connectionFactory.get();
-            connection = initial;
+            connection = connectionFactory.get();
             try {
-                resolvedConfig = initialize(initial);
+                resolvedConfig = initialize(connection);
                 state = State.OPEN;
             } catch (RuntimeException failure) {
                 state = State.CLOSED;
-                initial.close();
+                connection.close();
                 recoveryExecutor.shutdownNow();
                 throw failure;
             }
         }
     }
 
+    /**
+     * Send a request to Photon.
+     *
+     * <p>A dead connection triggers single-flight recovery. A request that
+     * discovers failure while in flight is not replayed.
+     *
+     * @param request the request to send
+     * @return the Photon response
+     * @throws PhotonError if the session is not open or Photon cannot serve the request
+     */
     public PhotonResponse request(PhotonRequest request) {
         return request(request, new PhotonRequestCancellation());
     }
@@ -161,6 +251,9 @@ public class PhotonSession implements Closeable {
         }
     }
 
+    /**
+     * Close the session and interrupt any recovery backoff. Idempotent.
+     */
     @Override
     public void close() {
         synchronized (lifecycleLock) {
@@ -181,12 +274,16 @@ public class PhotonSession implements Closeable {
         }
         recoveryExecutor.shutdownNow();
 
-        PhotonConnection active = connection;
-        if (active != null) {
-            active.close();
+        if (connection != null) {
+            connection.close();
         }
     }
 
+    /**
+     * Check whether the session is open and ready for requests.
+     *
+     * @return true when the lifecycle state is OPEN
+     */
     public boolean isOpen() {
         return state == State.OPEN;
     }
@@ -215,9 +312,10 @@ public class PhotonSession implements Closeable {
 
         synchronized (recoveryLock) {
             ensureOpen();
-            PhotonConnection current = connection;
-            if (current != null && current != failedConnection && current.isReady()) {
-                return current;
+            if (connection != null
+                    && connection != failedConnection
+                    && connection.isReady()) {
+                return connection;
             }
             if (recovery != null) {
                 flight = recovery;
@@ -329,12 +427,21 @@ public class PhotonSession implements Closeable {
         }
     }
 
+    /**
+     * Wait using capped exponential full jitter after a failed reconnect.
+     *
+     * @param failedAttempt the one-based reconnect attempt that just failed
+     * @return true if the session remains open and another attempt may proceed
+     */
     private boolean waitBeforeRetry(int failedAttempt) {
+        // Double the delay cap for each prior failure, stopping at maxDelayMs.
         long cap = reconnectPolicy.getBaseDelayMs();
         for (int i = 1; i < failedAttempt && cap < reconnectPolicy.getMaxDelayMs(); i++) {
+            // Saturate before multiplication can overflow.
             cap = Math.min(reconnectPolicy.getMaxDelayMs(), cap > Long.MAX_VALUE / 2
                     ? reconnectPolicy.getMaxDelayMs() : cap * 2);
         }
+        // nextLong uses an exclusive bound, so Long.MAX_VALUE needs an unbounded draw.
         long delay = cap == Long.MAX_VALUE
                 ? ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE
                 : ThreadLocalRandom.current().nextLong(cap + 1);

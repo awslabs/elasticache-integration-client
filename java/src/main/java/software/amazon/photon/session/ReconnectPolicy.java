@@ -97,9 +97,7 @@ public final class ReconnectPolicy {
             if (maxDelayMs < baseDelayMs) {
                 throw new IllegalArgumentException("maxDelayMs must be at least baseDelayMs");
             }
-            if (circuitFailureThreshold <= 0) {
-                throw new IllegalArgumentException("circuitFailureThreshold must be positive");
-            }
+            requirePositive("circuitFailureThreshold", circuitFailureThreshold);
             requirePositive("circuitOpenDurationMs", circuitOpenDurationMs);
             return new ReconnectPolicy(this);
         }

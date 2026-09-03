@@ -31,6 +31,7 @@ public final class MockTcpProxy implements Closeable {
     public MockTcpProxy(String targetHost, int targetPort) throws IOException {
         this.targetHost = targetHost;
         this.targetPort = targetPort;
+        // Port 0 asks the OS to allocate an available ephemeral port.
         this.listener = new ServerSocket(0);
         workers.execute(this::acceptLoop);
     }
@@ -43,11 +44,13 @@ public final class MockTcpProxy implements Closeable {
         return acceptedConnections.get();
     }
 
-    public void setForwarding(boolean enabled) {
-        forwarding.set(enabled);
-        if (!enabled) {
-            disconnectClients();
-        }
+    public void enableForwarding() {
+        forwarding.set(true);
+    }
+
+    public void disableForwardingAndDisconnectClients() {
+        forwarding.set(false);
+        disconnectClients();
     }
 
     public void disconnectClients() {
@@ -58,21 +61,24 @@ public final class MockTcpProxy implements Closeable {
 
     private void acceptLoop() {
         while (running.get()) {
+            Socket client = null;
             try {
-                Socket client = listener.accept();
+                client = listener.accept();
+                Socket acceptedClient = client;
                 acceptedConnections.incrementAndGet();
                 if (!forwarding.get()) {
-                    closeQuietly(client);
+                    closeQuietly(acceptedClient);
                     continue;
                 }
                 Socket upstream = new Socket(targetHost, targetPort);
-                sockets.add(client);
+                sockets.add(acceptedClient);
                 sockets.add(upstream);
-                workers.execute(() -> bridge(client, upstream));
-            } catch (IOException failure) {
-                if (running.get()) {
-                    // A client may race with a deliberate proxy state change.
+                workers.execute(() -> bridge(acceptedClient, upstream));
+            } catch (IOException ignored) {
+                if (client != null) {
+                    closeQuietly(client);
                 }
+                // Listener shutdown and deliberate proxy disconnects can race with accept/connect.
             }
         }
     }
@@ -80,7 +86,6 @@ public final class MockTcpProxy implements Closeable {
     private void bridge(Socket client, Socket upstream) {
         workers.execute(() -> copy(client, upstream));
         copy(upstream, client);
-        closePair(client, upstream);
     }
 
     private void copy(Socket source, Socket destination) {

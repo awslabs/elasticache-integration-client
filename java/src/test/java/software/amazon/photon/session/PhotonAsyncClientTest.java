@@ -19,6 +19,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTcpProxy;
@@ -190,14 +191,14 @@ class PhotonAsyncClientTest {
                 200,
                 Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
                 "{\"TableNames\":[\"reconnected\"]}"));
-        AtomicInteger credentials = new AtomicInteger();
+        AtomicInteger credentialsCallCount = new AtomicInteger();
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
 
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
              PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
                      .endpoint("localhost:" + proxy.getPort())
-                     .authProvider(() -> new software.amazon.photon.auth.AuthCredentials(
-                             "test-user", "token-" + credentials.incrementAndGet()))
+                     .authProvider(() -> new AuthCredentials(
+                             "test-user", "token-" + credentialsCallCount.incrementAndGet()))
                      .sslContext(clientSslContext)
                      .originAsyncHttpClient(origin)
                      .reconnectPolicy(ReconnectPolicy.builder()
@@ -213,7 +214,7 @@ class PhotonAsyncClientTest {
             result.client().listTables().get(5, TimeUnit.SECONDS);
             assertEquals(Collections.singletonList("reconnected"),
                     result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
-            assertEquals(2, credentials.get());
+            assertEquals(2, credentialsCallCount.get());
             assertEquals(2, proxy.getAcceptedConnections());
         }
     }
