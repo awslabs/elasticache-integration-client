@@ -15,8 +15,12 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
@@ -28,6 +32,8 @@ import java.util.function.Supplier;
  * the server may have processed them before the connection was lost.
  */
 public class PhotonSession implements Closeable {
+
+    private static final AtomicInteger RECOVERY_THREAD_IDS = new AtomicInteger();
 
     public enum State {
         CREATED,
@@ -45,6 +51,12 @@ public class PhotonSession implements Closeable {
     private final Supplier<AuthCredentials> authProvider;
     private final Map<String, Object> configOverrides;
     private final ReconnectPolicy reconnectPolicy;
+    private final ExecutorService recoveryExecutor = Executors.newSingleThreadExecutor(runnable -> {
+        Thread thread = new Thread(runnable,
+                "photon-recovery-" + RECOVERY_THREAD_IDS.incrementAndGet());
+        thread.setDaemon(true);
+        return thread;
+    });
     private final Object lifecycleLock = new Object();
     private final Object recoveryLock = new Object();
 
@@ -118,6 +130,7 @@ public class PhotonSession implements Closeable {
             } catch (RuntimeException failure) {
                 state = State.CLOSED;
                 initial.close();
+                recoveryExecutor.shutdownNow();
                 throw failure;
             }
         }
@@ -142,11 +155,7 @@ public class PhotonSession implements Closeable {
             return active.request(request, cancellation);
         } catch (PhotonError failure) {
             if (state == State.OPEN && active.isDead()) {
-                try {
-                    recover(active);
-                } catch (PhotonError recoveryFailure) {
-                    failure.addSuppressed(recoveryFailure);
-                }
+                recoverInBackground(active);
             }
             throw failure;
         }
@@ -170,6 +179,7 @@ public class PhotonSession implements Closeable {
             activeRecovery.completeExceptionally(
                     new PhotonConnectionError("Session closed during recovery"));
         }
+        recoveryExecutor.shutdownNow();
 
         PhotonConnection active = connection;
         if (active != null) {
@@ -230,6 +240,20 @@ public class PhotonSession implements Closeable {
             performRecovery(flight, failedConnection, halfOpenAttempt);
         }
         return awaitRecovery(flight);
+    }
+
+    private void recoverInBackground(PhotonConnection failedConnection) {
+        try {
+            recoveryExecutor.execute(() -> {
+                try {
+                    recover(failedConnection);
+                } catch (PhotonError ignored) {
+                    // The circuit state records the failure for subsequent requests.
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // close() may race with a transport failure.
+        }
     }
 
     private void performRecovery(CompletableFuture<PhotonConnection> flight,

@@ -66,7 +66,8 @@ with full jitter between a bounded number of attempts.
 
 The request that discovers a broken connection is not replayed through Photon
 because it may already have been processed. It follows the normal signed origin
-fallback path. Requests admitted after recovery use the new Photon connection.
+fallback path while Photon recovery proceeds in the background. Requests
+admitted after recovery use the new Photon connection.
 
 Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
 
