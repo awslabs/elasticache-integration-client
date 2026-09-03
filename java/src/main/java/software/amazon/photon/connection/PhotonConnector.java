@@ -733,7 +733,8 @@ public class PhotonConnector implements Closeable {
         if (cause instanceof PhotonError) {
             return (PhotonError) cause;
         }
-        return new PhotonConnectionLost("Request failed", cause);
+        return new PhotonConnectionLost(
+                "Photon request failed before a response was received", cause);
     }
 
     private static long deadlineAfter(int timeoutMs) {

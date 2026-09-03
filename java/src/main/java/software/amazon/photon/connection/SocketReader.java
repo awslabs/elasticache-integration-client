@@ -18,6 +18,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * Reads RESP frames and resolves pending futures by FIFO position or request ID.
@@ -125,27 +126,38 @@ public class SocketReader {
         }
     }
 
+    /**
+     * Route a RESP3 push frame.
+     *
+     * <p>A {@code photon.response} push carries three elements: the push kind,
+     * the deferred request ID, and the response value for that request. Other
+     * push kinds are ignored for forward compatibility, since a client that
+     * does not understand a push has no request to correlate it with.
+     */
     private void handlePush(RespPush push) {
-        if (push.getElements().isEmpty()
-                || !(push.getElements().get(0) instanceof RespBulkString)) {
-            throw new PhotonProtocolError("Malformed RESP push payload");
+        List<RespValue> elements = push.getElements();
+        if (elements.isEmpty() || !(elements.get(0) instanceof RespBulkString)) {
+            throw new PhotonProtocolError(
+                    "Malformed RESP push payload: expected a bulk string push kind");
         }
 
         String kind = new String(
-                ((RespBulkString) push.getElements().get(0)).getValue(),
-                StandardCharsets.UTF_8);
+                ((RespBulkString) elements.get(0)).getValue(), StandardCharsets.UTF_8);
         if (!PhotonProtocol.PUSH_KIND_RESPONSE.equals(kind)) {
+            // Unknown push kind: ignored for forward compatibility.
             return;
         }
-        if (push.getElements().size() != 3) {
-            throw new PhotonProtocolError("Malformed photon.response push payload");
+        if (elements.size() != 3) {
+            throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
+                    + " push payload: expected 3 elements but got " + elements.size());
         }
-        if (!(push.getElements().get(1) instanceof RespInteger)) {
-            throw new PhotonProtocolError("Malformed photon.response push request ID");
+        if (!(elements.get(1) instanceof RespInteger)) {
+            throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
+                    + " push request ID: expected an integer");
         }
 
-        long requestId = ((RespInteger) push.getElements().get(1)).getValue();
-        pending.resolveAsync(Long.toString(requestId), push.getElements().get(2));
+        long requestId = ((RespInteger) elements.get(1)).getValue();
+        pending.resolveAsync(Long.toString(requestId), elements.get(2));
     }
 
     /**
