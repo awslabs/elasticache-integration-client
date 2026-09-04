@@ -61,25 +61,28 @@ public final class MockTcpProxy implements Closeable {
 
     private void acceptLoop() {
         while (running.get()) {
-            Socket client = null;
             try {
-                client = listener.accept();
-                Socket acceptedClient = client;
+                Socket client = listener.accept();
                 acceptedConnections.incrementAndGet();
                 if (!forwarding.get()) {
-                    closeQuietly(acceptedClient);
+                    closeQuietly(client);
                     continue;
                 }
-                Socket upstream = new Socket(targetHost, targetPort);
-                sockets.add(acceptedClient);
-                sockets.add(upstream);
-                workers.execute(() -> bridge(acceptedClient, upstream));
+                connectUpstream(client);
             } catch (IOException ignored) {
-                if (client != null) {
-                    closeQuietly(client);
-                }
-                // Listener shutdown and deliberate proxy disconnects can race with accept/connect.
+                // Listener shutdown can race with accept.
             }
+        }
+    }
+
+    private void connectUpstream(Socket client) {
+        try {
+            Socket upstream = new Socket(targetHost, targetPort);
+            sockets.add(client);
+            sockets.add(upstream);
+            workers.execute(() -> bridge(client, upstream));
+        } catch (IOException ignored) {
+            closeQuietly(client);
         }
     }
 

@@ -232,7 +232,7 @@ public class PhotonSession implements Closeable {
      * <p>A {@code null} return means no predicate matched and the caller should
      * send the request to the origin service. A dead connection triggers
      * single-flight recovery. A request that discovers failure while in flight
-     * is not replayed.
+     * is not replayed.</p>
      *
      * @param request the request to send
      * @return the Photon response, or null when Photon declines the request
@@ -375,6 +375,14 @@ public class PhotonSession implements Closeable {
         }
     }
 
+    /**
+     * Own the shared recovery flight, retry connection initialization, and
+     * publish either the recovered connection or the terminal failure.
+     *
+     * @param flight the future shared by callers waiting for this recovery
+     * @param failedConnection the connection being replaced, if present
+     * @param halfOpenAttempt true when this recovery is the circuit's probe
+     */
     private void performRecovery(CompletableFuture<PhotonConnection> flight,
                                  PhotonConnection failedConnection,
                                  boolean halfOpenAttempt) {
@@ -461,14 +469,14 @@ public class PhotonSession implements Closeable {
      * @return true if the session remains open and another attempt may proceed
      */
     private boolean waitBeforeRetry(long failedAttempt) {
-        // Double the delay cap for each prior failure, stopping at maxDelayMs.
         long cap = reconnectPolicy.getBaseDelayMs();
         for (int i = 1; i < failedAttempt && cap < reconnectPolicy.getMaxDelayMs(); i++) {
-            // Saturate before multiplication can overflow.
-            cap = Math.min(reconnectPolicy.getMaxDelayMs(), cap > Long.MAX_VALUE / 2
-                    ? reconnectPolicy.getMaxDelayMs() : cap * 2);
+            // Guard the doubling operation itself from overflowing long.
+            long doubledCap = cap > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : cap * 2;
+            // Never let exponential growth exceed the configured maximum delay.
+            cap = Math.min(reconnectPolicy.getMaxDelayMs(), doubledCap);
         }
-        // nextLong uses an exclusive bound, so Long.MAX_VALUE needs an unbounded draw.
+        // nextLong(bound) cannot express an inclusive Long.MAX_VALUE upper limit.
         long delay = cap == Long.MAX_VALUE
                 ? ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE
                 : ThreadLocalRandom.current().nextLong(cap + 1);
