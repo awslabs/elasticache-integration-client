@@ -365,7 +365,8 @@ public class PhotonSession implements Closeable {
         PhotonConnection recovered = null;
         ResolvedConfig recoveredConfig = null;
 
-        for (int attempt = 1; attempt <= reconnectPolicy.getMaxReconnectAttempts(); attempt++) {
+        // Use a long counter so Integer.MAX_VALUE attempts remain bounded.
+        for (long attempt = 1; attempt <= reconnectPolicy.getMaxReconnectAttempts(); attempt++) {
             if (state != State.OPEN) {
                 lastFailure = new PhotonConnectionError("Session closed during recovery");
                 break;
@@ -433,7 +434,7 @@ public class PhotonSession implements Closeable {
      * @param failedAttempt the one-based reconnect attempt that just failed
      * @return true if the session remains open and another attempt may proceed
      */
-    private boolean waitBeforeRetry(int failedAttempt) {
+    private boolean waitBeforeRetry(long failedAttempt) {
         // Double the delay cap for each prior failure, stopping at maxDelayMs.
         long cap = reconnectPolicy.getBaseDelayMs();
         for (int i = 1; i < failedAttempt && cap < reconnectPolicy.getMaxDelayMs(); i++) {
