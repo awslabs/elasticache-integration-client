@@ -9,6 +9,7 @@ import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
+import software.amazon.photon.predicate.PredicateEvaluator;
 
 import java.io.Closeable;
 import java.util.Collections;
@@ -36,6 +37,10 @@ import java.util.function.Supplier;
  * connection, resolves fresh authentication credentials, and repeats the
  * mandatory configuration handshake. Failed requests are not replayed because
  * the server may have processed them before the connection was lost.
+ *
+ * <p>Resolved CEL predicates determine which requests are sent to Photon.
+ * Requests with no matching predicate are declined for origin pass-through.
+ * Predicates are recompiled from each successfully resolved reconnect config.
  *
  * <p>Usage:
  * <pre>{@code
@@ -93,6 +98,7 @@ public class PhotonSession implements Closeable {
     private volatile CircuitState circuitState = CircuitState.CLOSED;
     private volatile PhotonConnection connection;
     private volatile ResolvedConfig resolvedConfig;
+    private volatile PredicateEvaluator predicateEvaluator;
 
     private CompletableFuture<PhotonConnection> recovery;
     private int consecutiveRecoveryFailures;
@@ -205,7 +211,11 @@ public class PhotonSession implements Closeable {
 
             connection = connectionFactory.get();
             try {
-                resolvedConfig = initialize(connection);
+                ResolvedConfig initialConfig = initialize(connection);
+                PredicateEvaluator initialPredicateEvaluator =
+                        PredicateEvaluator.compile(initialConfig.getRaw());
+                resolvedConfig = initialConfig;
+                predicateEvaluator = initialPredicateEvaluator;
                 state = State.OPEN;
             } catch (RuntimeException failure) {
                 state = State.CLOSED;
@@ -217,13 +227,15 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Send a request to Photon.
+     * Route a request to Photon when a resolved CEL predicate matches.
      *
-     * <p>A dead connection triggers single-flight recovery. A request that
-     * discovers failure while in flight is not replayed.
+     * <p>A {@code null} return means no predicate matched and the caller should
+     * send the request to the origin service. A dead connection triggers
+     * single-flight recovery. A request that discovers failure while in flight
+     * is not replayed.
      *
      * @param request the request to send
-     * @return the Photon response
+     * @return the Photon response, or null when Photon declines the request
      * @throws PhotonError if the session is not open or Photon cannot serve the request
      */
     public PhotonResponse request(PhotonRequest request) {
@@ -237,8 +249,17 @@ public class PhotonSession implements Closeable {
         }
 
         PhotonConnection active = connection;
+        PredicateEvaluator activePredicateEvaluator = predicateEvaluator;
+        if (!activePredicateEvaluator.route(request)) {
+            return null;
+        }
         if (active == null || active.isDead()) {
             active = recover(active);
+            PredicateEvaluator recoveredPredicateEvaluator = predicateEvaluator;
+            if (recoveredPredicateEvaluator != activePredicateEvaluator
+                    && !recoveredPredicateEvaluator.route(request)) {
+                return null;
+            }
         }
 
         try {
@@ -364,6 +385,7 @@ public class PhotonSession implements Closeable {
         PhotonError lastFailure = new PhotonConnectionError("Photon reconnect attempts exhausted");
         PhotonConnection recovered = null;
         ResolvedConfig recoveredConfig = null;
+        PredicateEvaluator recoveredPredicateEvaluator = null;
 
         // Use a long counter so Integer.MAX_VALUE attempts remain bounded.
         for (long attempt = 1; attempt <= reconnectPolicy.getMaxReconnectAttempts(); attempt++) {
@@ -376,6 +398,8 @@ public class PhotonSession implements Closeable {
             try {
                 candidate = connectionFactory.get();
                 recoveredConfig = initialize(candidate);
+                recoveredPredicateEvaluator =
+                        PredicateEvaluator.compile(recoveredConfig.getRaw());
                 recovered = candidate;
                 break;
             } catch (RuntimeException failure) {
@@ -396,8 +420,10 @@ public class PhotonSession implements Closeable {
         synchronized (recoveryLock) {
             try {
                 if (recovered != null && state == State.OPEN) {
-                    connection = recovered;
                     resolvedConfig = recoveredConfig;
+                    predicateEvaluator = recoveredPredicateEvaluator;
+                    // Publish the connection last so readers see its matching config.
+                    connection = recovered;
                     consecutiveRecoveryFailures = 0;
                     circuitState = CircuitState.CLOSED;
                     circuitOpenUntilNanos = 0;

@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
  * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
- * Photon. Expected Photon failures transparently delegate the original signed
- * SDK request to the configured origin transport.
+ * Photon. Predicate declines and expected Photon failures transparently
+ * delegate the original signed SDK request to the configured origin transport.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
@@ -65,35 +65,44 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     photonCancellation.cancel();
                 }
 
+                PhotonResponse photonResponse;
                 try {
-                    PhotonResponse photonResponse = session.request(capturedRequest, photonCancellation);
-                    if (aborted.get()) {
-                        throw new IOException("Request was aborted");
-                    }
-                    SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
-                    HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
-                            .response(sdkResponse);
-                    byte[] body = photonResponse.getBody();
-                    if (body != null && body.length > 0) {
-                        response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
-                    }
-                    return response.build();
+                    photonResponse = session.request(capturedRequest, photonCancellation);
                 } catch (PhotonRequestCancellation.CancelledException cancelled) {
                     throw new IOException("Request was aborted", cancelled);
                 } catch (PhotonError photonFailure) {
                     if (aborted.get()) {
                         throw new IOException("Request was aborted", photonFailure);
                     }
-                    ExecutableHttpRequest originRequest = originClient.prepareRequest(request);
-                    activeOriginRequest.set(originRequest);
-                    if (aborted.get()) {
-                        originRequest.abort();
-                        throw new IOException("Request was aborted");
-                    }
-                    return originRequest.call();
+                    return callOrigin();
                 } finally {
                     activePhotonRequest.compareAndSet(photonCancellation, null);
                 }
+
+                if (aborted.get()) {
+                    throw new IOException("Request was aborted");
+                }
+                if (photonResponse == null) {
+                    return callOrigin();
+                }
+                SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
+                HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
+                        .response(sdkResponse);
+                byte[] body = photonResponse.getBody();
+                if (body != null && body.length > 0) {
+                    response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));
+                }
+                return response.build();
+            }
+
+            private HttpExecuteResponse callOrigin() throws IOException {
+                ExecutableHttpRequest originRequest = originClient.prepareRequest(request);
+                activeOriginRequest.set(originRequest);
+                if (aborted.get()) {
+                    originRequest.abort();
+                    throw new IOException("Request was aborted");
+                }
+                return originRequest.call();
             }
 
             @Override

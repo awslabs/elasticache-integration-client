@@ -152,6 +152,55 @@ class PhotonSessionTest {
     }
 
     @Test
+    void unmatchedRequest_isDeclinedWithoutCacheRoundTrip() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+
+            PhotonResponse response = session.request(new PhotonRequest(
+                    "POST",
+                    "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "CreateTable")));
+
+            assertNull(response);
+            assertTrue(cache.getRequests().isEmpty());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void celAllowlist_routesOnlyAllowlistedTable() {
+        cache.setConfigJson("{\"version\":\"1.0\",\"predicates\":[{"
+                + "\"expr\":\"service == 'dynamodb' && operation in ops "
+                + "&& has(body.TableName) && body.TableName in allowed\","
+                + "\"vars\":{\"ops\":[\"GetItem\",\"PutItem\"],"
+                + "\"allowed\":[\"Users\"]}}]}");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            PhotonRequest allowed = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{\"TableName\":\"Users\"}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "PutItem"));
+            PhotonRequest other = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{\"TableName\":\"Orders\"}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "GetItem"));
+
+            assertNotNull(session.request(allowed));
+            assertNull(session.request(other));
+            assertEquals(1, cache.getRequests().size());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
     void request_onCreatedSession_throws() {
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
 
@@ -383,6 +432,29 @@ class PhotonSessionTest {
     }
 
     @Test
+    void reconnectReevaluatesRequestWithFreshPredicates() {
+        TestConnection initialConnection = new TestConnection(false, "true");
+        TestConnection replacementConnection = new TestConnection(false, "false");
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        PhotonSession session = new PhotonSession(
+                () -> connectionCreationCount.getAndIncrement() == 0
+                        ? initialConnection : replacementConnection,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        try {
+            session.open();
+            initialConnection.fail();
+
+            assertNull(session.request(request()));
+            assertEquals(2, connectionCreationCount.get());
+            assertEquals(0, replacementConnection.getRequestCount());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
     void concurrentCallersShareOneRecoveryFlight() throws Exception {
         TestConnection initialConnection = new TestConnection();
         TestConnection replacementConnection = new TestConnection();
@@ -488,18 +560,29 @@ class PhotonSessionTest {
     private static class TestConnection extends PhotonConnection {
         private volatile boolean dead;
         private final boolean failConnect;
+        private final String predicateExpression;
+        private final AtomicInteger requestCount = new AtomicInteger();
 
         private TestConnection() {
             this(false);
         }
 
         private TestConnection(boolean failConnect) {
+            this(failConnect, "true");
+        }
+
+        private TestConnection(boolean failConnect, String predicateExpression) {
             super("unused", 1, null);
             this.failConnect = failConnect;
+            this.predicateExpression = predicateExpression;
         }
 
         protected void fail() {
             dead = true;
+        }
+
+        private int getRequestCount() {
+            return requestCount.get();
         }
 
         @Override
@@ -517,12 +600,18 @@ class PhotonSessionTest {
 
         @Override
         public ResolvedConfig configureAndStartReader(Map<String, Object> configOverrides) {
-            return new ResolvedConfig("1.0", 60, Collections.emptyMap());
+            Map<String, Object> predicate =
+                    Collections.<String, Object>singletonMap("expr", predicateExpression);
+            Map<String, Object> rawConfig =
+                    Collections.<String, Object>singletonMap(
+                            "predicates", Collections.singletonList(predicate));
+            return new ResolvedConfig("1.0", 60, rawConfig);
         }
 
         @Override
         public PhotonResponse request(PhotonRequest request,
                                       PhotonRequestCancellation cancellation) {
+            requestCount.incrementAndGet();
             return new PhotonResponse(200, Collections.emptyMap());
         }
 

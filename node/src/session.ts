@@ -5,10 +5,9 @@
  * the mandatory photon.config handshake, and exposes request() for the AWS SDK
  * middleware to call.
  *
- * Scope: no predicate filtering, degradation, circuit breaking, retry,
- * or periodic config refresh. The resolved config is fetched once and stored
- * for protocol compliance only. The middleware may pass idempotent Photon
- * failures through to the origin, while direct session errors propagate.
+ * The resolved config is fetched once and its CEL predicates determine which
+ * requests are sent to Photon. The middleware may pass predicate declines and
+ * idempotent Photon failures through to the origin.
  */
 import type { PhotonConnector } from "./connection.js";
 import { PhotonError } from "./errors.js";
@@ -19,6 +18,7 @@ import {
   serializeConfig,
   serializeRequest,
 } from "./protocol.js";
+import { PredicateEvaluator } from "./predicates.js";
 
 /**
  * Parse a host:port endpoint.
@@ -57,6 +57,7 @@ type SessionState = "created" | "open" | "closed";
 /** Owns a cache connection and exposes the asynchronous request API. */
 export class PhotonSession {
   private config: ResolvedConfig | undefined;
+  private predicateEvaluator = PredicateEvaluator.compile(undefined);
   private state: SessionState = "created";
 
   constructor(
@@ -87,6 +88,7 @@ export class PhotonSession {
         throw new PhotonError("session closed during open()");
       }
       this.config = config;
+      this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
       this.state = "open";
     } catch (error) {
       try {
@@ -99,14 +101,17 @@ export class PhotonSession {
   }
 
   /**
-   * Build photon.request, send it, and return the parsed response.
+   * Send matching requests to Photon and decline unmatched requests.
    *
-   * Requests before open are rejected at the session boundary. Once opened,
-   * connector and protocol errors propagate, including after close.
+   * An undefined result tells the middleware to send the original signed
+   * request to the origin. Connector and protocol errors propagate.
    */
-  async request(request: PhotonRequest): Promise<PhotonResponse> {
+  async request(request: PhotonRequest): Promise<PhotonResponse | undefined> {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
+    }
+    if (this.state === "open" && !this.predicateEvaluator.route(request)) {
+      return undefined;
     }
     const [command, args] = serializeRequest(request);
     return parseRequestResponse(await this.connector.execute(command, ...args));

@@ -21,7 +21,11 @@ public class MockCache {
 
     private Reply reply = Reply.ok(200, Collections.emptyMap(), new byte[0]);
     private Function<ReceivedRequest, Reply> replyFunction = null;
-    private String configJson = "{\"version\":\"1.0\",\"refresh_interval\":60}";
+    private String configJson = "{\"version\":\"1.0\",\"refresh_interval\":60,"
+            + "\"predicates\":[{\"expr\":\"service == 'dynamodb' && operation in ops\","
+            + "\"vars\":{\"ops\":[\"GetItem\",\"BatchGetItem\",\"Query\",\"Scan\","
+            + "\"PutItem\",\"UpdateItem\",\"DeleteItem\",\"BatchWriteItem\","
+            + "\"TransactGetItems\",\"TransactWriteItems\"]}}]}";
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;

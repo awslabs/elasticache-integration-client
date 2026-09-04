@@ -106,6 +106,7 @@ class PhotonClientTest {
 
     @Test
     void clientOperation_isServedByPhotonWithoutContactingOrigin() {
+        configureListTablesPredicate();
         cache.setReply(Reply.ok(
                 200,
                 Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
@@ -136,6 +137,7 @@ class PhotonClientTest {
 
     @Test
     void clientOperation_reusesCapturedRequestForSdkRetry() {
+        configureListTablesPredicate();
         AtomicInteger attempt = new AtomicInteger();
         cache.setReplyFunction(request -> {
             if (attempt.getAndIncrement() == 0) {
@@ -286,6 +288,7 @@ class PhotonClientTest {
 
     @Test
     void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        configureListTablesPredicate();
         cache.setReply(Reply.ok(
                 200,
                 Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
@@ -351,6 +354,7 @@ class PhotonClientTest {
 
     @Test
     void builder_withSdkOverrideConfiguration_mergesWithPhotonInterceptor() {
+        configureListTablesPredicate();
         // Track if our custom interceptor was installed
         AtomicBoolean customInterceptorCalled = new AtomicBoolean(false);
         
@@ -430,6 +434,12 @@ class PhotonClientTest {
         public void close() {
             closeCount.incrementAndGet();
         }
+    }
+
+    private void configureListTablesPredicate() {
+        cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,"
+                + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
+                + "&& operation == 'ListTables'\",\"vars\":{}}]}");
     }
 
     private static Map<String, String> mapOf(String key1, String value1,

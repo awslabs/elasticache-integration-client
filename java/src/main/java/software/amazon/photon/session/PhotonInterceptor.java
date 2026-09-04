@@ -25,7 +25,7 @@ import software.amazon.photon.model.PhotonRequest;
  *
  * <p>The interceptor hands the unsigned request to {@link PhotonHttpClient}, which
  * returns the Photon response or delegates the signed request to the origin
- * transport when Photon fails.
+ * transport when no predicate matches or Photon fails.
  *
  * <p><b>Important:</b> Installing this interceptor without also configuring
  * {@link #getHttpClient()} as the SDK client's HTTP transport does not enable

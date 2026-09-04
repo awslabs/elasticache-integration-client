@@ -14,6 +14,7 @@
   - `connection/`: TCP/TLS socket management, FIFO request correlation.
   - `session/`: PhotonSession, PhotonClient (SDK integration), PhotonInterceptor.
   - `protocol/`: Photon wire protocol serialization.
+  - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
   - `auth/`: IAM authentication token generation.
   - `model/`: PhotonRequest, PhotonResponse, metadata types.
@@ -116,9 +117,9 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Cacheability routing, failover to another Photon endpoint, pass-through,
-periodic config refresh, and out-of-band responses are currently out of scope.
-Bounded reconnection and circuit breaking are supported by PhotonSession.
+Failover to another Photon endpoint, periodic config refresh, and out-of-band
+responses are currently out of scope. CEL predicate routing, bounded
+reconnection, and circuit breaking are supported by PhotonSession.
 Do not introduce them silently or mistake their absence for a review finding;
 intentional scope changes require README, tests, and an explicit contract
 decision. Normal AWS SDK retry/deserialization behavior remains in scope.

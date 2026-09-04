@@ -133,6 +133,24 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
+    void predicateDeclineReplaysBufferedBodyToOrigin() throws Exception {
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new DecliningSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        client.execute(executeRequest(
+                new TrackingPublisher("declined", 8L))).get(2, TimeUnit.SECONDS);
+
+        assertArrayEquals("declined".getBytes(StandardCharsets.UTF_8), origin.body);
+        client.close();
+    }
+
+    @Test
     void cancellationReachesActivePhotonRequestWithoutOriginFallback() throws Exception {
         BlockingSession session = new BlockingSession();
         RecordingOrigin origin = new RecordingOrigin();
@@ -297,6 +315,17 @@ class PhotonAsyncHttpClientTest {
         }
     }
 
+    private static final class DecliningSession extends PhotonSession {
+        private DecliningSession() {
+            super(new PhotonConnection("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            return null;
+        }
+    }
+
     private static final class FailingSession extends PhotonSession {
         private FailingSession() {
             super(new PhotonConnection("unused", 1, null), "user", "token");
@@ -400,6 +429,7 @@ class PhotonAsyncHttpClientTest {
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
             int subscriptionNumber = subscribeCount.incrementAndGet();
             subscriber.onSubscribe(new Subscription() {
+                private boolean emitted;
                 private boolean completed;
 
                 @Override
@@ -410,7 +440,10 @@ class PhotonAsyncHttpClientTest {
                     if (subscriptionNumber == 1) {
                         collectorDemand.set(count);
                     }
-                    subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                    if (!emitted) {
+                        emitted = true;
+                        subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                    }
                     if (!completed) {
                         completed = true;
                         subscriber.onComplete();

@@ -3,6 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/nested-clients/sts";
 import { HttpRequest } from "@smithy/core/protocols";
+import { createServer, type Server } from "node:http";
 
 import { client } from "../src/index.js";
 import { PhotonConnectionLostError } from "../src/errors.js";
@@ -31,7 +32,13 @@ const successResponse = Buffer.from(`<?xml version="1.0"?>
 
 describe("public client", () => {
   let responses = 0;
+  let origin: Server;
+  let originEndpoint: string;
+  const originRequests: Array<{ body: string; headers: Record<string, string | string[]> }> = [];
   const cache = new MockCache({
+    config: {
+      predicates: [{ expr: "service == 'dynamodb' && operation == 'GetItem'", vars: {} }],
+    },
     responseFn: () =>
       ++responses === 1
         ? Reply.ok(500, "content-type:text/xml", retryableResponse)
@@ -47,25 +54,45 @@ describe("public client", () => {
     process.env.AWS_ACCESS_KEY_ID = "AKIAEXAMPLE";
     process.env.AWS_SECRET_ACCESS_KEY = "secret-example";
     process.env.AWS_SESSION_TOKEN = "token-example";
+    origin = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        originRequests.push({
+          body: Buffer.concat(chunks).toString(),
+          headers: request.headers as Record<string, string | string[]>,
+        });
+        response.statusCode = responses++ === 0 ? 500 : 200;
+        response.setHeader("content-type", "text/xml");
+        response.end(responses === 1 ? retryableResponse : successResponse);
+      });
+    });
+    await new Promise<void>((resolve) => origin.listen(0, "127.0.0.1", resolve));
+    const address = origin.address();
+    if (address === null || typeof address === "string") throw new Error("origin did not start");
+    originEndpoint = `http://127.0.0.1:${address.port}`;
     await cache.start();
   });
 
   afterAll(async () => {
     await cache.stop();
+    await new Promise<void>((resolve, reject) =>
+      origin.close((error) => (error ? reject(error) : resolve())),
+    );
     for (const [name, value] of Object.entries(originalCredentials)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
   });
 
-  it("routes a real SDK client through Photon", async () => {
+  it("passes a non-JSON request through to the origin without a cache round trip", async () => {
     const sts = await client("sts", STSClient, {
       endpoint: cache.endpoint,
       cacheName: "test-cache",
       region: "us-east-1",
       connectorOptions: { tls: false },
       clientConfig: {
-        endpoint: "http://127.0.0.1:1",
+        endpoint: originEndpoint,
         credentials: {
           accessKeyId: "AKIAEXAMPLE",
           secretAccessKey: "secret-example",
@@ -108,24 +135,14 @@ describe("public client", () => {
         expect(request.headers["x-amz-date"]).toBeDefined();
         expect(request.headers["x-amz-security-token"]).toBeDefined();
       }
-      expect(cache.photonCommandLog).toEqual([
-        "auth",
-        "photon.config",
-        "photon.request",
-        "photon.request",
-      ]);
-      expect(cache.requests).toHaveLength(2);
-      const [firstRequest, secondRequest] = cache.requests;
-      expect(firstRequest).toBeDefined();
-      expect(secondRequest).toBeDefined();
-      expect(firstRequest!.body.toString()).toContain("Action=AssumeRole");
-      expect(secondRequest!.body).toEqual(firstRequest!.body);
-      expect(secondRequest!.metadata).toEqual(firstRequest!.metadata);
-      expect(firstRequest!.metadata.toString()).toBe("service=sts&op=AssumeRole");
-      for (const request of cache.requests) {
-        expect(request.headers.toString()).not.toMatch(
-          /authorization|x-amz-date|x-amz-security-token/i,
-        );
+      expect(cache.photonCommandLog).toEqual(["auth", "photon.config"]);
+      expect(cache.requests).toHaveLength(0);
+      expect(originRequests).toHaveLength(2);
+      for (const request of originRequests) {
+        expect(request.body).toContain("Action=AssumeRole");
+        expect(request.headers.authorization).toBeDefined();
+        expect(request.headers["x-amz-date"]).toBeDefined();
+        expect(request.headers["x-amz-security-token"]).toBeDefined();
       }
     } finally {
       sts.destroy();
@@ -137,6 +154,16 @@ describe("public client", () => {
 describe("public DynamoDB client", () => {
   let responses = 0;
   const cache = new MockCache({
+    config: {
+      predicates: [
+        {
+          expr:
+            "service == 'dynamodb' && operation == 'GetItem' " +
+            "&& body.TableName == 'PhotonTest'",
+          vars: {},
+        },
+      ],
+    },
     responseFn: () =>
       ++responses === 1
         ? Reply.ok(
@@ -233,7 +260,12 @@ describe("public DynamoDB client", () => {
   });
 
   it("rejects an in-flight request when async callers destroy the client", async () => {
-    const hangingCache = new MockCache({ failure: "hang" });
+    const hangingCache = new MockCache({
+      config: {
+        predicates: [{ expr: "operation == 'GetItem'", vars: {} }],
+      },
+      failure: "hang",
+    });
     await hangingCache.start();
     const dynamodb = await client("dynamodb", DynamoDBClient, {
       endpoint: hangingCache.endpoint,

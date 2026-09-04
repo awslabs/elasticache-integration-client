@@ -174,7 +174,11 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 return;
             }
             if (photonFailure == null) {
-                deliver(result, request.responseHandler(), response);
+                if (response == null) {
+                    fallbackToOrigin(copyWithBody(request, body));
+                } else {
+                    deliver(result, request.responseHandler(), response);
+                }
                 return;
             }
 
