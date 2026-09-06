@@ -161,7 +161,7 @@ class PhotonConnector:
             job.cancel()  # the job may still be running
             self.close()
             raise PhotonConnectionError(f"Timed out connecting to {self._host}:{self._port}") from exc
-        except FuturesCancelled as exc:
+        except FuturesCancelledError as exc:
             # Only a concurrent close() cancels the job, and that close already cleaned up.
             raise PhotonConnectionError("connector closed during connect") from exc
         except OSError as exc:
