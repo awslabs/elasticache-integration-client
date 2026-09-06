@@ -14,7 +14,7 @@ import asyncio
 import ssl
 import threading
 from collections import deque
-from concurrent.futures import CancelledError as FuturesCancelled
+from concurrent.futures import CancelledError as FuturesCancelledError
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
