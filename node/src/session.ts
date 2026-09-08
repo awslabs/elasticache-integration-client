@@ -110,7 +110,7 @@ export class PhotonSession {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
     }
-    if (this.state === "open" && !this.predicateEvaluator.route(request)) {
+    if (this.state === "open" && !this.predicateEvaluator.shouldRouteToPhoton(request)) {
       return undefined;
     }
     const [command, args] = serializeRequest(request);

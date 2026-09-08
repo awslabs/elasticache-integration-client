@@ -97,7 +97,7 @@ public final class PredicateEvaluator {
     /**
      * Return true when the first compiled predicate matches the request.
      */
-    public boolean route(PhotonRequest request) {
+    public boolean shouldRouteToPhoton(PhotonRequest request) {
         if (predicates.isEmpty()) {
             return false;
         }

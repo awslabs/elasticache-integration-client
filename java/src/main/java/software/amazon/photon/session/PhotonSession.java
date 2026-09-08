@@ -171,7 +171,7 @@ public class PhotonSession implements Closeable {
         if (state != State.OPEN) {
             throw new PhotonError("request() called on a " + state.name().toLowerCase() + " session");
         }
-        if (!predicateEvaluator.route(request)) {
+        if (!predicateEvaluator.shouldRouteToPhoton(request)) {
             return null;
         }
         return connector.request(request, cancellation);
