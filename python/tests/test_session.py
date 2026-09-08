@@ -37,7 +37,7 @@ def test_resolved_config_stored_on_construction():
     connector = mock_connector()
     session = PhotonSession(connector)
     assert session._config is not None
-    assert session._config.version == "v1"
+    assert session._config.version == "1.0"
     assert session._config.refresh_interval == 60
 
 
