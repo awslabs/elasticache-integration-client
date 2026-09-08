@@ -138,7 +138,7 @@ class PhotonConnector:
         self._writer: asyncio.StreamWriter | None = None
         self._io_loop: asyncio.AbstractEventLoop | None = None
         self._io_thread: threading.Thread | None = None
-        self._io_task: asyncio.Task | None = None
+        self._io_task: asyncio.Task | None = None   # close() needs this to end the connection
         self._pending = _PendingRequests(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
@@ -353,8 +353,7 @@ class PhotonConnector:
         and write: queue order equals wire order, which FIFO reply matching depends on.
         A plain callback, not an async function: no task is created per request.
         """
-        writer = self._writer
-        if self._closed or writer is None or writer.transport.is_closing():
+        if self._closed or self._writer is None or self._writer.transport.is_closing():
             reply_future.set_exception(PhotonConnectionLost("connection is closed"))
             return
         try:
@@ -363,13 +362,13 @@ class PhotonConnector:
             reply_future.set_exception(exc)
             return
         try:
-            writer.write(frame)
+            self._writer.write(frame)
         except (OSError, TypeError, AttributeError) as exc:
             error = PhotonConnectionLost("send failed")
             error.__cause__ = exc
             self._mark_closed(error)
             # The abort gives the reader an EOF, which ends the connection as usual.
-            writer.transport.abort()
+            self._writer.transport.abort()
 
     def execute(self, command: str, *args: bytes, timeout: float | None = None) -> RespValue:
         """Send one command and block for its reply, returning the raw :data:`RespValue`.
