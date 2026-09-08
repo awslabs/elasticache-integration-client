@@ -71,7 +71,7 @@ class TestPhotonConnector:
         photon.config handshake round-trips the mock's resolved config (as a raw JSON
         bulk string — parsing it is protocol.py's contract)."""
         self.connect()
-        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) == 1
+        assert self.conn._sock.getsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY) != 0
         raw = self.conn.execute("photon.config", b'{"k":"v"}')
         cfg = json.loads(raw)
         assert cfg["version"] == "1.0"

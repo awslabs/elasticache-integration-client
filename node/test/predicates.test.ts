@@ -85,14 +85,22 @@ describe("PredicateEvaluator", () => {
     const predicates = tableAllowlistEvaluator("Users", "Sessions");
 
     expect(predicates.shouldRouteToPhoton(request("GetItem", '{"TableName":"Users"}'))).toBe(true);
-    expect(predicates.shouldRouteToPhoton(request("PutItem", '{"TableName":"Orders"}'))).toBe(false);
+    expect(predicates.shouldRouteToPhoton(request("PutItem", '{"TableName":"Orders"}'))).toBe(
+      false,
+    );
     expect(
-      predicates.shouldRouteToPhoton(request("BatchGetItem", '{"RequestItems":{"Users":{},"Sessions":{}}}')),
+      predicates.shouldRouteToPhoton(
+        request("BatchGetItem", '{"RequestItems":{"Users":{},"Sessions":{}}}'),
+      ),
     ).toBe(true);
     expect(
-      predicates.shouldRouteToPhoton(request("BatchWriteItem", '{"RequestItems":{"Users":[],"Orders":[]}}')),
+      predicates.shouldRouteToPhoton(
+        request("BatchWriteItem", '{"RequestItems":{"Users":[],"Orders":[]}}'),
+      ),
     ).toBe(false);
-    expect(predicates.shouldRouteToPhoton(request("BatchGetItem", '{"RequestItems":{}}'))).toBe(false);
+    expect(predicates.shouldRouteToPhoton(request("BatchGetItem", '{"RequestItems":{}}'))).toBe(
+      false,
+    );
     expect(
       predicates.shouldRouteToPhoton(
         request(
@@ -106,7 +114,9 @@ describe("PredicateEvaluator", () => {
         request("TransactWriteItems", '{"TransactItems":[{"Put":{"TableName":"Orders"}}]}'),
       ),
     ).toBe(false);
-    expect(predicates.shouldRouteToPhoton(request("TransactGetItems", '{"TransactItems":[]}'))).toBe(false);
+    expect(
+      predicates.shouldRouteToPhoton(request("TransactGetItems", '{"TransactItems":[]}')),
+    ).toBe(false);
   });
 
   it("ignores malformed predicate entries without dropping valid siblings", () => {
@@ -119,21 +129,27 @@ describe("PredicateEvaluator", () => {
 
     expect(predicates.shouldRouteToPhoton(request("GetItem"))).toBe(true);
     expect(predicates.shouldRouteToPhoton(request("PutItem"))).toBe(false);
-    expect(PredicateEvaluator.compile(undefined).shouldRouteToPhoton(request("GetItem"))).toBe(false);
-    expect(PredicateEvaluator.compile({ predicates: "invalid" }).shouldRouteToPhoton(request("GetItem"))).toBe(
+    expect(PredicateEvaluator.compile(undefined).shouldRouteToPhoton(request("GetItem"))).toBe(
       false,
     );
+    expect(
+      PredicateEvaluator.compile({ predicates: "invalid" }).shouldRouteToPhoton(request("GetItem")),
+    ).toBe(false);
   });
 
   it("routes only when the runtime result is exactly true", () => {
-    expect(evaluator(predicate("enabled", { enabled: true })).shouldRouteToPhoton(request("GetItem"))).toBe(true);
-    expect(evaluator(predicate("enabled", { enabled: false })).shouldRouteToPhoton(request("GetItem"))).toBe(
-      false,
-    );
-    expect(evaluator(predicate("value", { value: 1 })).shouldRouteToPhoton(request("GetItem"))).toBe(false);
-    expect(evaluator(predicate("value", { value: "non-empty" })).shouldRouteToPhoton(request("GetItem"))).toBe(
-      false,
-    );
+    expect(
+      evaluator(predicate("enabled", { enabled: true })).shouldRouteToPhoton(request("GetItem")),
+    ).toBe(true);
+    expect(
+      evaluator(predicate("enabled", { enabled: false })).shouldRouteToPhoton(request("GetItem")),
+    ).toBe(false);
+    expect(
+      evaluator(predicate("value", { value: 1 })).shouldRouteToPhoton(request("GetItem")),
+    ).toBe(false);
+    expect(
+      evaluator(predicate("value", { value: "non-empty" })).shouldRouteToPhoton(request("GetItem")),
+    ).toBe(false);
     expect(evaluator(predicate("1")).shouldRouteToPhoton(request("GetItem"))).toBe(false);
   });
 
@@ -162,7 +178,9 @@ describe("PredicateEvaluator", () => {
       ),
     );
 
-    expect(predicates.shouldRouteToPhoton(request("GetItem", "{}", { headers: { "x-test": "yes" } }))).toBe(true);
+    expect(
+      predicates.shouldRouteToPhoton(request("GetItem", "{}", { headers: { "x-test": "yes" } })),
+    ).toBe(true);
     expect(
       predicates.shouldRouteToPhoton(
         request("GetItem", "{}", {
@@ -171,9 +189,9 @@ describe("PredicateEvaluator", () => {
         }),
       ),
     ).toBe(false);
-    expect(predicates.shouldRouteToPhoton(request("PutItem", "{}", { headers: { "x-test": "yes" } }))).toBe(
-      false,
-    );
+    expect(
+      predicates.shouldRouteToPhoton(request("PutItem", "{}", { headers: { "x-test": "yes" } })),
+    ).toBe(false);
   });
 
   it("evaluates large valid request bodies", () => {
@@ -182,6 +200,8 @@ describe("PredicateEvaluator", () => {
     const body = prefix + "x".repeat(600 * 1024 - prefix.length - suffix.length) + suffix;
 
     expect(Buffer.byteLength(body)).toBe(600 * 1024);
-    expect(tableAllowlistEvaluator("Users").shouldRouteToPhoton(request("GetItem", body))).toBe(true);
+    expect(tableAllowlistEvaluator("Users").shouldRouteToPhoton(request("GetItem", body))).toBe(
+      true,
+    );
   });
 });
