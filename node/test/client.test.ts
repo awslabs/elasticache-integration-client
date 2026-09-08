@@ -17,7 +17,7 @@ vi.mock("../src/auth.js", () => ({
 }));
 
 vi.mock("../src/connection.js", () => ({
-  PhotonConnection: class {
+  PhotonConnector: class {
     constructor(...args: unknown[]) {
       mocks.connection(...args);
     }
@@ -101,7 +101,7 @@ const options = {
   userId: "iam-user",
   overrides: { timeout: 42 },
   clientConfig: { credentials },
-  connectionOptions: { tls: false, requestTimeout: 1234 },
+  connectorOptions: { tls: false, requestTimeout: 1234 },
 };
 
 describe("client", () => {

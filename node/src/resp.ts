@@ -6,8 +6,8 @@ const CRLF = Buffer.from("\r\n");
  * Generic RESP3 wire codec for the Photon client.
  *
  * Owns the RESP value types (`RespValue`, `RespError`), the framing functions (`encodeResp`,
- * `decodeResp`), and `IncompleteFrameError`. `decodeResp` distinguishes a **truncated** frame
- * (more bytes are coming -> `IncompleteFrameError`) from genuine **garbage** (unparseable input ->
+ * `decodeResp`), and `IncompleteFrame`. `decodeResp` distinguishes a **truncated** frame
+ * (more bytes are coming -> `IncompleteFrame`) from genuine **garbage** (unparseable input ->
  * `PhotonProtocolError`), so an incremental reader can tell "need more bytes" apart from "the
  * stream is corrupt".
  */
@@ -34,7 +34,7 @@ export type RespValue = number | bigint | Buffer | RespValue[] | RespError | nul
 type Decoder = (data: Buffer, header: Buffer, afterHeader: number) => [RespValue, number];
 
 /** Raised by `decodeResp` when the buffer holds only a partial frame (need more bytes). */
-export class IncompleteFrameError extends Error {
+export class IncompleteFrame extends Error {
   constructor(message: string) {
     super(message);
     this.name = new.target.name;
@@ -119,7 +119,7 @@ function decodeBulkString(data: Buffer, header: Buffer, afterHeader: number): [R
   const end = afterHeader + length;
   if (end + CRLF.length > data.length) {
     // body + trailing CRLF not all present yet
-    throw new IncompleteFrameError("bulk string body incomplete");
+    throw new IncompleteFrame("bulk string body incomplete");
   }
   if (!data.subarray(end, end + CRLF.length).equals(CRLF)) {
     throw new PhotonProtocolError("Malformed RESP bulk string terminator");
@@ -140,7 +140,7 @@ function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespVa
   const items: RespValue[] = [];
   let position = afterHeader;
   for (let index = 0; index < count; index += 1) {
-    // inner IncompleteFrameError propagates
+    // inner IncompleteFrame propagates
     const [item, nextPosition] = decodeResp(data, position);
     items.push(item);
     position = nextPosition;
@@ -161,7 +161,7 @@ const DECODERS: Record<string, Decoder> = {
 /** Decode a single RESP3 value beginning at `start`. */
 export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
   if (start >= data.length) {
-    throw new IncompleteFrameError("empty buffer");
+    throw new IncompleteFrame("empty buffer");
   }
 
   // Read the type prefix (+ - : $ * >)
@@ -169,7 +169,7 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
   // Find the end of the header line ("$3", ":42", "+OK", ...)
   const lineEnd = data.indexOf(CRLF, start + 1);
   if (lineEnd === -1) {
-    throw new IncompleteFrameError("header line not yet terminated");
+    throw new IncompleteFrame("header line not yet terminated");
   }
 
   // Extract the header

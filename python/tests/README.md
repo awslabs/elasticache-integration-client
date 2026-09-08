@@ -47,13 +47,13 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | File | Kind | Covers |
 |---|---|---|
 | `test_scaffolding.py` | smoke | package imports cleanly and exposes `__version__` |
-| `test_resp.py` | component | `photon.resp` RESP3 wire codec (encode/decode, all prefixes, `IncompleteFrameError` truncation, `PhotonProtocolError` garbage) |
+| `test_resp.py` | component | `photon.resp` RESP3 wire codec (encode/decode, all prefixes, `IncompleteFrame` truncation, `PhotonProtocolError` garbage) |
 | `test_protocol.py` | component | `photon.protocol` (command building, header normalization, request arg-list serialization, config/request response parsing) |
-| `test_connection.py` | component + integration | `photon.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `PhotonConnection` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
-| `test_session.py` | component | `photon.session.PhotonSession` sync API, driven by the `mock_connection()` autospec double |
+| `test_connection.py` | component + integration | `photon.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `PhotonConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
+| `test_session.py` | component | `photon.session.PhotonSession` sync API, driven by the `mock_connector()` autospec double |
 | `test_hooks.py` | component | `photon.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
 | `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
-| `test_ddb.py` | **end-to-end** | the full path `photon.client → boto3 GetItem → hook → PhotonSession → real PhotonConnection (TLS) → MockCache` |
+| `test_ddb.py` | **end-to-end** | the full path `photon.client → boto3 GetItem → hook → PhotonSession → real PhotonConnector (TLS) → MockCache` |
 
 All test doubles live in one module, `tests/mock.py` (imported by tests, not collected as test cases):
 
@@ -67,17 +67,17 @@ All test doubles live in one module, `tests/mock.py` (imported by tests, not col
 - `MockSocket` — an in-memory, scriptable socket for the `_SocketReader` unit tests.
 - `MockClient` — a botocore client stand-in exposing the real `.meta.events` emitter the hooks
   register on.
-- `mock_connection()` / `mock_session()` — `create_autospec` factory functions bound to the real
-  `PhotonConnection` / `PhotonSession`, with sensible default replies, for the session and hooks
+- `mock_connector()` / `mock_session()` — `create_autospec` factory functions bound to the real
+  `PhotonConnector` / `PhotonSession`, with sensible default replies, for the session and hooks
   tests.
 
 ## The end-to-end test (`test_ddb.py`)
 
-`test_ddb.py` exercises the **real** `PhotonConnection` over TLS (not a double), validating the
+`test_ddb.py` exercises the **real** `PhotonConnector` over TLS (not a double), validating the
 actual transport + protocol framing together:
 
 - It starts `MockCache(tls=True)` in-process with a **self-signed** certificate, and the client
-  performs real (verifying) TLS against it — `photon.PhotonConnection` is patched to inject
+  performs real (verifying) TLS against it — `photon.PhotonConnector` is patched to inject
   `ca_certs=cache.cert_path`; no real cache or DynamoDB is contacted.
 - The transport is pure stdlib, so there is no optional dependency — the e2e always runs.
 

@@ -4,7 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.exception.PhotonConnectionLostError;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
@@ -41,10 +41,10 @@ import java.util.concurrent.locks.Lock;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Integration tests for PhotonConnection against MockTlsServer.
+ * Integration tests for PhotonConnector against MockTlsServer.
  * Exercises the full flow: TLS connect → AUTH → photon.config → photon.request → response.
  */
-class PhotonConnectionIntegrationTest {
+class PhotonConnectorIntegrationTest {
 
     private static final String TEST_USER = "test-user";
     private static final String TEST_TOKEN = "test-token";
@@ -70,7 +70,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connectAndAuthenticate_successfulHandshake() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, "my-auth-token");
             assertNotNull(config);
@@ -85,24 +85,24 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connect_separateSteps_works() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             // Step 1: TCP + TLS
             conn.connect();
             // Connection established but not authenticated
             assertTrue(conn.isConnected());
-            assertNull(conn.getResolvedConfig());
+            assertNull(conn.getConfig());
 
             // Step 2: AUTH
             conn.authenticate(TEST_USER, "my-auth-token");
             assertTrue(conn.isConnected());
-            assertNull(conn.getResolvedConfig()); // Still no config until step 3
+            assertNull(conn.getConfig()); // Still no config until step 3
 
             // Step 3: Configure and start reader
             ResolvedConfig config = conn.configureAndStartReader(Collections.emptyMap());
             assertNotNull(config);
             assertEquals("1.0", config.getVersion());
-            assertSame(config, conn.getResolvedConfig());
+            assertSame(config, conn.getConfig());
         } finally {
             conn.close();
         }
@@ -110,7 +110,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connectAndAuthenticate_withSupplier() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         AtomicInteger callCount = new AtomicInteger(0);
         try {
             ResolvedConfig config = conn.connectAndAuthenticate(() -> {
@@ -127,7 +127,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connect_recordsAuthAndConfig() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, "secret");
             // The mock should have received AUTH and photon.config
@@ -141,7 +141,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connectAndAuthenticate_withConfigOverrides() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             Map<String, Object> overrides = new HashMap<>();
             overrides.put("refresh_interval", 120);
@@ -161,7 +161,7 @@ class PhotonConnectionIntegrationTest {
         cache.setReply(Reply.ok(200, respHeaders,
                 "{\"Item\":{\"id\":{\"S\":\"123\"}}}".getBytes(StandardCharsets.UTF_8)));
 
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -189,7 +189,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_serverReceivesCorrectArgs() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -230,7 +230,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_multipleRequestsOnSameConnection() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -256,7 +256,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_succeedsAfterConnectionIsIdleLongerThanReadTimeout() throws Exception {
-        PhotonConnection conn = new PhotonConnection(
+        PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext, 5000, 150);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -282,7 +282,7 @@ class PhotonConnectionIntegrationTest {
         respHeaders.put("content-type", "application/json");
         cache.setReply(Reply.ok(404, respHeaders, "{\"error\":\"not found\"}".getBytes(StandardCharsets.UTF_8)));
 
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -304,7 +304,7 @@ class PhotonConnectionIntegrationTest {
     void request_errorReplyThrows() {
         cache.setReply(Reply.error("CACHE_MISS", "item not cached"));
 
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -324,7 +324,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void close_marksConnectionClosed() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         assertTrue(conn.isConnected());
 
@@ -334,7 +334,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void close_isIdempotent() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
         conn.close();
@@ -344,8 +344,8 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
-    void request_afterClose_throwsPhotonConnectionLostError() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+    void request_afterClose_throwsPhotonConnectionLost() {
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         conn.close();
 
@@ -355,13 +355,13 @@ class PhotonConnectionIntegrationTest {
                 new RequestMetadata("dynamodb", "GetItem")
         );
 
-        assertThrows(PhotonConnectionLostError.class, () -> conn.request(request));
+        assertThrows(PhotonConnectionLost.class, () -> conn.request(request));
     }
 
     @Test
     void connect_invalidHost_throwsConnectionError() {
         // Use a non-routable address to trigger connection failure
-        PhotonConnection conn = new PhotonConnection("192.0.2.1", 9999, clientSslContext,
+        PhotonConnector conn = new PhotonConnector("192.0.2.1", 9999, clientSslContext,
                 200, 200);
         assertThrows(PhotonConnectionError.class, conn::connect);
     }
@@ -369,11 +369,11 @@ class PhotonConnectionIntegrationTest {
     // === Drop failure mode ===
 
     @Test
-    void request_serverDropsConnection_throwsPhotonConnectionLostError() {
+    void request_serverDropsConnection_throwsPhotonConnectionLost() {
         cache.setFailureMode(MockCache.FailureMode.DROP);
         cache.setFailureCommand("photon.request");
 
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -383,7 +383,7 @@ class PhotonConnectionIntegrationTest {
                     new RequestMetadata("dynamodb", "GetItem")
             );
 
-            assertThrows(PhotonConnectionLostError.class, () -> conn.request(request));
+            assertThrows(PhotonConnectionLost.class, () -> conn.request(request));
         } finally {
             conn.close();
         }
@@ -394,9 +394,9 @@ class PhotonConnectionIntegrationTest {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("photon.request");
 
-        PhotonConnection conn = new PhotonConnection(
+        PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+                5000, 5000, 100, PhotonConnector.DEFAULT_MAX_PENDING);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -431,9 +431,9 @@ class PhotonConnectionIntegrationTest {
             return Reply.ok(200, Collections.emptyMap(), "next");
         });
 
-        PhotonConnection conn = new PhotonConnection(
+        PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 2000, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+                5000, 5000, 2000, PhotonConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -461,9 +461,9 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
-        PhotonConnection conn = new PhotonConnection(
+        PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+                5000, 5000, 100, PhotonConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         Lock sendLock = getField(conn, "sendLock", Lock.class);
         try {
@@ -486,12 +486,12 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_blockedSocketWrite_timesOutAndKillsConnection() throws Exception {
-        PhotonConnection conn = new PhotonConnection(
+        PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
-                5000, 5000, 100, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
+                5000, 5000, 100, PhotonConnector.DEFAULT_MAX_PENDING);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
-            Field outputStream = PhotonConnection.class.getDeclaredField("outputStream");
+            Field outputStream = PhotonConnector.class.getDeclaredField("outputStream");
             outputStream.setAccessible(true);
             outputStream.set(conn, new OutputStream() {
                 @Override
@@ -539,10 +539,10 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void getConfig_returnsHandshakeConfig() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
-            assertEquals(config, conn.getResolvedConfig());
+            assertEquals(config, conn.getConfig());
         } finally {
             conn.close();
         }
@@ -552,7 +552,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void request_concurrentFromMultipleThreads() throws Exception {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -609,7 +609,7 @@ class PhotonConnectionIntegrationTest {
         // marker in the response body. Each caller must receive their own marker.
         cache.setReplyFunction(req -> Reply.ok(200, Collections.emptyMap(), req.getBody()));
 
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
@@ -651,9 +651,9 @@ class PhotonConnectionIntegrationTest {
     // === PendingRequests bounds ===
 
     @Test
-    void request_exceedingMaxPending_throwsPhotonConnectionLostError() throws Exception {
+    void request_exceedingMaxPending_throwsPhotonConnectionLost() throws Exception {
         // Create connection with very low max pending
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext,
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext,
                 5000, 5000, 2);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -670,7 +670,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void isDead_falseWhenConnected() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             assertFalse(conn.isDead());
@@ -681,7 +681,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void isDead_trueAfterClose() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
         conn.close();
         assertTrue(conn.isDead());
@@ -691,7 +691,7 @@ class PhotonConnectionIntegrationTest {
 
     @Test
     void connect_alreadyConnected_throwsIllegalState() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connect();
             assertThrows(IllegalStateException.class, conn::connect);
@@ -701,14 +701,14 @@ class PhotonConnectionIntegrationTest {
     }
 
     @Test
-    void authenticate_beforeConnect_throwsPhotonConnectionLostError() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
-        assertThrows(PhotonConnectionLostError.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
+    void authenticate_beforeConnect_throwsPhotonConnectionLost() {
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        assertThrows(PhotonConnectionLost.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
     }
 
     @Test
     void configureAndStartReader_calledTwice_throwsIllegalState() {
-        PhotonConnection conn = new PhotonConnection("localhost", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connect();
             conn.authenticate(TEST_USER, TEST_TOKEN);
@@ -726,7 +726,7 @@ class PhotonConnectionIntegrationTest {
         // The mock server's certificate has CN=localhost
         // Connecting with a different hostname (127.0.0.1) should fail hostname verification
         // even though we trust the certificate (same SSLContext)
-        PhotonConnection conn = new PhotonConnection("127.0.0.1", server.getPort(), clientSslContext);
+        PhotonConnector conn = new PhotonConnector("127.0.0.1", server.getPort(), clientSslContext);
         
         PhotonConnectionError error = assertThrows(PhotonConnectionError.class, conn::connect);
         

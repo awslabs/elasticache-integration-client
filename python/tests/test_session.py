@@ -1,8 +1,8 @@
 """Tests for photon.session.
 
-The connection double comes from :func:`tests.mock.mock_connection` — a ``create_autospec`` bound to
-the real :class:`PhotonConnection`, so the session is verified against the real connection signatures
-without a network. Because the connection is a mock (no real socket/thread), the session needs no
+The connector double comes from :func:`tests.mock.mock_connector` — a ``create_autospec`` bound to
+the real :class:`PhotonConnector`, so the session is verified against the real connector signatures
+without a network. Because the connector is a mock (no real socket/thread), the session needs no
 teardown.
 
 Command building/normalization details are protocol.py's contract and are covered in
@@ -14,51 +14,51 @@ import pytest
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.session import PhotonSession, parse_endpoint
-from tests.mock import mock_connection
+from tests.mock import mock_connector
 
 
 # --- lifecycle: bring-up --------------------------------------------------------
 
 def test_bring_up_order():
     """Construction drives connect(), authenticate(), then the config handshake via execute()."""
-    connection = mock_connection()
-    PhotonSession(connection, overrides={"flag": True})
-    assert [c[0] for c in connection.method_calls] == [
+    connector = mock_connector()
+    PhotonSession(connector, overrides={"flag": True})
+    assert [c[0] for c in connector.method_calls] == [
         "connect",
         "authenticate",
         "execute",
     ]
-    connection.execute.assert_called_once_with("photon.config", b'{"flag":true}',
-                                              timeout=connection.config_timeout)
+    connector.execute.assert_called_once_with("photon.config", b'{"flag":true}',
+                                              timeout=connector.config_timeout)
 
 
 def test_resolved_config_stored_on_construction():
     """The handshake's resolved config is stored by the time construction returns."""
-    connection = mock_connection()
-    session = PhotonSession(connection)
-    assert session.resolved_config is not None
-    assert session.resolved_config.version == "v1"
-    assert session.resolved_config.refresh_interval == 60
+    connector = mock_connector()
+    session = PhotonSession(connector)
+    assert session._config is not None
+    assert session._config.version == "v1"
+    assert session._config.refresh_interval == 60
 
 
 @pytest.mark.parametrize("failing_step", ["authenticate", "execute"])
 def test_failed_bring_up_closes_everything(failing_step):
-    """If any bring-up step after connect() raises, construction closes the connection
+    """If any bring-up step after connect() raises, construction closes the connector
     (no leaked connection) and the session object never exists."""
-    connection = mock_connection()
-    getattr(connection, failing_step).side_effect = PhotonError(f"{failing_step} failed")
+    connector = mock_connector()
+    getattr(connector, failing_step).side_effect = PhotonError(f"{failing_step} failed")
     with pytest.raises(PhotonError):
-        PhotonSession(connection)
-    connection.close.assert_called_once_with()
+        PhotonSession(connector)
+    connector.close.assert_called_once_with()
 
 
 # --- request path ---------------------------------------------------------------
 
-def test_request_delegates_to_connection():
+def test_request_delegates_to_connector():
     """request() serializes the photon.request command, forwards it to execute(), and returns
     the parsed response."""
-    connection = mock_connection()
-    session = PhotonSession(connection)
+    connector = mock_connector()
+    session = PhotonSession(connector)
     request = PhotonRequest(
         method="POST",
         url="https://dynamodb.us-east-1.amazonaws.com/",
@@ -69,34 +69,34 @@ def test_request_delegates_to_connection():
     resp = session.request(request)
     assert isinstance(resp, PhotonResponse)
     assert resp.status_code == 200
-    args, kwargs = connection.execute.call_args
+    args, kwargs = connector.execute.call_args
     assert args[0] == "photon.request"
     assert len(args[1:]) == 5  # [method, url, headers, body, metadata]
     assert kwargs == {}
 
 
-def test_request_after_close_propagates_connection_error():
-    """After close(), request() propagates the connection's error (no session-level state check)."""
-    connection = mock_connection()
-    session = PhotonSession(connection)
+def test_request_after_close_propagates_connector_error():
+    """After close(), request() propagates the connector's error (no session-level state check)."""
+    connector = mock_connector()
+    session = PhotonSession(connector)
     session.close()
-    connection.execute.reset_mock()  # discard the constructor's config call
-    connection.execute.side_effect = PhotonError("connection is closed")
+    connector.execute.reset_mock()  # discard the constructor's config call
+    connector.execute.side_effect = PhotonError("connection is closed")
     with pytest.raises(PhotonError):
         session.request(PhotonRequest(method="POST", url="https://x/",
                                       metadata=RequestMetadata(service="dynamodb", operation="GetItem")))
-    connection.execute.assert_called_once()  # the call reached the connection: no session-level gate
+    connector.execute.assert_called_once()  # the call reached the connector: no session-level gate
 
 
 # --- lifecycle: close -----------------------------------------------------------
 
-def test_close_delegates_to_connection():
-    """close() delegates to the connection; the connection's own close() is idempotent."""
-    connection = mock_connection()
-    session = PhotonSession(connection)
+def test_close_delegates_to_connector():
+    """close() delegates to the connector; the connector's own close() is idempotent."""
+    connector = mock_connector()
+    session = PhotonSession(connector)
     session.close()
     session.close()
-    assert connection.close.call_count == 2  # session adds no state; connection handles idempotence
+    assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
 
 
 # --- endpoint parsing -----------------------------------------------------------

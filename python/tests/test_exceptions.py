@@ -1,9 +1,9 @@
-"""Tests for photon.exceptions — the connection error taxonomy."""
+"""Tests for photon.exceptions — the connector error taxonomy."""
 
 import pytest
 
 from photon.exceptions import (
-    PhotonConnectionLostError,
+    PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
     PhotonProtocolError,
@@ -13,7 +13,7 @@ from photon.exceptions import (
 _SUBCLASSES = [
     PhotonConnectionError,
     PhotonProtocolError,
-    PhotonConnectionLostError,
+    PhotonConnectionLost,
     PhotonTimeoutError,
 ]
 
@@ -24,6 +24,8 @@ _SUBCLASSES = [
 def test_taxonomy_subclasses_photon_error(cls):
     """Every failure-mode class is a subclass of PhotonError."""
     assert issubclass(cls, PhotonError)
+
+
 # --- AC6: public re-export unchanged ------------------------------------------
 
 def test_public_api_surface():

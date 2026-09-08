@@ -4,19 +4,21 @@ import pytest
 
 from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.resp import (
-    IncompleteFrameError,
+    IncompleteFrame,
     RespError,
     decode_resp,
     encode_resp,
 )
 
 
-# --- AC1: codec API + IncompleteFrameError is a plain Exception --------------------
+# --- AC1: codec API + IncompleteFrame is a plain Exception --------------------
 
 def test_incomplete_frame_is_not_photon_error():
-    """IncompleteFrameError ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
-    assert issubclass(IncompleteFrameError, Exception)
-    assert not issubclass(IncompleteFrameError, PhotonError)
+    """IncompleteFrame ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
+    assert issubclass(IncompleteFrame, Exception)
+    assert not issubclass(IncompleteFrame, PhotonError)
+
+
 # --- AC2: encode/decode_resp round-trip --------------------------------------------
 
 def test_encode_decode_round_trip():
@@ -88,7 +90,7 @@ def test_decode_null_array():
     assert decode_resp(b"*-1\r\n") == (None, 5)
 
 
-# --- AC4: truncation raises IncompleteFrameError -----------------------------------
+# --- AC4: truncation raises IncompleteFrame -----------------------------------
 
 @pytest.mark.parametrize(
     "partial",
@@ -103,8 +105,8 @@ def test_decode_null_array():
     ],
 )
 def test_truncation_raises_incomplete_frame(partial):
-    """Each kind of partial buffer (empty, missing CRLF, short bulk, missing bulk trailing CRLF, missing array/push element, bare :) raises IncompleteFrameError."""
-    with pytest.raises(IncompleteFrameError):
+    """Each kind of partial buffer (empty, missing CRLF, short bulk, missing bulk trailing CRLF, missing array/push element, bare :) raises IncompleteFrame."""
+    with pytest.raises(IncompleteFrame):
         decode_resp(partial)
 
 

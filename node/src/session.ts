@@ -1,16 +1,15 @@
 /**
  * PhotonSession: connection bring-up and the asynchronous request API.
  *
- * A session owns one PhotonConnection, performs transport connect, AUTH, and
+ * A session owns one PhotonConnector, performs transport connect, AUTH, and
  * the mandatory photon.config handshake, and exposes request() for the AWS SDK
  * middleware to call.
  *
- * Scope: no predicate filtering, degradation, circuit breaking, retry,
- * or periodic config refresh. The resolved config is fetched once and stored
- * for protocol compliance only. The middleware may pass idempotent Photon
- * failures through to the origin, while direct session errors propagate.
+ * The resolved config is fetched once and its CEL predicates determine which
+ * requests are sent to Photon. The middleware may pass predicate declines and
+ * idempotent Photon failures through to the origin.
  */
-import type { PhotonConnection } from "./connection.js";
+import type { PhotonConnector } from "./connection.js";
 import { PhotonError } from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
 import {
@@ -19,6 +18,7 @@ import {
   serializeConfig,
   serializeRequest,
 } from "./protocol.js";
+import { PredicateEvaluator } from "./predicates.js";
 
 /**
  * Parse a host:port endpoint.
@@ -56,16 +56,17 @@ type SessionState = "created" | "open" | "closed";
 
 /** Owns a cache connection and exposes the asynchronous request API. */
 export class PhotonSession {
-  private config: ResolvedConfig | undefined;
+  private _config: ResolvedConfig | undefined;
+  private predicateEvaluator = PredicateEvaluator.compile(undefined);
   private state: SessionState = "created";
 
   constructor(
-    private readonly connection: PhotonConnection,
+    private readonly connector: PhotonConnector,
     private readonly overrides: Readonly<Record<string, unknown>> = {},
   ) {}
 
-  get resolvedConfig(): ResolvedConfig | undefined {
-    return this.config;
+  get config(): ResolvedConfig | undefined {
+    return this._config;
   }
 
   get isOpen(): boolean {
@@ -78,15 +79,16 @@ export class PhotonSession {
       throw new PhotonError(`open() called on a ${this.state} session`);
     }
 
-    await this.connection.connect();
+    await this.connector.connect();
     try {
-      await this.connection.authenticate();
+      await this.connector.authenticate();
       const [command, args] = serializeConfig(this.overrides);
-      const config = parseConfigResponse(await this.connection.execute(command, ...args));
+      const config = parseConfigResponse(await this.connector.execute(command, ...args));
       if (this.state !== "created") {
         throw new PhotonError("session closed during open()");
       }
-      this.config = config;
+      this._config = config;
+      this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
       this.state = "open";
     } catch (error) {
       try {
@@ -99,30 +101,33 @@ export class PhotonSession {
   }
 
   /**
-   * Build photon.request, send it, and return the parsed response.
+   * Send matching requests to Photon and decline unmatched requests.
    *
-   * Requests before open are rejected at the session boundary. Once opened,
-   * connection and protocol errors propagate, including after close.
+   * An undefined result tells the middleware to send the original signed
+   * request to the origin. Connector and protocol errors propagate.
    */
-  async request(request: PhotonRequest): Promise<PhotonResponse> {
+  async request(request: PhotonRequest): Promise<PhotonResponse | undefined> {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
     }
+    if (this.state === "open" && !this.predicateEvaluator.route(request)) {
+      return undefined;
+    }
     const [command, args] = serializeRequest(request);
-    return parseRequestResponse(await this.connection.execute(command, ...args));
+    return parseRequestResponse(await this.connector.execute(command, ...args));
   }
 
-  /** Close the connection and mark the session CLOSED. Idempotent. */
+  /** Close the connector and mark the session CLOSED. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closed";
-    await this.connection.close();
+    await this.connector.close();
   }
 
   /** Synchronous Node.js teardown used by AWS SDK client destroy(). */
   destroy(): void {
     if (this.state === "closed") return;
     this.state = "closed";
-    this.connection.destroy();
+    this.connector.destroy();
   }
 }

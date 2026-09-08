@@ -7,7 +7,7 @@ import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smi
 import { SMITHY_CONTEXT_KEY } from "@smithy/types";
 import { Readable } from "node:stream";
 
-import { PhotonConnectionLostError, PhotonError } from "../src/errors.js";
+import { PhotonConnectionLost, PhotonError } from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata } from "../src/models.js";
 import {
   awsToPhotonRequest,
@@ -208,6 +208,25 @@ describe("PhotonHandle", () => {
 });
 
 describe("photon middleware", () => {
+  it("passes predicate declines through to the untouched origin request", async () => {
+    const signedRequest = request(Buffer.from("{}"));
+    signedRequest.headers.authorization = "AWS4-HMAC-SHA256 Credential=example";
+    const session = fakeSession({ request: vi.fn(async () => undefined) });
+    const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
+      expect(args.request).toBe(signedRequest);
+      expect((args.request as HttpRequest).headers.authorization).toBe(
+        "AWS4-HMAC-SHA256 Credential=example",
+      );
+      return { response: new HttpResponse({ statusCode: 204 }) };
+    });
+    const handler = photonMiddleware("svc", session)(next, { commandName: "RunCommand" });
+
+    await expect(handler({ input: {}, request: signedRequest })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it("replaces the terminal origin handler while preserving session errors", async () => {
     const sessionError = new Error("session failed");
     const session = fakeSession({
@@ -276,7 +295,7 @@ describe("photon middleware", () => {
   });
 
   it("does not pass shutdown Photon failures through to the origin", async () => {
-    const connectionClosed = new PhotonConnectionLostError("connection closed");
+    const connectionClosed = new PhotonConnectionLost("connection closed");
     const session = fakeSession({
       isOpen: false,
       request: vi.fn(async () => {

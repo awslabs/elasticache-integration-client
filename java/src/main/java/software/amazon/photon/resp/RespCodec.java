@@ -78,12 +78,12 @@ public final class RespCodec {
      * @param data  the byte array
      * @param start the start position
      * @return a DecodeResult containing the decoded value and the position after it
-     * @throws IncompleteFrameError    if data is truncated
+     * @throws IncompleteFrame    if data is truncated
      * @throws PhotonProtocolError if data is malformed / garbage
      */
-    public static DecodeResult decode(byte[] data, int start) throws IncompleteFrameError {
+    public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
         if (start >= data.length) {
-            throw new IncompleteFrameError("No data available at position " + start);
+            throw new IncompleteFrame("No data available at position " + start);
         }
 
         byte prefix = data[start];
@@ -109,14 +109,14 @@ public final class RespCodec {
     /**
      * Decode one RESP3 value from the given byte array starting at position 0.
      */
-    public static DecodeResult decode(byte[] data) throws IncompleteFrameError {
+    public static DecodeResult decode(byte[] data) throws IncompleteFrame {
         return decode(data, 0);
     }
 
-    private static DecodeResult decodeSimpleString(byte[] data, int start) throws IncompleteFrameError {
+    private static DecodeResult decodeSimpleString(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
-            throw new IncompleteFrameError("Incomplete simple string");
+            throw new IncompleteFrame("Incomplete simple string");
         }
         int len = crlfPos - (start + 1);
         byte[] value = new byte[len];
@@ -124,10 +124,10 @@ public final class RespCodec {
         return new DecodeResult(new RespSimpleString(value), crlfPos + 2);
     }
 
-    private static DecodeResult decodeInteger(byte[] data, int start) throws IncompleteFrameError {
+    private static DecodeResult decodeInteger(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
-            throw new IncompleteFrameError("Incomplete integer");
+            throw new IncompleteFrame("Incomplete integer");
         }
         int len = crlfPos - (start + 1);
         String numStr = new String(data, start + 1, len, StandardCharsets.US_ASCII);
@@ -139,10 +139,10 @@ public final class RespCodec {
         }
     }
 
-    private static DecodeResult decodeError(byte[] data, int start) throws IncompleteFrameError {
+    private static DecodeResult decodeError(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
-            throw new IncompleteFrameError("Incomplete error");
+            throw new IncompleteFrame("Incomplete error");
         }
         int len = crlfPos - (start + 1);
         String line = new String(data, start + 1, len, StandardCharsets.UTF_8);
@@ -159,10 +159,10 @@ public final class RespCodec {
         return new DecodeResult(new RespError(code, message), crlfPos + 2);
     }
 
-    private static DecodeResult decodeBulkString(byte[] data, int start) throws IncompleteFrameError {
+    private static DecodeResult decodeBulkString(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
-            throw new IncompleteFrameError("Incomplete bulk string length");
+            throw new IncompleteFrame("Incomplete bulk string length");
         }
         String lenStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
         int length;
@@ -184,7 +184,7 @@ public final class RespCodec {
         long dataEndLong = (long) dataStart + length;
         // Need data + CRLF
         if (dataEndLong + 2 > data.length) {
-            throw new IncompleteFrameError("Incomplete bulk string data");
+            throw new IncompleteFrame("Incomplete bulk string data");
         }
         int dataEnd = (int) dataEndLong;
         if (data[dataEnd] != '\r' || data[dataEnd + 1] != '\n') {
@@ -196,10 +196,10 @@ public final class RespCodec {
         return new DecodeResult(new RespBulkString(value), dataEnd + 2);
     }
 
-    private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrameError {
+    private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
-            throw new IncompleteFrameError("Incomplete array length");
+            throw new IncompleteFrame("Incomplete array length");
         }
         String countStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
         int count;

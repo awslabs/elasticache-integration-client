@@ -66,6 +66,8 @@ class PhotonAsyncClientTest {
     @BeforeEach
     void setUp() throws Exception {
         cache = new MockCache();
+        cache.setConfigJson(
+                "{\"version\":\"1.0\",\"predicates\":[{\"expr\":\"true\"}]}");
         server = new MockTlsServer(cache);
         clientSslContext = server.getSslContext();
     }

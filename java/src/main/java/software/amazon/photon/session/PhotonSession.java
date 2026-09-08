@@ -1,12 +1,13 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
+import software.amazon.photon.predicate.PredicateEvaluator;
 
 import java.io.Closeable;
 import java.util.Collections;
@@ -14,7 +15,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Owns a PhotonConnection and manages its lifecycle.
+ * Owns a PhotonConnector and manages its lifecycle.
  *
  * <p>A session orchestrates connection bring-up (transport connect → AUTH →
  * the mandatory {@code photon.config} handshake) and exposes a synchronous
@@ -22,13 +23,13 @@ import java.util.function.Supplier;
  *
  * <p>Lifecycle: {@code CREATED} → {@code OPEN} → {@code CLOSED}
  *
- * <p>Scope: no predicate filtering, degradation, circuit breaking, retry,
- * pass-through, or periodic config refresh. The resolved config is fetched
- * once and stored for protocol compliance only. Errors propagate.
+ * <p>Resolved CEL predicates determine which requests are sent to Photon.
+ * Requests with no matching predicate are declined for origin pass-through.
+ * The config is fetched and compiled once.
  *
  * <p>Usage:
  * <pre>{@code
- * PhotonSession session = new PhotonSession(connection, authProvider, overrides);
+ * PhotonSession session = new PhotonSession(connector, authProvider, overrides);
  * session.open();
  * try {
  *     PhotonResponse response = session.request(photonRequest);
@@ -51,23 +52,24 @@ public class PhotonSession implements Closeable {
         CLOSED
     }
 
-    private final PhotonConnection connection;
+    private final PhotonConnector connector;
     private final Supplier<AuthCredentials> authProvider;
     private final Map<String, Object> overrides;
 
     private volatile State state = State.CREATED;
-    private ResolvedConfig resolvedConfig;
+    private ResolvedConfig config;
+    private PredicateEvaluator predicateEvaluator;
 
     /**
      * Create a session with the given connection and auth provider.
      *
-     * @param connection      the underlying connection (not yet connected)
+     * @param connector       the underlying connector (not yet connected)
      * @param authProvider    supplies the AUTH credentials (userId + token)
      * @param overrides optional config overrides (may be null)
      */
-    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider,
+    public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider,
                          Map<String, Object> overrides) {
-        this.connection = connection;
+        this.connector = connector;
         this.authProvider = authProvider;
         this.overrides = overrides != null ? overrides : Collections.emptyMap();
     }
@@ -75,35 +77,35 @@ public class PhotonSession implements Closeable {
     /**
      * Create a session with the given connection and static auth credentials.
      *
-     * @param connection      the underlying connection (not yet connected)
+     * @param connector       the underlying connector (not yet connected)
      * @param userId          the user ID for AUTH
      * @param authToken       the AUTH token
      * @param overrides optional config overrides (may be null)
      */
-    public PhotonSession(PhotonConnection connection, String userId, String authToken,
+    public PhotonSession(PhotonConnector connector, String userId, String authToken,
                          Map<String, Object> overrides) {
-        this(connection, () -> new AuthCredentials(userId, authToken), overrides);
+        this(connector, () -> new AuthCredentials(userId, authToken), overrides);
     }
 
     /**
      * Create a session with default config overrides.
      *
-     * @param connection   the underlying connection
+     * @param connector    the underlying connector
      * @param authProvider supplies the AUTH credentials
      */
-    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider) {
-        this(connection, authProvider, null);
+    public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider) {
+        this(connector, authProvider, null);
     }
 
     /**
      * Create a session with default config overrides and static auth credentials.
      *
-     * @param connection the underlying connection
+     * @param connector  the underlying connector
      * @param userId     the user ID for AUTH
      * @param authToken  the AUTH token
      */
-    public PhotonSession(PhotonConnection connection, String userId, String authToken) {
-        this(connection, userId, authToken, null);
+    public PhotonSession(PhotonConnector connector, String userId, String authToken) {
+        this(connector, userId, authToken, null);
     }
 
     /**
@@ -118,8 +120,8 @@ public class PhotonSession implements Closeable {
      *
      * @return the resolved config, or null if not yet opened
      */
-    public ResolvedConfig getResolvedConfig() {
-        return resolvedConfig;
+    public ResolvedConfig getConfig() {
+        return config;
     }
 
     /**
@@ -132,11 +134,12 @@ public class PhotonSession implements Closeable {
             throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
         }
 
-        connection.connect();
+        connector.connect();
         try {
             AuthCredentials creds = authProvider.get();
-            connection.authenticate(creds.getUserId(), creds.getToken());
-            resolvedConfig = connection.configureAndStartReader(overrides);
+            connector.authenticate(creds.getUserId(), creds.getToken());
+            config = connector.configureAndStartReader(overrides);
+            predicateEvaluator = PredicateEvaluator.compile(config.getRaw());
         } catch (Exception e) {
             // Close on failure to clean up partially-opened state
             try {
@@ -150,13 +153,14 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Send a request to the cache.
+     * Route a request to the cache when a resolved CEL predicate matches.
      *
-     * <p>Requests are forwarded unconditionally (no filtering). Connection
-     * and protocol errors propagate.
+     * <p>A {@code null} return means no predicate matched and the caller should
+     * send the request to the origin service. Connection and protocol errors
+     * still propagate.
      *
      * @param request the request to send
-     * @return the cache response
+     * @return the cache response, or null when Photon declines the request
      * @throws PhotonError if the session is not open
      */
     public PhotonResponse request(PhotonRequest request) {
@@ -167,7 +171,10 @@ public class PhotonSession implements Closeable {
         if (state != State.OPEN) {
             throw new PhotonError("request() called on a " + state.name().toLowerCase() + " session");
         }
-        return connection.request(request, cancellation);
+        if (!predicateEvaluator.route(request)) {
+            return null;
+        }
+        return connector.request(request, cancellation);
     }
 
     /**
@@ -179,7 +186,7 @@ public class PhotonSession implements Closeable {
             return;
         }
         state = State.CLOSED;
-        connection.close();
+        connector.close();
     }
 
     /**

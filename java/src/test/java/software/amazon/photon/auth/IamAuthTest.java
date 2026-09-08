@@ -429,7 +429,7 @@ class IamAuthTest {
     }
 
     // =========================================================================
-    // Integration with PhotonConnection tests
+    // Integration with PhotonConnector tests
     // =========================================================================
 
     @Nested
@@ -437,7 +437,7 @@ class IamAuthTest {
 
         @Test
         void provider_canBeUsedWithPhotonConnection() {
-            // This test verifies the API shape works with PhotonConnection
+            // This test verifies the API shape works with PhotonConnector
             // without actually connecting (no mock server needed)
 
             IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
@@ -448,7 +448,7 @@ class IamAuthTest {
                     .build();
 
             // The provider implements Supplier<AuthCredentials>
-            // PhotonConnection.connectAndAuthenticate accepts Supplier<String> for the token
+            // PhotonConnector.connectAndAuthenticate accepts Supplier<String> for the token
             // So we can use it like this:
             AuthCredentials creds = provider.get();
 
@@ -460,14 +460,14 @@ class IamAuthTest {
 
         @Test
         void provider_asSupplierForConnectionAuth() {
-            // Demonstrates how to use with PhotonConnection's Supplier<String> API
+            // Demonstrates how to use with PhotonConnector's Supplier<String> API
             IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
                     .cacheName("my-cache")
                     .region(Region.US_EAST_1)
                     .credentialsProvider(staticCredentials())
                     .build();
 
-            // This is how you'd pass it to PhotonConnection:
+            // This is how you'd pass it to PhotonConnector:
             // conn.connectAndAuthenticate(() -> provider.get().getToken());
             java.util.function.Supplier<String> tokenSupplier = () -> provider.get().getToken();
 

@@ -6,13 +6,13 @@ import {
 } from "node:tls";
 
 import {
-  PhotonConnectionLostError,
+  PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
   PhotonTimeoutError,
 } from "./errors.js";
-import { decodeResp, IncompleteFrameError, RespError, encodeResp, type RespValue } from "./resp.js";
+import { decodeResp, IncompleteFrame, RespError, encodeResp, type RespValue } from "./resp.js";
 
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
@@ -61,7 +61,7 @@ export class SocketReader {
         this.buffer = this.buffer.subarray(consumed);
         return value;
       } catch (error) {
-        if (!(error instanceof IncompleteFrameError)) throw error;
+        if (!(error instanceof IncompleteFrame)) throw error;
         this.ensureWithinLimit();
       }
 
@@ -74,13 +74,13 @@ export class SocketReader {
     while (this.pendingChunk.length === 0) {
       const next = await this.iterator.next();
       if (next.done) {
-        throw new PhotonConnectionLostError("connection closed by peer");
+        throw new PhotonConnectionLost("connection closed by peer");
       }
       if (!Buffer.isBuffer(next.value)) {
         throw new PhotonProtocolError("socket yielded a non-buffer chunk");
       }
       if (next.value.length === 0) {
-        throw new PhotonConnectionLostError("connection closed by peer");
+        throw new PhotonConnectionLost("connection closed by peer");
       }
       this.pendingChunk = next.value;
     }
@@ -117,20 +117,20 @@ interface PendingRequest {
 export class PendingRequests {
   private readonly queue: PendingRequest[] = [];
 
-  constructor(private readonly maxPendingRequests = 100) {
-    validatePositiveInteger(maxPendingRequests, "maxPendingRequests");
+  constructor(private readonly maxPending = 100) {
+    validatePositiveInteger(maxPending, "maxPending");
   }
 
-  register(): Promise<RespValue> {
-    if (this.queue.length >= this.maxPendingRequests) {
-      throw new PhotonError(`maximum pending requests of ${this.maxPendingRequests} reached`);
+  registerNewRequest(): Promise<RespValue> {
+    if (this.queue.length >= this.maxPending) {
+      throw new PhotonError(`maximum pending requests of ${this.maxPending} reached`);
     }
     return new Promise<RespValue>((resolve, reject) => {
       this.queue.push({ resolve, reject, settled: false });
     });
   }
 
-  resolveNext(value: RespValue): void {
+  resolveOldestRequest(value: RespValue): void {
     const request = this.queue.shift();
     if (request === undefined || request.settled) return;
     request.settled = true;
@@ -147,7 +147,7 @@ export class PendingRequests {
   }
 }
 
-export interface PhotonConnectionOptions {
+export interface PhotonConnectorOptions {
   /** Use TLS with hostname verification. Defaults to `true`. */
   tls?: boolean;
   /** TCP/TLS establishment timeout in milliseconds. */
@@ -163,7 +163,7 @@ export interface PhotonConnectionOptions {
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
   maxResponseSize?: number;
   /** Maximum number of registered requests. Defaults to 100. */
-  maxPendingRequests?: number;
+  maxPending?: number;
   /** Provider for the `(userId, token)` credentials used by `AUTH`. */
   authProvider?: AuthProvider;
 }
@@ -185,17 +185,17 @@ type ConnectedSocket = Socket | TLSSocket;
  * Timeouts close the connection because accepting a late response would make FIFO
  * correlation unsafe for every request sent afterward.
  */
-export class PhotonConnection {
+export class PhotonConnector {
   private readonly host: string;
   private readonly port: number;
   private readonly useTls: boolean;
   private readonly connectTimeout: number;
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
-  private readonly caCerts: PhotonConnectionOptions["caCerts"];
+  private readonly caCerts: PhotonConnectorOptions["caCerts"];
   private readonly readSize: number;
   private readonly maxResponseSize: number;
-  private readonly authProvider: PhotonConnectionOptions["authProvider"];
+  private readonly authProvider: PhotonConnectorOptions["authProvider"];
 
   private socket: ConnectedSocket | undefined;
   // Kept while the reader is active so close() can still await it after destroy().
@@ -205,7 +205,7 @@ export class PhotonConnection {
   private dead = false;
   private closed = false;
 
-  constructor(host: string, port: number, options: PhotonConnectionOptions = {}) {
+  constructor(host: string, port: number, options: PhotonConnectorOptions = {}) {
     this.host = host;
     this.port = port;
     this.useTls = options.tls ?? true;
@@ -218,20 +218,20 @@ export class PhotonConnection {
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
       "maxResponseSize",
     );
-    this.pending = new PendingRequests(options.maxPendingRequests ?? 100);
+    this.pending = new PendingRequests(options.maxPending ?? 100);
     this.authProvider = options.authProvider;
   }
 
   /** Open the socket, perform TLS when enabled, and start the background reader. */
   async connect(): Promise<void> {
     if (this.closed) {
-      throw new PhotonError("PhotonConnection used after close()");
+      throw new PhotonError("PhotonConnector used after close()");
     }
     if (this.socket !== undefined) {
-      throw new PhotonError("PhotonConnection is already connected");
+      throw new PhotonError("PhotonConnector is already connected");
     }
     if (this.connecting) {
-      throw new PhotonError("PhotonConnection is already connecting");
+      throw new PhotonError("PhotonConnector is already connecting");
     }
 
     this.connecting = true;
@@ -245,7 +245,7 @@ export class PhotonConnection {
       socket.setTimeout(0);
       if (this.closed) {
         socket.destroy();
-        throw new PhotonConnectionError("PhotonConnection closed during connect()");
+        throw new PhotonConnectionError("PhotonConnector closed during connect()");
       }
       this.socket = socket;
       this.dead = false;
@@ -303,7 +303,7 @@ export class PhotonConnection {
     if (this.closed) return;
     this.closed = true;
     this.dead = true;
-    this.pending.failAll(new PhotonConnectionLostError("connection closed"));
+    this.pending.failAll(new PhotonConnectionLost("connection closed"));
     const socket = this.socket;
     try {
       socket?.destroy();
@@ -327,12 +327,12 @@ export class PhotonConnection {
   async execute(command: string, ...args: Buffer[]): Promise<RespValue> {
     if (this.socket === undefined) {
       if (this.closed) {
-        throw new PhotonConnectionLostError("connection is closed");
+        throw new PhotonConnectionLost("connection is closed");
       }
-      throw new PhotonError("PhotonConnection used before connect()");
+      throw new PhotonError("PhotonConnector used before connect()");
     }
     if (this.dead) {
-      throw new PhotonConnectionLostError("connection is closed");
+      throw new PhotonConnectionLost("connection is closed");
     }
 
     try {
@@ -350,14 +350,14 @@ export class PhotonConnection {
 
   private send(command: string, ...args: Buffer[]): Promise<RespValue> {
     if (this.dead || this.socket === undefined) {
-      throw new PhotonConnectionLostError("connection is closed");
+      throw new PhotonConnectionLost("connection is closed");
     }
 
     const frame = encodeResp(command, ...args);
-    const response = this.pending.register();
+    const response = this.pending.registerNewRequest();
     const socket = this.socket;
     if (socket === undefined) {
-      throw new PhotonConnectionLostError("connection is closed");
+      throw new PhotonConnectionLost("connection is closed");
     }
 
     return this.writeAndWait(socket, frame, response);
@@ -392,9 +392,9 @@ export class PhotonConnection {
       // The frame may be partially written. Reusing the stream could mis-correlate a late
       // response, so close the connection and fail every pending request.
       const failure =
-        error instanceof PhotonTimeoutError || error instanceof PhotonConnectionLostError
+        error instanceof PhotonTimeoutError || error instanceof PhotonConnectionLost
           ? error
-          : new PhotonConnectionLostError("send failed", { cause: error });
+          : new PhotonConnectionLost("send failed", { cause: error });
       // `close()` rejects this response too; consume that rejection because the send error
       // is the failure reported to the caller.
       void response.catch(() => undefined);
@@ -449,8 +449,8 @@ export class PhotonConnection {
       };
       const onDrain = () => finishResolve();
       const onError = (error: Error) =>
-        finishReject(new PhotonConnectionLostError("send failed", { cause: error }));
-      const onClose = () => finishReject(new PhotonConnectionLostError("connection closed"));
+        finishReject(new PhotonConnectionLost("send failed", { cause: error }));
+      const onClose = () => finishReject(new PhotonConnectionLost("connection closed"));
 
       socket.once("drain", onDrain);
       socket.once("error", onError);
@@ -551,14 +551,14 @@ export class PhotonConnection {
     try {
       while (!this.dead) {
         const value = await reader.readFrame();
-        this.pending.resolveNext(value);
+        this.pending.resolveOldestRequest(value);
       }
     } catch (error) {
       if (this.dead) return;
       const failure =
-        error instanceof PhotonConnectionLostError || error instanceof PhotonProtocolError
+        error instanceof PhotonConnectionLost || error instanceof PhotonProtocolError
           ? error
-          : new PhotonConnectionLostError("socket read failed", { cause: error });
+          : new PhotonConnectionLost("socket read failed", { cause: error });
       this.markDead(failure);
     }
   }
@@ -579,11 +579,11 @@ export class PhotonConnection {
 
   private verifyAuthReply(reply: RespValue): void {
     if (reply instanceof RespError) {
-      this.markDead(new PhotonConnectionLostError("AUTH rejected"));
+      this.markDead(new PhotonConnectionLost("AUTH rejected"));
       throw new PhotonConnectionError(`IAM AUTH rejected: ${reply.code}`);
     }
     if (!Buffer.isBuffer(reply) || !reply.equals(Buffer.from("OK"))) {
-      const error = new PhotonConnectionLostError("unexpected AUTH reply");
+      const error = new PhotonConnectionLost("unexpected AUTH reply");
       this.markDead(error);
       throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
     }

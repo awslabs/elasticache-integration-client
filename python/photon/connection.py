@@ -1,6 +1,6 @@
-"""Pure-Python connection: the TCP+TLS transport plus its two concurrency primitives.
+"""Pure-Python connector: the TCP+TLS transport plus its two concurrency primitives.
 
-:class:`PhotonConnection` owns a single TCP+TLS connection, serializes writes with a send-lock, and
+:class:`PhotonConnector` owns a single TCP+TLS connection, serializes writes with a send-lock, and
 runs one daemon reader thread that turns the byte stream into framed ``RespValue``s
 (:class:`_SocketReader`) and resolves per-request ``Future``s in FIFO order
 (:class:`_PendingRequests`). Serialized writes + strict RESP request/response ⇒ response order
@@ -17,20 +17,20 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
 from photon.exceptions import (
-    PhotonConnectionLostError,
+    PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import IncompleteFrameError, RespError, RespValue, decode_resp, encode_resp
+from photon.resp import IncompleteFrame, RespError, RespValue, decode_resp, encode_resp
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
 _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _AUTH_OK = b"OK"  # the RESP simple string "+OK", decoded
-_DEFAULT_MAX_PENDING_REQUESTS = 100
+_DEFAULT_MAX_PENDING = 100
 
 
 class _SocketReader:
@@ -44,16 +44,16 @@ class _SocketReader:
     def read_frame(self) -> RespValue:
         """Return the next complete RESP value, recv-ing more bytes as needed.
 
-        Raises :class:`~photon.exceptions.PhotonConnectionLostError` on clean EOF and lets
+        Raises :class:`~photon.exceptions.PhotonConnectionLost` on clean EOF and lets
         :class:`~photon.exceptions.PhotonProtocolError` (genuine garbage) propagate.
         """
         while True:
             try:
                 value, consumed = decode_resp(self._buf)
-            except IncompleteFrameError:
+            except IncompleteFrame:
                 chunk = self._sock.recv(self._read_size)
                 if not chunk:
-                    raise PhotonConnectionLostError("connection closed by peer")
+                    raise PhotonConnectionLost("connection closed by peer")
                 self._buf += chunk
                 continue
             self._buf = self._buf[consumed:]  # retain any trailing bytes for the next frame
@@ -63,22 +63,20 @@ class _SocketReader:
 class _PendingRequests:
     """Thread-safe FIFO of pending request futures; the reader resolves them in registration order."""
 
-    def __init__(self, max_pending_requests: int = _DEFAULT_MAX_PENDING_REQUESTS) -> None:
+    def __init__(self, max_pending: int = _DEFAULT_MAX_PENDING) -> None:
         self._queue_lock = threading.Lock()
         self._queue: deque[Future] = deque()
-        self._max_pending_requests = max_pending_requests
+        self._max_pending = max_pending
 
-    def register(self) -> Future:
+    def register_new_request(self) -> Future:
         future: Future = Future()
         with self._queue_lock:
-            if len(self._queue) >= self._max_pending_requests:
-                raise PhotonError(
-                    f"too many in-flight requests (max {self._max_pending_requests})"
-                )
+            if len(self._queue) >= self._max_pending:
+                raise PhotonError(f"too many in-flight requests (max {self._max_pending})")
             self._queue.append(future)
         return future
 
-    def resolve_next(self, value: RespValue) -> None:
+    def resolve_oldest_request(self, value: RespValue) -> None:
         """Resolve the oldest waiting future with ``value`` (FIFO). No-op if none is waiting.
 
         A ``RespError`` is a value, not an exception, so it is delivered as the future's result;
@@ -99,7 +97,7 @@ class _PendingRequests:
                 future.set_exception(exc)
 
 
-class PhotonConnection:
+class PhotonConnector:
     """Single TCP+TLS connection to the cache with a send-lock, daemon reader, and FIFO futures."""
 
     def __init__(
@@ -115,7 +113,7 @@ class PhotonConnection:
         verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
         auth_provider=None,
-        max_pending_requests: int = _DEFAULT_MAX_PENDING_REQUESTS,
+        max_pending: int = _DEFAULT_MAX_PENDING,
     ) -> None:
         self._host = host
         self._port = port
@@ -131,7 +129,7 @@ class PhotonConnection:
         self._sock: socket.socket | None = None
         self._reader: _SocketReader | None = None
         self._reader_thread: threading.Thread | None = None
-        self._pending = _PendingRequests(max_pending_requests)
+        self._pending = _PendingRequests(max_pending)
         self._send_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._dead = False
@@ -157,11 +155,11 @@ class PhotonConnection:
         # miss a thread that is about to start.
         with self._state_lock:
             if self._closed:
-                # The application closed this connection while we were still setting up the
-                # socket; the connection must stay closed, so dispose of the fresh socket
+                # The application closed this connector while we were still setting up the
+                # socket; the connector must stay closed, so dispose of the fresh socket
                 # instead of installing it.
                 sock.close()
-                raise PhotonConnectionError("connection closed during connect")
+                raise PhotonConnectionError("connector closed during connect")
             self._sock = sock
             self._reader = reader
             self._reader_thread = thread
@@ -184,7 +182,7 @@ class PhotonConnection:
             reply = self.execute("AUTH", user_id.encode(), token.encode(),
                                  timeout=self.config_timeout)
         except PhotonTimeoutError:
-            self._mark_dead(PhotonConnectionLostError("AUTH timed out"))
+            self._mark_dead(PhotonConnectionLost("AUTH timed out"))
             raise PhotonConnectionError("IAM AUTH timed out — connection closed")
         self._verify_auth_reply(reply)
 
@@ -195,10 +193,10 @@ class PhotonConnection:
         rejected rather than treated as success. The token is never included in error messages.
         """
         if isinstance(reply, RespError):
-            self._mark_dead(PhotonConnectionLostError(f"IAM AUTH rejected: {reply.code}"))
+            self._mark_dead(PhotonConnectionLost(f"IAM AUTH rejected: {reply.code}"))
             raise PhotonConnectionError(f"IAM AUTH rejected: {reply.code}")
         if reply != _AUTH_OK:
-            self._mark_dead(PhotonConnectionLostError("unexpected AUTH reply"))
+            self._mark_dead(PhotonConnectionLost("unexpected AUTH reply"))
             raise PhotonConnectionError(f"IAM AUTH failed: unexpected reply {reply!r}")
 
     def _configure_socket(self, sock: socket.socket) -> socket.socket:
@@ -256,7 +254,7 @@ class PhotonConnection:
                 sock.close()
             except OSError:
                 pass
-        self._pending.fail_all(PhotonConnectionLostError("connection closed"))
+        self._pending.fail_all(PhotonConnectionLost("connection closed"))
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=5)
 
@@ -276,8 +274,8 @@ class PhotonConnection:
             # socket fails with OSError, handled below.
             sock = self._sock
             if self._dead or sock is None:
-                raise PhotonConnectionLostError("connection is closed")
-            future = self._pending.register()
+                raise PhotonConnectionLost("connection is closed")
+            future = self._pending.register_new_request()
             try:
                 sock.sendall(frame)
             except TimeoutError as exc:
@@ -287,7 +285,7 @@ class PhotonConnection:
                 self.close()
                 raise error from exc
             except OSError as exc:
-                error = PhotonConnectionLostError("send failed")
+                error = PhotonConnectionLost("send failed")
                 self._mark_dead(error)
                 self.close()  # same teardown as a send timeout: release the fd, join the reader
                 raise error from exc
@@ -303,7 +301,7 @@ class PhotonConnection:
         the send path (lock acquire, socket) stays on request_timeout.
         """
         if self._sock is None and not self._closed:
-            raise PhotonError("PhotonConnection used before connect()")
+            raise PhotonError("PhotonConnector used before connect()")
         wait = timeout if timeout is not None else self._request_timeout
         future = self._send(command, *args)
         # Wait outside the lock so other threads can send while we block.
@@ -330,11 +328,11 @@ class PhotonConnection:
                     # is an OSError subclass.)
                     continue
                 # Hand it to the oldest waiting caller (FIFO), waking their future.result().
-                self._pending.resolve_next(value)
-        except (PhotonConnectionLostError, PhotonProtocolError) as exc:
+                self._pending.resolve_oldest_request(value)
+        except (PhotonConnectionLost, PhotonProtocolError) as exc:
             self._mark_dead(exc)
         except OSError as exc:
-            error = PhotonConnectionLostError("socket read failed")
+            error = PhotonConnectionLost("socket read failed")
             error.__cause__ = exc
             self._mark_dead(error)
 

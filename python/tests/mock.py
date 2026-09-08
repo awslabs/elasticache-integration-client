@@ -7,12 +7,12 @@ This module holds the three authored mock classes the suite uses:
   success reply, and the error reply. A pure :meth:`MockCache.handle` method *is* the contract
   engine (validates command shape, picks a reply) and does no I/O, so it
   is unit-testable without a socket. A small synchronous, threaded TLS server wraps it so the real
-  :class:`~photon.connection.PhotonConnection` can talk to it over verifying TLS.
+  :class:`~photon.connection.PhotonConnector` can talk to it over verifying TLS.
 * :class:`MockSocket` — an in-memory, scriptable socket for ``_SocketReader`` unit tests.
 * :class:`MockClient` — a botocore client stand-in exposing the ``.meta.events`` emitter.
 
 For the layers above the cache it also provides two ``create_autospec`` factory functions,
-:func:`mock_connection` and :func:`mock_session`, used by the session and hooks tests.
+:func:`mock_connector` and :func:`mock_session`, used by the session and hooks tests.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from unittest.mock import create_autospec
 
 from botocore.hooks import HierarchicalEmitter
 
-from photon.connection import PhotonConnection
+from photon.connection import PhotonConnector
 from photon.models import PhotonResponse, RequestMetadata
 from photon.session import PhotonSession
 
@@ -499,15 +499,15 @@ class MockClient:
 # --------------------------------------------------------------------------- #
 # Autospec doubles for the layers above the cache
 # --------------------------------------------------------------------------- #
-def mock_connection() -> PhotonConnection:
-    """A ``create_autospec(PhotonConnection)`` double with sensible default replies.
+def mock_connector() -> PhotonConnector:
+    """A ``create_autospec(PhotonConnector)`` double with sensible default replies.
 
-    Bound to the real class, so the session is verified against the real connection signatures
+    Bound to the real class, so the session is verified against the real connector signatures
     without a network. ``execute`` returns wire-shaped ``RespValue``s (the session does the
     parsing): a JSON bulk string for ``photon.config``, a ``[status, headers, body]`` array
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
     """
-    conn = create_autospec(PhotonConnection, instance=True)
+    conn = create_autospec(PhotonConnector, instance=True)
     # Instance attribute (set in __init__), invisible to autospec; the session reads it.
     conn.config_timeout = 2.0
 

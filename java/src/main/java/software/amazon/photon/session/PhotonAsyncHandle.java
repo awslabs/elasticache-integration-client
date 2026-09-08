@@ -3,7 +3,7 @@ package software.amazon.photon.session;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
 
 import javax.net.ssl.SSLContext;
@@ -269,16 +269,16 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         private PhotonSession createSession(SSLContext resolvedSslContext) {
-            PhotonConnection connection = new PhotonConnection(
+            PhotonConnector connector = new PhotonConnector(
                     host, port, resolvedSslContext, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
-            return new PhotonSession(connection, authProvider, overrides);
+                    requestTimeoutMs, PhotonConnector.DEFAULT_MAX_PENDING);
+            return new PhotonSession(connector, authProvider, overrides);
         }
 
         private static ExecutorService createDefaultExecutor() {
             return new ThreadPoolExecutor(
                     0,
-                    PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS,
+                    PhotonConnector.DEFAULT_MAX_PENDING,
                     60,
                     TimeUnit.SECONDS,
                     new SynchronousQueue<>(),

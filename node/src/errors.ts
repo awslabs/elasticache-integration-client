@@ -13,7 +13,7 @@ export class PhotonConnectionError extends PhotonError {}
 export class PhotonProtocolError extends PhotonError {}
 
 /** The socket died mid-flight; pending requests are failed. */
-export class PhotonConnectionLostError extends PhotonError {}
+export class PhotonConnectionLost extends PhotonError {}
 
 /** A request exceeded its per-request timeout (named to avoid shadowing the builtin). */
 export class PhotonTimeoutError extends PhotonError {}

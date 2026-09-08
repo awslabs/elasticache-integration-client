@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  PhotonConnectionLostError,
+  PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
@@ -13,7 +13,7 @@ const ERROR_TYPES = [
   PhotonError,
   PhotonConnectionError,
   PhotonProtocolError,
-  PhotonConnectionLostError,
+  PhotonConnectionLost,
   PhotonTimeoutError,
 ] as const;
 

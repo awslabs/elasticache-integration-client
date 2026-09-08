@@ -1,7 +1,7 @@
 package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.PhotonConnectionLostError;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
@@ -25,56 +25,56 @@ class PendingRequestsTest {
     @Test
     void register_returnsFuture() {
         PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> future = pending.register();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
         assertNotNull(future);
         assertFalse(future.isDone());
     }
 
     @Test
-    void resolveNext_completesOldestFuture() {
+    void resolveOldestRequest_completesOldestFuture() {
         PendingRequests pending = new PendingRequests();
 
-        CompletableFuture<RespValue> f1 = pending.register();
-        CompletableFuture<RespValue> f2 = pending.register();
-        CompletableFuture<RespValue> f3 = pending.register();
+        CompletableFuture<RespValue> f1 = pending.registerNewRequest();
+        CompletableFuture<RespValue> f2 = pending.registerNewRequest();
+        CompletableFuture<RespValue> f3 = pending.registerNewRequest();
 
         RespValue v1 = new RespSimpleString("one".getBytes(StandardCharsets.UTF_8));
         RespValue v2 = new RespSimpleString("two".getBytes(StandardCharsets.UTF_8));
         RespValue v3 = new RespSimpleString("three".getBytes(StandardCharsets.UTF_8));
 
         // Resolve in FIFO order
-        assertTrue(pending.resolveNext(v1));
+        assertTrue(pending.resolveOldestRequest(v1));
         assertTrue(f1.isDone());
         assertFalse(f2.isDone());
         assertFalse(f3.isDone());
         assertEquals(v1, f1.join());
 
-        assertTrue(pending.resolveNext(v2));
+        assertTrue(pending.resolveOldestRequest(v2));
         assertTrue(f2.isDone());
         assertFalse(f3.isDone());
         assertEquals(v2, f2.join());
 
-        assertTrue(pending.resolveNext(v3));
+        assertTrue(pending.resolveOldestRequest(v3));
         assertTrue(f3.isDone());
         assertEquals(v3, f3.join());
     }
 
     @Test
-    void resolveNext_emptyQueue_returnsFalse() {
+    void resolveOldestRequest_emptyQueue_returnsFalse() {
         PendingRequests pending = new PendingRequests();
         RespValue v = new RespSimpleString("test".getBytes(StandardCharsets.UTF_8));
-        assertFalse(pending.resolveNext(v));
+        assertFalse(pending.resolveOldestRequest(v));
     }
 
     @Test
     void failAll_completesAllWithException() throws Exception {
         PendingRequests pending = new PendingRequests();
 
-        CompletableFuture<RespValue> f1 = pending.register();
-        CompletableFuture<RespValue> f2 = pending.register();
-        CompletableFuture<RespValue> f3 = pending.register();
+        CompletableFuture<RespValue> f1 = pending.registerNewRequest();
+        CompletableFuture<RespValue> f2 = pending.registerNewRequest();
+        CompletableFuture<RespValue> f3 = pending.registerNewRequest();
 
-        PhotonConnectionLostError cause = new PhotonConnectionLostError("test failure");
+        PhotonConnectionLost cause = new PhotonConnectionLost("test failure");
         pending.failAll(cause);
 
         assertTrue(f1.isCompletedExceptionally());
@@ -90,27 +90,27 @@ class PendingRequestsTest {
         PendingRequests pending = new PendingRequests();
         assertFalse(pending.isClosed());
 
-        pending.failAll(new PhotonConnectionLostError("test"));
+        pending.failAll(new PhotonConnectionLost("test"));
         assertTrue(pending.isClosed());
     }
 
     @Test
-    void register_afterFailAll_throwsPhotonConnectionLostError() {
+    void register_afterFailAll_throwsPhotonConnectionLost() {
         PendingRequests pending = new PendingRequests();
-        pending.failAll(new PhotonConnectionLostError("test"));
+        pending.failAll(new PhotonConnectionLost("test"));
 
-        assertThrows(PhotonConnectionLostError.class, pending::register);
+        assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
     }
 
     @Test
-    void register_atCapacity_throwsPhotonConnectionLostError() {
+    void register_atCapacity_throwsPhotonConnectionLost() {
         PendingRequests pending = new PendingRequests(2);
 
-        pending.register();
-        pending.register();
+        pending.registerNewRequest();
+        pending.registerNewRequest();
 
         // Third should fail
-        PhotonConnectionLostError e = assertThrows(PhotonConnectionLostError.class, pending::register);
+        PhotonConnectionLost e = assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
         assertTrue(e.getMessage().contains("Too many pending"));
         assertTrue(e.getMessage().contains("max=2"));
     }
@@ -119,17 +119,17 @@ class PendingRequestsTest {
     void register_afterResolve_allowsMore() {
         PendingRequests pending = new PendingRequests(2);
 
-        CompletableFuture<RespValue> f1 = pending.register();
-        pending.register();
+        CompletableFuture<RespValue> f1 = pending.registerNewRequest();
+        pending.registerNewRequest();
 
         // At capacity
-        assertThrows(PhotonConnectionLostError.class, pending::register);
+        assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
 
         // Resolve one
-        pending.resolveNext(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
+        pending.resolveOldestRequest(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
 
         // Now we can register again
-        CompletableFuture<RespValue> f3 = pending.register();
+        CompletableFuture<RespValue> f3 = pending.registerNewRequest();
         assertNotNull(f3);
     }
 
@@ -138,14 +138,14 @@ class PendingRequestsTest {
         PendingRequests pending = new PendingRequests();
         assertEquals(0, pending.size());
 
-        pending.register();
+        pending.registerNewRequest();
         assertEquals(1, pending.size());
 
-        pending.register();
-        pending.register();
+        pending.registerNewRequest();
+        pending.registerNewRequest();
         assertEquals(3, pending.size());
 
-        pending.resolveNext(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
+        pending.resolveOldestRequest(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
         assertEquals(2, pending.size());
     }
 
@@ -173,7 +173,7 @@ class PendingRequestsTest {
                 try {
                     startLatch.await();
                     for (int i = 0; i < numPerProducer; i++) {
-                        CompletableFuture<RespValue> f = pending.register();
+                        CompletableFuture<RespValue> f = pending.registerNewRequest();
                         synchronized (futuresLock) {
                             allFutures.add(f);
                         }
@@ -194,7 +194,7 @@ class PendingRequestsTest {
                 int maxAttempts = numProducers * numPerProducer * 10;
                 while (resolved < numProducers * numPerProducer && maxAttempts-- > 0) {
                     RespValue v = new RespSimpleString(("val" + resolved).getBytes(StandardCharsets.UTF_8));
-                    if (pending.resolveNext(v)) {
+                    if (pending.resolveOldestRequest(v)) {
                         resolved++;
                     } else {
                         Thread.sleep(1);

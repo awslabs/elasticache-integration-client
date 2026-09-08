@@ -2,15 +2,15 @@
 import { describe, expect, it } from "vitest";
 
 import { PhotonError, PhotonProtocolError } from "../src/errors.js";
-import { decodeResp, encodeResp, IncompleteFrameError, RespError } from "../src/resp.js";
+import { decodeResp, encodeResp, IncompleteFrame, RespError } from "../src/resp.js";
 
 const CRLF = "\r\n";
 
 describe("RESP codec", () => {
   it("incomplete frame is not a PhotonError", () => {
-    // IncompleteFrameError ("need more bytes") must be a plain Error, not a PhotonError,
+    // IncompleteFrame ("need more bytes") must be a plain Error, not a PhotonError,
     // so an incremental reader can distinguish truncation from corruption.
-    const error = new IncompleteFrameError("partial");
+    const error = new IncompleteFrame("partial");
 
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(PhotonError);
@@ -101,9 +101,9 @@ describe("RESP codec", () => {
     Buffer.from(`*2${CRLF}:1${CRLF}`), // array missing its second element
     Buffer.from(`>2${CRLF}:1${CRLF}`), // push missing its second element
     Buffer.from(":"), // integer header with no CRLF yet
-  ])("truncation raises IncompleteFrameError: %j", (partial) => {
-    // Each kind of partial buffer raises IncompleteFrameError.
-    expect(() => decodeResp(partial)).toThrow(IncompleteFrameError);
+  ])("truncation raises IncompleteFrame: %j", (partial) => {
+    // Each kind of partial buffer raises IncompleteFrame.
+    expect(() => decodeResp(partial)).toThrow(IncompleteFrame);
   });
 
   it.each([

@@ -1,8 +1,8 @@
 """Generic RESP3 wire codec for the Photon client.
 
 Owns the RESP value types (:data:`RespValue`, :class:`RespError`), the framing functions
-(:func:`encode_resp`, :func:`decode_resp`), and :class:`IncompleteFrameError`. ``decode_resp`` distinguishes a
-**truncated** frame (more bytes are coming → :class:`IncompleteFrameError`) from genuine **garbage**
+(:func:`encode_resp`, :func:`decode_resp`), and :class:`IncompleteFrame`. ``decode_resp`` distinguishes a
+**truncated** frame (more bytes are coming → :class:`IncompleteFrame`) from genuine **garbage**
 (unparseable input → :class:`~photon.exceptions.PhotonProtocolError`), so an incremental reader can
 tell "need more bytes" apart from "the stream is corrupt".
 """
@@ -31,8 +31,10 @@ class RespError:
 RespValue = int | bytes | list["RespValue"] | RespError | None
 
 
-class IncompleteFrameError(Exception):
+class IncompleteFrame(Exception):
     """Raised by :func:`decode_resp` when the buffer holds only a partial frame (need more bytes)."""
+
+
 def encode_resp(command: str, *args: bytes) -> bytes:
     r"""Encode a command and its binary args as one RESP3 frame, ready for the socket::
 
@@ -83,7 +85,7 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
         return None, after_header
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
-        raise IncompleteFrameError("bulk string body incomplete")
+        raise IncompleteFrame("bulk string body incomplete")
     return data[after_header:end], end + 2
 
 
@@ -95,7 +97,7 @@ def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     items: list[RespValue] = []
     pos = after_header
     for _ in range(count):
-        item, pos = decode_resp(data, pos)  # inner IncompleteFrameError propagates
+        item, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
         items.append(item)
     return items, pos
 
@@ -122,14 +124,14 @@ def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
         decode_resp(b"*2\\r\\n:1\\r\\n:2\\r\\n") -> ([1, 2], 12)
 
     Raises:
-        IncompleteFrameError: not an error — the frame is valid so far but the rest of its
+        IncompleteFrame: not an error — the frame is valid so far but the rest of its
             bytes have not arrived yet. Read more from the socket and call again.
         PhotonProtocolError: the bytes can never form a valid frame; the stream is
             corrupt and the connection should be closed.
     """
     header_end = data.find(_CRLF, start)
     if header_end == -1:
-        raise IncompleteFrameError("incomplete frame")
+        raise IncompleteFrame("incomplete frame")
     prefix = data[start:start + 1]
     decoder = _DECODERS.get(prefix)
     if decoder is None:

@@ -8,7 +8,7 @@ import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.Reply;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -46,8 +46,8 @@ class PhotonSessionTest {
         server.close();
     }
 
-    private PhotonConnection createConnection() {
-        return new PhotonConnection("localhost", server.getPort(), clientSslContext);
+    private PhotonConnector createConnection() {
+        return new PhotonConnector("localhost", server.getPort(), clientSslContext);
     }
 
     // === Lifecycle tests ===
@@ -137,6 +137,55 @@ class PhotonSessionTest {
     }
 
     @Test
+    void unmatchedRequest_isDeclinedWithoutCacheRoundTrip() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+
+            PhotonResponse response = session.request(new PhotonRequest(
+                    "POST",
+                    "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "CreateTable")));
+
+            assertNull(response);
+            assertTrue(cache.getRequests().isEmpty());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void celAllowlist_routesOnlyAllowlistedTable() {
+        cache.setConfigJson("{\"version\":\"1.0\",\"predicates\":[{"
+                + "\"expr\":\"service == 'dynamodb' && operation in ops "
+                + "&& has(body.TableName) && body.TableName in allowed\","
+                + "\"vars\":{\"ops\":[\"GetItem\",\"PutItem\"],"
+                + "\"allowed\":[\"Users\"]}}]}");
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            PhotonRequest allowed = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{\"TableName\":\"Users\"}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "PutItem"));
+            PhotonRequest other = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    "{\"TableName\":\"Orders\"}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "GetItem"));
+
+            assertNotNull(session.request(allowed));
+            assertNull(session.request(other));
+            assertEquals(1, cache.getRequests().size());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
     void request_onCreatedSession_throws() {
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
 
@@ -169,13 +218,13 @@ class PhotonSessionTest {
     // === Config tests ===
 
     @Test
-    void getResolvedConfig_afterOpen_returnsConfig() {
+    void getConfig_afterOpen_returnsConfig() {
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
-        assertNull(session.getResolvedConfig());
+        assertNull(session.getConfig());
 
         session.open();
-        assertNotNull(session.getResolvedConfig());
-        assertEquals("1.0", session.getResolvedConfig().getVersion());
+        assertNotNull(session.getConfig());
+        assertEquals("1.0", session.getConfig().getVersion());
 
         session.close();
     }

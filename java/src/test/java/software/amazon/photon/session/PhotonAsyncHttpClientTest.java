@@ -10,9 +10,9 @@ import software.amazon.awssdk.http.async.AsyncExecuteRequest;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
-import software.amazon.photon.exception.PhotonConnectionLostError;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -129,6 +129,24 @@ class PhotonAsyncHttpClientTest {
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
         assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void predicateDeclineReplaysBufferedBodyToOrigin() throws Exception {
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new DecliningSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        client.execute(executeRequest(
+                new TrackingPublisher("declined", 8L))).get(2, TimeUnit.SECONDS);
+
+        assertArrayEquals("declined".getBytes(StandardCharsets.UTF_8), origin.body);
         client.close();
     }
 
@@ -277,7 +295,7 @@ class PhotonAsyncHttpClientTest {
         private final CountDownLatch cancelled = new CountDownLatch(1);
 
         private BlockingSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
@@ -293,18 +311,29 @@ class PhotonAsyncHttpClientTest {
 
     private static final class ImmediateSession extends PhotonSession {
         private ImmediateSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+    }
+
+    private static final class DecliningSession extends PhotonSession {
+        private DecliningSession() {
+            super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            return null;
         }
     }
 
     private static final class FailingSession extends PhotonSession {
         private FailingSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
-            throw new PhotonConnectionLostError("cache unavailable");
+            throw new PhotonConnectionLost("cache unavailable");
         }
     }
 
@@ -400,6 +429,7 @@ class PhotonAsyncHttpClientTest {
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
             int subscriptionNumber = subscribeCount.incrementAndGet();
             subscriber.onSubscribe(new Subscription() {
+                private boolean emitted;
                 private boolean completed;
 
                 @Override
@@ -410,7 +440,10 @@ class PhotonAsyncHttpClientTest {
                     if (subscriptionNumber == 1) {
                         collectorDemand.set(count);
                     }
-                    subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                    if (!emitted) {
+                        emitted = true;
+                        subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                    }
                     if (!completed) {
                         completed = true;
                         subscriber.onComplete();

@@ -1,5 +1,5 @@
 import { buildCacheAuthProvider } from "./auth.js";
-import { PhotonConnection, type PhotonConnectionOptions } from "./connection.js";
+import { PhotonConnector, type PhotonConnectorOptions } from "./connection.js";
 import { PhotonError } from "./errors.js";
 import { PhotonHandle, type PhotonCompatibleClient } from "./middleware.js";
 import { parseEndpoint, PhotonSession } from "./session.js";
@@ -16,7 +16,7 @@ export interface PhotonClientOptions<TConfig extends object> {
   /** AWS SDK v3 client configuration. */
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
-  connectionOptions?: Omit<PhotonConnectionOptions, "authProvider">;
+  connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
 }
@@ -25,7 +25,7 @@ interface InitializeOptions {
   cacheName: string;
   region?: string;
   userId?: string;
-  connectionOptions?: Omit<PhotonConnectionOptions, "authProvider">;
+  connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
   overrides: Readonly<Record<string, unknown>>;
 }
 
@@ -49,11 +49,11 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     ...(options.region === undefined ? {} : { region: options.region }),
     credentials: sdkClient.config.credentials,
   });
-  const connection = new PhotonConnection(host, port, {
-    ...options.connectionOptions,
+  const connector = new PhotonConnector(host, port, {
+    ...options.connectorOptions,
     authProvider,
   });
-  const session = new PhotonSession(connection, options.overrides);
+  const session = new PhotonSession(connector, options.overrides);
   try {
     await session.open();
     const handle = new PhotonHandle(sdkClient, session, service);
@@ -89,7 +89,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     region,
     userId,
     clientConfig,
-    connectionOptions,
+    connectorOptions,
     overrides = {},
   } = options;
   const sdkClient = new ClientCtor({
@@ -102,7 +102,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       cacheName,
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
-      ...(connectionOptions === undefined ? {} : { connectionOptions }),
+      ...(connectorOptions === undefined ? {} : { connectorOptions }),
       overrides,
     });
   } catch (error) {

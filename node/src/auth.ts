@@ -6,9 +6,9 @@
  * 2. Token minter: `generateIamAuthToken`, which SigV4-presigns an
  *    `elasticache:connect` request.
  * 3. Provider: `IamAuthTokenProvider`, which supplies `(userId, token)`
- *    credentials to the connection.
+ *    credentials to the connector.
  *
- * The connection calls the provider at connect/authentication time. The
+ * The connector calls the provider at connect/authentication time. The
  * provider re-resolves credentials and mints a fresh token on every call.
  */
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
@@ -212,7 +212,7 @@ export class IamAuthTokenProvider {
   }
 }
 
-/** Assemble a ready-to-use authentication provider for a cache connection. */
+/** Assemble a ready-to-use authentication provider for a cache connector. */
 export async function buildCacheAuthProvider(
   input: AuthParamsInput & { credentials?: CredentialsProvider },
 ): Promise<() => Promise<[string, string]>> {

@@ -1,7 +1,7 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -16,7 +16,7 @@ import java.util.function.Supplier;
  * Manages the attachment of Photon to an AWS SDK client.
  *
  * <p>PhotonHandle creates and manages the lifecycle of a PhotonSession and
- * its associated PhotonConnection. It provides a clean API for setting up
+ * its associated PhotonConnector. It provides a clean API for setting up
  * Photon with an SDK client.
  *
  * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be
@@ -56,16 +56,16 @@ import java.util.function.Supplier;
  */
 public class PhotonHandle implements Closeable {
 
-    private final PhotonConnection connection;
+    private final PhotonConnector connector;
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
     private final PhotonHttpClient httpClient;
     private boolean opened = false;
     private boolean closed = false;
 
-    private PhotonHandle(PhotonConnection connection, PhotonSession session,
+    private PhotonHandle(PhotonConnector connector, PhotonSession session,
                          SdkHttpClient originClient, boolean ownsOriginClient) {
-        this.connection = connection;
+        this.connector = connector;
         this.session = session;
         this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
@@ -268,17 +268,17 @@ public class PhotonHandle implements Closeable {
                 }
             }
 
-            PhotonConnection connection = new PhotonConnection(
+            PhotonConnector connector = new PhotonConnector(
                     host, port, ssl, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnection.DEFAULT_MAX_PENDING_REQUESTS);
-            PhotonSession session = new PhotonSession(connection, authProvider, overrides);
+                    requestTimeoutMs, PhotonConnector.DEFAULT_MAX_PENDING);
+            PhotonSession session = new PhotonSession(connector, authProvider, overrides);
             SdkHttpClient origin = originHttpClient;
             boolean ownsOrigin = false;
             if (origin == null) {
                 origin = ApacheHttpClient.create();
                 ownsOrigin = true;
             }
-            return new PhotonHandle(connection, session, origin, ownsOrigin);
+            return new PhotonHandle(connector, session, origin, ownsOrigin);
         }
     }
 }
