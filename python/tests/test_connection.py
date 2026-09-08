@@ -145,12 +145,13 @@ class TestPhotonConnector:
         connection, no leaked I/O loop thread."""
         conn = PhotonConnector("h", 1, tls=False)
         open_entered = threading.Event()
-        release_open = threading.Event()
 
         async def blocked_open(*args, **kwargs):
             open_entered.set()
-            # Block off-loop so close()'s task cancellation can land at this await.
-            await asyncio.get_running_loop().run_in_executor(None, release_open.wait, 2)
+            # Park on the loop so close()'s task cancellation lands at this await. Not an
+            # executor: asyncio.run's teardown joins the default executor, so parking there
+            # would hold the loop thread open for reasons unrelated to the connector.
+            await asyncio.Event().wait()
             return (mock.Mock(), mock.Mock())
 
         outcome: list = []
@@ -166,7 +167,6 @@ class TestPhotonConnector:
             t.start()
             assert open_entered.wait(2)
             conn.close()            # races connect(): nothing is installed yet
-            release_open.set()      # free the executor thread promptly
             t.join(3)
 
         assert not t.is_alive()
@@ -198,7 +198,7 @@ class TestPhotonConnector:
 
     def test_auth_silence_times_out_and_kills_connection(self):
         """A server that goes silent on AUTH trips the request timeout: authenticate()
-        raises PhotonConnectionError and the connection is marked dead."""
+        raises PhotonConnectionError and the connection is closed."""
         self.start_cache(failure="hang", failure_command="auth")
         self.connect(
             request_timeout=0.3,
@@ -206,32 +206,32 @@ class TestPhotonConnector:
         )
         with pytest.raises(PhotonConnectionError, match="AUTH timed out"):
             self.conn.authenticate()
-        assert self.conn._dead is True
+        assert self.conn._closed is True
 
     def test_auth_accepted(self):
         """The RESP +OK reply (decoded to b"OK") is accepted.
         Internals: _verify_auth_reply is pure reply validation, tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
         conn._verify_auth_reply(b"OK")  # must not raise
-        assert conn._dead is False
+        assert conn._closed is False
 
     def test_auth_rejected_kills_connection(self):
-        """An -ERR AUTH reply raises PhotonConnectionError AND marks the connection dead:
+        """An -ERR AUTH reply raises PhotonConnectionError AND closes the connection:
         an unauthenticated connection has no valid next use. The token never appears in
         the message. Internals: _verify_auth_reply tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError) as excinfo:
             conn._verify_auth_reply(RespError("invalid-iam-credentials", "nope"))
         assert "invalid-iam-credentials" in str(excinfo.value)
-        assert conn._dead is True
+        assert conn._closed is True
 
     def test_auth_unexpected_reply_kills_connection(self):
-        """A non-error, non-OK AUTH reply is rejected and marks the connection dead.
+        """A non-error, non-OK AUTH reply is rejected and closes the connection.
         Internals: _verify_auth_reply tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError):
             conn._verify_auth_reply(123)
-        assert conn._dead is True
+        assert conn._closed is True
 
     # ======================================================================== #
     # 3. Send path — what a caller experiences calling execute
@@ -297,20 +297,20 @@ class TestPhotonConnector:
         self.connect_and_handshake(request_timeout=0.3)
         with pytest.raises(PhotonTimeoutError):
             self.send_request()
-        assert self.conn._dead is True
+        assert self.conn._closed is True
 
-    def test_send_on_dead_connection_fails_fast(self):
-        """Once dead, a new send fails PhotonConnectionLost immediately — it must not sit out
+    def test_send_on_closed_connection_fails_fast(self):
+        """Once closed, a new send fails PhotonConnectionLost immediately — it must not sit out
         the full request timeout."""
         self.start_cache(failure="drop")
         # Generous request_timeout so a fast failure is distinguishable from a timeout wait.
         self.connect_and_handshake(request_timeout=5.0)
         with pytest.raises(PhotonConnectionLost):
-            self.send_request()  # server drops -> dead
+            self.send_request()  # server drops -> closed
         start = time.monotonic()
         with pytest.raises(PhotonConnectionLost):
             self.send_request()
-        assert time.monotonic() - start < 1.0  # dead-check fired, not the 5s timeout
+        assert time.monotonic() - start < 1.0  # closed-check fired, not the 5s timeout
 
     def test_wedged_loop_does_not_block_callers_forever(self):
         """A wedged I/O loop must not block callers forever: with the send parked behind
@@ -336,10 +336,10 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionLost):
             self.send_request()
         writer.write.assert_called_once()
-        assert self.conn._dead is True
+        assert self.conn._closed is True
         start = time.monotonic()
         with pytest.raises(PhotonConnectionLost):
-            self.send_request()  # dead-check fires, not the 5s timeout
+            self.send_request()  # closed-check fires, not the 5s timeout
         assert time.monotonic() - start < 1.0
 
     # ======================================================================== #
@@ -359,7 +359,7 @@ class TestPhotonConnector:
     def test_reply_before_disconnect_is_delivered(self):
         """A cache that replies and immediately closes: the waiting caller must get the
         reply (TCP delivers those bytes before EOF), and only the NEXT request observes
-        the dead connection."""
+        the closed connection."""
         self.start_cache(failure="drop", failure_after_reply=True)
         self.connect_and_handshake()
         value = self.send_request()         # reply arrives despite the FIN right behind it
@@ -372,7 +372,7 @@ class TestPhotonConnector:
         afterwards the connection is alive and a request still round-trips."""
         self.connect_and_handshake(request_timeout=0.2)
         time.sleep(0.5)  # idle spell
-        assert self.conn._dead is False
+        assert self.conn._closed is False
         self.send_request()  # still works after the quiet spell
 
     def test_reader_reassembles_split_frames(self):
@@ -520,3 +520,110 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionLost):
             fut.result(timeout=1)  # pending caller still failed
         self.conn.close()  # still idempotent
+
+    # ======================================================================== #
+    # 6. Lifetime — one test per way the connection can die
+    # ======================================================================== #
+
+    def await_io_thread_exit(self, thread: threading.Thread, timeout: float = 2.0) -> None:
+        """Wait for the I/O thread to exit on its own — no close() involved."""
+        thread.join(timeout)
+        assert not thread.is_alive(), "I/O thread outlived the connection"
+
+    def test_peer_disconnect_releases_the_io_loop(self):
+        """A server-side disconnect must end the I/O loop and thread on its own. Nothing
+        upstream calls close() on a connector that merely died — hooks logs the error and
+        passes the request through — so a connection lost here has to release itself."""
+        self.start_cache(failure="drop")
+        self.connect_and_handshake()
+        thread = self.conn._io_thread
+
+        with pytest.raises(PhotonConnectionLost):
+            self.send_request()          # server drops instead of replying
+
+        self.await_io_thread_exit(thread)
+        assert self.conn._io_loop is None
+        assert self.conn._io_task is None
+        assert self.conn._writer is None
+        assert self.conn._reader is None
+        assert self.conn._closed is True
+
+    def test_unexpected_reader_error_releases_the_io_loop(self):
+        """Teardown must not depend on having enumerated the right exception types: an error
+        the reader never anticipated still releases the connection and still fails the caller,
+        rather than leaving a live loop and a caller waiting out its timeout.
+        Internals: the FIFO resolve step is made to raise a type no handler catches."""
+        self.connect_and_handshake(request_timeout=5.0)
+        thread = self.conn._io_thread
+        self.conn._pending.resolve_oldest_request = mock.Mock(
+            side_effect=ValueError("unanticipated")
+        )
+
+        start = time.monotonic()
+        with pytest.raises(PhotonConnectionLost):
+            self.send_request()
+        assert time.monotonic() - start < 1.0, "caller waited out the request timeout"
+
+        self.await_io_thread_exit(thread)
+        assert self.conn._io_loop is None
+
+    def test_close_from_the_io_thread_raises(self):
+        """close() from the I/O thread is a programming error, not a deadlock: it would ask
+        that thread to join itself. It raises RuntimeError rather than PhotonError so the
+        before-send hook cannot swallow it as a cache miss."""
+        self.connect()
+        outcome: list = []
+
+        def call_close_on_loop_thread() -> None:
+            try:
+                self.conn.close()
+                outcome.append("returned")
+            except BaseException as exc:  # noqa: BLE001 — the assertion below names the type
+                outcome.append(exc)
+
+        self.conn._io_loop.call_soon_threadsafe(call_close_on_loop_thread)
+        deadline = time.monotonic() + 2
+        while not outcome:
+            assert time.monotonic() < deadline, "close() never ran on the I/O thread"
+            time.sleep(0.01)
+
+        assert isinstance(outcome[0], RuntimeError), outcome[0]
+        assert self.conn._io_thread.is_alive()   # the guard fired before any teardown
+
+    def test_failed_dial_leaves_no_io_thread(self):
+        """A connect() that never establishes anything must not leave its loop thread behind:
+        the bring-up failure travels back to the caller and the thread ends with it."""
+        probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+        probe.close()                     # nothing is listening -> the dial fails
+
+        conn = PhotonConnector("127.0.0.1", port, tls=False, connect_timeout=1.0)
+        with pytest.raises(PhotonConnectionError):
+            conn.connect()
+
+        assert not any(t.name == "photon-io-loop" for t in threading.enumerate())
+        assert conn._io_loop is None
+
+    def test_second_connect_is_refused(self):
+        """PhotonConnector is single-use. A second connect() would overwrite the loop and
+        thread handles, orphaning the first pair with nothing left to close them."""
+        self.connect()
+        with pytest.raises(PhotonConnectionError, match="single-use"):
+            self.conn.connect()
+
+    def test_io_thread_declines_to_install_a_loop_after_close(self):
+        """close() can land between connect() starting the I/O thread and that thread reaching
+        the loop, so close() finds no loop to cancel. The thread must then decline to install
+        one and report the closure to the waiting connect().
+        Internals: the thread target driven directly with _closed pre-set."""
+        conn = PhotonConnector("h", 1, tls=False)
+        conn._closed = True
+        conn_ready: Future = Future()
+
+        conn._io_thread_main(conn_ready)     # returns as soon as the connection bails
+
+        with pytest.raises(PhotonConnectionError):
+            conn_ready.result(timeout=1)
+        assert conn._io_loop is None
+        assert conn._io_task is None
