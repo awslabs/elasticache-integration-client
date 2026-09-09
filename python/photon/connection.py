@@ -314,7 +314,7 @@ class PhotonConnector:
             self._io_thread = None
 
         # Phase 2: teardown outside the state lock (shutdown/join may block).
-        if io_loop is not None and task is not None:
+        if io_loop and task:
             try:
                 io_loop.call_soon_threadsafe(task.cancel)
             except RuntimeError:
