@@ -159,7 +159,7 @@ class PhotonConnector:
             if self._io_thread is not None:
                 raise PhotonConnectionError("connect() already called; PhotonConnector is single-use")
             self._io_thread = threading.Thread(
-                target=self._io_thread_main, args=(conn_ready,), name="photon-io-loop", daemon=True
+                target=self._io_thread_main, args=(conn_ready,), name="photon-io-thread", daemon=True
             )
             self._io_thread.start()
 
