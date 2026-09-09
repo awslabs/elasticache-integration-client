@@ -225,7 +225,7 @@ class PhotonConnector:
             except BaseException as exc:
                 # connect() turns the type into a message, so pass it on as it is.
                 conn_ready.set_exception(exc)
-                raise
+                return
             conn_ready.set_result(None)   # no value to pass; connect() just needs the wait to end
             await self._reader_loop()
         finally:
