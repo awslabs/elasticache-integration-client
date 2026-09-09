@@ -105,8 +105,9 @@ class TestPhotonConnector:
         port = probe.getsockname()[1]
         probe.close()
         conn = PhotonConnector("127.0.0.1", port, connect_timeout=1.0)
-        with pytest.raises(PhotonConnectionError):
+        with pytest.raises(PhotonConnectionError) as exc_info:
             conn.connect()
+        assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
 
     def test_tls_trusted_cert_connects(self):
         """Over real verifying TLS (trusting the mock's self-signed cert via ca_certs), the
@@ -121,7 +122,7 @@ class TestPhotonConnector:
         the handshake must fail — never connect insecurely."""
         self.start_cache(tls=True)
         self.conn = PhotonConnector(self.cache.host, self.cache.port)  # tls=True, no ca_certs
-        with pytest.raises(PhotonConnectionError):
+        with pytest.raises(PhotonConnectionError, match="TLS handshake failed"):
             self.conn.connect()
 
     def test_tls_verify_false_connects_untrusted(self):
@@ -136,7 +137,7 @@ class TestPhotonConnector:
         PhotonConnectionLost, which means a connection existed and died)."""
         self.start_cache()
         conn = PhotonConnector(self.cache.host, self.cache.port, tls=False)
-        with pytest.raises(PhotonError):
+        with pytest.raises(PhotonError, match="used before connect"):
             conn.execute("photon.config", b"{}")
 
     def test_close_during_connect_aborts_cleanly(self):
@@ -173,7 +174,7 @@ class TestPhotonConnector:
         assert len(outcome) == 1    # connect() raised exactly once
         assert isinstance(outcome[0], PhotonConnectionError), outcome[0]
         assert conn._writer is None
-        assert not any(th.name == "photon-io-loop" for th in threading.enumerate())
+        assert not any(th.name == "photon-io-thread" for th in threading.enumerate())
 
     def test_connect_install_refused_after_close(self):
         """The install-check second line of defense: if close() lands after the connection
@@ -249,12 +250,18 @@ class TestPhotonConnector:
         value = self.send_request(body=b'{"ok":1}')
         assert value == [200, b"content-type:application/json", b'{"ok":1}']
 
-    def test_concurrent_requests_get_own_replies(self):
+    @pytest.mark.parametrize("tls", [False, True], ids=["plaintext", "tls"])
+    def test_concurrent_requests_get_own_replies(self, tls):
         """8 threads fire requests simultaneously (barrier-synced); the mock reflects each
         request body; each thread must get its own token back — no response cross-talk over
-        the single shared connection. This is the file's central test."""
-        self.start_cache(response_fn=lambda req: Reply.ok(body=req.body))
-        self.connect_and_handshake()
+        the single shared connection. This is the file's central test.
+
+        Parametrized over TLS because the race it guards against belongs to the TLS object:
+        concurrent recv and sendall on a plaintext socket are safe, so the plaintext case
+        passes against the pre-fix code too."""
+        self.start_cache(tls=tls, response_fn=lambda req: Reply.ok(body=req.body))
+        tls_kwargs = {"ca_certs": self.cache.cert_path} if tls else {}
+        self.connect_and_handshake(tls=tls, **tls_kwargs)
 
         n = 8
         barrier = threading.Barrier(n)
@@ -454,7 +461,7 @@ class TestPhotonConnector:
             conn.connect()
             conn.execute("photon.config", b"{}")
             conn.close()
-        assert not any(t.name == "photon-io-loop" for t in threading.enumerate())
+        assert not any(t.name == "photon-io-thread" for t in threading.enumerate())
 
     def test_close_stops_and_forgets_the_io_loop(self):
         """After close(), the I/O loop thread has terminated and all connection state is
@@ -602,7 +609,7 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionError):
             conn.connect()
 
-        assert not any(t.name == "photon-io-loop" for t in threading.enumerate())
+        assert not any(t.name == "photon-io-thread" for t in threading.enumerate())
         assert conn._io_loop is None
 
     def test_second_connect_is_refused(self):

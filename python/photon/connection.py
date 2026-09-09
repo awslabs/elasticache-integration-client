@@ -92,7 +92,7 @@ class _PendingRequests:
         """
         with self._queue_lock:
             future = self._queue.popleft() if self._queue else None
-        if future is not None and not future.done():
+        if future and not future.done():
             future.set_result(value)
 
     def fail_all(self, exc: BaseException) -> None:
@@ -156,7 +156,7 @@ class PhotonConnector:
         with self._state_lock:
             if self._closed:
                 raise PhotonConnectionError("connector closed during connect")
-            if self._io_thread is not None:
+            if self._io_thread:
                 raise PhotonConnectionError("connect() already called; PhotonConnector is single-use")
             self._io_thread = threading.Thread(
                 target=self._io_thread_main, args=(conn_ready,), name="photon-io-thread", daemon=True
@@ -170,8 +170,13 @@ class PhotonConnector:
         except FuturesTimeout as exc:
             self.close()
             raise PhotonConnectionError(f"Timed out connecting to {self._host}:{self._port}") from exc
+        except ssl.SSLError as exc:
+            # Ahead of OSError, which ssl.SSLError subclasses: a rejected certificate must not
+            # report as an unreachable cache.
+            self.close()
+            raise PhotonConnectionError(f"TLS handshake failed to {self._host}:{self._port}") from exc
         except OSError as exc:
-            # DNS, TCP, or TLS failure from the dial.
+            # DNS or TCP failure from the dial.
             self.close()
             raise PhotonConnectionError(f"Failed to connect to {self._host}:{self._port}") from exc
         except BaseException:
@@ -193,8 +198,6 @@ class PhotonConnector:
             elif isinstance(exc, (asyncio.CancelledError, PhotonError)):
                 logger.debug("photon connector I/O loop ended", exc_info=True)
             else:
-                # Our own bug: callers were told the connection closed, which says nothing
-                # about the real cause. This log is the only record of it.
                 logger.error("photon connector I/O loop failed", exc_info=True)
 
     async def _serve_connection(self, conn_ready: Future) -> None:
@@ -229,7 +232,7 @@ class PhotonConnector:
             conn_ready.set_result(None)   # no value to pass; connect() just needs the wait to end
             await self._reader_loop()
         finally:
-            self._release()
+            self._release_conn()
 
     async def _establish_connection(self) -> None:
         """Open a secure connection and install it. Runs on the loop thread, which owns
@@ -259,7 +262,7 @@ class PhotonConnector:
             PhotonConnectionError: If AUTH is rejected or times out.
             PhotonError: If the provider fails to generate a token.
         """
-        if self._auth_provider is None:
+        if not self._auth_provider:
             return
         user_id, token = self._auth_provider()
         try:
@@ -319,10 +322,11 @@ class PhotonConnector:
                 io_loop.call_soon_threadsafe(task.cancel)
             except RuntimeError:
                 pass  # the loop is already closed: teardown has run or is running
-        if thread is not None:
+        if thread:
             thread.join(timeout=_CLOSE_TIMEOUT)
             if thread.is_alive():
-                logger.debug("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
+                logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
+        # The I/O thread has already done this, unless the join above expired.
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
 
     def _release_conn(self) -> None:
@@ -337,12 +341,11 @@ class PhotonConnector:
             self._io_task = None
             self._reader = None
             writer, self._writer = self._writer, None
-        if writer is not None:
+        if writer:
             try:
                 writer.transport.abort()
             except Exception:
-                # abort() can fail if the peer is already gone. Fail the callers anyway.
-                logger.debug("photon connector transport abort failed", exc_info=True)
+                logger.warning("photon connector transport abort failed", exc_info=True)
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
 
     # --- send path -----------------------------------------------------------
@@ -379,7 +382,7 @@ class PhotonConnector:
         cannot hang. A truly stuck connection is caught by the reply timeout.
         """
         io_loop = self._io_loop
-        if io_loop is None:
+        if not io_loop:
             if self._closed:
                 raise PhotonConnectionLost("connection is closed")
             raise PhotonError("PhotonConnector used before connect()")
@@ -390,7 +393,7 @@ class PhotonConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
-        timeout = timeout or else self._request_timeout
+        timeout = timeout or self._request_timeout
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:
