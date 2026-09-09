@@ -325,7 +325,7 @@ class PhotonConnector:
                 logger.debug("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
 
-    def _release(self) -> None:
+    def _release_conn(self) -> None:
         """Abort the transport, fail every waiting caller, and forget the connection.
 
         Runs on the I/O thread while it is already stopping, so it leaves the loop and the
