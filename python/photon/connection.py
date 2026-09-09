@@ -210,7 +210,7 @@ class PhotonConnector:
 
         self._reader: _SocketReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._loop_thread = _LoopThread()
+        self._io_loop_thread = _LoopThread()
         self._pending = _PendingRequests(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
@@ -228,9 +228,9 @@ class PhotonConnector:
         with self._state_lock:
             if self._closed:
                 raise PhotonConnectionError("connector closed during connect")
-            if self._loop_thread.thread:
+            if self._io_loop_thread.thread:
                 raise PhotonConnectionError("connect() already called; PhotonConnector is single-use")
-            self._loop_thread.start_thread(self._io_thread_main, conn_ready)
+            self._io_loop_thread.start_thread(self._io_thread_main, conn_ready)
 
         # The I/O thread always sets conn_ready, on success and on failure.
         # So a thread that stops early cannot leave us waiting here.
@@ -257,7 +257,7 @@ class PhotonConnector:
 
         The loop closes when the connection ends, so the loop and this thread stop with it.
         """
-        exc = self._loop_thread.run(self._serve_connection(conn_ready))
+        exc = self._io_loop_thread.run(self._serve_connection(conn_ready))
         if not exc:
             return
         # Nobody above can handle this. Give it to a caller still inside connect().
@@ -279,7 +279,7 @@ class PhotonConnector:
             if self._closed:
                 conn_ready.set_exception(PhotonConnectionError("connector closed during connect"))
                 return
-            self._loop_thread.accept_calls()
+            self._io_loop_thread.accept_calls()
 
         try:
             try:
@@ -375,13 +375,13 @@ class PhotonConnector:
         """
         # Phase 1: mark closed, under the state lock.
         with self._state_lock:
-            if self._loop_thread.owns_current_thread():
+            if self._io_loop_thread.owns_current_thread():
                 raise RuntimeError("close() cannot be called from the connector's I/O thread")
             self._closed = True
 
         # Phase 2: teardown outside the state lock (the join may block).
-        self._loop_thread.cancel()
-        if not self._loop_thread.join(_CLOSE_TIMEOUT):
+        self._io_loop_thread.cancel()
+        if not self._io_loop_thread.join(_CLOSE_TIMEOUT):
             logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
         # The I/O thread has already done this, unless the join above expired.
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
@@ -394,7 +394,7 @@ class PhotonConnector:
         """
         with self._state_lock:
             self._closed = True
-            self._loop_thread.refuse_calls()
+            self._io_loop_thread.refuse_calls()
             self._reader = None
             writer, self._writer = self._writer, None
         if writer:
@@ -437,14 +437,14 @@ class PhotonConnector:
         no send-side timeout: a send only copies bytes into the transport buffer, so it
         cannot hang. A truly stuck connection is caught by the reply timeout.
         """
-        if not self._loop_thread.loop:
+        if not self._io_loop_thread.loop:
             if self._closed:
                 raise PhotonConnectionLost("connection is closed")
             raise PhotonError("PhotonConnector used before connect()")
         frame = encode_resp(command, *args)
         reply_future: Future = Future()
         try:
-            self._loop_thread.call(self._send, frame, reply_future)
+            self._io_loop_thread.call(self._send, frame, reply_future)
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
