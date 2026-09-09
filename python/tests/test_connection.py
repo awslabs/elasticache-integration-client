@@ -324,7 +324,7 @@ class TestPhotonConnector:
         the wedge, the caller's reply timeout still fires. (There is no send-side timeout
         by design — a send only copies bytes into the transport buffer.)"""
         self.connect_and_handshake(request_timeout=0.2)
-        self.conn._io_loop.call_soon_threadsafe(time.sleep, 1)  # wedge the loop
+        self.conn._loop_thread.call(time.sleep, 1)  # wedge the loop
         with pytest.raises(PhotonTimeoutError):
             self.send_request()
 
@@ -467,12 +467,12 @@ class TestPhotonConnector:
         """After close(), the I/O loop thread has terminated and all connection state is
         nulled: nothing owned by the connector outlives close()."""
         self.connect()
-        thread = self.conn._io_thread
+        thread = self.conn._loop_thread.thread
         assert thread.is_alive()
         self.conn.close()
         assert not thread.is_alive()          # join happened, the thread is gone
-        assert self.conn._io_thread is None
-        assert self.conn._io_loop is None
+        assert self.conn._loop_thread.thread is None
+        assert self.conn._loop_thread.loop is None
         assert self.conn._writer is None
 
     def test_execute_after_close_raises_connection_lost(self):
@@ -543,14 +543,14 @@ class TestPhotonConnector:
         passes the request through — so a connection lost here has to release itself."""
         self.start_cache(failure="drop")
         self.connect_and_handshake()
-        thread = self.conn._io_thread
+        thread = self.conn._loop_thread.thread
 
         with pytest.raises(PhotonConnectionLost):
             self.send_request()          # server drops instead of replying
 
         self.await_io_thread_exit(thread)
-        assert self.conn._io_loop is None
-        assert self.conn._io_task is None
+        assert self.conn._loop_thread.loop is None
+        assert self.conn._loop_thread.main_task is None
         assert self.conn._writer is None
         assert self.conn._reader is None
         assert self.conn._closed is True
@@ -561,7 +561,7 @@ class TestPhotonConnector:
         rather than leaving a live loop and a caller waiting out its timeout.
         Internals: the FIFO resolve step is made to raise a type no handler catches."""
         self.connect_and_handshake(request_timeout=5.0)
-        thread = self.conn._io_thread
+        thread = self.conn._loop_thread.thread
         self.conn._pending.resolve_oldest_request = mock.Mock(
             side_effect=ValueError("unanticipated")
         )
@@ -572,7 +572,7 @@ class TestPhotonConnector:
         assert time.monotonic() - start < 1.0, "caller waited out the request timeout"
 
         self.await_io_thread_exit(thread)
-        assert self.conn._io_loop is None
+        assert self.conn._loop_thread.loop is None
 
     def test_close_from_the_io_thread_raises(self):
         """close() from the I/O thread is a programming error, not a deadlock: it would ask
@@ -588,14 +588,14 @@ class TestPhotonConnector:
             except BaseException as exc:  # noqa: BLE001 — the assertion below names the type
                 outcome.append(exc)
 
-        self.conn._io_loop.call_soon_threadsafe(call_close_on_loop_thread)
+        self.conn._loop_thread.call(call_close_on_loop_thread)
         deadline = time.monotonic() + 2
         while not outcome:
             assert time.monotonic() < deadline, "close() never ran on the I/O thread"
             time.sleep(0.01)
 
         assert isinstance(outcome[0], RuntimeError), outcome[0]
-        assert self.conn._io_thread.is_alive()   # the guard fired before any teardown
+        assert self.conn._loop_thread.thread.is_alive()   # the guard fired before any teardown
 
     def test_failed_dial_leaves_no_io_thread(self):
         """A connect() that never establishes anything must not leave its loop thread behind:
@@ -610,7 +610,7 @@ class TestPhotonConnector:
             conn.connect()
 
         assert not any(t.name == "photon-io-thread" for t in threading.enumerate())
-        assert conn._io_loop is None
+        assert conn._loop_thread.loop is None
 
     def test_second_connect_is_refused(self):
         """PhotonConnector is single-use. A second connect() would overwrite the loop and
@@ -632,5 +632,6 @@ class TestPhotonConnector:
 
         with pytest.raises(PhotonConnectionError):
             conn_ready.result(timeout=1)
-        assert conn._io_loop is None
-        assert conn._io_task is None
+        assert conn._loop_thread.loop is None
+        assert conn._loop_thread.main_task is None
+

@@ -1,16 +1,11 @@
-"""Pure-Python connector: the TCP+TLS transport plus its two concurrency primitives.
+"""Pure-Python connector: one TCP+TLS connection, driven from a single thread.
 
-:class:`PhotonConnector` owns a single TCP+TLS connection. All I/O runs on a private asyncio
-event loop in one daemon thread: callers hand the loop a plain callback that registers a reply
-``Future`` and writes the frame, and a reader turns the byte stream into framed ``RespValue``s
-(:class:`_SocketReader`) and resolves those futures in FIFO order (:class:`_PendingRequests`).
-One callback at a time on one loop thread ⇒ queue order equals wire order ⇒ FIFO correlation
-is correct.
+Every read and write runs on one thread with its own event loop. To send, a caller hands the
+loop a function that registers a future for the reply and writes the frame; a reader on the
+same loop turns arriving bytes into RESP values and gives each one to the oldest waiting
+future.
 
-The loop lives as long as the connection, and no longer. The I/O thread runs one thing:
-:meth:`_serve_connection`. That call opens the connection, reads it, then releases it. When
-the connection ends, for any reason, the call returns. ``asyncio.run`` then closes the loop
-and the thread stops.
+_LoopThread owns the thread and the loop, and lasts exactly as long as the connection.
 """
 
 from __future__ import annotations
@@ -105,6 +100,85 @@ class _PendingRequests:
                 future.set_exception(exc)
 
 
+class _LoopThread:
+    """Runs an async function on its own event loop, in its own daemon thread.
+
+    Other threads can put callbacks on that loop, end the function, and wait for the thread to exit.
+    """
+
+    def __init__(self, name: str = "photon-io-thread") -> None:
+        self._name = name
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._main_task: asyncio.Task | None = None
+
+    @property
+    def thread(self) -> threading.Thread | None:
+        return self._thread
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop | None:
+        return self._loop
+
+    @property
+    def main_task(self) -> asyncio.Task | None:
+        return self._main_task
+
+    def owns_current_thread(self) -> bool:
+        """True when the caller is the loop thread, which may not join or block on itself."""
+        return self._thread is threading.current_thread()
+
+    def start_thread(self, target, *args) -> None:
+        """Start the daemon thread on ``target(*args)``, which is expected to call :meth:`run`."""
+        self._thread = threading.Thread(target=target, args=args, name=self._name, daemon=True)
+        self._thread.start()
+
+    def run(self, main) -> BaseException | None:
+        """Run ``main`` on a new event loop on the calling thread."""
+        try:
+            asyncio.run(main)
+        except BaseException as exc:
+            return exc
+        return None
+
+    def accept_calls(self) -> None:
+        """Make the running loop reachable from other threads."""
+        self._loop = asyncio.get_running_loop()
+        self._main_task = asyncio.current_task()
+
+    def refuse_calls(self) -> None:
+        """Put the loop out of reach of other threads, before it closes. """
+        self._loop = None
+        self._main_task = None
+
+    def call(self, fn, *args) -> None:
+        """Schedule a function on the loop."""
+        loop = self._loop
+        if not loop:
+            raise RuntimeError("the loop thread is not running")
+        loop.call_soon_threadsafe(fn, *args)
+
+    def cancel(self) -> None:
+        """Ask ``main`` to end. Safe from any thread, and never joins. Best effort: a loop
+        that has already gone has nothing left to cancel.
+        """
+        main_task = self._main_task
+        if not main_task:
+            return
+        try:
+            self.call(main_task.cancel)
+        except RuntimeError:
+            pass
+
+    def join(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` for the thread to exit, then forget it either way. """
+        thread, self._thread = self._thread, None
+        if not thread:
+            return True
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
+
+
 class PhotonConnector:
     """Single TCP+TLS connection to the cache owned by an I/O loop, with FIFO futures."""
 
@@ -136,9 +210,7 @@ class PhotonConnector:
 
         self._reader: _SocketReader | None = None
         self._writer: asyncio.StreamWriter | None = None
-        self._io_loop: asyncio.AbstractEventLoop | None = None
-        self._io_thread: threading.Thread | None = None
-        self._io_task: asyncio.Task | None = None   # close() needs this to end the connection
+        self._loop_thread = _LoopThread()
         self._pending = _PendingRequests(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
@@ -156,12 +228,9 @@ class PhotonConnector:
         with self._state_lock:
             if self._closed:
                 raise PhotonConnectionError("connector closed during connect")
-            if self._io_thread:
+            if self._loop_thread.thread:
                 raise PhotonConnectionError("connect() already called; PhotonConnector is single-use")
-            self._io_thread = threading.Thread(
-                target=self._io_thread_main, args=(conn_ready,), name="photon-io-thread", daemon=True
-            )
-            self._io_thread.start()
+            self._loop_thread.start_thread(self._io_thread_main, conn_ready)
 
         # The I/O thread always sets conn_ready, on success and on failure.
         # So a thread that stops early cannot leave us waiting here.
@@ -186,19 +255,18 @@ class PhotonConnector:
     def _io_thread_main(self, conn_ready: Future) -> None:
         """The I/O thread's only job. Runs the connection on its own event loop.
 
-        ``asyncio.run`` closes that loop when the call returns, so the loop and this
-        thread stop when the connection does.
+        The loop closes when the connection ends, so the loop and this thread stop with it.
         """
-        try:
-            asyncio.run(self._serve_connection(conn_ready))
-        except BaseException as exc:
-            # Nobody above can handle this. Give it to a caller still inside connect().
-            if not conn_ready.done():      # never set, so connect() is still waiting
-                conn_ready.set_exception(exc)
-            elif isinstance(exc, (asyncio.CancelledError, PhotonError)):
-                logger.debug("photon connector I/O loop ended", exc_info=True)
-            else:
-                logger.error("photon connector I/O loop failed", exc_info=True)
+        exc = self._loop_thread.run(self._serve_connection(conn_ready))
+        if not exc:
+            return
+        # Nobody above can handle this. Give it to a caller still inside connect().
+        if not conn_ready.done():      # never set, so connect() is still waiting
+            conn_ready.set_exception(exc)
+        elif isinstance(exc, (asyncio.CancelledError, PhotonError)):
+            logger.debug("photon connector I/O loop ended", exc_info=exc)
+        else:
+            logger.error("photon connector I/O loop failed", exc_info=exc)
 
     async def _serve_connection(self, conn_ready: Future) -> None:
         """Open the connection, read replies until it ends, then release it. Runs on the I/O thread.
@@ -211,8 +279,7 @@ class PhotonConnector:
             if self._closed:
                 conn_ready.set_exception(PhotonConnectionError("connector closed during connect"))
                 return
-            self._io_loop = asyncio.get_running_loop()
-            self._io_task = asyncio.current_task()
+            self._loop_thread.accept_calls()
 
         try:
             try:
@@ -306,26 +373,16 @@ class PhotonConnector:
 
         Any thread may call this except the I/O thread, which cleans up on its own.
         """
-        # Phase 1: mark closed and capture the handles, under the state lock.
+        # Phase 1: mark closed, under the state lock.
         with self._state_lock:
-            if self._io_thread is threading.current_thread():
+            if self._loop_thread.owns_current_thread():
                 raise RuntimeError("close() cannot be called from the connector's I/O thread")
             self._closed = True
-            io_loop = self._io_loop
-            task = self._io_task
-            thread = self._io_thread
-            self._io_thread = None
 
-        # Phase 2: teardown outside the state lock (shutdown/join may block).
-        if io_loop and task:
-            try:
-                io_loop.call_soon_threadsafe(task.cancel)
-            except RuntimeError:
-                pass  # the loop is already closed: teardown has run or is running
-        if thread:
-            thread.join(timeout=_CLOSE_TIMEOUT)
-            if thread.is_alive():
-                logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
+        # Phase 2: teardown outside the state lock (the join may block).
+        self._loop_thread.cancel()
+        if not self._loop_thread.join(_CLOSE_TIMEOUT):
+            logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
         # The I/O thread has already done this, unless the join above expired.
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
 
@@ -337,8 +394,7 @@ class PhotonConnector:
         """
         with self._state_lock:
             self._closed = True
-            self._io_loop = None
-            self._io_task = None
+            self._loop_thread.refuse_calls()
             self._reader = None
             writer, self._writer = self._writer, None
         if writer:
@@ -381,15 +437,14 @@ class PhotonConnector:
         no send-side timeout: a send only copies bytes into the transport buffer, so it
         cannot hang. A truly stuck connection is caught by the reply timeout.
         """
-        io_loop = self._io_loop
-        if not io_loop:
+        if not self._loop_thread.loop:
             if self._closed:
                 raise PhotonConnectionLost("connection is closed")
             raise PhotonError("PhotonConnector used before connect()")
         frame = encode_resp(command, *args)
         reply_future: Future = Future()
         try:
-            io_loop.call_soon_threadsafe(self._send, frame, reply_future)
+            self._loop_thread.call(self._send, frame, reply_future)
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
