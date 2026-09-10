@@ -1,6 +1,6 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.resp.RespValue;
 
 import java.util.LinkedList;
@@ -15,8 +15,8 @@ import java.util.concurrent.locks.ReentrantLock;
  * <p>The Photon protocol requires strict FIFO ordering: responses arrive in the
  * same order requests were sent. This class maintains that correlation by:
  * <ol>
- *   <li>Callers register a future before sending (via {@link #register()})</li>
- *   <li>The reader thread resolves futures in order (via {@link #resolveNext(RespValue)})</li>
+ *   <li>Callers register a future before sending (via {@link #registerNewRequest()})</li>
+ *   <li>The reader thread resolves futures in order (via {@link #resolveOldestRequest(RespValue)})</li>
  * </ol>
  *
  * <p>All operations are thread-safe. The queue has a configurable maximum size
@@ -59,16 +59,16 @@ public class PendingRequests {
      * send lock.
      *
      * @return a future that will be completed when the response arrives
-     * @throws ConnectionLost if the queue is closed or at capacity
+     * @throws PhotonConnectionLost if the queue is closed or at capacity
      */
-    public CompletableFuture<RespValue> register() {
+    public CompletableFuture<RespValue> registerNewRequest() {
         lock.lock();
         try {
             if (closed) {
-                throw new ConnectionLost("Connection is closed");
+                throw new PhotonConnectionLost("Connection is closed");
             }
             if (queue.size() >= maxPending) {
-                throw new ConnectionLost("Too many pending requests (max=" + maxPending + ")");
+                throw new PhotonConnectionLost("Too many pending requests (max=" + maxPending + ")");
             }
             CompletableFuture<RespValue> future = new CompletableFuture<>();
             queue.add(future);
@@ -86,7 +86,7 @@ public class PendingRequests {
      * @param value the RESP value to complete with
      * @return true if a pending request was resolved, false if queue was empty
      */
-    public boolean resolveNext(RespValue value) {
+    public boolean resolveOldestRequest(RespValue value) {
         lock.lock();
         try {
             CompletableFuture<RespValue> future = queue.poll();

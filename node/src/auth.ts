@@ -212,7 +212,7 @@ export class IamAuthTokenProvider {
   }
 }
 
-/** Assemble a ready-to-use authentication provider for a cache connection. */
+/** Assemble a ready-to-use authentication provider for a cache connector. */
 export async function buildCacheAuthProvider(
   input: AuthParamsInput & { credentials?: CredentialsProvider },
 ): Promise<() => Promise<[string, string]>> {

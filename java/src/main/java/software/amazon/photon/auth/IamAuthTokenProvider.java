@@ -17,7 +17,7 @@ import java.util.function.Supplier;
  * or IMDS) are picked up automatically.
  *
  * <p>This provider implements {@code Supplier<AuthCredentials>} and can be
- * used directly with {@link software.amazon.photon.connection.PhotonConnection}.
+ * used directly with {@link software.amazon.photon.connection.PhotonConnector}.
  *
  * <p>Usage:
  * <pre>{@code
@@ -26,7 +26,7 @@ import java.util.function.Supplier;
  *     .region(Region.US_EAST_1)
  *     .build();
  *
- * PhotonConnection conn = new PhotonConnection(host, port, sslContext);
+ * PhotonConnector conn = new PhotonConnector(host, port, sslContext);
  * conn.connectAndAuthenticate(authProvider);
  * }</pre>
  *

@@ -1,6 +1,6 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.resp.DecodeResult;
@@ -79,13 +79,13 @@ public class SocketReader {
             while (true) {
                 readAndResolve();
             }
-        } catch (ConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
+        } catch (PhotonConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
             // Mark dead before failing futures so isDead() is true when callers observe the exception
             onDeath.run();
             pending.failAll(e);
         } catch (Exception e) {
             onDeath.run();
-            pending.failAll(new ConnectionLost("Reader thread failed", e));
+            pending.failAll(new PhotonConnectionLost("Reader thread failed", e));
         }
     }
 
@@ -96,12 +96,12 @@ public class SocketReader {
      * for synchronous use.
      *
      * @throws PhotonTimeoutError if the read times out
-     * @throws ConnectionLost if the socket closes or fails
+     * @throws PhotonConnectionLost if the socket closes or fails
      * @throws PhotonProtocolError if the response exceeds max size
      */
     public void readAndResolve() {
         RespValue value = readFrame();
-        boolean resolved = pending.resolveNext(value);
+        boolean resolved = pending.resolveOldestRequest(value);
         if (!resolved) {
             // Unexpected response with no pending request - protocol error
             throw new PhotonProtocolError("Received response with no pending request");
@@ -115,7 +115,7 @@ public class SocketReader {
      *
      * @return the decoded RESP value
      * @throws PhotonTimeoutError if the read times out
-     * @throws ConnectionLost if the socket closes or fails
+     * @throws PhotonConnectionLost if the socket closes or fails
      * @throws PhotonProtocolError if the response exceeds max size
      */
     public RespValue readFrame() {
@@ -144,11 +144,11 @@ public class SocketReader {
             } catch (SocketTimeoutException e) {
                 throw new PhotonTimeoutError("Read timed out", e);
             } catch (IOException e) {
-                throw new ConnectionLost("Socket read failed", e);
+                throw new PhotonConnectionLost("Socket read failed", e);
             }
 
             if (bytesRead < 0) {
-                throw new ConnectionLost("Connection closed by server (EOF)");
+                throw new PhotonConnectionLost("Connection closed by server (EOF)");
             }
 
             if (buffer.size() + bytesRead > maxResponseSize) {

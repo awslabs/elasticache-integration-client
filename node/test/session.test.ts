@@ -36,15 +36,15 @@ describe("PhotonSession", () => {
   it("opens in lifecycle order and stores the resolved config", async () => {
     const connector = fakeConnector();
     const session = new PhotonSession(connector, { ttl: 300 });
-    expect(session.resolvedConfig).toBeUndefined();
+    expect(session.config).toBeUndefined();
 
     await session.open();
 
     expect(connector.connect).toHaveBeenCalledOnce();
     expect(connector.authenticate).toHaveBeenCalledOnce();
     expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
-    expect(session.resolvedConfig).toEqual(expect.any(ResolvedConfig));
-    expect(session.resolvedConfig.raw).toEqual({
+    expect(session.config).toEqual(expect.any(ResolvedConfig));
+    expect(session.config.raw).toEqual({
       version: "v1",
       refresh_interval: 60,
       predicates: [{ expr: "true", vars: {} }],

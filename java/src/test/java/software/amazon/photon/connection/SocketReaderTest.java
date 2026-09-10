@@ -1,7 +1,7 @@
 package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
@@ -94,18 +94,18 @@ class SocketReaderTest {
     }
 
     @Test
-    void readFrame_eof_throwsConnectionLost() {
+    void readFrame_eof_throwsPhotonConnectionLost() {
         // Empty stream (immediate EOF)
         InputStream input = new ByteArrayInputStream(new byte[0]);
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
-        ConnectionLost e = assertThrows(ConnectionLost.class, reader::readFrame);
+        PhotonConnectionLost e = assertThrows(PhotonConnectionLost.class, reader::readFrame);
         assertTrue(e.getMessage().contains("EOF"));
     }
 
     @Test
-    void readFrame_ioError_throwsConnectionLost() {
+    void readFrame_ioError_throwsPhotonConnectionLost() {
         InputStream input = new InputStream() {
             @Override
             public int read() throws IOException {
@@ -121,7 +121,7 @@ class SocketReaderTest {
         PendingRequests pending = new PendingRequests();
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
-        ConnectionLost e = assertThrows(ConnectionLost.class, reader::readFrame);
+        PhotonConnectionLost e = assertThrows(PhotonConnectionLost.class, reader::readFrame);
         assertTrue(e.getMessage().contains("read failed"));
     }
 
@@ -152,7 +152,7 @@ class SocketReaderTest {
         SocketReader reader = new SocketReader(input, pending, () -> {});
 
         // Register a pending request
-        CompletableFuture<RespValue> future = pending.register();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
         assertFalse(future.isDone());
 
         // Read and resolve
@@ -218,8 +218,8 @@ class SocketReaderTest {
         };
 
         PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> f1 = pending.register();
-        CompletableFuture<RespValue> f2 = pending.register();
+        CompletableFuture<RespValue> f1 = pending.registerNewRequest();
+        CompletableFuture<RespValue> f2 = pending.registerNewRequest();
 
         SocketReader reader = new SocketReader(input, pending, () -> {});
 

@@ -10,9 +10,9 @@ import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpMethod;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -52,7 +52,7 @@ class PhotonHttpClientTest {
     @Test
     void photonFailureDelegatesExactSignedRequest() throws Exception {
         StubSession session = new StubSession();
-        session.failure = new ConnectionLost("cache unavailable");
+        session.failure = new PhotonConnectionLost("cache unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
         HttpExecuteRequest signedRequest = signedRequest();
@@ -140,7 +140,7 @@ class PhotonHttpClientTest {
     @Test
     void abortReachesActiveOriginRequest() throws Exception {
         StubSession session = new StubSession();
-        session.failure = new ConnectionLost("cache unavailable");
+        session.failure = new PhotonConnectionLost("cache unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
         origin.blockCall = true;
         PhotonRequestContext context = new PhotonRequestContext();
@@ -224,7 +224,7 @@ class PhotonHttpClientTest {
         private volatile boolean blockUntilCancelled;
 
         private StubSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override

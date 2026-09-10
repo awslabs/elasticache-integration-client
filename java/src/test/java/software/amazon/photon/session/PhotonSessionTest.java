@@ -4,7 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
@@ -61,8 +61,8 @@ class PhotonSessionTest {
         server.close();
     }
 
-    private PhotonConnection createConnection() {
-        return new PhotonConnection("localhost", server.getPort(), clientSslContext);
+    private PhotonConnector createConnection() {
+        return new PhotonConnector("localhost", server.getPort(), clientSslContext);
     }
 
     // === Lifecycle tests ===
@@ -233,13 +233,13 @@ class PhotonSessionTest {
     // === Config tests ===
 
     @Test
-    void getResolvedConfig_afterOpen_returnsConfig() {
+    void getConfig_afterOpen_returnsConfig() {
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
-        assertNull(session.getResolvedConfig());
+        assertNull(session.getConfig());
 
         session.open();
-        assertNotNull(session.getResolvedConfig());
-        assertEquals("1.0", session.getResolvedConfig().getVersion());
+        assertNotNull(session.getConfig());
+        assertEquals("1.0", session.getConfig().getVersion());
 
         session.close();
     }
@@ -321,15 +321,15 @@ class PhotonSessionTest {
 
     @Test
     void requestFailureStartsRecoveryWithoutBlockingOriginFallback() throws Exception {
-        RequestFailingConnection initialConnection = new RequestFailingConnection();
+        RequestFailingConnector initialConnector = new RequestFailingConnector();
         CountDownLatch recoveryStarted = new CountDownLatch(1);
         CountDownLatch allowRecovery = new CountDownLatch(1);
-        BlockingConnectConnection replacementConnection =
-                new BlockingConnectConnection(recoveryStarted, allowRecovery);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(recoveryStarted, allowRecovery);
         AtomicInteger connectionCreationCount = new AtomicInteger();
         PhotonSession session = new PhotonSession(
                 () -> connectionCreationCount.getAndIncrement() == 0
-                        ? initialConnection : replacementConnection,
+                        ? initialConnector : replacementConnector,
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 fastPolicy());
@@ -400,10 +400,10 @@ class PhotonSessionTest {
     @Test
     void failedHalfOpenProbeReopensCircuit() throws Exception {
         AtomicInteger connectionCreationCount = new AtomicInteger();
-        TestConnection initialConnection = new TestConnection();
+        TestConnector initialConnector = new TestConnector();
         PhotonSession session = new PhotonSession(
                 () -> connectionCreationCount.getAndIncrement() == 0
-                        ? initialConnection : new TestConnection(true),
+                        ? initialConnector : new TestConnector(true),
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 ReconnectPolicy.builder()
@@ -415,7 +415,7 @@ class PhotonSessionTest {
                         .build());
         try {
             session.open();
-            initialConnection.fail();
+            initialConnector.fail();
             assertThrows(PhotonError.class, () -> session.request(request()));
             assertEquals(PhotonSession.CircuitState.OPEN, session.getCircuitState());
 
@@ -433,22 +433,22 @@ class PhotonSessionTest {
 
     @Test
     void reconnectReevaluatesRequestWithFreshPredicates() {
-        TestConnection initialConnection = new TestConnection(false, "true");
-        TestConnection replacementConnection = new TestConnection(false, "false");
+        TestConnector initialConnector = new TestConnector(false, "true");
+        TestConnector replacementConnector = new TestConnector(false, "false");
         AtomicInteger connectionCreationCount = new AtomicInteger();
         PhotonSession session = new PhotonSession(
                 () -> connectionCreationCount.getAndIncrement() == 0
-                        ? initialConnection : replacementConnection,
+                        ? initialConnector : replacementConnector,
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 fastPolicy());
         try {
             session.open();
-            initialConnection.fail();
+            initialConnector.fail();
 
             assertNull(session.request(request()));
             assertEquals(2, connectionCreationCount.get());
-            assertEquals(0, replacementConnection.getRequestCount());
+            assertEquals(0, replacementConnector.getRequestCount());
         } finally {
             session.close();
         }
@@ -456,15 +456,15 @@ class PhotonSessionTest {
 
     @Test
     void concurrentCallersShareOneRecoveryFlight() throws Exception {
-        TestConnection initialConnection = new TestConnection();
-        TestConnection replacementConnection = new TestConnection();
+        TestConnector initialConnector = new TestConnector();
+        TestConnector replacementConnector = new TestConnector();
         AtomicInteger connectionCreationCount = new AtomicInteger();
         AtomicInteger credentialsCallCount = new AtomicInteger();
-        Supplier<PhotonConnection> connectionFactory = () ->
+        Supplier<PhotonConnector> connectorFactory = () ->
                 connectionCreationCount.getAndIncrement() == 0
-                        ? initialConnection : replacementConnection;
+                        ? initialConnector : replacementConnector;
         PhotonSession session = new PhotonSession(
-                connectionFactory,
+                connectorFactory,
                 () -> new AuthCredentials(
                         TEST_USER, "token-" + credentialsCallCount.incrementAndGet()),
                 null,
@@ -472,7 +472,7 @@ class PhotonSessionTest {
         ExecutorService requestExecutor = Executors.newFixedThreadPool(8);
         try {
             session.open();
-            initialConnection.fail();
+            initialConnector.fail();
 
             CompletableFuture<?>[] requests = new CompletableFuture<?>[8];
             for (int i = 0; i < requests.length; i++) {
@@ -492,11 +492,11 @@ class PhotonSessionTest {
 
     @Test
     void closeInterruptsReconnectBackoffAndStopsFurtherAttempts() throws Exception {
-        TestConnection initialConnection = new TestConnection(false);
+        TestConnector initialConnector = new TestConnector(false);
         AtomicInteger connectionCreationCount = new AtomicInteger();
         PhotonSession session = new PhotonSession(
                 () -> connectionCreationCount.getAndIncrement() == 0
-                        ? initialConnection : new TestConnection(true),
+                        ? initialConnector : new TestConnector(true),
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 ReconnectPolicy.builder()
@@ -509,7 +509,7 @@ class PhotonSessionTest {
         ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         try {
             session.open();
-            initialConnection.fail();
+            initialConnector.fail();
             CompletableFuture<?> requestFuture = CompletableFuture.runAsync(
                     () -> session.request(request()), requestExecutor);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
@@ -557,21 +557,21 @@ class PhotonSessionTest {
         }
     }
 
-    private static class TestConnection extends PhotonConnection {
+    private static class TestConnector extends PhotonConnector {
         private volatile boolean dead;
         private final boolean failConnect;
         private final String predicateExpression;
         private final AtomicInteger requestCount = new AtomicInteger();
 
-        private TestConnection() {
+        private TestConnector() {
             this(false);
         }
 
-        private TestConnection(boolean failConnect) {
+        private TestConnector(boolean failConnect) {
             this(failConnect, "true");
         }
 
-        private TestConnection(boolean failConnect, String predicateExpression) {
+        private TestConnector(boolean failConnect, String predicateExpression) {
             super("unused", 1, null);
             this.failConnect = failConnect;
             this.predicateExpression = predicateExpression;
@@ -631,7 +631,7 @@ class PhotonSessionTest {
         }
     }
 
-    private static final class RequestFailingConnection extends TestConnection {
+    private static final class RequestFailingConnector extends TestConnector {
         @Override
         public PhotonResponse request(PhotonRequest request,
                                       PhotonRequestCancellation cancellation) {
@@ -640,11 +640,11 @@ class PhotonSessionTest {
         }
     }
 
-    private static final class BlockingConnectConnection extends TestConnection {
+    private static final class BlockingConnectConnector extends TestConnector {
         private final CountDownLatch started;
         private final CountDownLatch proceed;
 
-        private BlockingConnectConnection(CountDownLatch started, CountDownLatch proceed) {
+        private BlockingConnectConnector(CountDownLatch started, CountDownLatch proceed) {
             this.started = started;
             this.proceed = proceed;
         }

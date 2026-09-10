@@ -6,7 +6,7 @@ import { HttpRequest } from "@smithy/core/protocols";
 import { createServer, type Server } from "node:http";
 
 import { client } from "../src/index.js";
-import { PhotonConnectionLostError } from "../src/errors.js";
+import { PhotonConnectionLost } from "../src/errors.js";
 import { MockCache, Reply } from "./mock-cache.js";
 
 const retryableResponse = Buffer.from(`<?xml version="1.0"?>
@@ -290,7 +290,7 @@ describe("public DynamoDB client", () => {
           Key: { id: { S: "key" } },
         }),
       );
-      const rejection = expect(request).rejects.toBeInstanceOf(PhotonConnectionLostError);
+      const rejection = expect(request).rejects.toBeInstanceOf(PhotonConnectionLost);
       await vi.waitFor(() => {
         expect(hangingCache.photonCommandLog).toContain("photon.request");
       });

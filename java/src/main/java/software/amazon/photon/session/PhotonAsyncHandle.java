@@ -3,7 +3,7 @@ package software.amazon.photon.session;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
 
 import javax.net.ssl.SSLContext;
@@ -130,7 +130,7 @@ public final class PhotonAsyncHandle implements Closeable {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
-        private Map<String, Object> configOverrides;
+        private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
@@ -168,8 +168,8 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
-        public Builder configOverrides(Map<String, Object> configOverrides) {
-            this.configOverrides = configOverrides;
+        public Builder overrides(Map<String, Object> overrides) {
+            this.overrides = overrides;
             return this;
         }
 
@@ -282,19 +282,19 @@ public final class PhotonAsyncHandle implements Closeable {
 
         private PhotonSession createSession(SSLContext resolvedSslContext) {
             return new PhotonSession(
-                    () -> new PhotonConnection(
+                    () -> new PhotonConnector(
                             host, port, resolvedSslContext, connectTimeoutMs,
                             initializationTimeoutMs, requestTimeoutMs,
-                            PhotonConnection.DEFAULT_MAX_PENDING),
+                            PhotonConnector.DEFAULT_MAX_PENDING),
                     authProvider,
-                    configOverrides,
+                    overrides,
                     reconnectPolicy);
         }
 
         private static ExecutorService createDefaultExecutor() {
             return new ThreadPoolExecutor(
                     0,
-                    PhotonConnection.DEFAULT_MAX_PENDING,
+                    PhotonConnector.DEFAULT_MAX_PENDING,
                     60,
                     TimeUnit.SECONDS,
                     new SynchronousQueue<>(),

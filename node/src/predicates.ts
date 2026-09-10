@@ -78,7 +78,7 @@ export class PredicateEvaluator {
   }
 
   /** Return true as soon as one compiled predicate matches the request. */
-  route(request: PhotonRequest): boolean {
+  shouldRouteToPhoton(request: PhotonRequest): boolean {
     if (this.predicates.length === 0) return false;
     const body = parseBody(request.body);
     if (body === undefined) return false;

@@ -1,7 +1,7 @@
 package software.amazon.photon.connection;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
@@ -65,7 +65,7 @@ import java.util.function.Supplier;
  * ordering, and after a timeout we cannot reliably determine which request
  * the next response belongs to.
  */
-public class PhotonConnection implements Closeable {
+public class PhotonConnector implements Closeable {
 
     /** Default request timeout in milliseconds. */
     public static final int DEFAULT_READ_TIMEOUT_MS = 5000;
@@ -121,7 +121,7 @@ public class PhotonConnection implements Closeable {
      * @param port       the cache port
      * @param sslContext the SSL context to use for TLS (allows custom trust stores for testing)
      */
-    public PhotonConnection(String host, int port, SSLContext sslContext) {
+    public PhotonConnector(String host, int port, SSLContext sslContext) {
         this(host, port, sslContext, DEFAULT_CONNECT_TIMEOUT_MS, DEFAULT_INITIALIZATION_TIMEOUT_MS,
                 DEFAULT_READ_TIMEOUT_MS, DEFAULT_MAX_PENDING);
     }
@@ -135,7 +135,7 @@ public class PhotonConnection implements Closeable {
      * @param connectTimeoutMs connection timeout in milliseconds
      * @param readTimeoutMs    read timeout in milliseconds
      */
-    public PhotonConnection(String host, int port, SSLContext sslContext,
+    public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs) {
         this(host, port, sslContext, connectTimeoutMs, readTimeoutMs, readTimeoutMs, DEFAULT_MAX_PENDING);
     }
@@ -150,7 +150,7 @@ public class PhotonConnection implements Closeable {
      * @param readTimeoutMs    read timeout in milliseconds
      * @param maxPending       maximum concurrent pending requests
      */
-    public PhotonConnection(String host, int port, SSLContext sslContext,
+    public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs, int maxPending) {
         this(host, port, sslContext, connectTimeoutMs, readTimeoutMs, readTimeoutMs, maxPending);
     }
@@ -166,7 +166,7 @@ public class PhotonConnection implements Closeable {
      * @param requestTimeoutMs        total timeout for each Photon request attempt
      * @param maxPending              maximum concurrent pending requests
      */
-    public PhotonConnection(String host, int port, SSLContext sslContext,
+    public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int initializationTimeoutMs,
                             int requestTimeoutMs, int maxPending) {
         requirePositive("connectTimeoutMs", connectTimeoutMs);
@@ -332,11 +332,11 @@ public class PhotonConnection implements Closeable {
      *
      * <p>After this returns, the connection is fully ready for concurrent requests.
      *
-     * @param configOverrides optional configuration overrides (may be null or empty)
+     * @param overrides optional configuration overrides (may be null or empty)
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if config handshake fails
      */
-    public ResolvedConfig configureAndStartReader(Map<String, Object> configOverrides) {
+    public ResolvedConfig configureAndStartReader(Map<String, Object> overrides) {
         ensureConnectedNotDead();
         if (readerThread != null) {
             throw new IllegalStateException("Reader already started");
@@ -344,7 +344,7 @@ public class PhotonConnection implements Closeable {
 
         // Send config (still synchronous - reader not running yet)
         try {
-            SerializedCommand configCmd = PhotonProtocol.serializeConfig(configOverrides);
+            SerializedCommand configCmd = PhotonProtocol.serializeConfig(overrides);
             byte[] encoded = RespCodec.encodeCommand(configCmd.getCommandName(),
                     configCmd.getArgs().toArray(new byte[0][]));
             sendRawDirect(encoded);
@@ -378,14 +378,14 @@ public class PhotonConnection implements Closeable {
      *
      * @param userId          the user ID for AUTH (e.g., "default.iam-user")
      * @param authToken       the AUTH token/password
-     * @param configOverrides optional configuration overrides
+     * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
      */
-    public ResolvedConfig connectAndAuthenticate(String userId, String authToken, Map<String, Object> configOverrides) {
+    public ResolvedConfig connectAndAuthenticate(String userId, String authToken, Map<String, Object> overrides) {
         connect();
         authenticate(userId, authToken);
-        return configureAndStartReader(configOverrides);
+        return configureAndStartReader(overrides);
     }
 
     /**
@@ -394,11 +394,11 @@ public class PhotonConnection implements Closeable {
      * <p>The provider is called after TLS connect to get fresh credentials.
      *
      * @param authProvider    supplies the AUTH credentials (called after TLS connect)
-     * @param configOverrides optional configuration overrides
+     * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
      */
-    public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider, Map<String, Object> configOverrides) {
+    public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider, Map<String, Object> overrides) {
         connect();
         AuthCredentials creds;
         try {
@@ -408,7 +408,7 @@ public class PhotonConnection implements Closeable {
             throw new PhotonConnectionError("Auth provider failed", e);
         }
         authenticate(creds.getUserId(), creds.getToken());
-        return configureAndStartReader(configOverrides);
+        return configureAndStartReader(overrides);
     }
 
     /**
@@ -437,7 +437,7 @@ public class PhotonConnection implements Closeable {
      *
      * @param request the request to send
      * @return the cache response
-     * @throws ConnectionLost     if the connection dies
+     * @throws PhotonConnectionLost     if the connection dies
      * @throws PhotonTimeoutError if the read times out (connection is then closed)
      */
     public PhotonResponse request(PhotonRequest request) {
@@ -471,7 +471,7 @@ public class PhotonConnection implements Closeable {
      * @param args    command arguments
      * @return the RESP response
      */
-    public RespValue sendCommand(String command, byte[]... args) {
+    public RespValue execute(String command, byte[]... args) {
         ensureReady();
         byte[] encoded = RespCodec.encodeCommand(command, args);
         return sendAndAwait(encoded);
@@ -524,7 +524,7 @@ public class PhotonConnection implements Closeable {
 
             // Fail all pending requests
             if (pending != null) {
-                pending.failAll(new ConnectionLost("Connection closed"));
+                pending.failAll(new PhotonConnectionLost("Connection closed"));
             }
 
             // Stop reader thread
@@ -562,14 +562,14 @@ public class PhotonConnection implements Closeable {
 
     private void ensureConnectedNotDead() {
         if (dead) {
-            throw new ConnectionLost("Connection is dead");
+            throw new PhotonConnectionLost("Connection is dead");
         }
         synchronized (stateLock) {
             if (socket == null) {
-                throw new ConnectionLost("Connection is not established");
+                throw new PhotonConnectionLost("Connection is not established");
             }
             if (closed) {
-                throw new ConnectionLost("Connection is closed");
+                throw new PhotonConnectionLost("Connection is closed");
             }
         }
     }
@@ -581,7 +581,7 @@ public class PhotonConnection implements Closeable {
         ensureConnectedNotDead();
         synchronized (stateLock) {
             if (readerThread == null) {
-                throw new ConnectionLost("Connection handshake not complete - call configureAndStartReader() first");
+                throw new PhotonConnectionLost("Connection handshake not complete - call configureAndStartReader() first");
             }
         }
     }
@@ -599,7 +599,7 @@ public class PhotonConnection implements Closeable {
             throw e;
         } catch (IOException e) {
             markDead();
-            throw new ConnectionLost("Failed to write to socket", e);
+            throw new PhotonConnectionLost("Failed to write to socket", e);
         }
     }
 
@@ -624,7 +624,7 @@ public class PhotonConnection implements Closeable {
             locked = sendLock.tryLock(requestTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new ConnectionLost("Interrupted while waiting to send request", e);
+            throw new PhotonConnectionLost("Interrupted while waiting to send request", e);
         }
         if (!locked) {
             PhotonTimeoutError timeout = new PhotonTimeoutError(
@@ -638,14 +638,14 @@ public class PhotonConnection implements Closeable {
             }
 
             // Must register before sending to maintain FIFO correlation
-            future = pending.register();
+            future = pending.registerNewRequest();
 
             // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
             OutputStream out;
             synchronized (stateLock) {
                 out = outputStream;
                 if (out == null || dead) {
-                    throw new ConnectionLost("Connection closed during send");
+                    throw new PhotonConnectionLost("Connection closed during send");
                 }
             }
 
@@ -658,7 +658,7 @@ public class PhotonConnection implements Closeable {
             } catch (IOException e) {
                 // Send failed - mark dead (future will be failed by markDead -> failAll)
                 markDead();
-                ConnectionLost failure = new ConnectionLost("Failed to write to socket", e);
+                PhotonConnectionLost failure = new PhotonConnectionLost("Failed to write to socket", e);
                 pending.failAll(failure);
                 throw failure;
             }
@@ -687,8 +687,8 @@ public class PhotonConnection implements Closeable {
         } catch (ExecutionException e) {
             // Reader thread failed the future - preserve the original exception type
             Throwable cause = e.getCause();
-            if (cause instanceof ConnectionLost) {
-                throw (ConnectionLost) cause;
+            if (cause instanceof PhotonConnectionLost) {
+                throw (PhotonConnectionLost) cause;
             } else if (cause instanceof PhotonTimeoutError) {
                 throw (PhotonTimeoutError) cause;
             } else if (cause instanceof PhotonProtocolError) {
@@ -696,13 +696,13 @@ public class PhotonConnection implements Closeable {
             } else if (cause instanceof PhotonError) {
                 throw (PhotonError) cause;
             } else {
-                throw new ConnectionLost("Request failed", cause);
+                throw new PhotonConnectionLost("Request failed", cause);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             markDead();
-            pending.failAll(new ConnectionLost("Request interrupted", e));
-            throw new ConnectionLost("Request interrupted", e);
+            pending.failAll(new PhotonConnectionLost("Request interrupted", e));
+            throw new PhotonConnectionLost("Request interrupted", e);
         } finally {
             cancellation.clear(cancellationAction);
         }

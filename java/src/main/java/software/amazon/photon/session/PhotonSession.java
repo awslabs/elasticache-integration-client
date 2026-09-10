@@ -1,7 +1,7 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonCircuitOpenError;
 import software.amazon.photon.exception.PhotonConnectionError;
@@ -25,7 +25,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
- * Owns the active Photon connection and recovers it after transport failure.
+ * Owns the active Photon connector and recovers it after transport failure.
  *
  * <p>A session orchestrates connection bring-up (transport connect, AUTH, and
  * the mandatory {@code photon.config} handshake) and exposes a synchronous
@@ -34,7 +34,7 @@ import java.util.function.Supplier;
  * <p>Lifecycle: {@code CREATED} to {@code OPEN} to {@code CLOSED}.
  *
  * <p>Recovery is single-flight. Each bounded reconnect attempt creates a new
- * connection, resolves fresh authentication credentials, and repeats the
+ * connector, resolves fresh authentication credentials, and repeats the
  * mandatory configuration handshake. Failed requests are not replayed because
  * the server may have processed them before the connection was lost.
  *
@@ -44,7 +44,7 @@ import java.util.function.Supplier;
  *
  * <p>Usage:
  * <pre>{@code
- * PhotonSession session = new PhotonSession(connection, authProvider, configOverrides);
+ * PhotonSession session = new PhotonSession(connector, authProvider, overrides);
  * session.open();
  * try {
  *     PhotonResponse response = session.request(photonRequest);
@@ -81,9 +81,9 @@ public class PhotonSession implements Closeable {
         HALF_OPEN
     }
 
-    private final Supplier<PhotonConnection> connectionFactory;
+    private final Supplier<PhotonConnector> connectorFactory;
     private final Supplier<AuthCredentials> authProvider;
-    private final Map<String, Object> configOverrides;
+    private final Map<String, Object> overrides;
     private final ReconnectPolicy reconnectPolicy;
     private final ExecutorService recoveryExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable,
@@ -96,79 +96,79 @@ public class PhotonSession implements Closeable {
 
     private volatile State state = State.CREATED;
     private volatile CircuitState circuitState = CircuitState.CLOSED;
-    private volatile PhotonConnection connection;
-    private volatile ResolvedConfig resolvedConfig;
+    private volatile PhotonConnector connector;
+    private volatile ResolvedConfig config;
     private volatile PredicateEvaluator predicateEvaluator;
 
-    private CompletableFuture<PhotonConnection> recovery;
+    private CompletableFuture<PhotonConnector> recovery;
     private int consecutiveRecoveryFailures;
     private long circuitOpenUntilNanos;
 
     /**
-     * Create a session with the given connection and auth provider.
+     * Create a session with the given connector and auth provider.
      *
-     * <p>A session constructed with a concrete connection cannot reconnect
-     * because it has no connection factory.
+     * <p>A session constructed with a concrete connector cannot reconnect
+     * because it has no connector factory.
      *
-     * @param connection      the underlying connection (not yet connected)
-     * @param authProvider    supplies fresh AUTH credentials
-     * @param configOverrides optional config overrides (may be null)
-     * @throws NullPointerException if connection or authProvider is null
+     * @param connector    the underlying connector (not yet connected)
+     * @param authProvider supplies fresh AUTH credentials
+     * @param overrides    optional config overrides (may be null)
+     * @throws NullPointerException if connector or authProvider is null
      */
-    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider,
-                         Map<String, Object> configOverrides) {
-        this(singleConnectionFactory(connection), authProvider, configOverrides,
+    public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider,
+                         Map<String, Object> overrides) {
+        this(singleConnectorFactory(connector), authProvider, overrides,
                 ReconnectPolicy.builder().maxReconnectAttempts(0).build());
     }
 
-    PhotonSession(Supplier<PhotonConnection> connectionFactory,
+    PhotonSession(Supplier<PhotonConnector> connectorFactory,
                   Supplier<AuthCredentials> authProvider,
-                  Map<String, Object> configOverrides,
+                  Map<String, Object> overrides,
                   ReconnectPolicy reconnectPolicy) {
-        if (connectionFactory == null) {
-            throw new NullPointerException("connectionFactory");
+        if (connectorFactory == null) {
+            throw new NullPointerException("connectorFactory");
         }
         if (authProvider == null) {
             throw new NullPointerException("authProvider");
         }
-        this.connectionFactory = connectionFactory;
+        this.connectorFactory = connectorFactory;
         this.authProvider = authProvider;
-        this.configOverrides = configOverrides != null ? configOverrides : Collections.emptyMap();
+        this.overrides = overrides != null ? overrides : Collections.emptyMap();
         this.reconnectPolicy = reconnectPolicy != null ? reconnectPolicy : ReconnectPolicy.defaults();
     }
 
     /**
      * Create a session with the given connection and static auth credentials.
      *
-     * @param connection      the underlying connection (not yet connected)
+     * @param connector       the underlying connector (not yet connected)
      * @param userId          the user ID for AUTH
      * @param authToken       the AUTH token
-     * @param configOverrides optional config overrides (may be null)
+     * @param overrides optional config overrides (may be null)
      */
-    public PhotonSession(PhotonConnection connection, String userId, String authToken,
-                         Map<String, Object> configOverrides) {
-        this(connection, () -> new AuthCredentials(userId, authToken), configOverrides);
+    public PhotonSession(PhotonConnector connector, String userId, String authToken,
+                         Map<String, Object> overrides) {
+        this(connector, () -> new AuthCredentials(userId, authToken), overrides);
     }
 
     /**
      * Create a session with default config overrides.
      *
-     * @param connection   the underlying connection
+     * @param connector    the underlying connector
      * @param authProvider supplies the AUTH credentials
      */
-    public PhotonSession(PhotonConnection connection, Supplier<AuthCredentials> authProvider) {
-        this(connection, authProvider, null);
+    public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider) {
+        this(connector, authProvider, null);
     }
 
     /**
      * Create a session with default config overrides and static auth credentials.
      *
-     * @param connection the underlying connection
+     * @param connector  the underlying connector
      * @param userId     the user ID for AUTH
      * @param authToken  the AUTH token
      */
-    public PhotonSession(PhotonConnection connection, String userId, String authToken) {
-        this(connection, userId, authToken, null);
+    public PhotonSession(PhotonConnector connector, String userId, String authToken) {
+        this(connector, userId, authToken, null);
     }
 
     /**
@@ -194,8 +194,8 @@ public class PhotonSession implements Closeable {
      *
      * @return the resolved config, or null if the session has not opened
      */
-    public ResolvedConfig getResolvedConfig() {
-        return resolvedConfig;
+    public ResolvedConfig getConfig() {
+        return config;
     }
 
     /**
@@ -209,17 +209,17 @@ public class PhotonSession implements Closeable {
                 throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
             }
 
-            connection = connectionFactory.get();
+            connector = connectorFactory.get();
             try {
-                ResolvedConfig initialConfig = initialize(connection);
+                ResolvedConfig initialConfig = initialize(connector);
                 PredicateEvaluator initialPredicateEvaluator =
                         PredicateEvaluator.compile(initialConfig.getRaw());
-                resolvedConfig = initialConfig;
+                config = initialConfig;
                 predicateEvaluator = initialPredicateEvaluator;
                 state = State.OPEN;
             } catch (RuntimeException failure) {
                 state = State.CLOSED;
-                connection.close();
+                connector.close();
                 recoveryExecutor.shutdownNow();
                 throw failure;
             }
@@ -248,16 +248,16 @@ public class PhotonSession implements Closeable {
             throw new PhotonRequestCancellation.CancelledException();
         }
 
-        PhotonConnection active = connection;
+        PhotonConnector active = connector;
         PredicateEvaluator activePredicateEvaluator = predicateEvaluator;
-        if (!activePredicateEvaluator.route(request)) {
+        if (!activePredicateEvaluator.shouldRouteToPhoton(request)) {
             return null;
         }
         if (active == null || active.isDead()) {
             active = recover(active);
             PredicateEvaluator recoveredPredicateEvaluator = predicateEvaluator;
             if (recoveredPredicateEvaluator != activePredicateEvaluator
-                    && !recoveredPredicateEvaluator.route(request)) {
+                    && !recoveredPredicateEvaluator.shouldRouteToPhoton(request)) {
                 return null;
             }
         }
@@ -284,7 +284,7 @@ public class PhotonSession implements Closeable {
             state = State.CLOSED;
         }
 
-        CompletableFuture<PhotonConnection> activeRecovery;
+        CompletableFuture<PhotonConnector> activeRecovery;
         synchronized (recoveryLock) {
             activeRecovery = recovery;
             recoveryLock.notifyAll();
@@ -295,8 +295,8 @@ public class PhotonSession implements Closeable {
         }
         recoveryExecutor.shutdownNow();
 
-        if (connection != null) {
-            connection.close();
+        if (connector != null) {
+            connector.close();
         }
     }
 
@@ -309,7 +309,7 @@ public class PhotonSession implements Closeable {
         return state == State.OPEN;
     }
 
-    private ResolvedConfig initialize(PhotonConnection candidate) {
+    private ResolvedConfig initialize(PhotonConnector candidate) {
         candidate.connect();
         AuthCredentials credentials;
         try {
@@ -323,20 +323,20 @@ public class PhotonSession implements Closeable {
             throw new PhotonConnectionError("Auth provider returned null credentials");
         }
         candidate.authenticate(credentials.getUserId(), credentials.getToken());
-        return candidate.configureAndStartReader(configOverrides);
+        return candidate.configureAndStartReader(overrides);
     }
 
-    private PhotonConnection recover(PhotonConnection failedConnection) {
-        CompletableFuture<PhotonConnection> flight;
+    private PhotonConnector recover(PhotonConnector failedConnector) {
+        CompletableFuture<PhotonConnector> flight;
         boolean owner = false;
         boolean halfOpenAttempt = false;
 
         synchronized (recoveryLock) {
             ensureOpen();
-            if (connection != null
-                    && connection != failedConnection
-                    && connection.isReady()) {
-                return connection;
+            if (connector != null
+                    && connector != failedConnector
+                    && connector.isReady()) {
+                return connector;
             }
             if (recovery != null) {
                 flight = recovery;
@@ -356,16 +356,16 @@ public class PhotonSession implements Closeable {
         }
 
         if (owner) {
-            performRecovery(flight, failedConnection, halfOpenAttempt);
+            performRecovery(flight, failedConnector, halfOpenAttempt);
         }
         return awaitRecovery(flight);
     }
 
-    private void recoverInBackground(PhotonConnection failedConnection) {
+    private void recoverInBackground(PhotonConnector failedConnector) {
         try {
             recoveryExecutor.execute(() -> {
                 try {
-                    recover(failedConnection);
+                    recover(failedConnector);
                 } catch (PhotonError ignored) {
                     // The circuit state records the failure for subsequent requests.
                 }
@@ -377,21 +377,21 @@ public class PhotonSession implements Closeable {
 
     /**
      * Own the shared recovery flight, retry connection initialization, and
-     * publish either the recovered connection or the terminal failure.
+     * publish either the recovered connector or the terminal failure.
      *
      * @param flight the future shared by callers waiting for this recovery
-     * @param failedConnection the connection being replaced, if present
+     * @param failedConnector the connector being replaced, if present
      * @param halfOpenAttempt true when this recovery is the circuit's probe
      */
-    private void performRecovery(CompletableFuture<PhotonConnection> flight,
-                                 PhotonConnection failedConnection,
+    private void performRecovery(CompletableFuture<PhotonConnector> flight,
+                                 PhotonConnector failedConnector,
                                  boolean halfOpenAttempt) {
-        if (failedConnection != null) {
-            failedConnection.close();
+        if (failedConnector != null) {
+            failedConnector.close();
         }
 
         PhotonError lastFailure = new PhotonConnectionError("Photon reconnect attempts exhausted");
-        PhotonConnection recovered = null;
+        PhotonConnector recovered = null;
         ResolvedConfig recoveredConfig = null;
         PredicateEvaluator recoveredPredicateEvaluator = null;
 
@@ -402,9 +402,9 @@ public class PhotonSession implements Closeable {
                 break;
             }
 
-            PhotonConnection candidate = null;
+            PhotonConnector candidate = null;
             try {
-                candidate = connectionFactory.get();
+                candidate = connectorFactory.get();
                 recoveredConfig = initialize(candidate);
                 recoveredPredicateEvaluator =
                         PredicateEvaluator.compile(recoveredConfig.getRaw());
@@ -428,10 +428,10 @@ public class PhotonSession implements Closeable {
         synchronized (recoveryLock) {
             try {
                 if (recovered != null && state == State.OPEN) {
-                    resolvedConfig = recoveredConfig;
+                    config = recoveredConfig;
                     predicateEvaluator = recoveredPredicateEvaluator;
-                    // Publish the connection last so readers see its matching config.
-                    connection = recovered;
+                    // Publish the connector last so readers see its matching config.
+                    connector = recovered;
                     consecutiveRecoveryFailures = 0;
                     circuitState = CircuitState.CLOSED;
                     circuitOpenUntilNanos = 0;
@@ -497,7 +497,7 @@ public class PhotonSession implements Closeable {
         }
     }
 
-    private PhotonConnection awaitRecovery(CompletableFuture<PhotonConnection> flight) {
+    private PhotonConnector awaitRecovery(CompletableFuture<PhotonConnector> flight) {
         try {
             return flight.get();
         } catch (InterruptedException e) {
@@ -519,22 +519,22 @@ public class PhotonSession implements Closeable {
         }
     }
 
-    private static Supplier<PhotonConnection> singleConnectionFactory(
-            PhotonConnection connection) {
-        if (connection == null) {
-            throw new NullPointerException("connection");
+    private static Supplier<PhotonConnector> singleConnectorFactory(
+            PhotonConnector connector) {
+        if (connector == null) {
+            throw new NullPointerException("connector");
         }
-        return new Supplier<PhotonConnection>() {
+        return new Supplier<PhotonConnector>() {
             private boolean supplied;
 
             @Override
-            public synchronized PhotonConnection get() {
+            public synchronized PhotonConnector get() {
                 if (supplied) {
                     throw new PhotonConnectionError(
-                            "This session does not have a reconnectable connection factory");
+                            "This session does not have a reconnectable connector factory");
                 }
                 supplied = true;
-                return connection;
+                return connector;
             }
         };
     }

@@ -323,16 +323,16 @@ class PhotonClientTest {
     }
 
     @Test
-    void builder_withConfigOverrides_passesToSession() {
+    void builder_withOverrides_passesToSession() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
                 .authCredentials(TEST_USER, TEST_TOKEN)
-                .configOverrides(Collections.singletonMap("ttl", 300))
+                .overrides(Collections.singletonMap("ttl", 300))
                 .sslContext(clientSslContext)
                 .origin(DynamoDbClient.builder(), sdkConfig)
                 .build()) {
             
-            assertNotNull(result.handle().getSession().getResolvedConfig());
+            assertNotNull(result.handle().getSession().getConfig());
         }
     }
 

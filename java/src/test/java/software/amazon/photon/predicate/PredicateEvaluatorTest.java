@@ -49,7 +49,7 @@ class PredicateEvaluatorTest {
                 singletonMap("predicates", predicates));
 
         assertEquals(1, evaluator.size());
-        assertTrue(evaluator.route(request("GetItem", "dynamodb", "{}")));
+        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", "{}")));
     }
 
     @Test
@@ -68,13 +68,13 @@ class PredicateEvaluatorTest {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(defaultConfig());
 
         for (String operation : ALL_OPERATIONS) {
-            assertTrue(evaluator.route(request(operation, "dynamodb", "{}")), operation);
+            assertTrue(evaluator.shouldRouteToPhoton(request(operation, "dynamodb", "{}")), operation);
         }
         for (String operation : Arrays.asList(
                 "CreateTable", "DescribeTable", "ExecuteStatement")) {
-            assertFalse(evaluator.route(request(operation, "dynamodb", "{}")), operation);
+            assertFalse(evaluator.shouldRouteToPhoton(request(operation, "dynamodb", "{}")), operation);
         }
-        assertFalse(evaluator.route(request("GetItem", "s3", "{}")));
+        assertFalse(evaluator.shouldRouteToPhoton(request("GetItem", "s3", "{}")));
     }
 
     @Test
@@ -83,12 +83,12 @@ class PredicateEvaluatorTest {
                 tableAllowlistConfig("Users"));
 
         for (String operation : SINGLE_TABLE_OPERATIONS) {
-            assertTrue(evaluator.route(request(
+            assertTrue(evaluator.shouldRouteToPhoton(request(
                     operation, "dynamodb", "{\"TableName\":\"Users\"}")), operation);
-            assertFalse(evaluator.route(request(
+            assertFalse(evaluator.shouldRouteToPhoton(request(
                     operation, "dynamodb", "{\"TableName\":\"Orders\"}")), operation);
         }
-        assertFalse(evaluator.route(request("GetItem", "dynamodb", "{\"Key\":{}}")));
+        assertFalse(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", "{\"Key\":{}}")));
     }
 
     @Test
@@ -96,15 +96,15 @@ class PredicateEvaluatorTest {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(
                 tableAllowlistConfig("Users", "Sessions"));
 
-        assertTrue(evaluator.route(request("BatchGetItem", "dynamodb",
+        assertTrue(evaluator.shouldRouteToPhoton(request("BatchGetItem", "dynamodb",
                 "{\"RequestItems\":{\"Users\":{},\"Sessions\":{}}}")));
-        assertFalse(evaluator.route(request("BatchGetItem", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("BatchGetItem", "dynamodb",
                 "{\"RequestItems\":{\"Users\":{},\"Orders\":{}}}")));
-        assertTrue(evaluator.route(request("BatchWriteItem", "dynamodb",
+        assertTrue(evaluator.shouldRouteToPhoton(request("BatchWriteItem", "dynamodb",
                 "{\"RequestItems\":{\"Users\":[]}}")));
-        assertFalse(evaluator.route(request("BatchWriteItem", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("BatchWriteItem", "dynamodb",
                 "{\"RequestItems\":{\"Users\":[],\"Orders\":[]}}")));
-        assertFalse(evaluator.route(request("BatchGetItem", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("BatchGetItem", "dynamodb",
                 "{\"RequestItems\":{}}")));
     }
 
@@ -113,17 +113,17 @@ class PredicateEvaluatorTest {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(
                 tableAllowlistConfig("Users", "Sessions"));
 
-        assertTrue(evaluator.route(request("TransactGetItems", "dynamodb",
+        assertTrue(evaluator.shouldRouteToPhoton(request("TransactGetItems", "dynamodb",
                 "{\"TransactItems\":[{\"Get\":{\"TableName\":\"Users\"}},"
                         + "{\"Get\":{\"TableName\":\"Sessions\"}}]}")));
-        assertFalse(evaluator.route(request("TransactGetItems", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("TransactGetItems", "dynamodb",
                 "{\"TransactItems\":[{\"Get\":{\"TableName\":\"Users\"}},"
                         + "{\"Get\":{\"TableName\":\"Orders\"}}]}")));
-        assertTrue(evaluator.route(request("TransactWriteItems", "dynamodb",
+        assertTrue(evaluator.shouldRouteToPhoton(request("TransactWriteItems", "dynamodb",
                 "{\"TransactItems\":[{\"Put\":{\"TableName\":\"Users\"}}]}")));
-        assertFalse(evaluator.route(request("TransactWriteItems", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("TransactWriteItems", "dynamodb",
                 "{\"TransactItems\":[{\"Put\":{\"TableName\":\"Orders\"}}]}")));
-        assertFalse(evaluator.route(request("TransactGetItems", "dynamodb",
+        assertFalse(evaluator.shouldRouteToPhoton(request("TransactGetItems", "dynamodb",
                 "{\"TransactItems\":[]}")));
     }
 
@@ -135,7 +135,7 @@ class PredicateEvaluatorTest {
         for (String body : Arrays.asList(
                 "", "not json", "[\"TableName\"]", "null",
                 "{\"TableName\":\"Users\"} trailing")) {
-            assertFalse(evaluator.route(request("GetItem", "dynamodb", body)), body);
+            assertFalse(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", body)), body);
         }
     }
 
@@ -146,17 +146,17 @@ class PredicateEvaluatorTest {
         byte[] largeBody = matchingBodyOfSize(600 * 1024);
 
         assertEquals(600 * 1024, largeBody.length);
-        assertTrue(evaluator.route(request("GetItem", "dynamodb", largeBody)));
+        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", largeBody)));
     }
 
     @Test
     void malformedAndNonObjectBodiesDeclineBodyIndependentPredicates() {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(defaultConfig());
 
-        assertTrue(evaluator.route(request("GetItem", "dynamodb", new byte[0])));
-        assertFalse(evaluator.route(request(
+        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", new byte[0])));
+        assertFalse(evaluator.shouldRouteToPhoton(request(
                 "GetItem", "dynamodb", "not json".getBytes(StandardCharsets.UTF_8))));
-        assertFalse(evaluator.route(request(
+        assertFalse(evaluator.shouldRouteToPhoton(request(
                 "GetItem", "dynamodb", "[]".getBytes(StandardCharsets.UTF_8))));
     }
 
@@ -167,8 +167,8 @@ class PredicateEvaluatorTest {
                 predicate("operation == 'GetItem'", Collections.emptyMap()));
         PredicateEvaluator evaluator = PredicateEvaluator.compile(config);
 
-        assertTrue(evaluator.route(request("GetItem", "dynamodb", "{}")));
-        assertFalse(evaluator.route(request("PutItem", "dynamodb", "{}")));
+        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", "{}")));
+        assertFalse(evaluator.shouldRouteToPhoton(request("PutItem", "dynamodb", "{}")));
     }
 
     @Test
@@ -185,13 +185,13 @@ class PredicateEvaluatorTest {
                 "POST", "https://dynamodb.us-east-1.amazonaws.com/",
                 headers, new byte[0], new RequestMetadata("dynamodb", "GetItem"));
 
-        assertTrue(evaluator.route(request));
+        assertTrue(evaluator.shouldRouteToPhoton(request));
     }
 
     @Test
     void emptyPredicateSetRoutesNothing() {
         assertFalse(PredicateEvaluator.compile(Collections.emptyMap())
-                .route(request("GetItem", "dynamodb", "{}")));
+                .shouldRouteToPhoton(request("GetItem", "dynamodb", "{}")));
     }
 
     private static Map<String, Object> defaultConfig() {

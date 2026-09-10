@@ -10,7 +10,7 @@ import {
   type SocketChunkSource,
 } from "../src/connection.js";
 import {
-  PhotonConnectionLostError,
+  PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
@@ -61,10 +61,10 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toEqual(Buffer.from("three"));
   });
 
-  it("turns clean EOF into PhotonConnectionLostError", async () => {
+  it("turns clean EOF into PhotonConnectionLost", async () => {
     const reader = new SocketReader(sourceFrom([]));
 
-    await expect(reader.readFrame()).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    await expect(reader.readFrame()).rejects.toBeInstanceOf(PhotonConnectionLost);
   });
 
   it("rejects malformed and truncated frames", async () => {
@@ -73,21 +73,21 @@ describe("SocketReader", () => {
     ).rejects.toBeInstanceOf(PhotonProtocolError);
     await expect(
       new SocketReader(sourceFrom([Buffer.from("$5\r\nab")])).readFrame(),
-    ).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    ).rejects.toBeInstanceOf(PhotonConnectionLost);
   });
 });
 
 describe("PendingRequests", () => {
   it("resolves responses in registration order, including RespError values", async () => {
     const pending = new PendingRequests();
-    const first = pending.register();
-    const second = pending.register();
-    const third = pending.register();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
+    const third = pending.registerNewRequest();
     const error = new RespError("ERR", "reply");
 
-    pending.resolveNext(Buffer.from("first"));
-    pending.resolveNext(error);
-    pending.resolveNext(Buffer.from("third"));
+    pending.resolveOldestRequest(Buffer.from("first"));
+    pending.resolveOldestRequest(error);
+    pending.resolveOldestRequest(Buffer.from("third"));
 
     await expect(first).resolves.toEqual(Buffer.from("first"));
     await expect(second).resolves.toBe(error);
@@ -96,22 +96,22 @@ describe("PendingRequests", () => {
 
   it("fails every pending request", async () => {
     const pending = new PendingRequests();
-    const first = pending.register();
-    const second = pending.register();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
 
-    pending.failAll(new PhotonConnectionLostError("connection closed"));
+    pending.failAll(new PhotonConnectionLost("connection closed"));
 
-    await expect(first).rejects.toBeInstanceOf(PhotonConnectionLostError);
-    await expect(second).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    await expect(first).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(second).rejects.toBeInstanceOf(PhotonConnectionLost);
   });
 
   it("rejects registrations above the configured capacity", async () => {
     const pending = new PendingRequests(1);
-    const first = pending.register();
+    const first = pending.registerNewRequest();
 
-    expect(() => pending.register()).toThrow("maximum pending requests");
+    expect(() => pending.registerNewRequest()).toThrow("maximum pending requests");
 
-    pending.resolveNext(Buffer.from("first"));
+    pending.resolveOldestRequest(Buffer.from("first"));
     await expect(first).resolves.toEqual(Buffer.from("first"));
   });
 
@@ -194,7 +194,7 @@ describe("PhotonConnector", () => {
     );
   });
 
-  it("does not resurrect a connector closed during connect", async () => {
+  it("does not resurrect a connection closed during connect", async () => {
     const cache = await startCache();
     const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
     const connecting = connector.connect();
@@ -331,10 +331,10 @@ describe("PhotonConnector", () => {
     vi.spyOn(socket, "write").mockReturnValue(false);
     const timedOutRequest = connector.execute("photon.config", Buffer.from("{}")); // on send/drain wait
 
-    await expect(pendingRequest).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    await expect(pendingRequest).rejects.toBeInstanceOf(PhotonConnectionLost);
     await expect(timedOutRequest).rejects.toThrow("send timed out after 25ms");
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
     await connector.close();
   });
@@ -349,7 +349,7 @@ describe("PhotonConnector", () => {
     });
 
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
     expect((connector as unknown as { socket?: unknown }).socket).toBeUndefined();
     await connector.close();
@@ -388,7 +388,7 @@ describe("PhotonConnector", () => {
       "IAM AUTH rejected: invalid-iam-credentials",
     );
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
   });
 
@@ -411,7 +411,7 @@ describe("PhotonConnector", () => {
       ),
     ).rejects.toBeInstanceOf(PhotonTimeoutError);
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
   });
 
@@ -434,7 +434,7 @@ describe("PhotonConnector", () => {
       ),
     ).rejects.toThrow("maximum response size");
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
   });
 
@@ -462,7 +462,7 @@ describe("PhotonConnector", () => {
     await connector.close();
 
     await expect(settled).resolves.toEqual({
-      error: expect.any(PhotonConnectionLostError),
+      error: expect.any(PhotonConnectionLost),
     });
     await connector.close();
   });
@@ -495,12 +495,12 @@ describe("PhotonConnector", () => {
       Buffer.from("service=s&op=o"),
     );
     await new Promise((resolve) => setTimeout(resolve, 10));
-    const rejection = expect(request).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    const rejection = expect(request).rejects.toBeInstanceOf(PhotonConnectionLost);
     connector.destroy();
 
     await rejection;
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
     connector.destroy();
     await connector.close();
@@ -562,9 +562,9 @@ describe("PhotonConnector", () => {
       Buffer.from("body"),
       Buffer.from("service=s&op=o"),
     );
-    await expect(request).rejects.toBeInstanceOf(PhotonConnectionLostError);
+    await expect(request).rejects.toBeInstanceOf(PhotonConnectionLost);
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLostError,
+      PhotonConnectionLost,
     );
   });
 

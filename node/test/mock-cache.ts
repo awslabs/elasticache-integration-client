@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
 
 import { CONFIG_COMMAND, REQUEST_COMMAND } from "../src/protocol.js";
-import { decodeResp, IncompleteFrameError } from "../src/resp.js";
+import { decodeResp, IncompleteFrame } from "../src/resp.js";
 
 type ReplyFactory = (request: ReceivedRequest) => Reply;
 type Failure = "hang" | "drop";
@@ -292,7 +292,7 @@ export class MockCache {
         try {
           decoded = decodeResp(pending);
         } catch (error) {
-          if (error instanceof IncompleteFrameError) return;
+          if (error instanceof IncompleteFrame) return;
           socket.destroy();
           return;
         }

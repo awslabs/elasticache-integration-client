@@ -10,9 +10,9 @@ import software.amazon.awssdk.http.async.AsyncExecuteRequest;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
-import software.amazon.photon.connection.PhotonConnection;
+import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
-import software.amazon.photon.exception.ConnectionLost;
+import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -295,7 +295,7 @@ class PhotonAsyncHttpClientTest {
         private final CountDownLatch cancelled = new CountDownLatch(1);
 
         private BlockingSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
@@ -311,13 +311,13 @@ class PhotonAsyncHttpClientTest {
 
     private static final class ImmediateSession extends PhotonSession {
         private ImmediateSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
     }
 
     private static final class DecliningSession extends PhotonSession {
         private DecliningSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
@@ -328,12 +328,12 @@ class PhotonAsyncHttpClientTest {
 
     private static final class FailingSession extends PhotonSession {
         private FailingSession() {
-            super(new PhotonConnection("unused", 1, null), "user", "token");
+            super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
-            throw new ConnectionLost("cache unavailable");
+            throw new PhotonConnectionLost("cache unavailable");
         }
     }
 

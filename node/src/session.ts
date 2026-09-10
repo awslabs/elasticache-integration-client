@@ -56,7 +56,7 @@ type SessionState = "created" | "open" | "closed";
 
 /** Owns a cache connection and exposes the asynchronous request API. */
 export class PhotonSession {
-  private config: ResolvedConfig | undefined;
+  private _config: ResolvedConfig | undefined;
   private predicateEvaluator = PredicateEvaluator.compile(undefined);
   private state: SessionState = "created";
 
@@ -65,8 +65,8 @@ export class PhotonSession {
     private readonly overrides: Readonly<Record<string, unknown>> = {},
   ) {}
 
-  get resolvedConfig(): ResolvedConfig | undefined {
-    return this.config;
+  get config(): ResolvedConfig | undefined {
+    return this._config;
   }
 
   get isOpen(): boolean {
@@ -87,7 +87,7 @@ export class PhotonSession {
       if (this.state !== "created") {
         throw new PhotonError("session closed during open()");
       }
-      this.config = config;
+      this._config = config;
       this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
       this.state = "open";
     } catch (error) {
@@ -110,7 +110,7 @@ export class PhotonSession {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
     }
-    if (this.state === "open" && !this.predicateEvaluator.route(request)) {
+    if (this.state === "open" && !this.predicateEvaluator.shouldRouteToPhoton(request)) {
       return undefined;
     }
     const [command, args] = serializeRequest(request);

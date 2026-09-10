@@ -31,12 +31,22 @@ import logging
 
 from io import BytesIO
 
-from photon.exceptions import PhotonError
+from photon.exceptions import (
+    PhotonConnectionError,
+    PhotonConnectionLost,
+    PhotonError,
+    PhotonTimeoutError,
+)
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.session import PhotonSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.client import BaseClient
+from botocore.exceptions import (
+    ConnectionClosedError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 from urllib3.response import HTTPResponse as Urllib3Response
 
 _BEFORE_SEND = "before-send"
@@ -125,13 +135,43 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. Any Photon failure therefore degrades to a cache miss.
-        Non-Photon exceptions propagate: those are our bugs and should be loud.
+        request down the pipeline and keeps the original behavior. That happens for two reasons: the
+        session declined the request (no resolved predicate matched — the normal per-request steady
+        state, logged at debug), or Photon replied with something unusable (degrades to a cache
+        miss, logged as a warning). Non-Photon exceptions propagate.
+
+        Transport failures do NOT pass through: if the cache never answered, the request's fate is
+        unknown — so re-sending it on the application's behalf could apply it twice. 
+        Those raise botocore's own transport errors, and the application decides whether to retry.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
             response = self._session.request(http_request)
+            if response is None:
+                logger.debug("No predicate matched %s; passing through to the service",
+                             http_request.metadata.operation)
+                return None
             return _photon_to_aws_response(request.url, response)
+        except (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError) as exc:
+            _raise_as_botocore_error(exc, request.url)
         except PhotonError:
             logger.warning("Photon request failed; passing through to the service", exc_info=True)
             return None
+
+
+def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
+    """Re-raise a Photon transport failure as botocore's own transport error.
+
+    botocore's ``Endpoint._do_get_response`` catches exceptions from ``before-send`` handlers the
+    same way it catches them from ``self._send(request)``, so raising here behaves exactly like a
+    transport failure on the real connection. Using botocore's classes — not Photon's — keeps the
+    application's existing ``except`` blocks working, and all three are retryable under the
+    ``standard`` retry mode, so the application's retry configuration applies unchanged.
+    """
+    if isinstance(exc, PhotonTimeoutError):
+        raise ReadTimeoutError(endpoint_url=endpoint_url) from exc
+    if isinstance(exc, PhotonConnectionLost):
+        raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
+    if isinstance(exc, PhotonConnectionError):
+        raise EndpointConnectionError(endpoint_url=endpoint_url) from exc
+    raise exc  # unmapped Photon error: propagate loudly rather than mislabel it

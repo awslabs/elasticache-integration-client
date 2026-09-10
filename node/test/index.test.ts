@@ -28,7 +28,7 @@ describe("Photon package entry point", () => {
     const entry = await import("../src/index.js");
     expect(Object.keys(entry).sort()).toEqual(["client", "version"]);
     for (const name of [
-      "PhotonConnectionLostError",
+      "PhotonConnectionLost",
       "PhotonConnectionError",
       "PhotonError",
       "PhotonProtocolError",

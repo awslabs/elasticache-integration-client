@@ -7,7 +7,7 @@ import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smi
 import { SMITHY_CONTEXT_KEY } from "@smithy/types";
 import { Readable } from "node:stream";
 
-import { PhotonConnectionLostError, PhotonError } from "../src/errors.js";
+import { PhotonConnectionLost, PhotonError } from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata } from "../src/models.js";
 import {
   awsToPhotonRequest,
@@ -295,7 +295,7 @@ describe("photon middleware", () => {
   });
 
   it("does not pass shutdown Photon failures through to the origin", async () => {
-    const connectionClosed = new PhotonConnectionLostError("connection closed");
+    const connectionClosed = new PhotonConnectionLost("connection closed");
     const session = fakeSession({
       isOpen: false,
       request: vi.fn(async () => {
