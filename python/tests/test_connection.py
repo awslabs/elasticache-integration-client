@@ -26,6 +26,7 @@ from photon.exceptions import (
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
+    PhotonProtocolError,
     PhotonTimeoutError,
 )
 from photon.resp import RespError, RespValue
@@ -394,6 +395,18 @@ class TestPhotonConnector:
             return [await reader.read_frame(), await reader.read_frame()]
 
         assert asyncio.run(scenario()) == [b"hello", b"OK"]
+
+    def test_garbage_reply_fails_caller_as_connection_lost(self):
+        """A reply that cannot be decoded kills the connection: the waiting caller fails
+        with PhotonConnectionLost carrying the PhotonProtocolError as its cause. The
+        request was sent and never answered, so it must surface as a connection loss
+        (indeterminate), never as a response-level error."""
+        self.start_cache(response=Reply(frame=b"X123\r\n"))
+        self.connect_and_handshake()
+        with pytest.raises(PhotonConnectionLost) as exc_info:
+            self.send_request()
+        assert isinstance(exc_info.value.__cause__, PhotonProtocolError)
+        assert self.conn._closed is True
 
     def test_reader_eof_raises_connection_lost(self):
         """Clean EOF mid-frame surfaces as PhotonConnectionLost, not a decode error.

@@ -471,8 +471,15 @@ class PhotonConnector:
                 value = await self._reader.read_frame()
                 # Hand it to the oldest waiting caller (FIFO), waking their future.result().
                 self._pending.resolve_oldest_request(value)
-        except (PhotonConnectionLost, PhotonProtocolError) as exc:
+        except PhotonConnectionLost as exc:
             self._mark_closed(exc)
+        except PhotonProtocolError as exc:
+            # Mirrors botocore, which raises ConnectionClosedError when the response
+            # stream violates the protocol (urllib3 ProtocolError): pending requests
+            # fail as a connection loss, with the decode failure as the root cause.
+            error = PhotonConnectionLost("reply stream corrupt")
+            error.__cause__ = exc
+            self._mark_closed(error)
         except OSError as exc:
             error = PhotonConnectionLost("socket read failed")
             error.__cause__ = exc

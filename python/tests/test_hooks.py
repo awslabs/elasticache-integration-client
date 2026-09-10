@@ -6,8 +6,20 @@ import pytest
 from botocore.hooks import first_non_none_response
 
 from photon import hooks
-from photon.exceptions import PhotonConnectionError, PhotonError, PhotonTimeoutError
+from photon.exceptions import (
+    PhotonConnectionError,
+    PhotonConnectionLost,
+    PhotonError,
+    PhotonProtocolError,
+    PhotonTimeoutError,
+)
 from tests.mock import MockClient, mock_session
+
+from botocore.exceptions import (
+    ConnectionClosedError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 
 
 def _emit(client, body=b"{}"):
@@ -76,16 +88,13 @@ def test_missing_or_malformed_event_name_raises(event_name):
     with pytest.raises(PhotonError):
         hooks._aws_to_photon_request(request, event_name)
 
-
-# --- fall-through: a failed Photon path never reaches the application ----------
-
 @pytest.mark.parametrize("error", [
     PhotonError("boom"),
-    PhotonConnectionError("connect failed"),
-    PhotonTimeoutError("timed out"),
+    PhotonProtocolError("malformed reply"),
 ])
-def test_photon_failure_passes_through(error):
-    """When the Photon path fails, the handler returns None so botocore sends the real request."""
+def test_response_level_failure_passes_through(error):
+    """When Photon replied with something unusable, the handler returns None so botocore
+    sends the real request."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = error
@@ -93,8 +102,25 @@ def test_photon_failure_passes_through(error):
     assert _emit(sdk) is None
 
 
+@pytest.mark.parametrize("photon_error,botocore_error", [
+    (PhotonTimeoutError("timed out"), ReadTimeoutError),
+    (PhotonConnectionLost("socket died"), ConnectionClosedError),
+    (PhotonConnectionError("connect failed"), EndpointConnectionError),
+])
+def test_transport_failure_raises_botocore_error(photon_error, botocore_error):
+    """A transport failure raises botocore's own error, chained to the Photon error, and
+    never passes through."""
+    sdk = MockClient()
+    session = mock_session()
+    session.request.side_effect = photon_error
+    hooks.PhotonHandle(sdk, session)
+    with pytest.raises(botocore_error) as exc_info:
+        _emit(sdk)
+    assert exc_info.value.__cause__ is photon_error
+
+
 def test_non_photon_error_propagates():
-    """A non-Photon exception is our bug and propagates instead of passing through."""
+    """A non-Photon exception propagates instead of passing through."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = RuntimeError("bug")
