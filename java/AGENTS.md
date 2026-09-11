@@ -118,8 +118,9 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Reconnection, circuit breaking, periodic config refresh, and out-of-band
-responses are currently out of scope.
+Reconnection, circuit breaking, and periodic config refresh are currently out
+of scope. Deferred responses delivered by `photon.response` pushes are
+supported; other push kinds are ignored for forward compatibility.
 Do not introduce them silently or mistake their absence for a review finding;
 intentional scope changes require README, tests, and an explicit contract
 decision. Normal AWS SDK retry/deserialization behavior remains in scope.

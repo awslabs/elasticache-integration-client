@@ -638,7 +638,7 @@ public class PhotonConnector implements Closeable {
             }
 
             // Must register before sending to maintain FIFO correlation
-            future = pending.registerNewRequest();
+            future = pending.registerNewRequest(deferredResponseAllowed);
 
             // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
             OutputStream out;

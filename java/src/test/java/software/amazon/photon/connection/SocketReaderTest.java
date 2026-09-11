@@ -208,6 +208,21 @@ class SocketReaderTest {
     }
 
     @Test
+    void readAndResolve_fifoOnlySimpleString_remainsFifoReply() {
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest(false);
+        SocketReader reader = new SocketReader(
+                new ByteArrayInputStream("+QUEUED\r\n".getBytes(StandardCharsets.UTF_8)),
+                pending, () -> {});
+
+        reader.readAndResolve();
+
+        assertEquals(
+                new RespSimpleString("QUEUED".getBytes(StandardCharsets.UTF_8)),
+                future.join());
+    }
+
+    @Test
     void readAndResolve_unknownPushKindAndId_areIgnored() {
         byte[] data = (">2\r\n$10\r\nother.kind\r\n:1\r\n"
                 + ">3\r\n$15\r\nphoton.response\r\n:999\r\n+ignored\r\n"

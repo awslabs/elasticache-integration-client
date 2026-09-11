@@ -90,7 +90,7 @@ public class PendingRequests {
      * @throws PhotonConnectionLost if the queue is closed or at capacity
      */
     public CompletableFuture<RespValue> registerNewRequest() {
-        return register(true);
+        return registerNewRequest(true);
     }
 
     /**
@@ -99,7 +99,7 @@ public class PendingRequests {
      * <p>Only Photon request calls accept a request-ID reply. Raw commands
      * remain FIFO-correlated and return arbitrary RESP simple strings directly.
      */
-    CompletableFuture<RespValue> register(boolean deferredResponseAllowed) {
+    CompletableFuture<RespValue> registerNewRequest(boolean deferredResponseAllowed) {
         lock.lock();
         try {
             if (closed) {

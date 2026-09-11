@@ -330,6 +330,36 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
+    void execute_requestIdSimpleStringRemainsFifoReply() {
+        cache.setReply(Reply.requestId(42));
+
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 1000, PhotonConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            RespValue response = conn.execute(
+                    "PHOTON.REQUEST",
+                    "GET".getBytes(StandardCharsets.UTF_8),
+                    "https://example.com/item".getBytes(StandardCharsets.UTF_8),
+                    new byte[0],
+                    new byte[0],
+                    "service=dynamodb&op=GetItem".getBytes(StandardCharsets.UTF_8));
+
+            // If execute allowed deferred responses, +42 would move this request to
+            // async tracking. Since no matching push is sent, execute would time out.
+            // Reaching this assertion confirms the reply was resolved through FIFO.
+            assertEquals(
+                    new RespSimpleString("42".getBytes(StandardCharsets.UTF_8)),
+                    response);
+            assertFalse(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
     void request_deferredResponseDoesNotBlockLaterFifoReply() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
         CountDownLatch firstReceived = new CountDownLatch(1);
