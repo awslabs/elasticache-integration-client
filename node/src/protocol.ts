@@ -20,14 +20,19 @@ export const REQUEST_COMMAND = "photon.request";
 const MIN_STATUS = 100;
 const MAX_STATUS = 599;
 
-// Headers excluded from the normalized form (case-insensitive). Auth/volatile headers must not
-// affect the cache key or be forwarded.
+// Headers excluded from the normalized form (case-insensitive): auth/volatile headers and
+// per-attempt transport artifacts, none of which identify the request. `host` is dropped so the
+// proxy sets the origin's own Host (the SDK's HttpRequest carries the AWS service host, which the origin rejects).
 const EXCLUDED_HEADERS = new Set([
   "authorization",
   "x-amz-date",
   "x-amz-security-token",
   "x-amz-request-id",
   "amz-sdk-request",
+  "host",
+  "amz-sdk-invocation-id",
+  "x-amz-content-sha256",
+  "x-amz-user-agent",
 ]);
 
 const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });

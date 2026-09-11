@@ -143,10 +143,15 @@ describe("Photon protocol", () => {
     expect(normalizeHeaders({ Authorization: "x", "X-Amz-Date": "y" })).toEqual(Buffer.alloc(0));
   });
 
-  it("retains x-amz-content-sha256 in normalized headers", () => {
-    expect(normalizeHeaders({ "x-amz-content-sha256": "hash" })).toEqual(
-      Buffer.from("x-amz-content-sha256:hash"),
-    );
+  it("excludes host and per-attempt transport headers from normalized headers", () => {
+    expect(
+      normalizeHeaders({
+        host: "dynamodb.us-east-1.amazonaws.com",
+        "amz-sdk-invocation-id": "id",
+        "x-amz-content-sha256": "hash",
+        "x-amz-user-agent": "aws-sdk-js/3",
+      }),
+    ).toEqual(Buffer.alloc(0));
   });
 
   it("sorts duplicate normalized names by value like Python", () => {
