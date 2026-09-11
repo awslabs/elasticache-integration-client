@@ -5,6 +5,15 @@
  * After a live connection is lost, reconnect attempts continue in the
  * background until one succeeds or the session closes. Requests that have not
  * been sent may use the origin fallback window while no connector is available.
+ *
+ * The resolved config is fetched once and its CEL predicates determine which
+ * requests are sent to Photon. The middleware may pass predicate declines and
+ * disconnected requests through to the origin.
+ *
+ * Each active connection also owns a ConfigRefresher. That is a lifecycle skeleton only:
+ * refreshOnce() is currently a no-op, so fetching, parsing, and swapping in a
+ * new resolved config together with its compiled predicates is not yet
+ * implemented.
  */
 import { performance } from "node:perf_hooks";
 
@@ -23,6 +32,7 @@ import {
   serializeRequest,
 } from "./protocol.js";
 import { PredicateEvaluator } from "./predicates.js";
+import { ConfigRefresher } from "./refresh.js";
 
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
@@ -164,6 +174,7 @@ function singleConnectorFactory(connector: PhotonConnector): PhotonConnectorFact
 export class PhotonSession {
   private _config: ResolvedConfig | undefined;
   private predicateEvaluator = PredicateEvaluator.compile(undefined);
+  private refresher: ConfigRefresher | undefined;
   private state: SessionState = "created";
   private connection: ConnectionState = "init";
   private readonly connectorFactory: PhotonConnectorFactory;
@@ -248,6 +259,9 @@ export class PhotonSession {
     });
   }
 
+  /** TODO: Placeholder. Fetching and swapping in a new config is not yet implemented. */
+  private refreshOnce(): void {}
+
   /**
    * Send matching requests to Photon and decline requests that are safe to send
    * to origin.
@@ -281,11 +295,12 @@ export class PhotonSession {
     return parseRequestResponse(await currentConnector.execute(command, ...args));
   }
 
-  /** Close active and recovering connectors. Idempotent. */
+  /** Stop refresh and close active and recovering connectors. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closed";
     this.connection = "closed";
+    this.refresher?.stop();
     this.recoveryAbort.abort();
     const active = this.connector;
     const candidate = this.candidate;
@@ -299,6 +314,7 @@ export class PhotonSession {
     if (this.state === "closed") return;
     this.state = "closed";
     this.connection = "closed";
+    this.refresher?.stop();
     this.recoveryAbort.abort();
     this.candidate?.destroy();
     this.connector?.destroy();
@@ -348,9 +364,15 @@ export class PhotonSession {
     if (this.disconnected.has(connector) || connector.isDead) {
       throw new PhotonConnectionError("Connection closed during initialization");
     }
+    const refresher = new ConfigRefresher(initialized.config.refreshInterval, () => {
+      this.refreshOnce();
+    });
+    this.refresher?.stop();
     this._config = initialized.config;
     this.predicateEvaluator = initialized.evaluator;
     this.connector = connector;
+    this.refresher = refresher;
+    refresher.start();
   }
 
   private handleDisconnect(connector: PhotonConnector): void {
@@ -360,6 +382,7 @@ export class PhotonSession {
     // Open the fallback window before clearing the connector so a request that
     // observes no connector always sees the current outage's deadline.
     this.fallbackDeadline = performance.now() + this.reconnectPolicy.fallbackWindowMs;
+    this.refresher?.stop();
     this.connector = undefined;
     this.connection = "reconnecting";
     void connector.close().catch(() => undefined);

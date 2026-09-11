@@ -10,6 +10,7 @@ import {
 import { PhotonConnector } from "../src/connection.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
+import type { ConfigRefresher } from "../src/refresh.js";
 import { MockCache, MockTcpProxy } from "./mock-cache.js";
 
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
@@ -59,6 +60,7 @@ function controlledConnector(
         if (options.config !== undefined) return options.config();
         return Buffer.from(
           JSON.stringify({
+            refresh_interval: 60,
             predicates: [{ expr: options.predicate ?? "true", vars: {} }],
           }),
         );
@@ -110,6 +112,11 @@ async function waitForState(session: PhotonSession, state: string): Promise<void
   });
 }
 
+/** Reach the session's private refresher; lifecycle assertions need it, callers do not. */
+function refresherOf(session: PhotonSession): ConfigRefresher | undefined {
+  return (session as unknown as { refresher: ConfigRefresher | undefined }).refresher;
+}
+
 describe("PhotonSession", () => {
   it("reports whether the session is open", async () => {
     const session = new PhotonSession(fakeConnector());
@@ -152,6 +159,7 @@ describe("PhotonSession", () => {
     }
     expect(connectOrder).toBeLessThan(authenticateOrder);
     expect(authenticateOrder).toBeLessThan(executeOrder);
+    await session.close();
   });
 
   it("serializes requests, delegates execution, and parses PhotonResponse", async () => {
@@ -180,13 +188,16 @@ describe("PhotonSession", () => {
       Buffer.from('{"value":"body"}'),
       Buffer.from("service=svc&op=Test"),
     );
+    await session.close();
   });
 
   it("declines unmatched requests without a cache round trip", async () => {
     const connector = fakeConnector({
       execute: vi.fn(async (command: string) =>
         command === "photon.config"
-          ? Buffer.from('{"predicates":[{"expr":"operation == \'GetItem\'","vars":{}}]}')
+          ? Buffer.from(
+              '{"refresh_interval":60,"predicates":[{"expr":"operation == \'GetItem\'","vars":{}}]}',
+            )
           : [200, Buffer.alloc(0), Buffer.alloc(0)],
       ),
     });
@@ -205,6 +216,7 @@ describe("PhotonSession", () => {
       ),
     ).resolves.toBeUndefined();
     expect(connector.execute).not.toHaveBeenCalled();
+    await session.close();
   });
 
   it.each(["connect", "authenticate", "config"])(
@@ -220,7 +232,7 @@ describe("PhotonSession", () => {
         }),
         execute: vi.fn(async () => {
           if (failure === "config") throw original;
-          return Buffer.from("{}");
+          return Buffer.from('{"refresh_interval":60}');
         }),
       });
 
@@ -246,7 +258,7 @@ describe("PhotonSession", () => {
     await vi.waitFor(() => {
       expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from("{}"));
     });
-    resolveConfig(Buffer.from('{"version":"v1"}'));
+    resolveConfig(Buffer.from('{"version":"v1","refresh_interval":60}'));
     session.destroy();
 
     await expect(opening).rejects.toThrow("Session closed during open()");
@@ -291,6 +303,69 @@ describe("PhotonSession", () => {
     ).rejects.toThrow("connection is closed");
     expect(connector.execute).toHaveBeenCalledOnce();
   });
+
+  it("starts a refresher on the resolved interval once predicates are compiled", async () => {
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      delays.push(delay ?? 0);
+      return realSetTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const session = new PhotonSession(fakeConnector());
+
+    try {
+      await session.open();
+
+      // The refresher is scheduled from the config's 60s interval, +/- 20% jitter.
+      const refreshDelays = delays.filter((delay) => delay >= 48_000 && delay <= 72_000);
+      expect(refreshDelays).toHaveLength(1);
+      expect(refresherOf(session)).toBeDefined();
+    } finally {
+      setTimeoutSpy.mockRestore();
+      await session.close();
+    }
+  });
+
+  it("does not start a refresher when opening fails", async () => {
+    const connector = fakeConnector({
+      execute: vi.fn(async () => {
+        throw new PhotonError("config failed");
+      }),
+    });
+    const session = new PhotonSession(connector);
+
+    await expect(session.open()).rejects.toThrow("config failed");
+    expect(refresherOf(session)).toBeUndefined();
+    expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it.each(["close", "destroy"] as const)(
+    "stops the refresher before tearing the connector down on %s",
+    async (teardown) => {
+      const connector = fakeConnector();
+      const session = new PhotonSession(connector);
+      await session.open();
+      const refresher = refresherOf(session);
+      if (refresher === undefined) throw new Error("expected a refresher");
+      const stop = vi.spyOn(refresher, "stop");
+
+      if (teardown === "close") await session.close();
+      else session.destroy();
+
+      // A refresh must never fire into a half-closed connection.
+      const stopOrder = stop.mock.invocationCallOrder[0];
+      const teardownMock = vi.mocked(teardown === "close" ? connector.close : connector.destroy);
+      const teardownOrder = teardownMock.mock.invocationCallOrder[0];
+      if (stopOrder === undefined || teardownOrder === undefined) {
+        throw new Error("expected teardown to stop the refresher");
+      }
+      expect(stopOrder).toBeLessThan(teardownOrder);
+    },
+  );
 
   it("enforces the CREATED -> OPEN -> CLOSED lifecycle", async () => {
     const connector = fakeConnector();
@@ -405,7 +480,7 @@ describe("PhotonSession", () => {
     const initial = controlledConnector();
     vi.mocked(initial.connector.execute).mockImplementation(async (command: string) => {
       if (command === "photon.config") {
-        return Buffer.from('{"predicates":[{"expr":"true","vars":{}}]}');
+        return Buffer.from('{"refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}');
       }
       initial.fail();
       throw new PhotonConnectionLost("connection dropped");

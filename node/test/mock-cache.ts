@@ -174,10 +174,9 @@ export class MockCache {
   private sockets = new Set<Socket>();
 
   constructor(options: MockCacheOptions = {}) {
-    this.config =
-      options.config && Object.keys(options.config).length > 0
-        ? options.config
-        : { version: "v1", refresh_interval: 60, predicates: [] };
+    // Callers usually override only `predicates`; the rest of a valid config
+    // (notably the required `refresh_interval`) is filled in here.
+    this.config = { version: "v1", refresh_interval: 60, predicates: [], ...options.config };
     this.tls = options.tls ?? false;
     this.authResponse = options.authResponse;
     this.responseStatus = options.responseStatus ?? 200;
