@@ -12,7 +12,7 @@ import {
   PhotonProtocolError,
   PhotonTimeoutError,
 } from "./errors.js";
-import { PUSH_KIND_RESPONSE } from "./protocol.js";
+import { PUSH_KIND_RESPONSE, REQUEST_COMMAND } from "./protocol.js";
 import {
   decodeResp,
   IncompleteFrame,
@@ -121,6 +121,7 @@ interface PendingRequest {
   reject: (reason: unknown) => void;
   settled: boolean;
   writeCompleted: boolean;
+  deferredResponseAllowed: boolean;
 }
 
 /** Thread-safe-in-spirit FIFO for promises registered by concurrent callers. */
@@ -132,7 +133,7 @@ export class PendingRequests {
     validatePositiveInteger(maxPending, "maxPending");
   }
 
-  registerNewRequest(): PendingRequest {
+  registerNewRequest(deferredResponseAllowed = true): PendingRequest {
     if (this.queue.length >= this.maxPending) {
       throw new PhotonError(`maximum pending requests of ${this.maxPending} reached`);
     }
@@ -149,6 +150,7 @@ export class PendingRequests {
       reject: rejectRequest,
       settled: false,
       writeCompleted: false,
+      deferredResponseAllowed,
     };
     this.queue.push(request);
     return request;
@@ -161,16 +163,20 @@ export class PendingRequests {
     request.resolve(value);
   }
 
-  moveNextToAsyncResponses(requestId: string): void {
+  moveNextToAsyncResponses(requestId: string): boolean {
     if (this.queue.length === 0) {
       throw new PhotonProtocolError(
         `received async response id without a pending FIFO request: ${requestId}`,
       );
     }
+    if (!this.queue[0]!.deferredResponseAllowed) {
+      return false;
+    }
     if (this.asyncResponses.has(requestId)) {
       throw new PhotonProtocolError(`duplicate async response id: ${requestId}`);
     }
     this.asyncResponses.set(requestId, this.queue.shift()!);
+    return true;
   }
 
   resolveAsync(requestId: string, value: RespValue): boolean {
@@ -432,7 +438,7 @@ export class PhotonConnector {
     }
 
     const frame = encodeResp(command, ...args);
-    const response = this.pending.registerNewRequest();
+    const response = this.pending.registerNewRequest(command.toLowerCase() === REQUEST_COMMAND);
     const socket = this.socket;
     if (socket === undefined) {
       throw new PhotonConnectionLost("connection is closed");
@@ -635,8 +641,12 @@ export class PhotonConnector {
         const value = await reader.readFrame();
         if (value instanceof RespPush) {
           this.handlePush(value.items);
-        } else if (typeof value === "string" && value !== "OK") {
-          this.pending.moveNextToAsyncResponses(value);
+        } else if (
+          typeof value === "string" &&
+          value !== "OK" &&
+          this.pending.moveNextToAsyncResponses(value)
+        ) {
+          continue;
         } else {
           this.pending.resolveOldestRequest(value);
         }

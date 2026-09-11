@@ -76,18 +76,13 @@ export class Reply {
     return new Reply(_error(code, message));
   }
 
-  /** A binary-safe bulk string response, useful for strict AUTH tests. */
-  static bulk(value: Buffer): Reply {
-    return new Reply(_bulk(value));
-  }
-
   /** The immediate request-id simple string that precedes a deferred push. */
   static requestId(id: number | bigint): Reply {
     return new Reply(_simple(Buffer.from(String(id), "ascii")));
   }
 
   /** An immediate request-id response followed by its photon.response push. */
-  static asyncResponse(id: number | bigint, reply: Reply): Reply {
+  static asyncResponse(id: number | bigint, reply = Reply.ok()): Reply {
     return new Reply(
       Buffer.concat([
         _simple(Buffer.from(String(id), "ascii")),
@@ -347,16 +342,11 @@ export class MockCache {
   /** Send a deferred response push to the active client without interleaving writes. */
   sendPush(
     requestId: number | bigint,
-    reply: Reply,
+    reply = Reply.ok(),
     kind = Buffer.from("photon.response", "ascii"),
   ): void {
     const socket = this.onlySocket();
     socket.write(_push([_bulk(kind), _int(requestId), reply.toBytes()]));
-  }
-
-  /** Send an arbitrary server frame for malformed-push and transport tests. */
-  sendRaw(frame: Buffer): void {
-    this.onlySocket().write(frame);
   }
 
   private onlySocket(): Socket {

@@ -54,6 +54,12 @@ describe("RESP codec", () => {
     expect(decodeResp(Buffer.from(`+OK${CRLF}`))).toEqual(["OK", 5]);
   });
 
+  it("rejects a simple string that is not valid UTF-8", () => {
+    // Replacing invalid bytes would silently corrupt the value, so it is a protocol error.
+    const frame = Buffer.concat([Buffer.from("+"), Buffer.from([0xff]), Buffer.from(CRLF)]);
+    expect(() => decodeResp(frame)).toThrow(PhotonProtocolError);
+  });
+
   it("decodes an integer", () => {
     // Decodes a : integer.
     expect(decodeResp(Buffer.from(`:200${CRLF}`))).toEqual([200, 6]);

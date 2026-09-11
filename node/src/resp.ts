@@ -1,6 +1,7 @@
 import { PhotonError, PhotonProtocolError } from "./errors.js";
 
 const CRLF = Buffer.from("\r\n");
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Generic RESP3 wire codec for the Photon client.
@@ -91,13 +92,22 @@ function parseLength(header: Buffer, what: string): number {
   return value;
 }
 
-/** Decode a `+` simple string to text. Bulk strings remain binary-safe Buffers. */
+/**
+ * Decode a `+` simple string to text. Bulk strings remain binary-safe Buffers.
+ *
+ * Simple strings must be valid UTF-8; replacing invalid bytes would silently corrupt
+ * values such as deferred request IDs, so malformed input is a protocol error.
+ */
 function decodeSimpleString(
   _data: Buffer,
   header: Buffer,
   afterHeader: number,
 ): [RespValue, number] {
-  return [header.toString("utf8"), afterHeader];
+  try {
+    return [STRICT_UTF8.decode(header), afterHeader];
+  } catch {
+    throw new PhotonProtocolError(`Malformed RESP simple string: ${header.toString("latin1")}`);
+  }
 }
 
 /** Decode a `:` integer. */

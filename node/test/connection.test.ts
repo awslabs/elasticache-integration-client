@@ -136,7 +136,7 @@ describe("PendingRequests", () => {
     const first = pending.registerNewRequest();
     const second = pending.registerNewRequest();
 
-    pending.moveNextToAsyncResponses("42");
+    expect(pending.moveNextToAsyncResponses("42")).toBe(true);
     pending.resolveOldestRequest(Buffer.from("second"));
 
     await expect(second.promise).resolves.toEqual(Buffer.from("second"));
@@ -144,7 +144,18 @@ describe("PendingRequests", () => {
     await expect(first.promise).resolves.toEqual(Buffer.from("first"));
   });
 
-  it("rejects duplicate async ids and empty FIFO promotion", () => {
+  it("keeps FIFO-only requests out of the async map", async () => {
+    const pending = new PendingRequests();
+    const request = pending.registerNewRequest(false);
+
+    expect(pending.moveNextToAsyncResponses("42")).toBe(false);
+    pending.resolveOldestRequest("42");
+
+    await expect(request.promise).resolves.toBe("42");
+    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
+  });
+
+  it("rejects duplicate async ids and empty FIFO promotion", async () => {
     const pending = new PendingRequests();
     const fifoFuture = pending.registerNewRequest();
 
@@ -152,14 +163,14 @@ describe("PendingRequests", () => {
     expect(() => pending.moveNextToAsyncResponses("42")).toThrow("without a pending FIFO request");
 
     const deferredFuture = pending.registerNewRequest();
-    pending.registerNewRequest();
     expect(() => pending.moveNextToAsyncResponses("42")).toThrow("duplicate async response id");
     expect(pending.resolveAsync("missing", Buffer.from("ignored"))).toBe(false);
-    expect(pending.removeFromAsync(fifoFuture)).toBe(true);
-    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
     expect(deferredFuture.settled).toBe(false);
-    pending.resolveOldestRequest(Buffer.from("first"));
-    pending.resolveOldestRequest(Buffer.from("second"));
+
+    expect(pending.resolveAsync("42", Buffer.from("deferred"))).toBe(true);
+    pending.resolveOldestRequest(Buffer.from("positional"));
+    await expect(fifoFuture.promise).resolves.toEqual(Buffer.from("deferred"));
+    await expect(deferredFuture.promise).resolves.toEqual(Buffer.from("positional"));
   });
 
   it("removes only an async request by handle identity", () => {
@@ -182,6 +193,9 @@ describe("PendingRequests", () => {
 
     await expect(first.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
     await expect(second.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    // The async map must be emptied too, so a late push cannot match a failed request.
+    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
+    expect(pending.removeFromAsync(first)).toBe(false);
   });
 
   it("frees FIFO capacity when a request moves to the async map", async () => {
@@ -424,6 +438,20 @@ describe("PhotonConnector", () => {
     },
   );
 
+  it("keeps a request-id-shaped reply positional for a non-request command", async () => {
+    const cache = await startCache({ authResponse: Reply.requestId(42) });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      configTimeout: 100,
+    });
+    await connector.connect();
+
+    await expect(
+      connector.execute("AUTH", Buffer.from("test-user"), Buffer.from("test-token")),
+    ).resolves.toBe("42");
+    await connector.close();
+  });
+
   it("passes a RespError in a response push through the normal parser path", async () => {
     const cache = await startCache({
       responseFn: () => Reply.asyncResponse(42, Reply.error("ERR", "boom")),
@@ -481,24 +509,20 @@ describe("PhotonConnector", () => {
     [">2\r\n$15\r\nphoton.response\r\n:42\r\n", "wrong arity"],
     [">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n$1\r\nx\r\n", "non-integer id"],
   ])("kills the connection on a malformed push: %s (%s)", async (frame) => {
-    const cache = await startCache({
-      responseFn: () => Reply.requestId(42),
-    });
-    const connector = new PhotonConnector(cache.host, cache.port!, {
-      tls: false,
-      requestTimeout: 250,
-    });
+    const cache = await startCache({ response: new Reply(Buffer.from(frame)) });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
     await connector.connect();
 
-    const request = connector.execute("photon.request", ...requestArgs("body"));
-    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
-    cache.sendRaw(Buffer.from(frame));
-
-    await expect(request).rejects.toBeInstanceOf(PhotonProtocolError);
-    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
-      PhotonConnectionLost,
-    );
-    await connector.close();
+    try {
+      await expect(
+        connector.execute("photon.request", ...requestArgs("malformed")),
+      ).rejects.toBeInstanceOf(PhotonProtocolError);
+      await expect(
+        connector.execute("photon.request", ...requestArgs("after-failure")),
+      ).rejects.toBeInstanceOf(PhotonConnectionLost);
+    } finally {
+      await connector.close();
+    }
   });
 
   it("preserves the connection when a deferred request times out", async () => {
@@ -635,7 +659,7 @@ describe("PhotonConnector", () => {
 
   it("does not accept a bulk string containing OK as AUTH success", async () => {
     const cache = await startCache({
-      authResponse: Reply.bulk(Buffer.from("OK")),
+      authResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
     });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
