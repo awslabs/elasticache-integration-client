@@ -13,6 +13,8 @@ export interface PhotonClientOptions<TConfig extends object> {
   region?: string;
   /** ElastiCache IAM user id; defaults to default.iam-user. */
   userId?: string;
+  /** Pre-vended IAM AUTH token used verbatim instead of minting one from the SDK credential chain. */
+  authCredentials?: { userId: string; token: string };
   /** AWS SDK v3 client configuration. */
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
@@ -25,6 +27,7 @@ interface InitializeOptions {
   cacheName: string;
   region?: string;
   userId?: string;
+  authCredentials?: { userId: string; token: string };
   connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
   overrides: Readonly<Record<string, unknown>>;
 }
@@ -43,12 +46,16 @@ async function initialize<TClient extends PhotonCompatibleClient>(
   options: InitializeOptions,
 ): Promise<PhotonHandle> {
   const [host, port] = parseEndpoint(endpoint);
-  const authProvider = await buildCacheAuthProvider({
-    cacheName: options.cacheName,
-    ...(options.userId === undefined ? {} : { userId: options.userId }),
-    ...(options.region === undefined ? {} : { region: options.region }),
-    credentials: sdkClient.config.credentials,
-  });
+  const injected = options.authCredentials;
+  const authProvider =
+    injected !== undefined
+      ? (): [string, string] => [injected.userId, injected.token]
+      : await buildCacheAuthProvider({
+          cacheName: options.cacheName,
+          ...(options.userId === undefined ? {} : { userId: options.userId }),
+          ...(options.region === undefined ? {} : { region: options.region }),
+          credentials: sdkClient.config.credentials,
+        });
   const connector = new PhotonConnector(host, port, {
     ...options.connectorOptions,
     authProvider,
@@ -88,6 +95,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     cacheName,
     region,
     userId,
+    authCredentials,
     clientConfig,
     connectorOptions,
     overrides = {},
@@ -102,6 +110,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       cacheName,
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
+      ...(authCredentials === undefined ? {} : { authCredentials }),
       ...(connectorOptions === undefined ? {} : { connectorOptions }),
       overrides,
     });

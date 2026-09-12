@@ -158,6 +158,10 @@ export interface PhotonConnectorOptions {
   configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
+  /** TLS SNI server name; defaults to the host. Set when connecting by IP literal (Node omits SNI per RFC 6066). */
+  servername?: string;
+  /** Verify the server certificate; defaults to true. Explicit value overrides NODE_TLS_REJECT_UNAUTHORIZED. */
+  rejectUnauthorized?: boolean;
   /** Maximum size requested from a socket read. */
   readSize?: number;
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
@@ -193,6 +197,8 @@ export class PhotonConnector {
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
   private readonly caCerts: PhotonConnectorOptions["caCerts"];
+  private readonly servername: PhotonConnectorOptions["servername"];
+  private readonly rejectUnauthorized: boolean;
   private readonly readSize: number;
   private readonly maxResponseSize: number;
   private readonly authProvider: PhotonConnectorOptions["authProvider"];
@@ -213,6 +219,8 @@ export class PhotonConnector {
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
+    this.servername = options.servername;
+    this.rejectUnauthorized = options.rejectUnauthorized ?? true;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
     this.maxResponseSize = validatePositiveInteger(
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
@@ -507,9 +515,9 @@ export class PhotonConnector {
     return new Promise<TLSSocket>((resolve, reject) => {
       const options: TlsConnectionOptions = {
         socket,
-        servername: this.host,
+        servername: this.servername ?? this.host,
         minVersion: "TLSv1.2",
-        rejectUnauthorized: true,
+        rejectUnauthorized: this.rejectUnauthorized,
       };
       if (this.caCerts !== undefined) options.ca = this.caCerts;
 

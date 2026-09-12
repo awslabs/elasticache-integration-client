@@ -621,3 +621,60 @@ describe("PhotonConnector", () => {
     }
   });
 });
+
+describe("PhotonConnector connector seams", () => {
+  it("accepts a self-signed certificate when rejectUnauthorized is false", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      rejectUnauthorized: false,
+    });
+
+    await connector.connect();
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await connector.close();
+  });
+
+  it("still verifies when rejectUnauthorized is explicitly true", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      rejectUnauthorized: true,
+    });
+
+    await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
+    await connector.close();
+  });
+
+  it("connects with an SNI override supplied by servername", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      caCerts: readFileSync(certPath),
+      servername: "localhost",
+    });
+
+    await connector.connect();
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await connector.close();
+  });
+
+  it("sends AUTH from an object-form auth provider", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: { getAuth: () => ["object-user", "object-token"] },
+    });
+
+    await connector.connect();
+    await connector.authenticate();
+
+    expect(cache.receivedCommands[0]).toEqual([
+      Buffer.from("AUTH"),
+      Buffer.from("object-user"),
+      Buffer.from("object-token"),
+    ]);
+    await connector.close();
+  });
+});

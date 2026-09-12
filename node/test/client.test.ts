@@ -134,6 +134,24 @@ describe("client", () => {
     expect(mocks.handle.install).toHaveBeenCalledOnce();
   });
 
+  it("injects a static auth provider from authCredentials without the SDK chain", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, {
+      endpoint: options.endpoint,
+      cacheName: options.cacheName,
+      authCredentials: { userId: "static-user", token: "static-token" },
+      clientConfig: { credentials },
+      connectorOptions: { tls: false },
+    });
+
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    const connectorOptions = mocks.connection.mock.calls[0]![2] as {
+      authProvider: () => [string, string];
+    };
+    expect(connectorOptions.authProvider()).toEqual(["static-user", "static-token"]);
+  });
+
   it("allows region and userId to resolve from the environment", async () => {
     setup();
 
