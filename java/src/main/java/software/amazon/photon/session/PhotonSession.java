@@ -36,6 +36,12 @@ import java.util.function.Supplier;
  * <p>Requests are never replayed after being admitted to Photon. While no
  * connector is available, matching requests use origin fallback until the
  * configured fallback duration expires.
+ *
+ * <p>Resolved CEL predicates determine which requests are sent to Photon.
+ * Requests with no matching predicate are declined for origin pass-through.
+ * The session starts a periodic config refresher after the initial handshake,
+ * but its callback is currently a no-op. Successful reconnects still fetch and
+ * compile the latest configuration.
  */
 public class PhotonSession implements Closeable {
 
@@ -69,6 +75,7 @@ public class PhotonSession implements Closeable {
     private volatile PhotonConnector candidate;
     private volatile ResolvedConfig config;
     private volatile PredicateEvaluator predicateEvaluator;
+    private volatile ConfigRefresher refresher;
     private volatile long fallbackDeadlineNanos;
     private boolean reconnectRunning;
 
@@ -126,7 +133,13 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Open and configure the first connection.
+     * Open the session: connect, authenticate, perform the config handshake,
+     * compile the resolved predicates, then start the config refresher.
+     *
+     * <p>The refresher is started only after the config and predicates succeed, and its
+     * construction is inside the failure-cleanup path, so a failed open leaks neither the
+     * connector nor a refresher thread. The session becomes {@code OPEN} only once the
+     * refresher has started.
      *
      * <p>Each attempt uses a new connector and fresh credentials. Startup fails
      * after the configured number of attempts rather than returning an
@@ -142,6 +155,7 @@ public class PhotonSession implements Closeable {
         RuntimeException lastFailure = null;
         for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
             PhotonConnector next = null;
+            ConfigRefresher nextRefresher = null;
             try {
                 next = connectorFactory.get();
                 synchronized (stateLock) {
@@ -152,6 +166,8 @@ public class PhotonSession implements Closeable {
                     candidate = next;
                 }
                 ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                nextRefresher = createRefresher(
+                        snapshot.config.getRefreshInterval(), this::refreshOnce);
                 synchronized (stateLock) {
                     candidate = null;
                     if (state != State.CREATED || !next.isReady()) {
@@ -161,7 +177,9 @@ public class PhotonSession implements Closeable {
                                         ? "Photon connection closed while opening"
                                         : "Session closed while opening");
                     }
+                    nextRefresher.start();
                     publish(next, snapshot);
+                    refresher = nextRefresher;
                     state = State.OPEN;
                 }
                 return;
@@ -171,6 +189,9 @@ public class PhotonSession implements Closeable {
                     if (candidate == next) {
                         candidate = null;
                     }
+                }
+                if (nextRefresher != null) {
+                    nextRefresher.stop();
                 }
                 if (next != null) {
                     next.close();
@@ -188,6 +209,24 @@ public class PhotonSession implements Closeable {
         throw lastFailure != null
                 ? lastFailure
                 : new PhotonConnectionError("Photon initial connection failed");
+    }
+
+    /**
+     * Construct the refresher for this session. Package-private test seam: tests override this
+     * to observe refresher lifecycle without a public constructor or getter.
+     */
+    ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
+        return new ConfigRefresher(intervalSeconds, refreshOnce);
+    }
+
+    /**
+     * TODO: The refresher's periodic callback.
+     *
+     * <p>Placeholder: fetching a new {@code photon.config}, parsing it, and swapping in the new
+     * resolved config and compiled predicates belong to follow-up changes. Deliberately a no-op.
+     */
+    private void refreshOnce() {
+        // No-op. See the Javadoc above.
     }
 
     /**
@@ -230,10 +269,17 @@ public class PhotonSession implements Closeable {
         }
     }
 
+    /**
+     * Stop the refresher, then close the connector. Idempotent.
+     *
+     * <p>The refresher is stopped strictly before the connector closes, so a refresh can never
+     * fire into a half-closed connection during an orderly shutdown.
+     */
     @Override
     public void close() {
         PhotonConnector active;
         PhotonConnector opening;
+        ConfigRefresher activeRefresher;
         synchronized (stateLock) {
             if (state == State.CLOSED) {
                 return;
@@ -242,7 +288,13 @@ public class PhotonSession implements Closeable {
             active = connector;
             opening = candidate;
             connector = null;
+            candidate = null;
+            activeRefresher = refresher;
+            refresher = null;
             stateLock.notifyAll();
+        }
+        if (activeRefresher != null) {
+            activeRefresher.stop();
         }
         if (opening != null && opening != active) {
             opening.close();

@@ -15,6 +15,7 @@ import software.amazon.photon.resp.RespNull;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
+import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -40,6 +41,7 @@ public final class PhotonProtocol {
 
     private static final Set<String> EXCLUDED_HEADERS;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final BigInteger MAX_REFRESH_INTERVAL = BigInteger.valueOf(Integer.MAX_VALUE);
 
     static {
         Set<String> excluded = new HashSet<>();
@@ -134,19 +136,47 @@ public final class PhotonProtocol {
             String json = decodeUtf8(data, "config JSON");
             Map<String, Object> raw = OBJECT_MAPPER.readValue(json, new TypeReference<Map<String, Object>>() {});
             String version = raw.containsKey("version") ? String.valueOf(raw.get("version")) : null;
-            Integer refreshInterval = null;
-            if (raw.containsKey("refresh_interval")) {
-                Object ri = raw.get("refresh_interval");
-                if (ri instanceof Number) {
-                    refreshInterval = ((Number) ri).intValue();
-                }
-            }
+            Integer refreshInterval = parseRefreshInterval(raw.get("refresh_interval"));
             return new ResolvedConfig(version, refreshInterval, raw);
         } catch (PhotonProtocolError e) {
             throw e;
         } catch (Exception e) {
             throw new PhotonProtocolError("Failed to parse config JSON: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Validate the {@code refresh_interval} field: required, an integer, and positive.
+     *
+     * <p>{@code refresh_interval} feeds directly into the config refresher's jittered delay
+     * arithmetic, so a missing, wrongly-typed, or non-positive value is considered malformed.
+     * Jackson maps JSON integers to Integer/Long/BigInteger and JSON reals to Double, so an
+     * integral JSON number is the only accepted shape: {@code 60.0} is a real, not an integer,
+     * and is rejected rather than truncated. Values outside the Integer range are rejected
+     * rather than wrapped.
+     */
+    private static Integer parseRefreshInterval(Object value) {
+        if (value == null) {
+            throw new PhotonProtocolError("Config JSON missing required field 'refresh_interval'");
+        }
+        BigInteger seconds;
+        if (value instanceof BigInteger) {
+            seconds = (BigInteger) value;
+        } else if (value instanceof Integer || value instanceof Long
+                || value instanceof Short || value instanceof Byte) {
+            seconds = BigInteger.valueOf(((Number) value).longValue());
+        } else {
+            throw new PhotonProtocolError("Invalid 'refresh_interval': expected int, got "
+                    + value.getClass().getSimpleName() + ": " + value);
+        }
+        if (seconds.signum() <= 0) {
+            throw new PhotonProtocolError("Invalid 'refresh_interval': must be positive, got " + seconds);
+        }
+        if (seconds.compareTo(MAX_REFRESH_INTERVAL) > 0) {
+            throw new PhotonProtocolError("Invalid 'refresh_interval': exceeds the supported range, got "
+                    + seconds);
+        }
+        return seconds.intValue();
     }
 
     /**
