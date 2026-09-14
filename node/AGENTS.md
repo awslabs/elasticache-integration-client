@@ -81,10 +81,14 @@ require the corresponding tests, README, and package checks to change with it.
   connects. Safe path: reject use before connect, register before writing,
   enforce the response-size bound, and reset the whole connection on timeout
   so late replies cannot match later requests.
-- **Session lifecycle:** flag changes that permit requests before
+- **Session lifecycle and recovery:** flag changes that permit requests before
   `connect → authenticate → photon.config`, use after close, or duplicate
-  teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
-  and idempotent `close()`/`destroy()`.
+  teardown, replay an ambiguously completed request, create parallel recovery
+  flights, reuse stale AUTH credentials, or publish a connector with stale
+  predicates. Safe path: preserve the one-way lifecycle, cleanup on failed
+  open, single-flight bounded reconnects with fresh AUTH and config, background
+  recovery for the request that discovers failure, and idempotent
+  `close()`/`destroy()`.
 - **Middleware path:** flag changes that use a non-final serialized request,
   bypass normal SDK deserialization/retry behavior, silently add unsupported
   streaming-body behavior, or destroy the SDK before Photon. Safe path: preserve

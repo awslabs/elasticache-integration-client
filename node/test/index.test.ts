@@ -29,6 +29,7 @@ describe("Photon package entry point", () => {
     expect(Object.keys(entry).sort()).toEqual(["client", "version"]);
     for (const name of [
       "PhotonConnectionLost",
+      "PhotonCircuitOpenError",
       "PhotonConnectionError",
       "PhotonError",
       "PhotonProtocolError",

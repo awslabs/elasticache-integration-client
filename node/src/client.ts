@@ -2,7 +2,7 @@ import { buildCacheAuthProvider } from "./auth.js";
 import { PhotonConnector, type PhotonConnectorOptions } from "./connection.js";
 import { PhotonError } from "./errors.js";
 import { PhotonHandle, type PhotonCompatibleClient } from "./middleware.js";
-import { parseEndpoint, PhotonSession } from "./session.js";
+import { parseEndpoint, PhotonSession, type ReconnectPolicyOptions } from "./session.js";
 
 export interface PhotonClientOptions<TConfig extends object> {
   /** Cache endpoint as host:port. */
@@ -17,6 +17,8 @@ export interface PhotonClientOptions<TConfig extends object> {
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
   connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
+  /** Reconnection and circuit-breaker configuration. */
+  reconnectPolicy?: ReconnectPolicyOptions;
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
 }
@@ -26,6 +28,7 @@ interface InitializeOptions {
   region?: string;
   userId?: string;
   connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
+  reconnectPolicy?: ReconnectPolicyOptions;
   overrides: Readonly<Record<string, unknown>>;
 }
 
@@ -49,11 +52,21 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     ...(options.region === undefined ? {} : { region: options.region }),
     credentials: sdkClient.config.credentials,
   });
-  const connector = new PhotonConnector(host, port, {
-    ...options.connectorOptions,
-    authProvider,
-  });
-  const session = new PhotonSession(connector, options.overrides);
+  const createConnector = () =>
+    new PhotonConnector(host, port, {
+      ...options.connectorOptions,
+      authProvider,
+    });
+  let nextConnector: PhotonConnector | undefined = createConnector();
+  const connectorFactory = () => {
+    const connector = nextConnector ?? createConnector();
+    nextConnector = undefined;
+    return connector;
+  };
+  const session =
+    options.reconnectPolicy === undefined
+      ? new PhotonSession(connectorFactory, options.overrides)
+      : new PhotonSession(connectorFactory, options.overrides, options.reconnectPolicy);
   try {
     await session.open();
     const handle = new PhotonHandle(sdkClient, session, service);
@@ -90,6 +103,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     userId,
     clientConfig,
     connectorOptions,
+    reconnectPolicy,
     overrides = {},
   } = options;
   const sdkClient = new ClientCtor({
@@ -103,6 +117,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
       ...(connectorOptions === undefined ? {} : { connectorOptions }),
+      ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
       overrides,
     });
   } catch (error) {

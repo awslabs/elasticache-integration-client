@@ -348,6 +348,16 @@ export class PhotonConnector {
     }
   }
 
+  /** Whether this connector has failed or been closed and must be replaced. */
+  get isDead(): boolean {
+    return this.dead || this.closed;
+  }
+
+  /** Whether this connector currently has a usable socket. */
+  get isReady(): boolean {
+    return this.socket !== undefined && !this.dead && !this.closed;
+  }
+
   private send(command: string, ...args: Buffer[]): Promise<RespValue> {
     if (this.dead || this.socket === undefined) {
       throw new PhotonConnectionLost("connection is closed");

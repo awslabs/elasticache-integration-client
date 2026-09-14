@@ -9,6 +9,9 @@ export class PhotonError extends Error {
 /** Connection bring-up failed (DNS, TCP connect, or TLS handshake). */
 export class PhotonConnectionError extends PhotonError {}
 
+/** Recovery is temporarily disabled after repeated reconnect failures. */
+export class PhotonCircuitOpenError extends PhotonConnectionError {}
+
 /** A RESP frame was malformed or could not be decoded. */
 export class PhotonProtocolError extends PhotonError {}
 

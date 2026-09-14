@@ -16,17 +16,19 @@ This package currently ports the Python implementation's:
   bounded response frames, bounded in-flight requests, bounded send backpressure,
   differentiated connect/request/initialization timeouts, idempotent close, and
   injected AUTH credentials;
-- a session that performs connect, AUTH, and the `photon.config` handshake;
+- a session that performs connect, AUTH, and the `photon.config` handshake,
+  reconnects failed transports with bounded exponential backoff, and circuit
+  breaks repeated recovery failures;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to
   the origin;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
-Automatic Photon failover/reconnection, circuit breaking, periodic config
-refresh, and out-of-band responses remain out of scope. The middleware sends
-requests with no matching predicate directly to origin and has a narrow origin
-fallback for idempotent requests when Photon fails; non-idempotent Photon
-failures and non-Photon errors propagate.
+Automatic Photon failover to another endpoint, periodic config refresh, and
+out-of-band responses remain out of scope. The middleware sends requests with
+no matching predicate directly to origin and has a narrow origin fallback for
+idempotent requests when Photon fails; non-idempotent Photon failures and
+non-Photon errors propagate.
 
 ## Request routing
 
@@ -75,6 +77,36 @@ origin, and is safe to repeat.
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`
 option.
+
+## Reconnection and circuit breaking
+
+When a Photon connection fails, the request that discovered the failure is not
+replayed through Photon because the cache may already have processed it. For an
+idempotent operation, the existing middleware fallback can proceed to the
+origin while one background recovery creates a new TLS connection, obtains
+fresh AUTH credentials, repeats `photon.config`, and recompiles its predicates.
+Concurrent requests share that recovery attempt.
+
+Recovery uses bounded exponential backoff with full jitter. After repeated
+failed recovery cycles, the circuit opens and Photon requests fail immediately
+until one half-open recovery probe is allowed:
+
+```ts
+const dynamodb = await client("dynamodb", DynamoDBClient, {
+  endpoint: "cache.example.com:6379",
+  cacheName: "my-cache",
+  reconnectPolicy: {
+    maxReconnectAttempts: 3,
+    baseDelayMs: 100,
+    maxDelayMs: 5_000,
+    circuitFailureThreshold: 3,
+    circuitOpenDurationMs: 30_000,
+  },
+});
+```
+
+Set `maxReconnectAttempts` to `0` to disable reconnection. Closing or destroying
+the SDK client cancels reconnect backoff and prevents further attempts.
 
 Authentication, transport, protocol, and middleware implementation details are
 internal to the package. Overrides use standard JSON-compatible values;

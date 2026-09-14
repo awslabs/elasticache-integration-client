@@ -153,6 +153,25 @@ describe("client", () => {
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), {});
   });
 
+  it("passes reconnect policy to the session", async () => {
+    setup();
+    const reconnectPolicy = {
+      maxReconnectAttempts: 2,
+      baseDelayMs: 5,
+      maxDelayMs: 20,
+      circuitFailureThreshold: 4,
+      circuitOpenDurationMs: 100,
+    };
+
+    await client("dynamodb", FakeClient, { ...options, reconnectPolicy });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      reconnectPolicy,
+    );
+  });
+
   it.each(["auth", "open", "install"])(
     "cleans up owned resources when %s initialization fails",
     async (failure) => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PhotonCircuitOpenError,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
@@ -11,6 +12,7 @@ import * as photon from "../src/index.js";
 
 const ERROR_TYPES = [
   PhotonError,
+  PhotonCircuitOpenError,
   PhotonConnectionError,
   PhotonProtocolError,
   PhotonConnectionLost,
