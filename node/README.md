@@ -76,8 +76,11 @@ Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`
 option.
 
-Authentication, transport, protocol, and middleware implementation details are
-internal to the package. Overrides use standard JSON-compatible values;
+IAM token generation is provided by `@aws/developer-toolkit-elasticache`.
+Cache names and user IDs are validated and normalized to lowercase by that
+library before signing. Authentication adapters, transport, protocol, and
+middleware implementation details are internal to the package. Overrides use
+standard JSON-compatible values;
 non-finite JavaScript numbers are rejected instead of being silently converted
 to `null`.
 
@@ -87,6 +90,10 @@ to `null`.
 npm install
 npm run verify
 ```
+
+Until the ElastiCache toolkit is published to npm, it is pinned as a Git
+submodule. Initialize it after cloning with
+`git submodule update --init --recursive`.
 
 The package builds ESM and CommonJS outputs, emits TypeScript declarations, and
 does not publish as part of this prototype.

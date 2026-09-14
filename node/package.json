@@ -22,14 +22,18 @@
     "README.md",
     "LICENSE"
   ],
+  "bundledDependencies": [
+    "@aws/developer-toolkit-elasticache"
+  ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "build:iam": "node scripts/build-iam.mjs",
+    "build": "npm run clean && npm run build:iam && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "typecheck": "tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
-    "test": "vitest run --coverage",
+    "typecheck": "npm run build:iam && tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
+    "test": "npm run build:iam && vitest run --coverage",
     "pack:smoke": "npm run build && node scripts/package-smoke.mjs",
     "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
   },
@@ -48,10 +52,10 @@
   "dependencies": {
     "@aws-sdk/core": "^3.977.1",
     "@aws-sdk/credential-providers": "^3.1096.0",
+    "@aws/developer-toolkit-elasticache": "file:vendor/developer-toolkit-elasticache-package",
     "@marcbachmann/cel-js": "^8.0.0",
-    "@smithy/config-resolver": "^4.6.15",
     "@smithy/core": "^3.31.0",
-    "@smithy/node-config-provider": "^4.5.15",
+    "@smithy/hash-node": "^4.2.7",
     "@smithy/signature-v4": "^5.6.11",
     "@smithy/types": "^4.16.1"
   }

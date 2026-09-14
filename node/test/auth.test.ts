@@ -79,7 +79,7 @@ describe("generateIamAuthToken", () => {
     ).rejects.toThrow("No AWS credentials");
   });
 
-  it("wraps unexpected credential and signing failures", async () => {
+  it("normalizes credential provider failures without exposing details", async () => {
     const failingCredentials = async () => {
       throw new Error("secret=credential-material");
     };
@@ -91,8 +91,32 @@ describe("generateIamAuthToken", () => {
       credentials: failingCredentials,
     }).catch((reason: unknown) => reason);
 
-    expect(error).toHaveProperty("message", "Failed to generate IAM auth token");
+    expect(error).toHaveProperty(
+      "message",
+      "No AWS credentials available for IAM auth token generation",
+    );
     expect(String(error)).not.toContain("credential-material");
+  });
+
+  it("uses the toolkit validation and lowercase normalization", async () => {
+    const token = await generateIamAuthToken({
+      cacheName: "My-Cache",
+      userId: "IAM-User",
+      region: "us-east-1",
+      credentials: async () => credentials,
+    });
+
+    expect(token).toMatch(/^my-cache\//);
+    expect(token).toContain("User=iam-user");
+
+    await expect(
+      generateIamAuthToken({
+        cacheName: "bad/cache",
+        userId: "iam-user",
+        region: "us-east-1",
+        credentials: async () => credentials,
+      }),
+    ).rejects.toThrow("serverlessCacheName");
   });
 
   it("requests fresh credentials for every token", async () => {

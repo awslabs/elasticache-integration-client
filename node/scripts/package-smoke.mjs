@@ -1,12 +1,28 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+const require = createRequire(import.meta.url);
+const cjsAuth = require(resolve("dist/cjs/auth.js"));
+const cjsToken = await cjsAuth.generateIamAuthToken({
+  cacheName: "my-cache",
+  userId: "iam-user",
+  region: "us-east-1",
+  credentials: async () => ({
+    accessKeyId: "AKIAIOSFODNN7EXAMPLE",
+    secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+  }),
+});
+if (!cjsToken.startsWith("my-cache/") || !cjsToken.includes("User=iam-user")) {
+  throw new Error("CommonJS IAM toolkit integration smoke failed");
+}
 
 mkdirSync(".artifacts", { recursive: true });
 
 const packed = JSON.parse(
-  execFileSync("npm", ["pack", "--pack-destination", ".artifacts", "--json"], {
+  execFileSync("npm", ["pack", "--ignore-scripts", "--pack-destination", ".artifacts", "--json"], {
     encoding: "utf8",
   }),
 );
@@ -19,8 +35,14 @@ const tarballPath = resolve(".artifacts", tarball);
 const listing = execFileSync("tar", ["-tzf", tarballPath], { encoding: "utf8" })
   .split("\n")
   .filter(Boolean);
-const forbidden = /package\/(?:test|src|node_modules|coverage|\.omx)\/|\.key$|(^|\/)\.omx\//;
-const forbiddenEntries = listing.filter((entry) => forbidden.test(entry));
+const toolkitPrefix = "package/node_modules/@aws/developer-toolkit-elasticache/";
+const forbidden = /package\/(?:test|src|coverage|\.omx)\/|\.key$|(^|\/)\.omx\//;
+const forbiddenEntries = listing.filter((entry) => {
+  if (entry.startsWith("package/node_modules/")) {
+    return !entry.startsWith(toolkitPrefix) || /\/(?:src|test)\//.test(entry);
+  }
+  return forbidden.test(entry);
+});
 if (forbiddenEntries.length > 0) {
   throw new Error(`Packed tarball contains forbidden entries:\n${forbiddenEntries.join("\n")}`);
 }
@@ -29,6 +51,9 @@ if (
   !listing.includes("package/dist/cjs/index.js")
 ) {
   throw new Error("Packed tarball is missing both ESM and CommonJS entrypoints");
+}
+if (!listing.includes(`${toolkitPrefix}dist/index.js`)) {
+  throw new Error("Packed tarball is missing the bundled ElastiCache toolkit");
 }
 
 const smokeRoot = mkdtempSync(join(tmpdir(), "photon-nodejs-smoke-"));

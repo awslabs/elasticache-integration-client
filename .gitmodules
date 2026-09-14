@@ -1,0 +1,4 @@
+[submodule "node/vendor/developer-toolkit-elasticache"]
+	path = node/vendor/developer-toolkit-elasticache
+	url = https://github.com/aws/developer-toolkit-elasticache.git
+	branch = release-2
