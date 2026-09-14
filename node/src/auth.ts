@@ -6,6 +6,7 @@
  * keeps Photon's connector-facing `(userId, token)` provider contract and
  * error taxonomy.
  */
+import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type {
   ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
   TokenGeneratorDependencies,
@@ -174,7 +175,7 @@ export async function buildCacheAuthProvider(
   input: AuthParamsInput & { credentials?: CredentialsProvider },
 ): Promise<() => Promise<[string, string]>> {
   const toolkit = await loadToolkit();
-  const credentials = input.credentials;
+  const credentials = input.credentials ?? fromNodeProviderChain();
 
   try {
     const provider = await toolkit.ElastiCacheIAMAuthTokenProvider.create(
@@ -183,7 +184,7 @@ export async function buildCacheAuthProvider(
         userId: input.userId || DEFAULT_USER_ID,
         ...(input.region === undefined ? {} : { region: input.region }),
       },
-      credentials === undefined ? {} : toolkitDependencies(credentials),
+      toolkitDependencies(credentials),
     );
     return async () => {
       try {

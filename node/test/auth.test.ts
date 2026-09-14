@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CredentialsProviderError } from "@smithy/core/config";
 
+const defaultCredentials = vi.hoisted(() => {
+  const provider = vi.fn();
+  return {
+    provider,
+    fromNodeProviderChain: vi.fn(() => provider),
+  };
+});
+
+vi.mock("@aws-sdk/credential-providers", () => ({
+  fromNodeProviderChain: defaultCredentials.fromNodeProviderChain,
+}));
+
 import {
   DEFAULT_USER_ID,
   IamAuthTokenProvider,
@@ -212,5 +224,22 @@ describe("buildCacheAuthProvider", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("force-refreshes credentials from the default provider chain", async () => {
+    defaultCredentials.provider.mockResolvedValue(credentials);
+    defaultCredentials.fromNodeProviderChain.mockClear();
+
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+    });
+
+    await provider();
+    await provider();
+
+    expect(defaultCredentials.fromNodeProviderChain).toHaveBeenCalledOnce();
+    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
+    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
   });
 });
