@@ -20,6 +20,11 @@ describe("Photon protocol", () => {
     expect(serializeConfig({})).toEqual([CONFIG_COMMAND, [Buffer.from("{}")]]);
   });
 
+  it.each([null, undefined])("sends no argument for %s overrides", (overrides) => {
+    // No overrides means "give me the current config", which is a zero-argument command.
+    expect(serializeConfig(overrides)).toEqual([CONFIG_COMMAND, []]);
+  });
+
   it("serializes config overrides without whitespace", () => {
     const [, [payload]] = serializeConfig({ b: 2, a: 1 });
 

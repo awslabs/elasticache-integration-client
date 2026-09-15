@@ -20,9 +20,9 @@ This package currently ports the Python implementation's:
   differentiated connect/request/initialization timeouts, idempotent close,
   and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake,
-  periodically refreshes and atomically replaces its resolved config,
-  reconnects failed transports in the background, and controls safe origin
-  fallback with a per-outage window;
+  reconnects failed transports in the background, periodically refreshes the
+  config on the interval the cache returns, and controls safe origin fallback
+  with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to
   the origin;
@@ -46,7 +46,12 @@ A request is sent to Photon when any predicate evaluates to `true`. Otherwise,
 the original signed SDK request continues to the configured origin transport
 without a cache round trip. Invalid predicates are ignored independently.
 Evaluation errors and malformed or non-object JSON bodies count as no match.
-The resolved config is compiled once when the session opens.
+
+The predicates are compiled when the session opens and recompiled whenever a
+refresh returns a new config. A refresh sends `photon.config` with no argument;
+a RESP3 null reply means the config is unchanged. A failed or malformed refresh
+keeps the last known-good config, predicates, and refresh interval, and the next
+cycle retries.
 
 ## Client
 

@@ -6,14 +6,13 @@
  * background until one succeeds or the session closes. Requests that have not
  * been sent may use the origin fallback window while no connector is available.
  *
- * The resolved config is fetched once and its CEL predicates determine which
- * requests are sent to Photon. The middleware may pass predicate declines and
- * disconnected requests through to the origin.
+ * The resolved config and its CEL predicates determine which requests are sent
+ * to Photon. The middleware may pass predicate declines and disconnected
+ * requests through to the origin.
  *
- * Each active connection also owns a ConfigRefresher. That is a lifecycle skeleton only:
- * refreshOnce() is currently a no-op, so fetching, parsing, and swapping in a
- * new resolved config together with its compiled predicates is not yet
- * implemented.
+ * Each active connection owns a ConfigRefresher, which periodically re-issues
+ * photon.config and swaps in the new config and predicates. A refresh that
+ * fails keeps the last known-good config, predicates, and schedule.
  */
 import { performance } from "node:perf_hooks";
 
@@ -186,6 +185,8 @@ export class PhotonSession {
   private fallbackDeadline = 0;
   private readonly disconnected = new WeakSet<PhotonConnector>();
   private readonly recoveryAbort = new AbortController();
+  /** Whether `overrides` have already been sent, so a refresh can use the no-argument form. */
+  private overridesSent = false;
 
   constructor(
     connectorOrFactory: PhotonConnector | PhotonConnectorFactory,
@@ -259,8 +260,54 @@ export class PhotonSession {
     });
   }
 
-  /** TODO: Placeholder. Fetching and swapping in a new config is not yet implemented. */
-  private refreshOnce(): void {}
+  /**
+   * Re-issue photon.config and install the result.
+   *
+   * Sends the overrides if they have not been sent yet, otherwise sends the no-argument form. A
+   * RESP3 null reply means the cache's config has not changed, so nothing further happens. Any
+   * other reply is parsed, installed with its recompiled predicates, and the refresher is
+   * rescheduled on the new config's interval.
+   *
+   * A `PhotonError` from any step is logged rather than escaping into the refresher: the current
+   * config and schedule stay in place and the next cycle retries.
+   */
+  private async refreshOnce(): Promise<void> {
+    const connector = this.connector;
+    const refresher = this.refresher;
+    if (
+      this.state !== "open" ||
+      this.connection !== "alive" ||
+      connector === undefined ||
+      refresher === undefined
+    ) {
+      return;
+    }
+    const [command, args] = serializeConfig(this.overridesSent ? null : this.overrides);
+    try {
+      const value = await connector.execute(command, ...args);
+      // Ignore a reply from a connector that was replaced while refresh was in flight.
+      if (
+        this.state !== "open" ||
+        this.connection !== "alive" ||
+        this.connector !== connector ||
+        this.refresher !== refresher ||
+        value === null
+      ) {
+        return;
+      }
+
+      const config = parseConfigResponse(value);
+      // Reschedule first: an interval this refresher cannot schedule is a malformed config, and
+      // rejecting it before the swap keeps the whole previous config rather than half of it.
+      refresher.setInterval(config.refreshInterval);
+      this.overridesSent = true;
+      this._config = config;
+      this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
+    } catch (error) {
+      if (!(error instanceof PhotonError)) throw error;
+      console.warn(`photon.config refresh failed, keeping the previous config: ${error.message}`);
+    }
+  }
 
   /**
    * Send matching requests to Photon and decline requests that are safe to send
@@ -371,6 +418,7 @@ export class PhotonSession {
     this._config = initialized.config;
     this.predicateEvaluator = initialized.evaluator;
     this.connector = connector;
+    this.overridesSent = true;
     this.refresher = refresher;
     refresher.start();
   }

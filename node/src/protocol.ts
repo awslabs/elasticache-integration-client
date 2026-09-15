@@ -189,12 +189,17 @@ function describeType(value: unknown): string {
 /**
  * Build the `photon.config` command from an overrides object.
  *
- * Returns `["photon.config", [overridesJsonBytes]]`.
+ * Returns `["photon.config", [overridesJsonBytes]]`. `null`/`undefined` means "no overrides
+ * argument at all" and returns `["photon.config", []]`, which is how a refresh asks the cache
+ * for the current config; an empty object still sends an explicit `{}` argument.
  */
 export function serializeConfig(
   overrides: Record<string, unknown> | null | undefined,
-): [string, [Buffer]] {
-  const payload = escapeNonAscii(stringifyConfig(overrides ?? {}));
+): [string, Buffer[]] {
+  if (overrides === null || overrides === undefined) {
+    return [CONFIG_COMMAND, []];
+  }
+  const payload = escapeNonAscii(stringifyConfig(overrides));
   return [CONFIG_COMMAND, [Buffer.from(payload, "utf8")]];
 }
 
