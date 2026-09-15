@@ -66,15 +66,22 @@ class _SocketReader:
 
 
 class _PendingRequests:
-    """Thread-safe FIFO of pending request futures; the reader resolves them in registration order."""
+    """Thread-safe home of every in-flight request future, in one of two structures.
+
+    The FIFO deque holds futures whose replies are matched by position (reply order equals
+    request order), and ``_async_responses`` holds futures whose replies are matched by request
+    id (deferred requests). Both live under one lock so moving a future between them is atomic:
+    a future is always in exactly one structure, which the timeout path relies on.
+    """
 
     def __init__(self, max_pending: int = _DEFAULT_MAX_PENDING) -> None:
-        self._queue_lock = threading.Lock()
+        self._pending_requests_lock = threading.Lock()
         self._queue: deque[Future] = deque()
+        self._async_responses: dict[str, Future] = {}
         self._max_pending = max_pending
 
     def register_new_request(self, future: Future) -> None:
-        with self._queue_lock:
+        with self._pending_requests_lock:
             if len(self._queue) >= self._max_pending:
                 raise PhotonError(f"too many in-flight requests (max {self._max_pending})")
             self._queue.append(future)
@@ -85,16 +92,56 @@ class _PendingRequests:
         A ``RespError`` is a value, not an exception, so it is delivered as the future's result;
         the caller-facing ``parse_*`` functions raise on it.
         """
-        with self._queue_lock:
+        with self._pending_requests_lock:
             future = self._queue.popleft() if self._queue else None
         if future and not future.done():
             future.set_result(value)
 
+    def move_head_to_async_responses(self, request_id: str) -> None:
+        """Move the oldest future out of the FIFO into ``_async_responses[request_id]``;
+        the push for ``request_id`` resolves it. The caller keeps blocking on the same future,
+        but its pipeline (FIFO) slot is freed."""
+        with self._pending_requests_lock:
+            if not self._queue:
+                raise PhotonProtocolError("request id reply with no pending request")
+            if request_id in self._async_responses:
+                # There can never be two live requests with the same id; a duplicate means
+                # the stream cannot be trusted (a silent overwrite would orphan a caller).
+                raise PhotonProtocolError(f"duplicate request id {request_id!r}")
+            self._async_responses[request_id] = self._queue.popleft()
+
+    def resolve_async(self, request_id: str, outcome: RespValue | BaseException) -> bool:
+        """Resolve the future stored under ``request_id``. False: unknown id (removed earlier)."""
+        with self._pending_requests_lock:
+            future = self._async_responses.pop(request_id, None)
+        # gone: the reader resolved this push while we were running this function, or
+        # fail_if_async resolved the future with an exception
+        if not future:
+            return False
+        if isinstance(outcome, BaseException):
+            future.set_exception(outcome)
+        else:
+            future.set_result(outcome)
+        return True
+
+    def fail_if_async(self, future: Future, exc: BaseException) -> bool:
+        """Fail a deferred ``future`` with ``exc``. True: it was deferred, or the reader settled it
+        first, so nothing more is needed. False: it still holds a FIFO slot."""
+        with self._pending_requests_lock:
+            request_id = next(
+                (rid for rid, tracked in self._async_responses.items() if tracked is future),
+                None,
+            )
+        if request_id and self.resolve_async(request_id, exc):
+            return True
+        return future.done()  # True if the future was settled while we were timing out
     def fail_all(self, exc: BaseException) -> None:
-        """Fail every waiting future with ``exc`` and clear the queue."""
-        with self._queue_lock:
+        """Fail every waiting future — FIFO and async alike — with ``exc`` and clear both."""
+        with self._pending_requests_lock:
             pending = list(self._queue)
+            pending.extend(self._async_responses.values())
             self._queue.clear()
+            self._async_responses.clear()
         for future in pending:
             if not future.done():
                 future.set_exception(exc)

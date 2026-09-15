@@ -450,6 +450,93 @@ class TestPhotonConnector:
         pending.resolve_oldest_request(b"v1")   # frees one slot
         pending.register_new_request(Future())  # fits again
 
+    def test_pending_requests_move_and_resolve_async(self):
+        """move_head_to_async_responses moves the OLDEST future out of the FIFO under the id;
+        resolve_async resolves it; the FIFO order of the remaining futures is untouched.
+        Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        f1, f2 = Future(), Future()
+        pending.register_new_request(f1)
+        pending.register_new_request(f2)
+        pending.move_head_to_async_responses("1")   # moves f1
+        pending.resolve_oldest_request(b"v2")           # f2 is now the oldest
+        assert f2.result(timeout=1) == b"v2"
+        assert not f1.done()
+        assert pending.resolve_async("1", b"v1")
+        assert f1.result(timeout=1) == b"v1"
+
+    def test_resolve_async_unknown_id(self):
+        """resolve_async reports an id nobody waits for, so a push that lost its caller is
+        dropped instead of failing the connection. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        assert not pending.resolve_async("999", b"v")
+
+    def test_id_reply_with_empty_fifo_is_a_protocol_error(self):
+        """A request id reply with nothing pending cannot be matched to a caller, so the stream
+        can no longer be trusted. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        with pytest.raises(PhotonProtocolError, match="no pending request"):
+            pending.move_head_to_async_responses("1")
+
+    def test_duplicate_request_id_is_a_protocol_error(self):
+        """Two live requests can never share an id; overwriting the entry would orphan the
+        first caller, so a duplicate is a protocol error. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        pending.register_new_request(Future())
+        pending.move_head_to_async_responses("1")
+        pending.register_new_request(Future())  # else the empty-FIFO check fires first
+        with pytest.raises(PhotonProtocolError, match="duplicate request id"):
+            pending.move_head_to_async_responses("1")
+
+    def test_fail_if_async_fails_a_deferred_future(self):
+        """A caller giving up on a deferred request drops its entry and the future carries the
+        failure, so a late push finds nothing to resolve. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        assert pending.fail_if_async(deferred, PhotonTimeoutError("gave up"))
+        with pytest.raises(PhotonTimeoutError):
+            deferred.result(timeout=1)
+        assert not pending.resolve_async("1", b"late")
+
+    def test_fail_if_async_when_the_reader_settled_first(self):
+        """A reply landing as the caller times out leaves nothing to fail: fail_if_async reports
+        the connection is fine and the result stands, so a healthy connection is not closed over
+        a race."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        assert pending.resolve_async("1", b"just in time")   # the reader wins
+        assert pending.fail_if_async(deferred, PhotonTimeoutError("too late"))
+        assert deferred.result(timeout=1) == b"just in time"
+
+    def test_fail_if_async_leaves_a_fifo_future_alone(self):
+        """A future still in the FIFO is not deferred, so it keeps its slot and stays pending —
+        that is how the timeout path knows the connection cannot survive.
+        Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        fifo = Future()
+        pending.register_new_request(fifo)
+        assert not pending.fail_if_async(fifo, PhotonTimeoutError("gave up"))
+        assert not fifo.done()
+
+    def test_fail_all_fails_async_futures_too(self):
+        """fail_all fails futures in BOTH structures — a deferred caller must not hang until
+        its timeout when the connection dies. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        fifo = Future()
+        pending.register_new_request(fifo)
+        pending.fail_all(PhotonConnectionLost("gone"))
+        for future in (deferred, fifo):
+            with pytest.raises(PhotonConnectionLost):
+                future.result(timeout=1)
+        assert pending.resolve_async("1", b"late") is False  # map was cleared
+
     def test_max_pending_propagates_from_connector(self):
         """The connector passes its max_pending through to the pending queue."""
         conn = PhotonConnector("h", 1, tls=False, max_pending=7)
