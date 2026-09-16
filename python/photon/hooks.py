@@ -83,10 +83,13 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
     except (AttributeError, ValueError) as exc:
         raise PhotonError(f"Malformed before-send event name: {event_name!r}") from exc
     # header values arrive from botocore as bytes; convert them to strings
-    headers = {
-        k: v.decode() if isinstance(v, bytes) else v
-        for k, v in (request.headers or {}).items()
-    }
+    try:
+        headers = {
+            k: v.decode() if isinstance(v, bytes) else v
+            for k, v in (request.headers or {}).items()
+        }
+    except UnicodeDecodeError as exc:
+        raise PhotonError("Undecodable header value in prepared request") from exc
     body = request.body or b""
     return PhotonRequest(
         method=request.method,
