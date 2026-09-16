@@ -343,7 +343,7 @@ class PhotonAsyncClientTest {
         return new RespPush(Arrays.asList(
                 new RespBulkString(PhotonProtocol.PUSH_KIND_RESPONSE
                         .getBytes(StandardCharsets.US_ASCII)),
-                new RespInteger(requestId),
+                new RespBulkString(Long.toString(requestId).getBytes(StandardCharsets.US_ASCII)),
                 response));
     }
 

@@ -2,6 +2,7 @@ package software.amazon.photon.connection;
 
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.resp.RespSimpleString;
@@ -87,23 +88,24 @@ class PendingRequestsTest {
     }
 
     @Test
-    void maxPending_appliesOnlyToRequestsAwaitingFifoReplies() {
+    void maxPending_countsFifoAndAsyncTogether() {
         PendingRequests pending = new PendingRequests(1);
         CompletableFuture<RespValue> deferred = pending.registerNewRequest();
 
+        // Moving the request off the FIFO queue and into async tracking must not free
+        // capacity: an unbounded number of deferred requests would otherwise be able to
+        // pile up behind a single FIFO slot.
         pending.moveNextToAsyncResponses("42");
-
-        CompletableFuture<RespValue> fifo = pending.registerNewRequest();
-        assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
-
-        RespValue fifoValue = new RespSimpleString("fifo".getBytes(StandardCharsets.UTF_8));
-        assertTrue(pending.resolveOldestRequest(fifoValue));
-        assertEquals(fifoValue, fifo.join());
+        assertThrows(PhotonError.class, pending::registerNewRequest);
 
         RespValue deferredValue =
                 new RespSimpleString("deferred".getBytes(StandardCharsets.UTF_8));
         assertTrue(pending.resolveAsync("42", deferredValue));
         assertEquals(deferredValue, deferred.join());
+
+        // Once the deferred request resolves, its capacity is freed.
+        CompletableFuture<RespValue> fifo = pending.registerNewRequest();
+        assertNotNull(fifo);
     }
 
     @Test
@@ -293,14 +295,16 @@ class PendingRequestsTest {
     }
 
     @Test
-    void register_atCapacity_throwsPhotonConnectionLost() {
+    void register_atCapacity_throwsPhotonError() {
         PendingRequests pending = new PendingRequests(2);
 
         pending.registerNewRequest();
         pending.registerNewRequest();
 
-        // Third should fail
-        PhotonConnectionLost e = assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
+        // Third should fail. Capacity exhaustion does not mean the connection was lost, so
+        // this is the base PhotonError, not PhotonConnectionLost.
+        PhotonError e = assertThrows(PhotonError.class, pending::registerNewRequest);
+        assertFalse(e instanceof PhotonConnectionLost);
         assertTrue(e.getMessage().contains("Too many pending"));
         assertTrue(e.getMessage().contains("max=2"));
     }
@@ -313,7 +317,7 @@ class PendingRequestsTest {
         pending.registerNewRequest();
 
         // At capacity
-        assertThrows(PhotonConnectionLost.class, pending::registerNewRequest);
+        assertThrows(PhotonError.class, pending::registerNewRequest);
 
         // Resolve one
         pending.resolveOldestRequest(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));

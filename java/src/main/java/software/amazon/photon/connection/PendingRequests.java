@@ -1,6 +1,7 @@
 package software.amazon.photon.connection;
 
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.resp.RespValue;
 
@@ -24,13 +25,13 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <li>Deferred requests are promoted and later resolved by request ID</li>
  * </ol>
  *
- * <p>All operations are thread-safe. The FIFO queue has a configurable maximum
- * size to bound the number of requests waiting for positional replies. Moving
- * a request to ID-based tracking frees its FIFO capacity.
+ * <p>All operations are thread-safe. Requests awaiting either a positional FIFO
+ * reply or a deferred by-ID reply together count against a configurable maximum,
+ * so moving a request to ID-based tracking does not free additional capacity.
  */
 public class PendingRequests {
 
-    /** Default maximum requests awaiting FIFO replies. */
+    /** Default maximum requests awaiting either a FIFO or a deferred reply. */
     public static final int DEFAULT_MAX_PENDING = 100;
 
     enum TimeoutDisposition {
@@ -69,8 +70,8 @@ public class PendingRequests {
     /**
      * Create a pending requests queue with a custom max size.
      *
-     * @param maxPending maximum number of requests awaiting FIFO replies
-     *                   (must be positive)
+     * @param maxPending maximum number of requests awaiting either a FIFO or a
+     *                   deferred reply (must be positive)
      */
     public PendingRequests(int maxPending) {
         if (maxPending <= 0) {
@@ -87,7 +88,8 @@ public class PendingRequests {
      * send lock.
      *
      * @return a future that will be completed when the response arrives
-     * @throws PhotonConnectionLost if the queue is closed or at capacity
+     * @throws PhotonConnectionLost if the queue is closed
+     * @throws PhotonError if capacity is exhausted
      */
     public CompletableFuture<RespValue> registerNewRequest() {
         return registerNewRequest(true);
@@ -105,8 +107,9 @@ public class PendingRequests {
             if (closed) {
                 throw new PhotonConnectionLost("Connection is closed");
             }
-            if (queue.size() >= maxPending) {
-                throw new PhotonConnectionLost("Too many pending requests (max=" + maxPending + ")");
+            if (queue.size() + asyncResponses.size() >= maxPending) {
+                // Capacity exhaustion does not mean the connection was lost.
+                throw new PhotonError("Too many pending requests (max=" + maxPending + ")");
             }
             CompletableFuture<RespValue> future = new CompletableFuture<>();
             queue.add(new PendingRequest(future, deferredResponseAllowed));

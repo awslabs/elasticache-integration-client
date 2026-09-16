@@ -120,10 +120,14 @@ require the corresponding tests, README, and build checks to change with it.
 
 Reconnection, circuit breaking, and periodic config refresh are currently out
 of scope. Deferred responses delivered by `photon.response` pushes are
-supported; other push kinds are ignored for forward compatibility.
-Do not introduce them silently or mistake their absence for a review finding;
-intentional scope changes require README, tests, and an explicit contract
-decision. Normal AWS SDK retry/deserialization behavior remains in scope.
+supported; other push kinds are fatal protocol corruption (raised as
+`PhotonProtocolError` and wrapped as `PhotonConnectionLost` by the reader
+loop), matching the Node and Python clients: a client that does not
+understand a push has no request to correlate it with, so the stream can no
+longer be trusted. Do not reintroduce silent ignoring of unknown push kinds or
+mistake this contract for a review finding; intentional scope changes require
+README, tests, and an explicit contract decision. Normal AWS SDK
+retry/deserialization behavior remains in scope.
 
 ## Security and test boundaries
 

@@ -8,7 +8,6 @@ import software.amazon.photon.resp.DecodeResult;
 import software.amazon.photon.resp.IncompleteFrame;
 import software.amazon.photon.resp.RespBulkString;
 import software.amazon.photon.resp.RespCodec;
-import software.amazon.photon.resp.RespInteger;
 import software.amazon.photon.resp.RespPush;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
@@ -17,6 +16,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 
@@ -86,10 +88,16 @@ public class SocketReader {
             while (true) {
                 readAndResolve();
             }
-        } catch (PhotonConnectionLost | PhotonTimeoutError | PhotonProtocolError e) {
+        } catch (PhotonConnectionLost | PhotonTimeoutError e) {
             // Mark dead before failing futures so isDead() is true when callers observe the exception
             onDeath.run();
             pending.failAll(e);
+        } catch (PhotonProtocolError e) {
+            // A malformed frame leaves the stream position untrustworthy: treat it as a lost
+            // connection (not a retriable protocol issue) while preserving the parse failure as
+            // its cause.
+            onDeath.run();
+            pending.failAll(new PhotonConnectionLost("reply stream corrupt", e));
         } catch (Exception e) {
             onDeath.run();
             pending.failAll(new PhotonConnectionLost("Reader thread failed", e));
@@ -113,8 +121,8 @@ public class SocketReader {
             return;
         }
         if (value instanceof RespSimpleString) {
-            String text = new String(
-                    ((RespSimpleString) value).getValue(), StandardCharsets.UTF_8);
+            String text = decodeStrictUtf8(
+                    ((RespSimpleString) value).getValue(), "async response ID");
             if (!"OK".equals(text) && pending.moveNextToAsyncResponses(text)) {
                 return;
             }
@@ -130,34 +138,58 @@ public class SocketReader {
      * Route a RESP3 push frame.
      *
      * <p>A {@code photon.response} push carries three elements: the push kind,
-     * the deferred request ID, and the response value for that request. Other
-     * push kinds are ignored for forward compatibility, since a client that
-     * does not understand a push has no request to correlate it with.
+     * the deferred request ID, and the response value for that request. The
+     * push kind may arrive as a bulk or simple string. An unrecognized push
+     * kind is fatal protocol corruption: a client that does not understand a
+     * push has no request to correlate it with, so the stream can no longer
+     * be trusted.
      */
     private void handlePush(RespPush push) {
         List<RespValue> elements = push.getElements();
-        if (elements.isEmpty() || !(elements.get(0) instanceof RespBulkString)) {
+        byte[] kindBytes;
+        if (!elements.isEmpty() && elements.get(0) instanceof RespBulkString) {
+            kindBytes = ((RespBulkString) elements.get(0)).getValue();
+        } else if (!elements.isEmpty() && elements.get(0) instanceof RespSimpleString) {
+            kindBytes = ((RespSimpleString) elements.get(0)).getValue();
+        } else {
             throw new PhotonProtocolError(
-                    "Malformed RESP push payload: expected a bulk string push kind");
+                    "Malformed RESP push payload: expected a bulk or simple string push kind");
         }
 
-        String kind = new String(
-                ((RespBulkString) elements.get(0)).getValue(), StandardCharsets.UTF_8);
+        String kind = decodeStrictUtf8(kindBytes, "push kind");
         if (!PhotonProtocol.PUSH_KIND_RESPONSE.equals(kind)) {
-            // Unknown push kind: ignored for forward compatibility.
-            return;
+            throw new PhotonProtocolError("Unknown RESP push kind: " + kind);
         }
         if (elements.size() != 3) {
             throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
                     + " push payload: expected 3 elements but got " + elements.size());
         }
-        if (!(elements.get(1) instanceof RespInteger)) {
+        if (!(elements.get(1) instanceof RespBulkString)) {
             throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
-                    + " push request ID: expected an integer");
+                    + " push request ID: expected a bulk string");
         }
 
-        long requestId = ((RespInteger) elements.get(1)).getValue();
-        pending.resolveAsync(Long.toString(requestId), elements.get(2));
+        String requestId = decodeStrictUtf8(
+                ((RespBulkString) elements.get(1)).getValue(), "push request ID");
+        pending.resolveAsync(requestId, elements.get(2));
+    }
+
+    /**
+     * Strictly decode UTF-8, rejecting malformed or unmappable bytes.
+     *
+     * <p>A looser or lossy decoding could mis-correlate a deferred response
+     * with a different in-flight request.
+     */
+    private static String decodeStrictUtf8(byte[] value, String field) {
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(value))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            throw new PhotonProtocolError("Invalid UTF-8 in " + field, e);
+        }
     }
 
     /**

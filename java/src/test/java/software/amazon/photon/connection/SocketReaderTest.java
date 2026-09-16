@@ -9,6 +9,7 @@ import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -180,7 +181,7 @@ class SocketReaderTest {
     @Test
     void readAndResolve_requestIdThenPush_resolvesDeferredFuture() {
         byte[] data = ("+42\r\n"
-                + ">3\r\n$15\r\nphoton.response\r\n:42\r\n-ERR origin failed\r\n")
+                + ">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n-ERR origin failed\r\n")
                 .getBytes(StandardCharsets.UTF_8);
         PendingRequests pending = new PendingRequests();
         CompletableFuture<RespValue> future = pending.registerNewRequest();
@@ -223,15 +224,15 @@ class SocketReaderTest {
     }
 
     @Test
-    void readAndResolve_unknownPushKindAndId_areIgnored() {
-        byte[] data = (">2\r\n$10\r\nother.kind\r\n:1\r\n"
-                + ">3\r\n$15\r\nphoton.response\r\n:999\r\n+ignored\r\n"
+    void readAndResolve_unmatchedPushRequestId_isDropped() {
+        // A well-formed photon.response push for an ID with no waiting caller (e.g. removed
+        // earlier by a timeout) is silently dropped rather than treated as an error.
+        byte[] data = (">3\r\n$15\r\nphoton.response\r\n$3\r\n999\r\n+ignored\r\n"
                 + "+OK\r\n").getBytes(StandardCharsets.UTF_8);
         PendingRequests pending = new PendingRequests();
         CompletableFuture<RespValue> future = pending.registerNewRequest();
         SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
 
-        reader.readAndResolve();
         reader.readAndResolve();
         assertFalse(future.isDone());
 
@@ -240,12 +241,43 @@ class SocketReaderTest {
     }
 
     @Test
+    void readAndResolve_unknownPushKind_throwsProtocolError() {
+        // An unrecognized push kind means the stream can no longer be correlated, so it is
+        // fatal rather than ignored for forward compatibility.
+        byte[] data = ">2\r\n$10\r\nother.kind\r\n:1\r\n".getBytes(StandardCharsets.UTF_8);
+        PendingRequests pending = new PendingRequests();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        assertThrows(PhotonProtocolError.class, reader::readAndResolve);
+    }
+
+    @Test
+    void readAndResolve_simpleStringPushKind_resolvesDeferredFuture() {
+        // The push kind may arrive as a RESP simple string rather than a bulk string.
+        byte[] data = ("+42\r\n"
+                + ">3\r\n+photon.response\r\n$2\r\n42\r\n+deferred\r\n")
+                .getBytes(StandardCharsets.UTF_8);
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        reader.readAndResolve();
+        assertFalse(future.isDone());
+
+        reader.readAndResolve();
+        assertEquals(
+                new RespSimpleString("deferred".getBytes(StandardCharsets.UTF_8)), future.join());
+    }
+
+    @Test
     void readAndResolve_malformedPushes_throwProtocolError() {
         String[] frames = {
                 ">0\r\n",
                 ">1\r\n:123\r\n",
-                ">2\r\n$15\r\nphoton.response\r\n:42\r\n",
-                ">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n+value\r\n"
+                ">2\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n",
+                // Request ID as a RESP integer (the obsolete shape) is malformed: it must be a
+                // bulk string, matching the FIFO simple-string key it correlates with.
+                ">3\r\n$15\r\nphoton.response\r\n:42\r\n+value\r\n"
         };
 
         for (String frame : frames) {
@@ -255,6 +287,52 @@ class SocketReaderTest {
                     pending, () -> {});
             assertThrows(PhotonProtocolError.class, reader::readAndResolve, frame);
         }
+    }
+
+    @Test
+    void readAndResolve_invalidUtf8AsyncResponseId_throwsProtocolError() {
+        // A FIFO simple-string request ID with invalid UTF-8 must be rejected rather than
+        // lossily decoded, since a mangled key could mis-correlate with another request.
+        byte[] data = new byte[]{'+', (byte) 0xff, '\r', '\n'};
+        PendingRequests pending = new PendingRequests();
+        pending.registerNewRequest();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        assertThrows(PhotonProtocolError.class, reader::readAndResolve);
+    }
+
+    @Test
+    void readAndResolve_invalidUtf8PushRequestId_throwsProtocolError() throws IOException {
+        ByteArrayOutputStream frame = new ByteArrayOutputStream();
+        frame.write(">3\r\n$15\r\nphoton.response\r\n$1\r\n".getBytes(StandardCharsets.UTF_8));
+        frame.write(0xff);
+        frame.write("\r\n+value\r\n".getBytes(StandardCharsets.UTF_8));
+
+        PendingRequests pending = new PendingRequests();
+        SocketReader reader = new SocketReader(
+                new ByteArrayInputStream(frame.toByteArray()), pending, () -> {});
+
+        assertThrows(PhotonProtocolError.class, reader::readAndResolve);
+    }
+
+    @Test
+    void runLoop_wrapsProtocolErrorAsConnectionLost() throws Exception {
+        // A malformed push means the read position can no longer be trusted: the reader loop
+        // must treat this as a lost connection (with the parse failure preserved as cause),
+        // not surface the raw protocol error to callers.
+        byte[] data = ">0\r\n".getBytes(StandardCharsets.UTF_8);
+        PendingRequests pending = new PendingRequests();
+        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
+
+        Thread t = new Thread(reader::runLoop);
+        t.start();
+        t.join(1000);
+
+        assertTrue(future.isCompletedExceptionally());
+        Throwable failure = future.handle((v, e) -> e).join();
+        assertTrue(failure instanceof PhotonConnectionLost);
+        assertTrue(failure.getCause() instanceof PhotonProtocolError);
     }
 
     @Test

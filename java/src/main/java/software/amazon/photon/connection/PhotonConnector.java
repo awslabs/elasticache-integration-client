@@ -147,7 +147,7 @@ public class PhotonConnector implements Closeable {
      * @param sslContext       the SSL context
      * @param connectTimeoutMs connection timeout in milliseconds
      * @param readTimeoutMs    read timeout in milliseconds
-     * @param maxPending       maximum requests awaiting FIFO replies
+     * @param maxPending       maximum requests awaiting either a FIFO or a deferred reply
      */
     public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs, int maxPending) {
@@ -163,7 +163,7 @@ public class PhotonConnector implements Closeable {
      * @param connectTimeoutMs        TCP connection timeout in milliseconds
      * @param initializationTimeoutMs TLS, AUTH, and config timeout in milliseconds
      * @param requestTimeoutMs        total timeout for each Photon request attempt
-     * @param maxPending              maximum requests awaiting FIFO replies
+     * @param maxPending              maximum requests awaiting either a FIFO or a deferred reply
      */
     public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int initializationTimeoutMs,

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.mock.MockCache;
@@ -323,7 +324,8 @@ class PhotonConnectorIntegrationTest {
                     new RequestMetadata("dynamodb", "GetItem")
             );
 
-            assertThrows(PhotonProtocolError.class, () -> conn.request(request));
+            PhotonError error = assertThrows(PhotonError.class, () -> conn.request(request));
+            assertFalse(error instanceof PhotonProtocolError);
         } finally {
             conn.close();
         }
@@ -419,7 +421,8 @@ class PhotonConnectorIntegrationTest {
 
             ExecutionException failure = assertThrows(
                     ExecutionException.class, () -> deferred.get(1, TimeUnit.SECONDS));
-            assertTrue(failure.getCause() instanceof PhotonProtocolError);
+            assertTrue(failure.getCause() instanceof PhotonError);
+            assertFalse(failure.getCause() instanceof PhotonProtocolError);
             assertTrue(failure.getCause().getMessage().contains("origin failed"));
             assertFalse(conn.isDead());
         } finally {
@@ -429,7 +432,7 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
-    void request_unknownPushKindAndId_areIgnored() throws Exception {
+    void request_unknownPushKind_killsConnection() throws Exception {
         PhotonConnector conn = new PhotonConnector(
                 "localhost", server.getPort(), clientSslContext,
                 5000, 5000, 1000, PhotonConnector.DEFAULT_MAX_PENDING);
@@ -437,12 +440,9 @@ class PhotonConnectorIntegrationTest {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             server.sendPush(new RespPush(Collections.singletonList(
                     bulk("future.push"))));
-            server.sendPush(responsePush(999, responseValue("ignored")));
 
-            PhotonResponse response = conn.request(testRequest());
-
-            assertEquals(200, response.getStatusCode());
-            assertFalse(conn.isDead());
+            awaitDead(conn);
+            assertThrows(PhotonConnectionLost.class, () -> conn.request(testRequest()));
         } finally {
             conn.close();
         }
@@ -471,7 +471,10 @@ class PhotonConnectorIntegrationTest {
 
             ExecutionException failure = assertThrows(
                     ExecutionException.class, () -> deferred.get(1, TimeUnit.SECONDS));
-            assertTrue(failure.getCause() instanceof PhotonProtocolError);
+            // A malformed frame leaves the read position untrustworthy, so the reader thread
+            // reports it as a lost connection with the parse failure preserved as the cause.
+            assertTrue(failure.getCause() instanceof PhotonConnectionLost);
+            assertTrue(failure.getCause().getCause() instanceof PhotonProtocolError);
             assertTrue(conn.isDead());
         } finally {
             executor.shutdownNow();
@@ -792,7 +795,7 @@ class PhotonConnectorIntegrationTest {
     private static RespPush responsePush(long requestId, RespValue response) {
         List<RespValue> elements = new ArrayList<>();
         elements.add(bulk(PhotonProtocol.PUSH_KIND_RESPONSE));
-        elements.add(new RespInteger(requestId));
+        elements.add(bulk(Long.toString(requestId)));
         elements.add(response);
         return new RespPush(elements);
     }
@@ -815,6 +818,14 @@ class PhotonConnectorIntegrationTest {
             Thread.sleep(5);
         }
         assertEquals(expected, pending.size());
+    }
+
+    private static void awaitDead(PhotonConnector conn) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (!conn.isDead() && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertTrue(conn.isDead());
     }
 
     private static <T> T getField(Object target, String name, Class<T> type) throws Exception {
@@ -937,7 +948,7 @@ class PhotonConnectorIntegrationTest {
     // === PendingRequests bounds ===
 
     @Test
-    void request_exceedingMaxPending_throwsPhotonConnectionLost() throws Exception {
+    void constructor_acceptsCustomMaxPending() throws Exception {
         // Create connection with very low max pending
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext,
                 5000, 5000, 2);
