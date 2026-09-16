@@ -21,8 +21,8 @@ This package currently ports the Python implementation's:
   and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the Photon copy, and routes idempotent Photon failures to
-  the origin;
+  SigV4 headers from the Photon copy, and routes transport failures to the
+  origin only for operations in the shared replay-safe catalog;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover/reconnection, circuit breaking, periodic config
@@ -31,8 +31,10 @@ ID and later `photon.response` pushes, while callers still receive ordinary
 promises. A timeout for a deferred request removes only that request and
 preserves the connection; a FIFO or write timeout remains connection-fatal. The
 middleware sends requests with no matching predicate directly to origin and has
-a narrow origin fallback for idempotent requests when Photon fails;
-non-idempotent Photon failures and non-Photon errors propagate.
+a narrow origin fallback for cataloged idempotent requests when Photon times
+out or loses its connection; non-idempotent transport failures and non-Photon
+errors propagate. Response-level Photon errors still fall through because
+Photon answered the request.
 
 ## Request routing
 
@@ -72,9 +74,10 @@ before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
 the original signed request remains untouched for origin pass-through. Photon
-errors for idempotent operations therefore return to the SDK's normal origin
-request and retry pipeline. Non-idempotent Photon errors and request validation
-errors propagate. Calling `destroy()` detaches Photon before SDK teardown,
+transport errors for operations in the shared replay-safe catalog therefore
+return to the SDK's normal origin request and retry pipeline. Non-idempotent
+transport errors and request validation errors propagate. Calling `destroy()`
+detaches Photon before SDK teardown,
 rejects in-flight Photon requests without passing shutdown failures to the
 origin, and is safe to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard

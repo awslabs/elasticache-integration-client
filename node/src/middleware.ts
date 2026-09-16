@@ -19,17 +19,18 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import { SMITHY_CONTEXT_KEY } from "@smithy/types";
-
-import { PhotonError } from "./errors.js";
+import {
+  PhotonConnectionError,
+  PhotonConnectionLost,
+  PhotonError,
+  PhotonTimeoutError,
+} from "./errors.js";
+import { isIdempotentOperation } from "./idempotency.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
 import type { PhotonResponse } from "./models.js";
 import type { PhotonSession } from "./session.js";
 
 const PHOTON_MIDDLEWARE = "photon";
-const IDEMPOTENT_TRAIT_MASK = 0b10;
-const IDEMPOTENT_HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PUT", "TRACE"]);
-
 /** The part of an AWS SDK v3 client used by PhotonHandle. */
 export interface PhotonCompatibleClient {
   config: { credentials: AwsCredentialIdentityProvider };
@@ -100,31 +101,12 @@ export function photonToHttpResponse(response: PhotonResponse): HttpResponse {
   });
 }
 
-function operationTraits(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema[3];
-  if (schema !== null && typeof schema === "object") {
-    return (schema as { traits?: unknown }).traits;
-  }
-  return undefined;
-}
-
-/**
- * Prefer Smithy operation metadata because AWS JSON protocols commonly use POST
- * for both read and write operations. HTTP method semantics cover generic
- * clients that do not provide an operation schema.
- */
-function isIdempotentRequest(request: PhotonRequest, context: HandlerExecutionContext): boolean {
-  const commandSchema = context[SMITHY_CONTEXT_KEY]?.commandInstance?.schema;
-  if (commandSchema !== undefined) {
-    const traits = operationTraits(commandSchema);
-    if (typeof traits === "number") return (traits & IDEMPOTENT_TRAIT_MASK) !== 0;
-    return (
-      traits !== null &&
-      typeof traits === "object" &&
-      (traits as { idempotent?: unknown }).idempotent === 1
-    );
-  }
-  return IDEMPOTENT_HTTP_METHODS.has(request.method.toUpperCase());
+function isTransportFailure(error: PhotonError): boolean {
+  return (
+    error instanceof PhotonTimeoutError ||
+    error instanceof PhotonConnectionLost ||
+    error instanceof PhotonConnectionError
+  );
 }
 
 export function photonMiddleware<Input extends object, Output extends object>(
@@ -139,8 +121,13 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (response === undefined) return next(args);
       return { response: photonToHttpResponse(response) };
     } catch (error) {
-      if (error instanceof PhotonError && session.isOpen && isIdempotentRequest(request, context)) {
-        return next(args);
+      if (error instanceof PhotonError && session.isOpen) {
+        if (
+          !isTransportFailure(error) ||
+          isIdempotentOperation(request.metadata.service, request.metadata.operation)
+        ) {
+          return next(args);
+        }
       }
       throw error;
     }

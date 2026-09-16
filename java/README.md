@@ -5,8 +5,11 @@ Photon integration for AWS SDK for Java v2 DynamoDB clients.
 Photon connects and authenticates before returning the SDK client. Requests are
 sent to Photon when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. Expected Photon failures also fall back
-to origin. SDK retries, response deserialization, and caller-provided override
-configuration remain in the normal SDK pipeline.
+to origin when Photon answered, or when the operation is in the shared
+replay-safe catalog. A timeout or connection failure for any other operation
+is surfaced instead of replaying the signed request at the origin. SDK retries,
+response deserialization, and caller-provided override configuration remain in
+the normal SDK pipeline.
 
 ## Request routing
 

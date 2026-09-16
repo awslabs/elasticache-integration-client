@@ -9,6 +9,7 @@ on:
       - main
     paths:
       - "node/**"
+      - "shared/idempotent-operations.json"
       - ".github/workflows/node-ci.yml"
 
 permissions:

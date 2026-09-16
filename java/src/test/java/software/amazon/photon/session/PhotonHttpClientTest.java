@@ -13,6 +13,7 @@ import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -52,7 +53,7 @@ class PhotonHttpClientTest {
     @Test
     void photonFailureDelegatesExactSignedRequest() throws Exception {
         StubSession session = new StubSession();
-        session.failure = new PhotonConnectionLost("cache unavailable");
+        session.failure = new PhotonTimeoutError("cache timed out");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
         HttpExecuteRequest signedRequest = signedRequest();
@@ -63,6 +64,20 @@ class PhotonHttpClientTest {
         assertSame(signedRequest, origin.request.get());
         assertEquals("signed-value",
                 origin.request.get().httpRequest().firstMatchingHeader("Authorization").orElse(null));
+    }
+
+    @Test
+    void nonIdempotentTransportFailureDoesNotContactOrigin() {
+        StubSession session = new StubSession();
+        session.failure = new PhotonTimeoutError("cache timed out");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        IOException failure = assertThrows(IOException.class,
+                () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
@@ -187,24 +202,37 @@ class PhotonHttpClientTest {
 
     private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
                                                boolean ownsOrigin) {
+        return newClient(session, origin, ownsOrigin, "ListTables");
+    }
+
+    private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
+                                               boolean ownsOrigin, String operation) {
         PhotonRequestContext context = new PhotonRequestContext();
-        prepare(context);
+        prepare(context, operation);
         return new PhotonHttpClient(session, context, origin, ownsOrigin);
     }
 
     private static void prepare(PhotonRequestContext context) {
+        prepare(context, "ListTables");
+    }
+
+    private static void prepare(PhotonRequestContext context, String operation) {
         ExecutionAttributes attributes = new ExecutionAttributes();
-        context.capture(photonRequest(), attributes);
+        context.capture(photonRequest(operation), attributes);
         context.prepareAttempt(attributes);
     }
 
     private static PhotonRequest photonRequest() {
+        return photonRequest("ListTables");
+    }
+
+    private static PhotonRequest photonRequest(String operation) {
         return new PhotonRequest(
                 "POST",
                 "https://dynamodb.us-east-1.amazonaws.com/",
                 Collections.emptyMap(),
                 new byte[0],
-                new RequestMetadata("dynamodb", "ListTables"));
+                new RequestMetadata("dynamodb", operation));
     }
 
     private static HttpExecuteRequest signedRequest() {

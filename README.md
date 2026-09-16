@@ -9,11 +9,18 @@ the Photon protocol, and allow cacheable responses to be served without
 contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
+The language-neutral replay-safety catalog is
+`shared/idempotent-operations.json`. Each packaged client keeps a local copy
+that is checked against this source of truth in its tests. Transport failures
+fall back to the origin only for cataloged operations; mixed or unknown
+operations are treated as non-idempotent.
+
 ## Repository layout
 
 ```text
 .
 ├── node/    # Node.js client
 ├── java/    # Java client
-└── python/  # Python client
+├── python/  # Python client
+└── shared/  # Language-neutral client contracts
 ```

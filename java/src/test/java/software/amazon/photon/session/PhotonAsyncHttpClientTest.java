@@ -13,11 +13,13 @@ import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -36,6 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncHttpClientTest {
@@ -214,6 +217,27 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
+    void nonIdempotentTransportFailureDoesNotContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new TimeoutSession(),
+                preparedContext("UpdateItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        java.util.concurrent.ExecutionException failure = assertThrows(
+                java.util.concurrent.ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof IOException);
+        assertTrue(failure.getCause().getCause() instanceof PhotonTimeoutError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
     void closeClosesOnlyOwnedResourcesAndIsIdempotent() {
         ImmediateSession session = new ImmediateSession();
         RecordingOrigin callerManaged = new RecordingOrigin();
@@ -241,14 +265,22 @@ class PhotonAsyncHttpClientTest {
     }
 
     private static PhotonRequestContext preparedContext() {
+        return preparedContext("ListTables");
+    }
+
+    private static PhotonRequestContext preparedContext(String operation) {
         PhotonRequestContext context = new PhotonRequestContext();
-        prepareAttempt(context);
+        prepareAttempt(context, operation);
         return context;
     }
 
     private static void prepareAttempt(PhotonRequestContext context) {
+        prepareAttempt(context, "ListTables");
+    }
+
+    private static void prepareAttempt(PhotonRequestContext context, String operation) {
         ExecutionAttributes attributes = new ExecutionAttributes();
-        context.capture(photonRequest(), attributes);
+        context.capture(photonRequest(operation), attributes);
         context.prepareAttempt(attributes);
     }
 
@@ -268,11 +300,15 @@ class PhotonAsyncHttpClientTest {
     }
 
     private static PhotonRequest photonRequest() {
+        return photonRequest("ListTables");
+    }
+
+    private static PhotonRequest photonRequest(String operation) {
         return new PhotonRequest(
                 "POST",
                 "https://dynamodb.us-east-1.amazonaws.com/",
                 Collections.emptyMap(),
-                new RequestMetadata("dynamodb", "ListTables"));
+                new RequestMetadata("dynamodb", operation));
     }
 
     private static AsyncExecuteRequest executeRequest() {
@@ -334,6 +370,17 @@ class PhotonAsyncHttpClientTest {
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
             throw new PhotonConnectionLost("cache unavailable");
+        }
+    }
+
+    private static final class TimeoutSession extends PhotonSession {
+        private TimeoutSession() {
+            super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonTimeoutError("cache timed out");
         }
     }
 

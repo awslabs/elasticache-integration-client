@@ -38,6 +38,7 @@ from photon.exceptions import (
     PhotonTimeoutError,
 )
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
+from photon.idempotency import is_idempotent_operation
 from photon.session import PhotonSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
@@ -153,6 +154,15 @@ class PhotonHandle:
                 return None
             return _photon_to_aws_response(request.url, response)
         except (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError) as exc:
+            if is_idempotent_operation(
+                http_request.metadata.service, http_request.metadata.operation
+            ):
+                logger.warning(
+                    "Photon transport failed for idempotent %s; passing through to the service",
+                    http_request.metadata.operation,
+                    exc_info=True,
+                )
+                return None
             _raise_as_botocore_error(exc, request.url)
         except PhotonError:
             logger.warning("Photon request failed; passing through to the service", exc_info=True)

@@ -107,16 +107,31 @@ def test_response_level_failure_passes_through(error):
     (PhotonConnectionLost("socket died"), ConnectionClosedError),
     (PhotonConnectionError("connect failed"), EndpointConnectionError),
 ])
-def test_transport_failure_raises_botocore_error(photon_error, botocore_error):
-    """A transport failure raises botocore's own error, chained to the Photon error, and
-    never passes through."""
+def test_non_idempotent_transport_failure_raises_botocore_error(photon_error, botocore_error):
+    """A non-idempotent transport failure raises botocore's own error."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = photon_error
     hooks.PhotonHandle(sdk, session)
     with pytest.raises(botocore_error) as exc_info:
-        _emit(sdk)
+        request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
     assert exc_info.value.__cause__ is photon_error
+
+
+@pytest.mark.parametrize("photon_error", [
+    PhotonTimeoutError("timed out"),
+    PhotonConnectionLost("socket died"),
+    PhotonConnectionError("connect failed"),
+])
+def test_idempotent_transport_failure_passes_through(photon_error):
+    sdk = MockClient()
+    session = mock_session()
+    session.request.side_effect = photon_error
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    responses = sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert first_non_none_response(responses) is None
 
 
 def test_non_photon_error_propagates():
