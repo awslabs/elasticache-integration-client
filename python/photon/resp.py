@@ -116,8 +116,6 @@ _DECODERS = {
 def decode_resp(data: bytes | bytearray, start: int = 0) -> tuple[RespValue, int]:
     """Decode a single RESP3 value beginning at ``start``.
 
-    ``data`` may be ``bytes`` or a ``bytearray`` (an incremental reader's accumulation
-    buffer); decoded string values are always ``bytes``.
 
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
     consumed frame — pass it back as ``start`` to read the next frame::
