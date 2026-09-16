@@ -158,7 +158,7 @@ class Reply:
         return cls(_error(code, message))
 
     @classmethod
-    def async_response(cls, request_id: int, reply: "Reply | None" = None) -> "Reply":
+    def push_response(cls, request_id: int, reply: "Reply | None" = None) -> "Reply":
         """An out-of-band exchange: the request id as a simple string, immediately followed
         by the ``photon.response`` push carrying ``reply`` (default :meth:`ok`) for that id."""
         reply = reply or cls.ok()

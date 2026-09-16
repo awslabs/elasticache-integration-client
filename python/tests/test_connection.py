@@ -551,7 +551,7 @@ class TestPhotonConnector:
         """A request the cache defers (request-id reply, then a photon.response push) resolves
         the blocked caller with the pushed [status, headers, body] — indistinguishable from a
         synchronous answer."""
-        async_reply = Reply.async_response(42, Reply.ok(status=200, body=b'{"deferred":1}'))
+        async_reply = Reply.push_response(42, Reply.ok(status=200, body=b'{"deferred":1}'))
         self.start_cache(response=async_reply)
         self.connect_and_handshake()
         value = self.send_request()
@@ -560,7 +560,7 @@ class TestPhotonConnector:
     def test_async_error_response_delivered_as_value(self):
         """A push carrying a RespError resolves the deferred caller with the error as a VALUE
         (raising is the parse_* functions' job), same as a synchronous error reply."""
-        async_reply = Reply.async_response(42, Reply.error("ERR", "origin failed"))
+        async_reply = Reply.push_response(42, Reply.error("ERR", "origin failed"))
         self.start_cache(response=async_reply)
         self.connect_and_handshake()
         value = self.send_request()
