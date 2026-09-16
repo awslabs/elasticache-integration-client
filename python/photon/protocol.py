@@ -139,9 +139,6 @@ def parse_request_response(value: RespValue) -> PhotonResponse:
 def parse_response_push(push: RespPush) -> tuple[str, RespValue]:
     """Split a ``photon.response`` push into the request id it answers and the reply for it.
 
-    Items are ``[request_id, reply]``. The id is a bulk string, returned as the ``str`` the id
-    reply used. The reply is handed back untouched — an array or a :class:`RespError`, both the
-    same as a synchronous one — for :func:`parse_request_response` to interpret.
 
     Raises :class:`~photon.exceptions.PhotonProtocolError`, not :class:`PhotonError`: a push
     that cannot be read leaves the whole stream untrustworthy.
