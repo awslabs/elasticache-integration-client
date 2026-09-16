@@ -556,14 +556,14 @@ class PhotonConnector:
 
     def _handle_push(self, push: RespPush) -> None:
         """Route a push by its kind: ``photon.response`` resolves the future mapped to the
-        request id it carries, any other kind is logged and ignored (forward compatible). A
-        structurally broken push raises out of the parse and kills the connection."""
+        request id it carries. Any other kind, or a structurally broken payload, means the
+        stream cannot be trusted, so the error propagates and kills the connection."""
         if push.kind == PUSH_KIND_RESPONSE:
             request_id, response = parse_response_push(push)
             if not self._pending.resolve_async(request_id, response):
                 logger.warning("push for unknown request id (timed out earlier); dropped")
             return
-        logger.warning("ignoring push with unknown kind %r", push.kind)
+        raise PhotonProtocolError(f"unknown push kind {push.kind!r}")
 
     def _mark_closed(self, exc: BaseException) -> None:
         """Refuse further sends and fail every waiting caller. Releases nothing."""

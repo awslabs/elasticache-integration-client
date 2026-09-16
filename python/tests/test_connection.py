@@ -618,12 +618,12 @@ class TestPhotonConnector:
         assert value[2] == b"after"
         assert not self.conn._closed
 
-    def test_unknown_push_kind_is_ignored(self):
-        """A push with an unknown kind is logged and dropped (forward compatible); the
-        connection stays alive and the FIFO is untouched. Internals: _handle_push."""
+    def test_unknown_push_kind_is_a_protocol_error(self):
+        """The proxy only sends kinds this client understands, so an unknown kind means the
+        stream cannot be trusted. Internals: _handle_push."""
         conn = PhotonConnector("host", 6379, tls=False)
-        conn._handle_push(RespPush(kind=b"photon.config", items=[b"whatever"]))
-        assert not conn._closed
+        with pytest.raises(PhotonProtocolError, match="unknown push kind"):
+            conn._handle_push(RespPush(kind=b"invalidate", items=[b"whatever"]))
 
     def test_malformed_push_kills_connection(self):
         """A push the protocol layer cannot read leaves the whole stream untrustworthy, so the
