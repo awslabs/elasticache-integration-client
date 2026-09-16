@@ -76,6 +76,13 @@ class TestPhotonConnector:
         args = [b"POST", b"https://x/", b"", body, b"service=s&op=o"]
         return self.conn.execute("photon.request", *args)
 
+    def wait_until(self, condition, timeout: float = 2.0) -> bool:
+        """Poll ``condition`` until it is true, up to ``timeout``. Returns its final value."""
+        deadline = time.monotonic() + timeout
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return condition()
+
     def wrap_writer(self) -> mock.Mock:
         """Replace the connector's stream writer with a delegating mock and return it.
 
@@ -459,20 +466,27 @@ class TestPhotonConnector:
         with pytest.raises(PhotonError, match="too many in-flight requests"):
             pending.register_new_request(Future())
 
-    def test_pending_requests_move_and_resolve_async(self):
-        """move_head_to_async_responses moves the OLDEST future out of the FIFO under the id;
-        resolve_async resolves it; the FIFO order of the remaining futures is untouched.
-        Internals: _PendingRequests."""
+    def test_a_deferred_request_lets_the_next_reply_through(self):
+        """The reply after a deferral goes to the request behind it; the deferred one keeps
+        waiting. Internals: _PendingRequests."""
         pending = _PendingRequests()
-        f1, f2 = Future(), Future()
-        pending.register_new_request(f1)
-        pending.register_new_request(f2)
-        pending.move_head_to_async_responses("1")   # moves f1
-        pending.resolve_oldest_request(b"v2")           # f2 is now the oldest
-        assert f2.result(timeout=1) == b"v2"
-        assert not f1.done()
-        assert pending.resolve_async("1", b"v1")
-        assert f1.result(timeout=1) == b"v1"
+        deferred, behind_it = Future(), Future()
+        pending.register_new_request(deferred)
+        pending.register_new_request(behind_it)
+        pending.move_head_to_async_responses("1")
+        pending.resolve_oldest_request(b"reply")
+        assert behind_it.result(timeout=1) == b"reply"
+        assert not deferred.done()
+
+    def test_pending_requests_move_and_resolve_async(self):
+        """move_head_to_async_responses moves the oldest future out of the FIFO under the id;
+        resolve_async resolves it. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        future = Future()
+        pending.register_new_request(future)
+        pending.move_head_to_async_responses("1")
+        assert pending.resolve_async("1", b"reply")
+        assert future.result(timeout=1) == b"reply"
 
     def test_resolve_async_unknown_id(self):
         """resolve_async reports an id nobody waits for, so a push that lost its caller is
@@ -555,52 +569,38 @@ class TestPhotonConnector:
     # 5. Deferred (out-of-band) responses — HOL blocking removal
     # ======================================================================== #
 
-    def test_async_response_resolves_via_push(self):
-        """A request the cache defers (request-id reply, then a photon.response push) resolves
-        the blocked caller with the pushed [status, headers, body] — indistinguishable from a
-        synchronous answer."""
-        async_reply = Reply.push_response(42, Reply.ok(status=200, body=b'{"deferred":1}'))
-        self.start_cache(response=async_reply)
-        self.connect_and_handshake()
-        value = self.send_request()
-        assert value == [200, b"content-type:application/x-amz-json-1.0", b'{"deferred":1}']
+    def test_reader_routes_an_id_reply_to_the_async_map(self):
+        """A simple string other than OK is a request id: the reader moves the oldest future
+        out of the FIFO into the async map under that id. Internals: _reader_loop."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        future = Future()
+        conn._pending.register_new_request(future)
 
-    def test_async_error_response_delivered_as_value(self):
-        """A push carrying a RespError resolves the deferred caller with the error as a VALUE
-        (raising is the parse_* functions' job), same as a synchronous error reply."""
-        async_reply = Reply.push_response(42, Reply.error("ERR", "origin failed"))
-        self.start_cache(response=async_reply)
-        self.connect_and_handshake()
-        value = self.send_request()
-        assert isinstance(value, RespError)
-        assert value.code == "ERR"
+        async def read_frame() -> RespValue:
+            conn._closed = True
+            return "42"
 
-    def test_async_request_does_not_block_later_replies(self):
-        """The point of the feature: a deferred request frees its FIFO slot, so the reply to a
-        LATER request resolves its caller while the deferred caller is still waiting."""
-        replies = [Reply.request_id(1), Reply.ok(body=b"fast")]
-        self.start_cache(response_fn=lambda req: replies.pop(0))
-        self.connect_and_handshake(request_timeout=5.0)
+        conn._reader = mock.Mock(read_frame=read_frame)
+        asyncio.run(conn._reader_loop())
+        assert conn._pending._async_responses["42"] is future
+        assert future not in conn._pending._queue
 
-        slow_result: list = []
-        slow_thread = threading.Thread(
-            target=lambda: slow_result.append(self.send_request(body=b"slow"))
-        )
-        slow_thread.start()
-        # Wait until the deferred request reached the cache before sending the fast one,
-        # so the reply order on the wire is deterministic.
-        deadline = time.monotonic() + 2
-        while len(self.cache.requests) < 1 and time.monotonic() < deadline:
-            time.sleep(0.01)
-
-        fast = self.send_request(body=b"fast")   # resolves while request 1 is still pending
-        assert fast[2] == b"fast"
-        assert slow_thread.is_alive()            # the deferred caller is still blocked
-
-        self.cache.send_push(1, Reply.ok(body=b"slow"))
-        slow_thread.join(timeout=2)
-        assert not slow_thread.is_alive()
-        assert slow_result[0][2] == b"slow"
+    @pytest.mark.parametrize(
+        "reply",
+        [[200, b"", b"body"], RespError("ERR", "origin failed")],
+        ids=["response", "error"],
+    )
+    def test_push_consumes_its_id_entry(self, reply):
+        """The push for a deferred request resolves its future and removes the id from the
+        map, so nothing is left waiting under it. An error travels as a value, like a
+        synchronous one. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        future = Future()
+        conn._pending.register_new_request(future)
+        conn._pending.move_head_to_async_responses("42")
+        conn._handle_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"42", reply]))
+        assert future.result(timeout=1) == reply
+        assert "42" not in conn._pending._async_responses
 
     def test_async_request_timeout_keeps_connection_alive(self):
         """A timeout on a deferred request abandons only that request: the connection
@@ -631,10 +631,7 @@ class TestPhotonConnector:
         self.start_cache()
         self.connect_and_handshake()
         self.cache.send_push(1, items=[Reply.ok().frame])  # a reply, no request id
-        deadline = time.monotonic() + 2
-        while not self.conn._closed and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert self.conn._closed is True
+        assert self.wait_until(lambda: self.conn._closed)
 
     def test_push_for_unknown_id_is_dropped(self):
         """A push whose id maps to nothing (caller timed out earlier) is logged and dropped;

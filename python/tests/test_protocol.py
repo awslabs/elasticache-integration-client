@@ -254,16 +254,16 @@ def test_parse_response_push_keeps_an_error_reply():
 
 
 @pytest.mark.parametrize(
-    "items",
+    "items, message",
     [
-        [],                        # nothing at all
-        [b"7"],                    # id with no reply
-        [b"7", [200], b"extra"],   # too many
-        [7, [200]],                # id is not a bulk string
+        ([], "takes 2 items"),
+        ([b"7"], "takes 2 items"),
+        ([b"7", [200], b"extra"], "takes 2 items"),
+        ([7, [200]], "Invalid push request id"),
     ],
 )
-def test_parse_response_push_rejects_wrong_payload(items):
+def test_parse_response_push_rejects_wrong_payload(items, message):
     """A push whose payload cannot be read is a protocol error: the stream is untrustworthy,
     unlike a reply that merely carries an error."""
-    with pytest.raises(PhotonProtocolError):
+    with pytest.raises(PhotonProtocolError, match=message):
         parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=items))
