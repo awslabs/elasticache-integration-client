@@ -86,7 +86,7 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
         raise IncompleteFrame("bulk string body incomplete")
-    return data[after_header:end], end + 2
+    return bytes(data[after_header:end]), end + 2
 
 
 def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
@@ -113,8 +113,11 @@ _DECODERS = {
 }
 
 
-def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
+def decode_resp(data: bytes | bytearray, start: int = 0) -> tuple[RespValue, int]:
     """Decode a single RESP3 value beginning at ``start``.
+
+    ``data`` may be ``bytes`` or a ``bytearray`` (an incremental reader's accumulation
+    buffer); decoded string values are always ``bytes``.
 
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
     consumed frame — pass it back as ``start`` to read the next frame::
@@ -132,9 +135,9 @@ def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
     header_end = data.find(_CRLF, start)
     if header_end == -1:
         raise IncompleteFrame("incomplete frame")
-    prefix = data[start:start + 1]
+    prefix = bytes(data[start:start + 1])
     decoder = _DECODERS.get(prefix)
     if decoder is None:
         raise PhotonProtocolError(f"Unsupported RESP prefix: {prefix!r}")
-    header = data[start + 1:header_end]
+    header = bytes(data[start + 1:header_end])
     return decoder(data, header, header_end + len(_CRLF))

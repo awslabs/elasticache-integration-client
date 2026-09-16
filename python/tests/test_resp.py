@@ -125,3 +125,37 @@ def test_decode_garbage_raises_protocol_error(garbage):
     """Genuinely corrupt input (unknown prefix, unparseable int/bulk/array headers) raises PhotonProtocolError."""
     with pytest.raises(PhotonProtocolError):
         decode_resp(garbage)
+
+
+# --- bytearray input (incremental reader buffer) -------------------------------
+
+def test_decode_from_bytearray_returns_bytes():
+    """A bytearray buffer decodes like bytes, and every decoded string value is bytes."""
+    frame = bytearray(b"*3\r\n:200\r\n+OK\r\n$5\r\nhello\r\n")
+    value, nxt = decode_resp(frame)
+    assert value == [200, b"OK", b"hello"]
+    assert all(isinstance(v, bytes) for v in value if not isinstance(v, int))
+    assert nxt == len(frame)
+
+
+def test_decode_from_bytearray_incremental_consume():
+    """The reader's loop shape: append chunks to a bytearray, decode, delete the consumed
+    prefix in place; the trailing bytes stay available for the next frame."""
+    buf = bytearray()
+    with pytest.raises(IncompleteFrame):
+        decode_resp(buf)
+    buf += b"$5\r\nhel"
+    with pytest.raises(IncompleteFrame):
+        decode_resp(buf)
+    buf += b"lo\r\n+OK\r\n"
+    value, consumed = decode_resp(buf)
+    assert value == b"hello"
+    assert isinstance(value, bytes)
+    del buf[:consumed]
+    assert decode_resp(buf) == (b"OK", 5)
+
+
+def test_decode_bytearray_garbage_raises_protocol_error():
+    """Unknown prefixes are rejected from a bytearray buffer too (hashable prefix lookup)."""
+    with pytest.raises(PhotonProtocolError):
+        decode_resp(bytearray(b"!bad\r\n"))
