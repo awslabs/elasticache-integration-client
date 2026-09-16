@@ -630,7 +630,7 @@ class TestPhotonConnector:
         reader marks the connection dead. Payload rules live in parse_response_push."""
         self.start_cache()
         self.connect_and_handshake()
-        self.cache.send_push(1, items=[Reply.ok().frame])  # a reply, no request id
+        self.cache.send_push(1, items=[Reply.ok().frame])  # a reply, one item
         assert self.wait_until(lambda: self.conn._closed)
 
     def test_push_for_unknown_id_is_dropped(self):
