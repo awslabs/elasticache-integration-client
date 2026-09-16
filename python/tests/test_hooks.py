@@ -1,5 +1,7 @@
 """Unit tests for photon.hooks."""
 
+import io
+
 from unittest import mock
 
 import pytest
@@ -64,6 +66,34 @@ def test__aws_to_photon_request_maps_fields():
     assert result.url == "https://host/path"
     assert result.headers == {"Host": "host"}
     assert result.body == b""  # a None body is normalized to empty bytes
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (None, b""),
+        ("", b""),
+        (b"raw", b"raw"),
+        ("Action=GetCallerIdentity&Version=2011-06-15", b"Action=GetCallerIdentity&Version=2011-06-15"),
+    ],
+)
+def test_body_conversion(body, expected):
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=body)
+    result = hooks._aws_to_photon_request(request, "before-send.sts.GetCallerIdentity")
+    assert result.body == expected
+
+
+def test_streaming_body_is_not_carried():
+    request = mock.Mock(method="PUT", url="https://host/", headers={}, body=io.BytesIO(b"payload"))
+    assert hooks._aws_to_photon_request(request, "before-send.s3.PutObject") is None
+
+
+def test_streaming_body_passes_through():
+    sdk = MockClient()
+    session = mock_session()
+    hooks.PhotonHandle(sdk, session)
+    assert _emit(sdk, body=io.BytesIO(b"payload")) is None
+    session.request.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -56,8 +56,21 @@ _UNIQUE_ID = "photon"
 logger = logging.getLogger(__name__)
 
 
-def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest:
+def _body_as_bytes(body: object) -> bytes | None:
+    """The prepared body as bytes, or None for a streaming body Photon cannot carry."""
+    if not body:
+        return b""
+    if isinstance(body, bytes):
+        return body
+    if isinstance(body, str):
+        return body.encode()
+    return None
+
+
+def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest | None:
     """Build an internal PhotonRequest from a botocore prepared request and event name.
+
+    Returns None for a streaming body; the caller passes the request through.
 
     boto3 builds an ``AWSPreparedRequest`` for every SDK call: the final HTTP request —
     method, url, headers, body — after serialization and signing, exactly what would be
@@ -87,7 +100,9 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
         k: v.decode() if isinstance(v, bytes) else v
         for k, v in (request.headers or {}).items()
     }
-    body = request.body or b""
+    body = _body_as_bytes(request.body)
+    if body is None:
+        return None
     return PhotonRequest(
         method=request.method,
         url=request.url,
@@ -135,10 +150,10 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. That happens for two reasons: the
-        session declined the request (no resolved predicate matched — the normal per-request steady
-        state, logged at debug), or Photon replied with something unusable (degrades to a cache
-        miss, logged as a warning). Non-Photon exceptions propagate.
+        request down the pipeline and keeps the original behavior. That happens when the request
+        cannot be carried (streaming body), no resolved predicate matched (the normal per-request
+        steady state), or Photon replied with something unusable (degrades to a cache miss, logged
+        as a warning). Non-Photon exceptions propagate.
 
         Transport failures do NOT pass through: if the cache never answered, the request's fate is
         unknown — so re-sending it on the application's behalf could apply it twice. 
@@ -146,6 +161,9 @@ class PhotonHandle:
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
+            if http_request is None:
+                logger.debug("Streaming request body; passing through to the service")
+                return None
             response = self._session.request(http_request)
             if response is None:
                 logger.debug("No predicate matched %s; passing through to the service",
