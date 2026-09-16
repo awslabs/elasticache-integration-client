@@ -18,7 +18,6 @@ export const IDEMPOTENT_OPERATIONS: Readonly<Record<string, ReadonlySet<string>>
     "DescribeTable",
     "DescribeTableReplicaAutoScaling",
     "DescribeTimeToLive",
-    "ExecuteTransaction",
     "GetItem",
     "GetResourcePolicy",
     "ListBackups",

@@ -23,6 +23,7 @@ describe("idempotent operations", () => {
     expect(isIdempotentOperation("DynamoDB", "GetItem")).toBe(true);
     expect(isIdempotentOperation("dynamodb", "UpdateItem")).toBe(false);
     expect(isIdempotentOperation("dynamodb", "ExecuteStatement")).toBe(false);
+    expect(isIdempotentOperation("dynamodb", "ExecuteTransaction")).toBe(false);
     expect(isIdempotentOperation("unknown", "GetItem")).toBe(false);
   });
 });

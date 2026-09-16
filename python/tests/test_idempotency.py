@@ -18,4 +18,5 @@ def test_catalog_is_conservative():
     assert is_idempotent_operation("DynamoDB", "GetItem")
     assert not is_idempotent_operation("dynamodb", "UpdateItem")
     assert not is_idempotent_operation("dynamodb", "ExecuteStatement")
+    assert not is_idempotent_operation("dynamodb", "ExecuteTransaction")
     assert not is_idempotent_operation("unknown", "GetItem")

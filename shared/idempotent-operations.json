@@ -14,7 +14,6 @@
     "DescribeTable",
     "DescribeTableReplicaAutoScaling",
     "DescribeTimeToLive",
-    "ExecuteTransaction",
     "GetItem",
     "GetResourcePolicy",
     "ListBackups",

@@ -28,7 +28,6 @@ final class Idempotency {
                     "DescribeTable",
                     "DescribeTableReplicaAutoScaling",
                     "DescribeTimeToLive",
-                    "ExecuteTransaction",
                     "GetItem",
                     "GetResourcePolicy",
                     "ListBackups",

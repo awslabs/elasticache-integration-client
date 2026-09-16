@@ -16,7 +16,6 @@ IDEMPOTENT_OPERATIONS = {
         "DescribeTable",
         "DescribeTableReplicaAutoScaling",
         "DescribeTimeToLive",
-        "ExecuteTransaction",
         "GetItem",
         "GetResourcePolicy",
         "ListBackups",

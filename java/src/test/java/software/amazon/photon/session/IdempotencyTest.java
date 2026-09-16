@@ -32,6 +32,8 @@ class IdempotencyTest {
         assertFalse(Idempotency.isIdempotent(new RequestMetadata("dynamodb", "UpdateItem")));
         assertFalse(Idempotency.isIdempotent(
                 new RequestMetadata("dynamodb", "ExecuteStatement")));
+        assertFalse(Idempotency.isIdempotent(
+                new RequestMetadata("dynamodb", "ExecuteTransaction")));
         assertFalse(Idempotency.isIdempotent(new RequestMetadata("unknown", "GetItem")));
     }
 }
