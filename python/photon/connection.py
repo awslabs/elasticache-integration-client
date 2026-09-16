@@ -510,8 +510,7 @@ class PhotonConnector:
             error = PhotonTimeoutError(f"async request timed out after {timeout}s")
             if self._pending.fail_if_async(reply_future, error):
                 # Deferred request: it holds no FIFO slot, so abandoning it is harmless and
-                # the connection survives. The future is settled either way: 
-                # with ``error``, or with a reply that landed as the timeout fired.
+                # the connection survives..
                 return reply_future.result()
             # Still in the FIFO: a late reply would be FIFO-matched to the wrong caller and
             # desynchronize every reply behind it, so the connection must die. close() fails
