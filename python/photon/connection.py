@@ -42,7 +42,7 @@ _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
 _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
-_AUTH_OK = "OK"  # the RESP simple string "+OK", decoded
+OK = "OK"  # the RESP simple string "+OK", decoded
 _DEFAULT_MAX_PENDING = 100
 
 
@@ -404,7 +404,7 @@ class PhotonConnector:
         if isinstance(reply, RespError):
             self.close()
             raise PhotonConnectionError(f"IAM AUTH rejected: {reply.code}")
-        if reply != _AUTH_OK:
+        if reply != OK:
             self.close()
             raise PhotonConnectionError(f"IAM AUTH failed: unexpected reply {reply!r}")
 
@@ -533,7 +533,7 @@ class PhotonConnector:
                 if isinstance(value, RespPush):
                     # Out-of-band frame: a deferred request's response, matched by id.
                     self._handle_push(value)
-                elif isinstance(value, str) and value != _AUTH_OK:
+                elif isinstance(value, str) and value != OK:
                     # A request id reply: the cache deferred the oldest request. Move its
                     # future out of the FIFO (freeing the pipeline slot); the push resolves it.
                     self._pending.move_head_to_async_responses(value)
