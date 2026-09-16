@@ -139,7 +139,6 @@ def parse_request_response(value: RespValue) -> PhotonResponse:
 def parse_response_push(push: RespPush) -> tuple[str, RespValue]:
     """Split a ``photon.response`` push into the request id it answers and the reply for it.
 
-
     Raises :class:`~photon.exceptions.PhotonProtocolError`, not :class:`PhotonError`: a push
     that cannot be read leaves the whole stream untrustworthy.
     """
