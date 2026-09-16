@@ -69,12 +69,12 @@ class TestPhotonConnector:
     def connect_and_handshake(self, **kwargs) -> None:
         """connect() plus the photon.config handshake — ready to send requests."""
         self.connect(**kwargs)
-        self.conn.execute("photon.config", b"{}")
+        self.conn.execute("photon.config", b"{}", timeout=self.conn.config_timeout)
 
-    def send_request(self, body: bytes = b"body") -> RespValue:
+    def send_request(self, body: bytes = b"body", *, timeout: float | None = None) -> RespValue:
         """Send a canonical photon.request ([method, url, headers, body, metadata]) with the given."""
         args = [b"POST", b"https://x/", b"", body, b"service=s&op=o"]
-        return self.conn.execute("photon.request", *args)
+        return self.conn.execute("photon.request", *args, timeout=timeout)
 
     def wait_until(self, condition, timeout: float = 2.0) -> bool:
         """Poll ``condition`` until it is true, up to ``timeout``. Returns its final value."""
@@ -124,7 +124,7 @@ class TestPhotonConnector:
         job — this test only proves the paths function over TLS.)"""
         self.start_cache(tls=True)
         self.connect_and_handshake(tls=True, ca_certs=self.cache.cert_path)
-        assert self.send_request()[0] == 200
+        assert self.send_request(timeout=self.conn.config_timeout)[0] == 200
 
     def test_tls_untrusted_cert_refused(self):
         """With the default CA store (which does not trust the mock's self-signed cert),

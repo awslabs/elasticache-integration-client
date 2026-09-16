@@ -1,9 +1,14 @@
 """Error taxonomy for the Photon client.
 
 ``PhotonError`` is the base for every connector failure; the subclasses name the distinct failure
-modes the transport layer raises. The full resilience layer (circuit breaking, pass-through) is
-out of scope for the bootstrap.
+modes the transport layer raises.
+
+One error deliberately sits outside that tree: :class:`PhotonCacheUnavailable` subclasses botocore's
+``ConnectionClosedError`` instead, because it is the only Photon failure meant to reach the
+application.
 """
+
+from botocore.exceptions import ConnectionClosedError
 
 
 class PhotonError(Exception):
@@ -24,3 +29,12 @@ class PhotonConnectionLost(PhotonError):
 
 class PhotonTimeoutError(PhotonError):
     """A request exceeded its per-request timeout (named to avoid shadowing the builtin)."""
+
+
+class PhotonCacheUnavailable(ConnectionClosedError):
+    """Photon has no connection to the cache and the fallback window has closed."""
+
+    fmt = (
+        'Photon has no connection to the cache, so this request could not be served from it: '
+        '"{endpoint_url}".'
+    )

@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 
 from photon.client import client
+from photon.exceptions import PhotonCacheUnavailable
 
 __version__ = "0.0.1"
 
@@ -28,5 +29,6 @@ logging.getLogger("photon").addHandler(logging.NullHandler())
 
 __all__ = [
     "client",
+    "PhotonCacheUnavailable",
     "__version__",
 ]

@@ -13,6 +13,7 @@ import pytest
 
 from photon.exceptions import PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
+from photon.policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 from tests.mock import mock_connector
 
@@ -22,7 +23,7 @@ from tests.mock import mock_connector
 def test_bring_up_order():
     """Construction drives connect(), authenticate(), then the config handshake via execute()."""
     connector = mock_connector()
-    PhotonSession(connector, overrides={"flag": True})
+    PhotonSession(lambda: connector, overrides={"flag": True})
     assert [c[0] for c in connector.method_calls] == [
         "connect",
         "authenticate",
@@ -35,7 +36,7 @@ def test_bring_up_order():
 def test_resolved_config_stored_on_construction():
     """The handshake's resolved config is stored by the time construction returns."""
     connector = mock_connector()
-    session = PhotonSession(connector)
+    session = PhotonSession(lambda: connector)
     assert session._config is not None
     assert session._config.version == "1.0"
     assert session._config.refresh_interval == 60
@@ -47,8 +48,9 @@ def test_failed_bring_up_closes_everything(failing_step):
     (no leaked connection) and the session object never exists."""
     connector = mock_connector()
     getattr(connector, failing_step).side_effect = PhotonError(f"{failing_step} failed")
+    # One attempt, so the assertion is about closing rather than about how often we retry.
     with pytest.raises(PhotonError):
-        PhotonSession(connector)
+        PhotonSession(lambda: connector, policy=ReconnectPolicy(connect_attempts=1))
     connector.close.assert_called_once_with()
 
 
@@ -58,7 +60,7 @@ def test_request_delegates_to_connector():
     """request() serializes the photon.request command, forwards it to execute(), and returns
     the parsed response."""
     connector = mock_connector()
-    session = PhotonSession(connector)
+    session = PhotonSession(lambda: connector)
     request = PhotonRequest(
         method="POST",
         url="https://dynamodb.us-east-1.amazonaws.com/",
@@ -78,7 +80,7 @@ def test_request_delegates_to_connector():
 def test_request_after_close_propagates_connector_error():
     """After close(), request() propagates the connector's error (no session-level state check)."""
     connector = mock_connector()
-    session = PhotonSession(connector)
+    session = PhotonSession(lambda: connector)
     session.close()
     connector.execute.reset_mock()  # discard the constructor's config call
     connector.execute.side_effect = PhotonError("connection is closed")
@@ -93,7 +95,7 @@ def test_request_after_close_propagates_connector_error():
 def test_close_delegates_to_connector():
     """close() delegates to the connector; the connector's own close() is idempotent."""
     connector = mock_connector()
-    session = PhotonSession(connector)
+    session = PhotonSession(lambda: connector)
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence

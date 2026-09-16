@@ -560,6 +560,133 @@ class MockCache:
 
 
 # --------------------------------------------------------------------------- #
+# MockTcpProxy — a controllable TCP relay, for driving reconnect
+# --------------------------------------------------------------------------- #
+class MockTcpProxy:
+    """TCP relay in front of a :class:`MockCache` for testing reconnect behavior.
+
+    The proxy can disconnect existing connections, reject new connections, or
+    resume forwarding, allowing tests to exercise reconnects without requiring
+    the cache itself to fail.
+
+    Point the client at :attr:`port` instead of the cache's own port.
+
+    * :meth:`disconnect_clients` closes existing connections and triggers EOF.
+    * :meth:`disable_forwarding` rejects new connections and closes existing ones.
+    * :meth:`enable_forwarding` allows new connections to reach the cache again.
+    * :attr:`accepted_connections` counts client connections, which can be used
+      to detect duplicate or concurrent reconnect attempts.
+    """
+
+    def __init__(self, target_host: str, target_port: int) -> None:
+        self._target = (target_host, target_port)
+        self._sockets: list[socket.socket] = []
+        self._sockets_lock = threading.Lock()
+        self._running = True
+        self._forwarding = True
+        self.accepted_connections = 0
+
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))  # port 0: the OS picks a free port
+        self._listener.listen(16)
+        self.host, self.port = self._listener.getsockname()[:2]
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop, name="mock-proxy-accept", daemon=True
+        )
+        self._accept_thread.start()
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.host}:{self.port}"
+
+    def enable_forwarding(self) -> None:
+        self._forwarding = True
+
+    def disable_forwarding(self) -> None:
+        """Reject new connections and close existing ones."""
+        self._forwarding = False
+        self.disconnect_clients()
+
+    def disconnect_clients(self) -> None:
+        """Close every relayed socket, so both ends see EOF."""
+        with self._sockets_lock:
+            sockets, self._sockets = self._sockets, []
+        for sock in sockets:
+            _close_quietly(sock)
+
+    def stop(self) -> None:
+        """Stop relaying and release the listener. Idempotent."""
+        if not self._running:
+            return
+        self._running = False
+        _close_quietly(self._listener)  # unblocks accept()
+        self.disconnect_clients()
+        if self._accept_thread is not threading.current_thread():
+            self._accept_thread.join(5)
+
+    def _accept_loop(self) -> None:
+        self._listener.settimeout(0.5)  # wake periodically to observe the stop flag
+        while self._running:
+            try:
+                client, _ = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break  # listener closed by stop()
+            self.accepted_connections += 1
+            if not self._forwarding:
+                _close_quietly(client)
+                continue
+            self._start_relay(client)
+
+    def _start_relay(self, client: socket.socket) -> None:
+        try:
+            upstream = socket.create_connection(self._target)
+        except OSError:
+            _close_quietly(client)
+            return
+        with self._sockets_lock:
+            self._sockets.extend((client, upstream))
+        for src, dst in ((client, upstream), (upstream, client)):
+            threading.Thread(
+                target=self._pump, args=(src, dst), name="mock-proxy-pump", daemon=True
+            ).start()
+
+    def _pump(self, src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while self._running:
+                chunk = src.recv(65536)
+                if not chunk:
+                    break
+                dst.sendall(chunk)
+        except OSError:
+            pass  # a broken relay is the behavior under test
+        finally:
+            # Close both directions so a broken relay appears as a dead connection,
+            # rather than leaving the peer waiting on a half-open socket.
+            _close_quietly(src)
+            _close_quietly(dst)
+
+
+def _close_quietly(sock: socket.socket) -> None:
+    """Shutdown and close a socket without raising.
+
+    ``shutdown`` is required before ``close`` because relay threads may be
+    blocked in ``recv`` on the socket. It wakes the blocked thread and causes
+    the peer to observe the connection ending instead of hanging.
+    """
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # already shut down, or never connected
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
+# --------------------------------------------------------------------------- #
 # MockSocket — in-memory socket for _SocketReader unit tests
 # --------------------------------------------------------------------------- #
 class MockSocket:
@@ -606,7 +733,8 @@ def mock_connector() -> PhotonConnector:
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
     """
     conn = create_autospec(PhotonConnector, instance=True)
-    # Instance attribute (set in __init__), invisible to autospec; the session reads it.
+    # Instance attributes (set in __init__) and properties, which autospec leaves as bare Mocks;
+    # the session reads all three and compares two of them, so give them real values.
     conn.config_timeout = 2.0
 
     def _execute(command, *args, timeout=None):
