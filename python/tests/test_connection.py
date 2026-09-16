@@ -451,6 +451,14 @@ class TestPhotonConnector:
         pending.resolve_oldest_request(b"v1")   # frees one slot
         pending.register_new_request(Future())  # fits again
 
+    def test_max_pending_counts_deferred_requests(self):
+        """A deferred request still counts against max_pending."""
+        pending = _PendingRequests(max_pending=1)
+        pending.register_new_request(Future())
+        pending.move_head_to_async_responses("1")   # out of the FIFO, still in flight
+        with pytest.raises(PhotonError, match="too many in-flight requests"):
+            pending.register_new_request(Future())
+
     def test_pending_requests_move_and_resolve_async(self):
         """move_head_to_async_responses moves the OLDEST future out of the FIFO under the id;
         resolve_async resolves it; the FIFO order of the remaining futures is untouched.

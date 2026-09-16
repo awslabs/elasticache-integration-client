@@ -90,7 +90,7 @@ class _PendingRequests:
 
     def register_new_request(self, future: Future) -> None:
         with self._pending_requests_lock:
-            if len(self._queue) >= self._max_pending:
+            if len(self._queue) + len(self._async_responses) >= self._max_pending:
                 raise PhotonError(f"too many in-flight requests (max {self._max_pending})")
             self._queue.append(future)
 
