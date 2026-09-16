@@ -29,6 +29,12 @@ const credentials = {
   sessionToken: "FwoGZXIvYXdzEBYaDHqa0AP",
 };
 
+const rotatedCredentials = {
+  accessKeyId: "ASIAROTATEDCREDENTIAL",
+  secretAccessKey: "rotated-secret-access-key",
+  sessionToken: "rotated-session-token",
+};
+
 // --- resolveAuthParams tests -------------------------------------------------
 
 describe("resolveAuthParams", () => {
@@ -227,7 +233,9 @@ describe("buildCacheAuthProvider", () => {
   });
 
   it("force-refreshes credentials from the default provider chain", async () => {
-    defaultCredentials.provider.mockResolvedValue(credentials);
+    defaultCredentials.provider
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValueOnce(rotatedCredentials);
     defaultCredentials.fromNodeProviderChain.mockClear();
 
     const provider = await buildCacheAuthProvider({
@@ -235,11 +243,16 @@ describe("buildCacheAuthProvider", () => {
       region: "us-east-1",
     });
 
-    await provider();
-    await provider();
+    const [, firstToken] = await provider();
+    const [, secondToken] = await provider();
 
     expect(defaultCredentials.fromNodeProviderChain).toHaveBeenCalledOnce();
     expect(defaultCredentials.provider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
     expect(defaultCredentials.provider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(firstToken).toContain(credentials.accessKeyId);
+    expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
+    expect(secondToken).toContain(rotatedCredentials.accessKeyId);
+    expect(secondToken).not.toContain(credentials.accessKeyId);
+    expect(secondToken).not.toBe(firstToken);
   });
 });
