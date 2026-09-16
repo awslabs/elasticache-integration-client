@@ -19,6 +19,7 @@ import {
   RespError,
   RespPush,
   encodeResp,
+  STRICT_UTF8,
   type RespValue,
 } from "./resp.js";
 
@@ -134,7 +135,7 @@ export class PendingRequests {
   }
 
   registerNewRequest(deferredResponseAllowed = true): PendingRequest {
-    if (this.queue.length >= this.maxPending) {
+    if (this.queue.length + this.asyncResponses.size >= this.maxPending) {
       throw new PhotonError(`maximum pending requests of ${this.maxPending} reached`);
     }
 
@@ -231,7 +232,10 @@ export interface PhotonConnectorOptions {
   readSize?: number;
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
   maxResponseSize?: number;
-  /** Maximum number of requests still awaiting positional/FIFO replies. Defaults to 100. */
+  /**
+   * Maximum number of requests still awaiting a reply, including deferred
+   * requests awaiting their async `photon.response` push. Defaults to 100.
+   */
   maxPending?: number;
   /** Provider for the `(userId, token)` credentials used by `AUTH`. */
   authProvider?: AuthProvider;
@@ -654,21 +658,26 @@ export class PhotonConnector {
     } catch (error) {
       if (this.dead) return;
       const failure =
-        error instanceof PhotonConnectionLost || error instanceof PhotonProtocolError
+        error instanceof PhotonConnectionLost
           ? error
-          : new PhotonConnectionLost("socket read failed", { cause: error });
+          : error instanceof PhotonProtocolError
+            ? new PhotonConnectionLost("reply stream corrupt", { cause: error })
+            : new PhotonConnectionLost("socket read failed", { cause: error });
       this.markDead(failure);
     }
   }
 
   private handlePush(items: RespValue[]): void {
     const [kind] = items;
-    if (items.length === 0 || !Buffer.isBuffer(kind)) {
+    if (items.length === 0 || (!Buffer.isBuffer(kind) && typeof kind !== "string")) {
       throw new PhotonProtocolError("Malformed RESP push payload");
     }
 
-    if (!kind.equals(PUSH_KIND_RESPONSE)) {
-      return;
+    const kindMatches = Buffer.isBuffer(kind)
+      ? kind.equals(PUSH_KIND_RESPONSE)
+      : kind === PUSH_KIND_RESPONSE.toString("ascii");
+    if (!kindMatches) {
+      throw new PhotonProtocolError(`Unknown RESP push kind: ${String(kind)}`);
     }
     if (items.length !== 3) {
       throw new PhotonProtocolError(
@@ -678,12 +687,24 @@ export class PhotonConnector {
 
     const requestId = items[1];
     const response = items[2]!;
-    if (typeof requestId !== "number" && typeof requestId !== "bigint") {
+    if (!Buffer.isBuffer(requestId)) {
       throw new PhotonProtocolError(
         `Malformed ${PUSH_KIND_RESPONSE.toString("ascii")} push request id`,
       );
     }
-    this.pending.resolveAsync(requestId.toString(10), response);
+    // Decode with the same strict UTF-8 codec used for the simple-string request
+    // id that seeded the FIFO->async correlation key, so the two keys always
+    // agree; a looser or differently-lossy decoding could mis-correlate a
+    // deferred response with a different in-flight request.
+    let requestIdKey: string;
+    try {
+      requestIdKey = STRICT_UTF8.decode(requestId);
+    } catch {
+      throw new PhotonProtocolError(
+        `Malformed ${PUSH_KIND_RESPONSE.toString("ascii")} push request id`,
+      );
+    }
+    this.pending.resolveAsync(requestIdKey, response);
   }
 
   private releaseReaderTask(readerTask: Promise<void> | undefined): void {

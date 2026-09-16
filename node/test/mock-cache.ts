@@ -86,7 +86,11 @@ export class Reply {
     return new Reply(
       Buffer.concat([
         _simple(Buffer.from(String(id), "ascii")),
-        _push([_bulk(Buffer.from("photon.response", "ascii")), _int(id), reply.toBytes()]),
+        _push([
+          _bulk(Buffer.from("photon.response", "ascii")),
+          _bulk(Buffer.from(String(id), "ascii")),
+          reply.toBytes(),
+        ]),
       ]),
     );
   }
@@ -344,9 +348,13 @@ export class MockCache {
     requestId: number | bigint,
     reply = Reply.ok(),
     kind = Buffer.from("photon.response", "ascii"),
+    kindEncoding: "bulk" | "simple" = "bulk",
   ): void {
     const socket = this.onlySocket();
-    socket.write(_push([_bulk(kind), _int(requestId), reply.toBytes()]));
+    const encodedKind = kindEncoding === "simple" ? _simple(kind) : _bulk(kind);
+    socket.write(
+      _push([encodedKind, _bulk(Buffer.from(String(requestId), "ascii")), reply.toBytes()]),
+    );
   }
 
   private onlySocket(): Socket {

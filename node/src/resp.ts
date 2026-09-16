@@ -1,7 +1,8 @@
 import { PhotonError, PhotonProtocolError } from "./errors.js";
 
 const CRLF = Buffer.from("\r\n");
-const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
+/** Strict UTF-8 decoder shared by simple-string decoding and RESP-string-keyed correlation. */
+export const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Generic RESP3 wire codec for the Photon client.

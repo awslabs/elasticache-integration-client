@@ -15,9 +15,10 @@ This package currently ports the Python implementation's:
 - a single-connection TCP/TLS transport with FIFO response correlation,
   request-ID correlation for deferred cache responses delivered through later
   RESP3 pushes,
-  bounded response frames, bounded positional/FIFO pending requests, bounded
-  send backpressure, differentiated connect/request/initialization timeouts,
-  idempotent close, and injected AUTH credentials;
+  bounded response frames, a single `maxPending` bound covering both
+  positional/FIFO and deferred requests, bounded send backpressure,
+  differentiated connect/request/initialization timeouts, idempotent close,
+  and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to

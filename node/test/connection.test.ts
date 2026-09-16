@@ -198,14 +198,15 @@ describe("PendingRequests", () => {
     expect(pending.removeFromAsync(first)).toBe(false);
   });
 
-  it("frees FIFO capacity when a request moves to the async map", async () => {
+  it("counts a deferred request against maxPending until it resolves", async () => {
     const pending = new PendingRequests(1);
     const first = pending.registerNewRequest();
 
     pending.moveNextToAsyncResponses("42");
-    const second = pending.registerNewRequest();
+    expect(() => pending.registerNewRequest()).toThrow("maximum pending requests");
 
     pending.resolveAsync("42", Buffer.from("first"));
+    const second = pending.registerNewRequest();
     pending.resolveOldestRequest(Buffer.from("second"));
     await expect(first.promise).resolves.toEqual(Buffer.from("first"));
     await expect(second.promise).resolves.toEqual(Buffer.from("second"));
@@ -438,6 +439,35 @@ describe("PhotonConnector", () => {
     },
   );
 
+  it("resolves a deferred request via a push kind encoded as a simple string", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const deferred = connector.execute("photon.request", ...requestArgs("deferred"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("deferred")),
+      Buffer.from("photon.response", "ascii"),
+      "simple",
+    );
+    await expect(deferred).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("deferred"),
+    ]);
+    await connector.close();
+  });
+
   it("keeps a request-id-shaped reply positional for a non-request command", async () => {
     const cache = await startCache({ authResponse: Reply.requestId(42) });
     const connector = new PhotonConnector(cache.host, cache.port!, {
@@ -468,7 +498,7 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
-  it("ignores unknown push kinds and ids while keeping the connection usable", async () => {
+  it("drops response pushes for unknown ids while keeping the connection usable", async () => {
     let requestCount = 0;
     const cache = await startCache({
       responseFn: (request) => {
@@ -482,7 +512,6 @@ describe("PhotonConnector", () => {
 
     const first = connector.execute("photon.request", ...requestArgs("first"));
     await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
-    cache.sendPush(42, Reply.ok(), Buffer.from("other.kind"));
     cache.sendPush(999, Reply.ok(), Buffer.from("photon.response"));
 
     await expect(connector.execute("photon.request", ...requestArgs("second"))).resolves.toEqual([
@@ -507,16 +536,22 @@ describe("PhotonConnector", () => {
     [">0\r\n", "empty payload"],
     [">3\r\n:123\r\n:42\r\n$1\r\nx\r\n", "non-bytes kind"],
     [">2\r\n$15\r\nphoton.response\r\n:42\r\n", "wrong arity"],
-    [">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n$1\r\nx\r\n", "non-integer id"],
+    [">3\r\n$15\r\nphoton.response\r\n:42\r\n$1\r\nx\r\n", "integer id is no longer accepted"],
+    [">3\r\n$10\r\nother.kind\r\n$2\r\n42\r\n$1\r\nx\r\n", "unknown push kind"],
+    [">3\r\n$15\r\nphoton.response\r\n$1\r\n\xff\r\n$1\r\nx\r\n", "invalid UTF-8 id"],
   ])("kills the connection on a malformed push: %s (%s)", async (frame) => {
-    const cache = await startCache({ response: new Reply(Buffer.from(frame)) });
+    // latin1 so a raw invalid-UTF-8 byte (\xff) in a table entry round-trips as
+    // that exact byte rather than being re-encoded as multi-byte UTF-8.
+    const cache = await startCache({ response: new Reply(Buffer.from(frame, "latin1")) });
     const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
     await connector.connect();
 
     try {
-      await expect(
-        connector.execute("photon.request", ...requestArgs("malformed")),
-      ).rejects.toBeInstanceOf(PhotonProtocolError);
+      const failure = await connector
+        .execute("photon.request", ...requestArgs("malformed"))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(PhotonConnectionLost);
+      expect((failure as Error).cause).toBeInstanceOf(PhotonProtocolError);
       await expect(
         connector.execute("photon.request", ...requestArgs("after-failure")),
       ).rejects.toBeInstanceOf(PhotonConnectionLost);
@@ -720,16 +755,19 @@ describe("PhotonConnector", () => {
     });
     await connector.connect();
 
-    await expect(
-      connector.execute(
+    const failure = await connector
+      .execute(
         "photon.request",
         Buffer.from("POST"),
         Buffer.from("https://x/"),
         Buffer.alloc(0),
         Buffer.from("body"),
         Buffer.from("service=s&op=o"),
-      ),
-    ).rejects.toThrow("maximum response size");
+      )
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PhotonConnectionLost);
+    expect((failure as Error).cause).toBeInstanceOf(PhotonProtocolError);
+    expect(((failure as Error).cause as Error).message).toContain("maximum response size");
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
       PhotonConnectionLost,
     );
