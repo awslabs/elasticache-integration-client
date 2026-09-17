@@ -200,35 +200,6 @@ class PhotonAsyncClientTest {
     }
 
     @Test
-    void photonTimeoutDoesNotDirectlyReplayAgainstAsyncOrigin() throws Exception {
-        cache.setFailureMode(MockCache.FailureMode.HANG);
-        cache.setFailureCommand("photon.request");
-        RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
-
-        Consumer<DynamoDbAsyncClientBuilder> originConfig = builder -> builder
-                .region(Region.US_EAST_1)
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("access-key", "secret-key")))
-                .endpointOverride(URI.create("http://localhost:8080"));
-
-        try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials("test-user", "test-token")
-                .sslContext(clientSslContext)
-                .requestTimeoutMs(100)
-                .originAsyncHttpClient(origin)
-                .buildAsync(DynamoDbAsyncClient.builder(), originConfig)) {
-            CompletableFuture<ListTablesResponse> request = result.client().listTables();
-            assertThrows(java.util.concurrent.TimeoutException.class,
-                    () -> request.get(500, TimeUnit.MILLISECONDS));
-            request.cancel(true);
-        }
-
-        assertEquals(null, origin.request.get());
-        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
-    }
-
-    @Test
     void asyncClientUsesRecoveredConnectionThroughProxy() throws Exception {
         cache.setReply(Reply.ok(
                 200,

@@ -310,7 +310,7 @@ public class PhotonSession implements Closeable {
             }
             if (state == State.OPEN) {
                 PhotonConnector current = connector;
-                if (failed != null && current != failed && current != null && current.isReady()) {
+                if (current != null && current.isReady() && current != failed) {
                     return;
                 }
                 fallbackDeadlineNanos = fallbackDeadline();
