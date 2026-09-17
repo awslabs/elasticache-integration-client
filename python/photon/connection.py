@@ -399,11 +399,12 @@ class PhotonConnector:
         the connection to avoid FIFO desync.
 
         Raises:
-            PhotonConnectionError: If the handshake is rejected or times out.
-            PhotonError: If there is no auth provider, or it fails to generate a token.
+            PhotonConnectionError: If there is no auth provider, or the handshake is rejected
+                or times out.
+            PhotonError: If the provider fails to generate a token.
         """
         if self._auth_provider is None:
-            raise PhotonError("PhotonConnector requires an auth provider to handshake")
+            raise PhotonConnectionError("PhotonConnector requires an auth provider to handshake")
         user_id, token = self._auth_provider()
         try:
             reply = self.execute("HELLO", b"3", b"AUTH", user_id.encode(), token.encode(),
@@ -415,13 +416,23 @@ class PhotonConnector:
 
     def _verify_hello_reply(self, reply: RespValue) -> None:
         """Require a map reporting ``proto`` 3; an error reply or any other shape closes the
-        connection."""
+        connection.
+
+        The reply itself is never put in the message. Whatever arrives here is a frame we did not
+        expect, so it could be any size and hold anything — a desynchronized FIFO would deliver
+        a cached response body. The shape is enough to diagnose it.
+        """
         if isinstance(reply, RespError):
             self.close()
             raise PhotonConnectionError(f"HELLO 3 rejected: {reply.code}")
-        if not isinstance(reply, dict) or reply.get(b"proto") != _RESP3_PROTO:
+        if not isinstance(reply, dict):
             self.close()
-            raise PhotonConnectionError(f"HELLO 3 failed: unexpected reply {reply!r}")
+            raise PhotonConnectionError(
+                f"HELLO 3 failed: expected a map reply, got {type(reply).__name__}")
+        if reply.get(b"proto") != _RESP3_PROTO:
+            self.close()
+            raise PhotonConnectionError(
+                f"HELLO 3 failed: reply did not report proto {_RESP3_PROTO}")
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """TLS policy for the connection: TLS 1.2+, hostname check, required verification."""

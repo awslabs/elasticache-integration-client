@@ -167,6 +167,7 @@ def test_decode_negative_map_length_raises_protocol_error():
         (b"$5\r\nhell", "bulk string body incomplete"),
         (b"$5\r\nhello", "bulk string body incomplete"),
         (b"*2\r\n:1\r\n", "incomplete frame"),
+        (b"%1\r\n$5\r\nproto\r\n", "incomplete frame"),
         (b">2\r\n:1\r\n", "incomplete frame"),
         (b":", "incomplete frame"),
         (b"_", "incomplete frame"),

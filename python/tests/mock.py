@@ -375,21 +375,26 @@ class MockCache:
 
         if name == "hello":
             self.photon_command_log.append(name)
-            # HELLO 3 [AUTH <user> <token>]: any credentials are accepted, as with AUTH.
-            if not args or args[0] != b"3":
+            # HELLO <protover> [AUTH <user> <token>]: any credentials are accepted, as with AUTH.
+            # The reply echoes the version asked for, encoded in it: a map for RESP3, array for RESP2.
+            if not args or args[0] not in (b"2", b"3"):
                 return _error("NOPROTO", "unsupported protocol version")
             rest = args[1:]
             if rest and (len(rest) != 3 or rest[0].upper() != b"AUTH"):
                 return _error("ERR", "syntax error")
-            return _map([
+            proto = int(args[0])
+            fields = [
                 (_bulk(b"server"), _bulk(b"valkey")),
                 (_bulk(b"version"), _bulk(b"8.0.0")),
-                (_bulk(b"proto"), _int(3)),
+                (_bulk(b"proto"), _int(proto)),
                 (_bulk(b"id"), _int(1)),
                 (_bulk(b"mode"), _bulk(b"cluster")),
                 (_bulk(b"role"), _bulk(b"primary")),
                 (_bulk(b"modules"), _array([])),
-            ])
+            ]
+            if proto == 2:
+                return _array([item for pair in fields for item in pair])
+            return _map(fields)
 
         if name == "photon.config":
             self.photon_command_log.append(name)

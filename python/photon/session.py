@@ -87,7 +87,7 @@ class PhotonSession:
         return self._connection_manager.state
 
     def _configure(self, connector: PhotonConnector) -> None:
-        """Hand shake with a freshly connected connector and resolve its config, making it usable.
+        """Handshake with a freshly connected connector and resolve its config, making it usable.
 
         Called for the initial connection and for every reconnect, so each connection negotiates
         RESP3, authenticates with fresh credentials, and routes by the latest resolved config.
