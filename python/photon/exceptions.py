@@ -25,7 +25,7 @@ class PhotonConfigError(PhotonError, ValueError):
 
 
 class PhotonConnectionError(PhotonError):
-    """Connection bring-up failed (DNS, TCP connect, or TLS handshake)."""
+    """Opening a connection failed (DNS, TCP connect, or TLS handshake)."""
 
 
 class PhotonProtocolError(PhotonError):

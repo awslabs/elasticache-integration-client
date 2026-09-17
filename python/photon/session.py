@@ -2,7 +2,7 @@
 
 The connection itself is owned by a :class:`~photon.connection_manager.ConnectionManager`, which
 brings it up, rebuilds it when it is lost, and holds the fallback window open meanwhile. The session
-supplies the Photon half: the handshake each new connection needs, the predicates that decide what is
+supplies the Photon half: the AUTH and config exchange each new connection needs, the predicates
 cacheable, and the request path.
 
 While no connection is available, requests are declined so the caller sends them to the origin
@@ -17,7 +17,7 @@ from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
 from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError
 from photon.models import PhotonRequest, PhotonResponse
-from photon.policy import ReconnectPolicy
+from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
     parse_config_response,
@@ -64,33 +64,35 @@ class PhotonSession:
 
         Args:
             connector_factory: Returns a new, unconnected connector each time it is called.
-            overrides: ``photon.config`` overrides to send during the handshake. The proxy resolves
+            overrides: ``photon.config`` overrides to send when configuring. The proxy resolves
                 them and answers with the config the session then routes by.
-            policy: Reconnect and fallback behavior; see :class:`~photon.policy.ReconnectPolicy`.
+            policy: Reconnect and fallback behavior; see
+                :class:`~photon.reconnect_policy.ReconnectPolicy`.
 
         Raises:
-            PhotonError: The connection could not be opened; see :meth:`ConnectionManager.start`. 
+            PhotonError: The connection could not be opened; see
+                :meth:`ConnectionManager.init_connection`.
                 Creating a session fails loudly rather than handing back one that never caches.
         """
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
         self._connection_manager = ConnectionManager(
-            connector_factory, self._bring_up, policy or ReconnectPolicy()
+            connector_factory, self._configure, policy or ReconnectPolicy()
         )
-        self._connection_manager.start()
+        self._connection_manager.init_connection()
 
     @property
     def state(self) -> ConnectionState:
         return self._connection_manager.state
 
-    def _bring_up(self, connector: PhotonConnector) -> None:
-        """Give a freshly connected connector the Photon handshake, making it usable.
+    def _configure(self, connector: PhotonConnector) -> None:
+        """Authenticate a freshly connected connector and resolve its config, making it usable.
 
         Called for the initial connection and for every reconnect, so each connection
         authenticates with fresh credentials and routes by the latest resolved config.
 
-        Neither result is published unless both succeed, so a bring-up that fails half-way leaves
+        Neither result is published unless both succeed, so a configure that fails half-way leaves
         the session routing by the config it was already using rather than pairing a new config with
         the predicates of an older one. The two stores are not atomic together, so a request can
         briefly see the new config beside the old predicates; nothing reads both today.

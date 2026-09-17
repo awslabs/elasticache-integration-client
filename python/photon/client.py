@@ -7,7 +7,7 @@ import boto3
 from photon.auth import build_cache_auth_provider
 from photon.connection import PhotonConnector
 from photon.hooks import PhotonHandle
-from photon.policy import ReconnectPolicy
+from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 
 

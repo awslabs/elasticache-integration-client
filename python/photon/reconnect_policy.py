@@ -25,7 +25,7 @@ class ReconnectPolicy:
 
     fallback_duration: int | None = None
     connect_attempts: int = 3
-    # How long one bring-up may take: transport connect, AUTH and the config handshake together,
+    # How long opening one connection may take: transport connect, AUTH and the config exchange
     # bounded from outside while the steps keep their own timeouts underneath. It caps every
     # attempt, so creating a session takes at most connect_attempts of these plus the backoff
     # between them, and each later reconnect attempt is capped by one.
