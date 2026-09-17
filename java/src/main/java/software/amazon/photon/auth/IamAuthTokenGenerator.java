@@ -38,7 +38,9 @@ import java.util.Objects;
  */
 public final class IamAuthTokenGenerator {
 
-    /** SigV4 presign expiry: maximum accepted by ElastiCache (15 minutes). */
+    /**
+     * SigV4 presign expiry fixed by the ElastiCache IAM toolkit contract.
+     */
     public static final Duration TOKEN_EXPIRY = Duration.ofSeconds(900);
 
     /** Default ElastiCache IAM user for serverless caches. */
@@ -47,7 +49,7 @@ public final class IamAuthTokenGenerator {
     private final String cacheName;
     private final String userId;
     private final Region region;
-    private final ElastiCacheIamAuthTokenProvider delegate;
+    private final ElastiCacheIamAuthTokenProvider toolkitTokenProvider;
 
     private IamAuthTokenGenerator(Builder builder) {
         String requestedCacheName =
@@ -69,7 +71,7 @@ public final class IamAuthTokenGenerator {
         }
 
         try {
-            this.delegate = ElastiCacheIamAuthTokenProvider.builder()
+            this.toolkitTokenProvider = ElastiCacheIamAuthTokenProvider.builder()
                     .serverlessCacheName(requestedCacheName)
                     .userId(requestedUserId)
                     .region(region)
@@ -81,7 +83,7 @@ public final class IamAuthTokenGenerator {
             throw new PhotonError("Failed to initialize IAM authentication", e);
         }
         this.cacheName = requestedCacheName.toLowerCase(Locale.ROOT);
-        this.userId = delegate.getUserId();
+        this.userId = toolkitTokenProvider.getUserId();
     }
 
     /**
@@ -95,7 +97,7 @@ public final class IamAuthTokenGenerator {
      */
     public String generateToken() {
         try {
-            return delegate.getToken();
+            return toolkitTokenProvider.getToken();
         } catch (ToolkitInputException e) {
             throw new PhotonError(e.getMessage(), e);
         } catch (RuntimeException e) {

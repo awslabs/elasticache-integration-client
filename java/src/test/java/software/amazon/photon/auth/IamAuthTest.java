@@ -10,7 +10,10 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.photon.exception.PhotonError;
 
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -127,6 +130,19 @@ class IamAuthTest {
                             .build());
 
             assertTrue(error.getMessage().contains("exactly 900 seconds"));
+        }
+
+        @Test
+        void generateToken_rejectsCustomSigningClock() {
+            PhotonError error = assertThrows(PhotonError.class, () ->
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .clock(Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+                            .build());
+
+            assertTrue(error.getMessage().contains("clock customization is not supported"));
         }
 
         @Test
