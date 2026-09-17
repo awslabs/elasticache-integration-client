@@ -14,6 +14,7 @@ import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -261,6 +262,23 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
+    void nonIdempotentExplicitRejectionDelegatesToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new RejectedSession(),
+                preparedContext("UpdateItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
     void shutdownFailureDoesNotStartIdempotentFallback() {
         RecordingOrigin origin = new RecordingOrigin();
         PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
@@ -439,6 +457,13 @@ class PhotonAsyncHttpClientTest {
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
             throw new PhotonProtocolError("malformed response");
+        }
+    }
+
+    private static final class RejectedSession extends OpenSession {
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonRejectedError("request rejected");
         }
     }
 

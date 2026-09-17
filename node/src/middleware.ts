@@ -3,9 +3,10 @@
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
  * AWS SigV4 authentication headers, builds a PhotonRequest, calls PhotonSession,
- * and returns a synthetic HttpResponse. Photon failures for idempotent
- * operations and predicate declines return to the SDK's origin pipeline while
- * preserving its normal retry and deserialization behavior.
+ * and returns a synthetic HttpResponse. Predicate declines, explicit Photon
+ * rejections, and indeterminate failures for idempotent operations return to
+ * the SDK's origin pipeline while preserving its normal retry and
+ * deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the Photon path drops the auth
@@ -19,7 +20,7 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import { PhotonError } from "./errors.js";
+import { PhotonError, PhotonRejectedError } from "./errors.js";
 import { isIdempotentOperation } from "./idempotency.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
 import type { PhotonResponse } from "./models.js";
@@ -111,7 +112,8 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (
         error instanceof PhotonError &&
         session.isOpen &&
-        isIdempotentOperation(request.metadata.service, request.metadata.operation)
+        (error instanceof PhotonRejectedError ||
+          isIdempotentOperation(request.metadata.service, request.metadata.operation))
       ) {
         return next(args);
       }

@@ -14,6 +14,7 @@ import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -93,6 +94,19 @@ class PhotonHttpClientTest {
 
         assertSame(session.failure, failure.getCause());
         assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void nonIdempotentExplicitRejectionDelegatesToOrigin() throws Exception {
+        StubSession session = new StubSession();
+        session.failure = new PhotonRejectedError("request rejected");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        HttpExecuteResponse response = client.prepareRequest(signedRequest()).call();
+
+        assertEquals(201, response.httpResponse().statusCode());
+        assertEquals(1, origin.prepareCount.get());
     }
 
     @Test

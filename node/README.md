@@ -21,8 +21,9 @@ This package currently ports the Python implementation's:
   and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the Photon copy, and routes transport failures to the
-  origin only for operations in the shared replay-safe catalog;
+  SigV4 headers from the Photon copy, routes indeterminate failures to the
+  origin only for operations in the shared replay-safe catalog, and passes
+  explicit Photon rejections through for any operation;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover/reconnection, circuit breaking, periodic config
@@ -31,9 +32,11 @@ ID and later `photon.response` pushes, while callers still receive ordinary
 promises. A timeout for a deferred request removes only that request and
 preserves the connection; a FIFO or write timeout remains connection-fatal. The
 middleware sends requests with no matching predicate directly to origin and has
-a narrow origin fallback for cataloged idempotent requests when Photon fails;
-non-idempotent Photon failures and non-Photon errors propagate. Malformed
-responses are treated as indeterminate failures, not safe cache misses.
+a narrow origin fallback for cataloged idempotent requests when Photon fails.
+Explicit Photon rejections also fall through because the request was not
+accepted. Other non-idempotent Photon failures and non-Photon errors propagate.
+Malformed responses are treated as indeterminate failures, not safe cache
+misses.
 
 ## Request routing
 
@@ -73,9 +76,10 @@ before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
 the original signed request remains untouched for origin pass-through. Photon
-failures for operations in the shared replay-safe catalog therefore
-return to the SDK's normal origin request and retry pipeline. Non-idempotent
-Photon errors and request validation errors propagate. Calling `destroy()`
+indeterminate failures for operations in the shared replay-safe catalog
+therefore return to the SDK's normal origin request and retry pipeline.
+Explicit rejections do so for every operation; other non-idempotent Photon
+errors and request validation errors propagate. Calling `destroy()`
 detaches Photon before SDK teardown,
 rejects in-flight Photon requests without passing shutdown failures to the
 origin, and is safe to repeat.

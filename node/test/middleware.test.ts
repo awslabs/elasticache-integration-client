@@ -324,10 +324,28 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it.each([
-    new PhotonRejectedError("cache rejected request"),
-    new PhotonProtocolError("malformed response"),
-  ])("does not replay non-idempotent Photon failure %s", async (photonError) => {
+  it("passes an explicitly rejected non-idempotent request through to the origin", async () => {
+    const photonError = new PhotonRejectedError("cache rejected request");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
+  });
+
+  it("does not replay a non-idempotent malformed Photon response", async () => {
+    const photonError = new PhotonProtocolError("malformed response");
     const session = fakeSession({
       request: vi.fn(async () => {
         throw photonError;

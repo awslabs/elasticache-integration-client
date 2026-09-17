@@ -135,16 +135,17 @@ def test_idempotent_transport_failure_passes_through(photon_error):
     assert first_non_none_response(responses) is None
 
 
-def test_non_idempotent_rejection_propagates():
+def test_non_idempotent_rejection_passes_through():
     sdk = MockClient()
     session = mock_session()
     rejection = PhotonRejectedError("rejected")
     session.request.side_effect = rejection
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises(PhotonRejectedError) as exc_info:
-        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
-    assert exc_info.value is rejection
+    responses = sdk.meta.events.emit(
+        "before-send.dynamodb.UpdateItem", request=request
+    )
+    assert first_non_none_response(responses) is None
 
 
 def test_non_idempotent_malformed_response_raises_connection_closed():

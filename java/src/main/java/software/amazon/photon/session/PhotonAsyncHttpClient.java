@@ -184,7 +184,8 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
             Throwable cause = unwrap(photonFailure);
             if (cause instanceof PhotonError) {
-                if (!PhotonFallbackPolicy.shouldFallback(session, capturedRequest)) {
+                if (!PhotonFallbackPolicy.shouldFallback(
+                        session, capturedRequest, (PhotonError) cause)) {
                     fail(result, request.responseHandler(),
                             PhotonFallbackPolicy.noFallback((PhotonError) cause));
                 } else {

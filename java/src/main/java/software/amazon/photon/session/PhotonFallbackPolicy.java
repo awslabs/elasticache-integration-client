@@ -1,6 +1,7 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 
 import java.io.IOException;
@@ -13,8 +14,11 @@ final class PhotonFallbackPolicy {
     private PhotonFallbackPolicy() {
     }
 
-    static boolean shouldFallback(PhotonSession session, PhotonRequest request) {
-        return session.isOpen() && Idempotency.isIdempotent(request.getMetadata());
+    static boolean shouldFallback(PhotonSession session, PhotonRequest request,
+                                  PhotonError failure) {
+        return session.isOpen()
+                && (failure instanceof PhotonRejectedError
+                || Idempotency.isIdempotent(request.getMetadata()));
     }
 
     static IOException noFallback(PhotonError failure) {

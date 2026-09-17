@@ -12,9 +12,10 @@ supported features and fallback behavior for each language.
 The language-neutral replay-safety catalog is
 `shared/idempotent-operations.json`. Java packages it as a resource, Python
 copies it into built packages, and Node generates its compiled lookup from the
-same source with a CI freshness check. Photon failures fall back to the origin
-only for cataloged operations; mixed or unknown operations are treated as
-non-idempotent.
+same source with a CI freshness check. Indeterminate Photon failures fall back
+to the origin only for cataloged operations; mixed or unknown operations are
+treated as non-idempotent. An explicit Photon rejection can fall through for
+any operation because Photon authoritatively did not accept the request.
 
 ## Repository layout
 

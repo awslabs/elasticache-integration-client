@@ -25,12 +25,13 @@ session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connec
   `photon.config` handshake already returns the resolved predicate set (kept in
   `ResolvedConfig.raw`); a follow-up evaluates those predicates to decide cache vs. pass-through to
   the origin service.
-- **Resilience / failover.** Photon failures pass through to the origin only
-  for operations in the shared replay-safe catalog. For other operations,
-  transport and malformed-response failures surface as botocore transport
-  errors, while explicit Photon rejections propagate. Shutdown disables
-  fallback. Reconnection with exponential backoff and circuit breaking remain
-  follow-up work.
+- **Resilience / failover.** Indeterminate Photon failures pass through to the
+  origin only for operations in the shared replay-safe catalog. Explicit
+  Photon rejections pass through for every operation because Photon did not
+  accept the request. For other operations, transport and malformed-response
+  failures surface as botocore transport errors. Shutdown disables fallback.
+  Reconnection with exponential backoff and circuit breaking remain follow-up
+  work.
 - **IAM authentication hardening.** The connector performs IAM-token session auth at connect time
   (SigV4-presigned `elasticache:connect` token — POC). Follow-ups: validation against a real
   cache, token refresh on reconnect, and the origin-call (FAS) token.

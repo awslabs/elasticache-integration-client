@@ -36,6 +36,7 @@ from photon.exceptions import (
     PhotonConnectionLost,
     PhotonError,
     PhotonProtocolError,
+    PhotonRejectedError,
     PhotonTimeoutError,
 )
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
@@ -137,10 +138,10 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline. Predicate declines always do that. Photon failures do it only
-        while the session is open and the operation is in the replay-safe catalog. Failures for
-        other operations propagate; transport and malformed-response failures are translated to
-        botocore's own transport errors.
+        request down the pipeline. Predicate declines and explicit Photon rejections always do
+        that while the session is open. Indeterminate Photon failures do it only for operations in
+        the replay-safe catalog. Failures for other operations propagate; transport and
+        malformed-response failures are translated to botocore's own transport errors.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
@@ -151,11 +152,14 @@ class PhotonHandle:
                 return None
             return _photon_to_aws_response(request.url, response)
         except PhotonError as exc:
-            if self._session.is_open and is_idempotent_operation(
-                http_request.metadata.service, http_request.metadata.operation
+            if self._session.is_open and (
+                isinstance(exc, PhotonRejectedError)
+                or is_idempotent_operation(
+                    http_request.metadata.service, http_request.metadata.operation
+                )
             ):
                 logger.warning(
-                    "Photon failed for idempotent %s; passing through to the service",
+                    "Photon fallback is safe for %s; passing through to the service",
                     http_request.metadata.operation,
                     exc_info=True,
                 )
