@@ -24,6 +24,12 @@ import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
+import software.amazon.photon.protocol.PhotonProtocol;
+import software.amazon.photon.resp.RespArray;
+import software.amazon.photon.resp.RespBulkString;
+import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespPush;
+import software.amazon.photon.resp.RespValue;
 
 import javax.net.ssl.SSLContext;
 import java.io.ByteArrayOutputStream;
@@ -37,6 +43,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -157,6 +164,40 @@ class PhotonAsyncClientTest {
     }
 
     @Test
+    void deferredAsyncResponseDoesNotBlockLaterAsyncOperation() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                firstReceived.countDown();
+                return Reply.requestId(42);
+            }
+            return Reply.ok(
+                    200,
+                    Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                    "{\"AccountMaxReadCapacityUnits\":123}");
+        });
+
+        try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = newClient(sdkConfig)) {
+            CompletableFuture<ListTablesResponse> deferred = result.client().listTables();
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+
+            CompletableFuture<DescribeLimitsResponse> fast =
+                    result.client().describeLimits();
+            assertEquals(123L, fast.get(5, TimeUnit.SECONDS)
+                    .accountMaxReadCapacityUnits());
+            assertFalse(deferred.isDone());
+
+            server.sendPush(responsePush(
+                    42,
+                    responseValue("{\"TableNames\":[\"from-deferred-push\"]}")));
+
+            assertEquals(Collections.singletonList("from-deferred-push"),
+                    deferred.get(5, TimeUnit.SECONDS).tableNames());
+        }
+    }
+
+    @Test
     void photonTimeoutFallsBackToSignedAsyncOrigin() throws Exception {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("photon.request");
@@ -183,6 +224,54 @@ class PhotonAsyncClientTest {
         assertTrue(origin.request.get().firstMatchingHeader("Authorization").isPresent());
         assertTrue(origin.body.get().length > 0);
         assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
+    }
+
+    @Test
+    void deferredAsyncTimeoutFallsBackAndKeepsPhotonConnectionUsable() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        cache.setReplyFunction(request -> {
+            if (sequence.getAndIncrement() == 0) {
+                firstReceived.countDown();
+                return Reply.requestId(42);
+            }
+            return Reply.ok(
+                    200,
+                    Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                    "{\"TableNames\":[\"still-from-photon\"]}");
+        });
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
+
+        Consumer<DynamoDbAsyncClientBuilder> originConfig = builder -> builder
+                .region(Region.US_EAST_1)
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://localhost:8080"));
+
+        try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .authCredentials("test-user", "test-token")
+                .sslContext(clientSslContext)
+                .requestTimeoutMs(100)
+                .originAsyncHttpClient(origin)
+                .buildAsync(DynamoDbAsyncClient.builder(), originConfig)) {
+            CompletableFuture<ListTablesResponse> timedOut =
+                    result.client().listTables();
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+
+            // The first request times out, but the fallback origin is used to complete it.
+            assertEquals(Collections.emptyList(),
+                    timedOut.get(5, TimeUnit.SECONDS).tableNames());
+            assertNotNull(origin.request.get());
+
+            // The request ID was already removed after timeout, so this push is treated as unknown and dropped.
+            server.sendPush(responsePush(
+                    42,
+                    responseValue("{\"TableNames\":[\"late\"]}")));
+
+            assertEquals(Collections.singletonList("still-from-photon"),
+                    result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
+        }
     }
 
     @Test
@@ -248,6 +337,23 @@ class PhotonAsyncClientTest {
         headers.put("content-type", "application/x-amz-json-1.0");
         headers.put(key, value);
         return headers;
+    }
+
+    private static RespPush responsePush(long requestId, RespValue response) {
+        return new RespPush(Arrays.asList(
+                new RespBulkString(PhotonProtocol.PUSH_KIND_RESPONSE
+                        .getBytes(StandardCharsets.US_ASCII)),
+                new RespBulkString(Long.toString(requestId).getBytes(StandardCharsets.US_ASCII)),
+                response));
+    }
+
+    private static RespArray responseValue(String body) {
+        return new RespArray(Arrays.asList(
+                new RespInteger(200),
+                new RespBulkString(
+                        "content-type:application/x-amz-json-1.0"
+                                .getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString(body.getBytes(StandardCharsets.UTF_8))));
     }
 
     private static final class RecordingAsyncOrigin implements SdkAsyncHttpClient {

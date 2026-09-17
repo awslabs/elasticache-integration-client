@@ -3,9 +3,9 @@
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
  * AWS SigV4 authentication headers, builds a PhotonRequest, calls PhotonSession,
- * and returns a synthetic HttpResponse. Photon failures for idempotent
- * operations and predicate declines return to the SDK's origin pipeline while
- * preserving its normal retry and deserialization behavior.
+ * and returns a synthetic HttpResponse. Predicate declines and disconnected
+ * sessions inside their fallback window return to the SDK's origin pipeline.
+ * Failures after a request may have been sent propagate without direct replay.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the Photon path drops the auth
@@ -19,7 +19,6 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import { SMITHY_CONTEXT_KEY } from "@smithy/types";
 
 import { PhotonError } from "./errors.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
@@ -27,8 +26,6 @@ import type { PhotonResponse } from "./models.js";
 import type { PhotonSession } from "./session.js";
 
 const PHOTON_MIDDLEWARE = "photon";
-const IDEMPOTENT_TRAIT_MASK = 0b10;
-const IDEMPOTENT_HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PUT", "TRACE"]);
 
 /** The part of an AWS SDK v3 client used by PhotonHandle. */
 export interface PhotonCompatibleClient {
@@ -100,33 +97,6 @@ export function photonToHttpResponse(response: PhotonResponse): HttpResponse {
   });
 }
 
-function operationTraits(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema[3];
-  if (schema !== null && typeof schema === "object") {
-    return (schema as { traits?: unknown }).traits;
-  }
-  return undefined;
-}
-
-/**
- * Prefer Smithy operation metadata because AWS JSON protocols commonly use POST
- * for both read and write operations. HTTP method semantics cover generic
- * clients that do not provide an operation schema.
- */
-function isIdempotentRequest(request: PhotonRequest, context: HandlerExecutionContext): boolean {
-  const commandSchema = context[SMITHY_CONTEXT_KEY]?.commandInstance?.schema;
-  if (commandSchema !== undefined) {
-    const traits = operationTraits(commandSchema);
-    if (typeof traits === "number") return (traits & IDEMPOTENT_TRAIT_MASK) !== 0;
-    return (
-      traits !== null &&
-      typeof traits === "object" &&
-      (traits as { idempotent?: unknown }).idempotent === 1
-    );
-  }
-  return IDEMPOTENT_HTTP_METHODS.has(request.method.toUpperCase());
-}
-
 export function photonMiddleware<Input extends object, Output extends object>(
   service: string,
   session: PhotonSession,
@@ -134,16 +104,9 @@ export function photonMiddleware<Input extends object, Output extends object>(
   return (next, context: HandlerExecutionContext) => async (args) => {
     const request = awsToPhotonRequest(args.request, service, context.commandName);
 
-    try {
-      const response = await session.request(request);
-      if (response === undefined) return next(args);
-      return { response: photonToHttpResponse(response) };
-    } catch (error) {
-      if (error instanceof PhotonError && session.isOpen && isIdempotentRequest(request, context)) {
-        return next(args);
-      }
-      throw error;
-    }
+    const response = await session.request(request);
+    if (response === undefined) return next(args);
+    return { response: photonToHttpResponse(response) };
   };
 }
 

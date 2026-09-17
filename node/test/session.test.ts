@@ -1,14 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  PhotonCircuitOpenError,
+  PhotonCacheUnavailable,
+  PhotonConfigError,
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
 } from "../src/errors.js";
+import { PhotonConnector } from "../src/connection.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
-import type { PhotonConnector } from "../src/connection.js";
+import { MockCache, MockTcpProxy } from "./mock-cache.js";
 
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
   return {
@@ -35,7 +37,14 @@ function controlledConnector(
   } = {},
 ) {
   let dead = false;
+  let disconnectNotified = false;
+  const notify = () => {
+    if (disconnectNotified) return;
+    disconnectNotified = true;
+    connector.onDisconnect?.();
+  };
   const connector = {
+    onDisconnect: undefined as (() => void) | undefined,
     connect: vi.fn(async () => {
       await options.connect?.();
       dead = false;
@@ -59,9 +68,11 @@ function controlledConnector(
     }),
     close: vi.fn(async () => {
       dead = true;
+      notify();
     }),
     destroy: vi.fn(() => {
       dead = true;
+      notify();
     }),
     get isDead() {
       return dead;
@@ -74,6 +85,7 @@ function controlledConnector(
     connector,
     fail: () => {
       dead = true;
+      notify();
     },
   };
 }
@@ -84,6 +96,12 @@ function testRequest(): PhotonRequest {
     url: "https://x/",
     body: "{}",
     metadata: new RequestMetadata({ service: "svc", operation: "GetItem" }),
+  });
+}
+
+async function waitForState(session: PhotonSession, state: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(session.connectionState).toBe(state);
   });
 }
 
@@ -203,7 +221,7 @@ describe("PhotonSession", () => {
 
       const session = new PhotonSession(connector);
       await expect(session.open()).rejects.toBe(original);
-      expect(connector.close).toHaveBeenCalledTimes(failure === "connect" ? 0 : 1);
+      expect(connector.close).toHaveBeenCalledOnce();
     },
   );
 
@@ -226,7 +244,7 @@ describe("PhotonSession", () => {
     resolveConfig(Buffer.from('{"version":"v1"}'));
     session.destroy();
 
-    await expect(opening).rejects.toThrow("session closed during open()");
+    await expect(opening).rejects.toThrow("Session closed during open()");
     expect(session.isOpen).toBe(false);
     expect(connector.destroy).toHaveBeenCalledOnce();
   });
@@ -285,7 +303,100 @@ describe("PhotonSession", () => {
     await expect(session.open()).rejects.toThrow("open() called on a closed session");
   });
 
-  it("does not replay a failed request and recovers in the background", async () => {
+  it("retries initial connection attempts before succeeding", async () => {
+    const first = controlledConnector({
+      connect: async () => {
+        throw new PhotonConnectionError("first");
+      },
+    });
+    const second = controlledConnector({
+      connect: async () => {
+        throw new PhotonConnectionError("second");
+      },
+    });
+    const third = controlledConnector();
+    const factory = vi
+      .fn<() => PhotonConnector>()
+      .mockReturnValueOnce(first.connector)
+      .mockReturnValueOnce(second.connector)
+      .mockReturnValue(third.connector);
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        connectAttempts: 3,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        jitter: 0,
+      },
+    );
+
+    await session.open();
+
+    expect(factory).toHaveBeenCalledTimes(3);
+    expect(first.connector.close).toHaveBeenCalled();
+    expect(second.connector.close).toHaveBeenCalled();
+    expect(session.connectionState).toBe("alive");
+    await session.close();
+  });
+
+  it("fails startup after the configured attempt limit", async () => {
+    const factory = vi.fn<() => PhotonConnector>(() => {
+      return controlledConnector({
+        connect: async () => {
+          throw new PhotonConnectionError("unavailable");
+        },
+      }).connector;
+    });
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        connectAttempts: 2,
+        baseDelayMs: 1,
+        maxDelayMs: 1,
+        jitter: 0,
+      },
+    );
+
+    await expect(session.open()).rejects.toThrow("unavailable");
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(session.connectionState).toBe("closed");
+  });
+
+  it("bounds the complete initial connect, AUTH, and config attempt", async () => {
+    const cache = new MockCache({ failure: "hang", failureCommand: "auth" });
+    await cache.start();
+    const connectors: PhotonConnector[] = [];
+    const session = new PhotonSession(
+      () => {
+        const connector = new PhotonConnector(cache.host, cache.port!, {
+          tls: false,
+          configTimeout: 5_000,
+          authProvider: () => ["test-user", "test-token"],
+        });
+        connectors.push(connector);
+        return connector;
+      },
+      {},
+      {
+        connectAttempts: 1,
+        connectionTimeoutMs: 25,
+      },
+    );
+    const started = performance.now();
+    try {
+      await expect(session.open()).rejects.toThrow("opening a connection timed out after 25ms");
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(connectors).toHaveLength(1);
+      expect(connectors[0]?.isDead).toBe(true);
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
+  });
+
+  it("does not replay a failed request and reconnects in the background", async () => {
     const initial = controlledConnector();
     vi.mocked(initial.connector.execute).mockImplementation(async (command: string) => {
       if (command === "photon.config") {
@@ -307,9 +418,9 @@ describe("PhotonSession", () => {
       factory,
       {},
       {
-        maxReconnectAttempts: 1,
         baseDelayMs: 1,
         maxDelayMs: 1,
+        jitter: 0,
       },
     );
     await session.open();
@@ -320,9 +431,10 @@ describe("PhotonSession", () => {
       expect(replacement.connector.connect).toHaveBeenCalledOnce();
     });
 
-    const next = session.request(testRequest());
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
     allowReconnect();
-    await expect(next).resolves.toEqual(
+    await waitForState(session, "alive");
+    await expect(session.request(testRequest())).resolves.toEqual(
       new PhotonResponse({
         statusCode: 200,
         headers: { "content-type": "application/json" },
@@ -335,7 +447,7 @@ describe("PhotonSession", () => {
     await session.close();
   });
 
-  it("shares one recovery flight across concurrent requests", async () => {
+  it("starts reconnecting after an idle disconnect without a request", async () => {
     const initial = controlledConnector();
     let allowReconnect!: () => void;
     const reconnectGate = new Promise<void>((resolve) => {
@@ -350,66 +462,226 @@ describe("PhotonSession", () => {
       factory,
       {},
       {
-        maxReconnectAttempts: 1,
         baseDelayMs: 1,
         maxDelayMs: 1,
+        jitter: 0,
       },
     );
     await session.open();
     initial.fail();
 
-    const requests = [session.request(testRequest()), session.request(testRequest())];
     await vi.waitFor(() => {
       expect(replacement.connector.connect).toHaveBeenCalledOnce();
     });
+    expect(session.connectionState).toBe("reconnecting");
+    expect(initial.connector.execute).toHaveBeenCalledOnce();
     allowReconnect();
-
-    await expect(Promise.all(requests)).resolves.toHaveLength(2);
+    await waitForState(session, "alive");
     expect(factory).toHaveBeenCalledTimes(2);
-    expect(replacement.connector.execute).toHaveBeenCalledTimes(3);
     await session.close();
   });
 
-  it("opens the circuit and uses one half-open probe to restore service", async () => {
-    const initial = controlledConnector();
-    const failedReplacement = controlledConnector({
-      connect: async () => {
-        throw new PhotonConnectionError("unavailable");
-      },
+  it("reconnects an idle real socket with fresh auth and config", async () => {
+    const cache = new MockCache({
+      config: { predicates: [{ expr: "true", vars: {} }] },
+      responseBody: Buffer.from("reconnected"),
     });
-    const healthyReplacement = controlledConnector();
-    const factory = vi
-      .fn<() => PhotonConnector>()
-      .mockReturnValueOnce(initial.connector)
-      .mockReturnValueOnce(failedReplacement.connector)
-      .mockReturnValue(healthyReplacement.connector);
+    await cache.start();
+    const proxy = new MockTcpProxy(cache.host, cache.port!);
+    await proxy.start();
+    const authProvider = vi.fn(async () => ["test-user", "test-token"] as [string, string]);
+    const factory = vi.fn(
+      () =>
+        new PhotonConnector(proxy.host, proxy.port!, {
+          tls: false,
+          connectTimeout: 500,
+          configTimeout: 500,
+          requestTimeout: 500,
+          authProvider,
+        }),
+    );
     const session = new PhotonSession(
       factory,
       {},
       {
-        maxReconnectAttempts: 1,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        jitter: 0,
+      },
+    );
+    try {
+      await session.open();
+      proxy.disconnectClients();
+
+      await vi.waitFor(
+        () => {
+          expect(factory).toHaveBeenCalledTimes(2);
+          expect(session.connectionState).toBe("alive");
+        },
+        { timeout: 5_000 },
+      );
+
+      await expect(session.request(testRequest())).resolves.toMatchObject({
+        body: Buffer.from("reconnected"),
+      });
+      expect(authProvider).toHaveBeenCalledTimes(2);
+      expect(cache.photonCommandLog.filter((command) => command === "photon.config")).toHaveLength(
+        2,
+      );
+    } finally {
+      await session.close();
+      await proxy.stop();
+      await cache.stop();
+    }
+  });
+
+  it("keeps reconnecting until a later attempt succeeds", async () => {
+    const initial = controlledConnector();
+    let calls = 0;
+    const factory = vi.fn<() => PhotonConnector>(() => {
+      calls++;
+      if (calls === 1) return initial.connector;
+      return controlledConnector({
+        connect: async () => {
+          if (calls < 6) throw new PhotonConnectionError("unavailable");
+        },
+      }).connector;
+    });
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
         baseDelayMs: 1,
         maxDelayMs: 1,
-        circuitFailureThreshold: 1,
-        circuitOpenDurationMs: 5,
+        jitter: 0,
       },
     );
     await session.open();
     initial.fail();
 
-    await expect(session.request(testRequest())).rejects.toThrow("unavailable");
-    expect(session.circuitState).toBe("open");
-    await expect(session.request(testRequest())).rejects.toBeInstanceOf(PhotonCircuitOpenError);
-    expect(factory).toHaveBeenCalledTimes(2);
-
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    await expect(session.request(testRequest())).resolves.toBeInstanceOf(PhotonResponse);
-    expect(session.circuitState).toBe("closed");
-    expect(factory).toHaveBeenCalledTimes(3);
+    await waitForState(session, "alive");
+    expect(factory).toHaveBeenCalledTimes(6);
     await session.close();
   });
 
-  it("re-evaluates a waiting request against predicates from the recovered config", async () => {
+  it("allows origin fallback indefinitely by default while reconnecting", async () => {
+    const initial = controlledConnector();
+    const factory = vi.fn<() => PhotonConnector>(() =>
+      factory.mock.calls.length === 1
+        ? initial.connector
+        : controlledConnector({
+            connect: async () => {
+              throw new PhotonConnectionError("unavailable");
+            },
+          }).connector,
+    );
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        baseDelayMs: 10_000,
+        maxDelayMs: 10_000,
+        jitter: 0,
+      },
+    );
+    await session.open();
+    initial.fail();
+    await waitForState(session, "reconnecting");
+
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+    await session.close();
+  });
+
+  it("allows finite fallback and then raises PhotonCacheUnavailable", async () => {
+    const initial = controlledConnector();
+    const factory = vi.fn<() => PhotonConnector>(() =>
+      factory.mock.calls.length === 1
+        ? initial.connector
+        : controlledConnector({
+            connect: async () => {
+              throw new PhotonConnectionError("unavailable");
+            },
+          }).connector,
+    );
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        fallbackDurationMs: 5,
+        baseDelayMs: 10_000,
+        maxDelayMs: 10_000,
+        jitter: 0,
+      },
+    );
+    await session.open();
+    initial.fail();
+
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expect(session.request(testRequest())).rejects.toBeInstanceOf(PhotonCacheUnavailable);
+    await session.close();
+  });
+
+  it("raises immediately when fallback is disabled", async () => {
+    const initial = controlledConnector();
+    const replacement = controlledConnector({
+      connect: async () => {
+        throw new PhotonConnectionError("unavailable");
+      },
+    });
+    const factory = vi
+      .fn<() => PhotonConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        fallbackDurationMs: 0,
+        baseDelayMs: 10_000,
+        maxDelayMs: 10_000,
+        jitter: 0,
+      },
+    );
+    await session.open();
+    initial.fail();
+
+    await expect(session.request(testRequest())).rejects.toBeInstanceOf(PhotonCacheUnavailable);
+    await session.close();
+  });
+
+  it("does not escalate an unmatched request during an outage", async () => {
+    const initial = controlledConnector({ predicate: "false" });
+    const factory = vi
+      .fn<() => PhotonConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockImplementation(
+        () =>
+          controlledConnector({
+            connect: async () => {
+              throw new PhotonConnectionError("unavailable");
+            },
+          }).connector,
+      );
+    const session = new PhotonSession(
+      factory,
+      {},
+      {
+        fallbackDurationMs: 0,
+        baseDelayMs: 10_000,
+        maxDelayMs: 10_000,
+        jitter: 0,
+      },
+    );
+    await session.open();
+    initial.fail();
+
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+    await session.close();
+  });
+
+  it("recompiles predicates from the recovered config", async () => {
     const initial = controlledConnector({ predicate: "true" });
     const replacement = controlledConnector({ predicate: "false" });
     const factory = vi
@@ -420,14 +692,15 @@ describe("PhotonSession", () => {
       factory,
       {},
       {
-        maxReconnectAttempts: 1,
         baseDelayMs: 1,
         maxDelayMs: 1,
+        jitter: 0,
       },
     );
     await session.open();
     initial.fail();
 
+    await waitForState(session, "alive");
     await expect(session.request(testRequest())).resolves.toBeUndefined();
     expect(replacement.connector.execute).toHaveBeenCalledOnce();
     await session.close();
@@ -449,9 +722,9 @@ describe("PhotonSession", () => {
       factory,
       {},
       {
-        maxReconnectAttempts: 10,
         baseDelayMs: 10_000,
         maxDelayMs: 10_000,
+        jitter: 0,
       },
     );
     try {
@@ -463,7 +736,7 @@ describe("PhotonSession", () => {
       });
 
       await session.close();
-      await expect(request).rejects.toThrow("Session closed during recovery");
+      await expect(request).resolves.toBeUndefined();
       const callsAfterClose = factory.mock.calls.length;
       await new Promise((resolve) => setTimeout(resolve, 10));
       expect(factory).toHaveBeenCalledTimes(callsAfterClose);
@@ -476,15 +749,24 @@ describe("PhotonSession", () => {
   it("validates reconnect policy bounds", () => {
     const connector = fakeConnector();
 
-    expect(() => new PhotonSession(() => connector, {}, { maxReconnectAttempts: -1 })).toThrow(
-      "non-negative integer",
+    expect(() => new PhotonSession(() => connector, {}, { connectAttempts: 0 })).toThrow(
+      PhotonConfigError,
     );
     expect(() => new PhotonSession(() => connector, {}, { baseDelayMs: 0 })).toThrow(
-      "positive integer",
+      "greater than zero",
     );
     expect(
       () => new PhotonSession(() => connector, {}, { baseDelayMs: 10, maxDelayMs: 5 }),
     ).toThrow("at least baseDelayMs");
+    expect(() => new PhotonSession(() => connector, {}, { jitter: 1 })).toThrow(
+      "jitter must be in [0, 1)",
+    );
+    expect(() => new PhotonSession(() => connector, {}, { fallbackDurationMs: 0.5 })).toThrow(
+      "whole number",
+    );
+    expect(() => new PhotonSession(() => connector, {}, { fallbackDurationMs: -0.5 })).toThrow(
+      "whole number",
+    );
   });
 });
 

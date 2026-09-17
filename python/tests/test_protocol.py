@@ -4,18 +4,20 @@ import json
 
 import pytest
 
-from photon.exceptions import PhotonError
+from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig
 from photon.protocol import (
     CONFIG_COMMAND,
+    PUSH_KIND_RESPONSE,
     REQUEST_COMMAND,
     serialize_config,
     serialize_request,
     normalize_headers,
     parse_config_response,
     parse_request_response,
+    parse_response_push,
 )
-from photon.resp import RespError
+from photon.resp import RespError, RespPush
 
 
 # --- AC3: config command + parse ----------------------------------------------
@@ -231,3 +233,37 @@ def test_parse_request_response_rejects_wrong_element_types(elements):
     """A well-shaped reply with non-bytes headers/body fails as PhotonError, not a raw crash."""
     with pytest.raises(PhotonError):
         parse_request_response(elements)
+
+
+# --- out-of-band response push ------------------------------------------------
+
+def test_parse_response_push_splits_id_and_reply():
+    """The id comes back as the str form the id reply used; the reply is handed over untouched
+    for parse_request_response."""
+    push = RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", [200, b"", b"body"]])
+    assert parse_response_push(push) == ("7", [200, b"", b"body"])
+
+
+def test_parse_response_push_keeps_an_error_reply():
+    """A failed request answers with a RespError inside the push, passed through as the value."""
+    error = RespError("PHOTON_AUTH_ERROR", "nope")
+    assert parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", error])) == (
+        "7",
+        error,
+    )
+
+
+@pytest.mark.parametrize(
+    "items, message",
+    [
+        ([], "takes 2 items"),
+        ([b"7"], "takes 2 items"),
+        ([b"7", [200], b"extra"], "takes 2 items"),
+        ([7, [200]], "Invalid push request id"),
+    ],
+)
+def test_parse_response_push_rejects_wrong_payload(items, message):
+    """A push whose payload cannot be read is a protocol error: the stream is untrustworthy,
+    unlike a reply that merely carries an error."""
+    with pytest.raises(PhotonProtocolError, match=message):
+        parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=items))

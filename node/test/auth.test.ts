@@ -149,7 +149,7 @@ describe("IamAuthTokenProvider", () => {
       tls: false,
       authProvider: provider,
     });
-    const execute = vi.spyOn(connector, "execute").mockResolvedValue(Buffer.from("OK"));
+    const execute = vi.spyOn(connector, "execute").mockResolvedValue("OK");
 
     await connector.authenticate();
 

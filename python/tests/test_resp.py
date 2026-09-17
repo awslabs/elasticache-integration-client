@@ -6,6 +6,7 @@ from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.resp import (
     IncompleteFrame,
     RespError,
+    RespPush,
     decode_resp,
     encode_resp,
 )
@@ -43,8 +44,8 @@ def test_encode_resp_resp3_array_framing():
 # --- AC3: all RESP3 prefixes decode_resp -------------------------------------------
 
 def test_decode_simple_string():
-    """Decodes a + simple string and reports bytes consumed."""
-    assert decode_resp(b"+OK\r\n") == (b"OK", 5)
+    """Decodes a + simple string to str (bulk strings stay bytes) and reports bytes consumed."""
+    assert decode_resp(b"+OK\r\n") == ("OK", 5)
 
 
 def test_decode_integer():
@@ -79,10 +80,43 @@ def test_decode_array():
     assert nxt == len(frame)
 
 
-def test_decode_push_like_array():
-    """A > push frame decodes like an array."""
-    value, _ = decode_resp(b">2\r\n:1\r\n:2\r\n")
-    assert value == [1, 2]
+def test_decode_push():
+    """A > push frame decodes its elements like an array but is wrapped in RespPush, so the
+    reader can tell an out-of-band message from a positional reply. The first element is the
+    kind."""
+    frame = b">2\r\n$10\r\ninvalidate\r\n*2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n"
+    value, nxt = decode_resp(frame)
+    assert isinstance(value, RespPush)
+    assert value.kind == b"invalidate"
+    assert value.items == [[b"foo", b"bar"]]
+    assert nxt == len(frame)
+
+
+def test_decode_push_with_only_a_kind():
+    """A push may carry nothing but its kind; items is then empty."""
+    frame = b">1\r\n$10\r\ninvalidate\r\n"
+    assert decode_resp(frame) == (RespPush(kind=b"invalidate", items=[]), len(frame))
+
+
+def test_decode_frame_after_a_push():
+    """The position a push reports lands on the next frame, so a reply pipelined behind a push
+    is decoded from there."""
+    frame = b">1\r\n$10\r\ninvalidate\r\n+OK\r\n"
+    _, nxt = decode_resp(frame)
+    assert decode_resp(frame, nxt) == ("OK", len(frame))
+
+
+@pytest.mark.parametrize("frame", [b">0\r\n", b">-1\r\n"])
+def test_decode_empty_push(frame):
+    """An empty push (``>0``, or the null ``>-1``) carries no kind; it decodes rather than
+    failing, and a reader that knows no such kind ignores it."""
+    assert decode_resp(frame) == (RespPush(kind=b"", items=[]), len(frame))
+
+
+def test_decode_push_kind_as_simple_string():
+    """A kind sent as a simple string ends up as the same bytes as a bulk string kind."""
+    frame = b">1\r\n+invalidate\r\n"
+    assert decode_resp(frame) == (RespPush(kind=b"invalidate", items=[]), len(frame))
 
 
 def test_decode_null_array():
@@ -93,35 +127,36 @@ def test_decode_null_array():
 # --- AC4: truncation raises IncompleteFrame -----------------------------------
 
 @pytest.mark.parametrize(
-    "partial",
+    "partial, message",
     [
-        b"",                       # empty buffer
-        b"+missing-crlf",          # header with no terminating CRLF
-        b"$5\r\nhell",             # bulk one byte short of declared length (+ trailing CRLF)
-        b"$5\r\nhello",            # bulk body present but trailing CRLF missing
-        b"*2\r\n:1\r\n",           # array missing its second element
-        b">2\r\n:1\r\n",           # push missing its second element
-        b":",                      # integer header with no CRLF yet
+        (b"", "incomplete frame"),
+        (b"+missing-crlf", "incomplete frame"),
+        (b"$5\r\nhell", "bulk string body incomplete"),
+        (b"$5\r\nhello", "bulk string body incomplete"),
+        (b"*2\r\n:1\r\n", "incomplete frame"),
+        (b">2\r\n:1\r\n", "incomplete frame"),
+        (b":", "incomplete frame"),
     ],
 )
-def test_truncation_raises_incomplete_frame(partial):
-    """Each kind of partial buffer (empty, missing CRLF, short bulk, missing bulk trailing CRLF, missing array/push element, bare :) raises IncompleteFrame."""
-    with pytest.raises(IncompleteFrame):
+def test_truncation_raises_incomplete_frame(partial, message):
+    """A partial buffer raises IncompleteFrame, saying how far it got."""
+    with pytest.raises(IncompleteFrame, match=message):
         decode_resp(partial)
 
 
 # --- AC5: garbage raises PhotonProtocolError ----------------------------------
 
 @pytest.mark.parametrize(
-    "garbage",
+    "garbage, message",
     [
-        b"!bad\r\n",        # unknown prefix
-        b":notanint\r\n",   # integer header unparseable
-        b"$notanint\r\n",   # bulk length unparseable
-        b"*notanint\r\n",   # array count unparseable
+        (b"!bad\r\n", "Unsupported RESP prefix"),
+        (b":notanint\r\n", "Malformed RESP integer"),
+        (b"$notanint\r\n", "Malformed RESP bulk length"),
+        (b"*notanint\r\n", "Malformed RESP array length"),
+        (b">2\r\n:1\r\n:2\r\n", "Invalid RESP push kind"),
     ],
 )
-def test_decode_garbage_raises_protocol_error(garbage):
-    """Genuinely corrupt input (unknown prefix, unparseable int/bulk/array headers) raises PhotonProtocolError."""
-    with pytest.raises(PhotonProtocolError):
+def test_decode_garbage_raises_protocol_error(garbage, message):
+    """Genuinely corrupt input raises PhotonProtocolError, naming what it could not read."""
+    with pytest.raises(PhotonProtocolError, match=message):
         decode_resp(garbage)

@@ -10,12 +10,15 @@ This module builds the two Photon commands and interprets their replies:
 from __future__ import annotations
 
 import json
-from photon.exceptions import PhotonError
+from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
-from photon.resp import RespError, RespValue
+from photon.resp import RespError, RespPush, RespValue
 
 CONFIG_COMMAND = "photon.config"
-REQUEST_COMMAND = "photon.request"  # working name; may change before launch
+REQUEST_COMMAND = "photon.request"
+
+PUSH_KIND_RESPONSE = b"photon.response"
+"""Push kind for an out-of-band response. The only kind defined today."""
 
 # Headers excluded from the normalized form (case-insensitive). Auth/volatile headers must not
 # affect the cache key or be forwarded.
@@ -131,3 +134,17 @@ def parse_request_response(value: RespValue) -> PhotonResponse:
         headers=_parse_headers(headers_raw),
         body=body_raw,
     )
+
+
+def parse_response_push(push: RespPush) -> tuple[str, RespValue]:
+    """Split a ``photon.response`` push into the request id it answers and the reply for it.
+
+    Raises :class:`~photon.exceptions.PhotonProtocolError`, not :class:`PhotonError`: a push
+    that cannot be read leaves the whole stream untrustworthy.
+    """
+    if len(push.items) != 2:
+        raise PhotonProtocolError(f"photon.response push takes 2 items, got {len(push.items)}")
+    request_id, reply = push.items
+    if not isinstance(request_id, bytes):
+        raise PhotonProtocolError(f"Invalid push request id: {request_id!r}")
+    return request_id.decode(), reply

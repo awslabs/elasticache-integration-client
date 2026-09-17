@@ -1,15 +1,20 @@
 /**
- * PhotonSession: connection bring-up, recovery, and the asynchronous request API.
+ * PhotonSession owns cache connection recovery and the asynchronous request API.
  *
- * A session owns the active PhotonConnector, performs transport connect, AUTH,
- * and the mandatory photon.config handshake, and exposes request() for the AWS
- * SDK middleware to call. Dead connections are replaced through a single-flight
- * reconnect path with bounded backoff and circuit breaking.
+ * Initial connection attempts are bounded so client creation fails loudly.
+ * After a live connection is lost, reconnect attempts continue in the
+ * background until one succeeds or the session closes. Requests that have not
+ * been sent may use the origin fallback window while no connector is available.
  */
 import { performance } from "node:perf_hooks";
 
 import type { PhotonConnector } from "./connection.js";
-import { PhotonCircuitOpenError, PhotonConnectionError, PhotonError } from "./errors.js";
+import {
+  PhotonCacheUnavailable,
+  PhotonConfigError,
+  PhotonConnectionError,
+  PhotonError,
+} from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
 import {
   parseConfigResponse,
@@ -19,90 +24,104 @@ import {
 } from "./protocol.js";
 import { PredicateEvaluator } from "./predicates.js";
 
-const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
+const DEFAULT_CONNECT_ATTEMPTS = 3;
+const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DELAY_MS = 100;
-const DEFAULT_MAX_DELAY_MS = 5_000;
-const DEFAULT_CIRCUIT_FAILURE_THRESHOLD = 3;
-const DEFAULT_CIRCUIT_OPEN_DURATION_MS = 30_000;
+const DEFAULT_MAX_DELAY_MS = 3_200;
+const DEFAULT_JITTER = 0.2;
 
-/**
- * Reconnect and circuit-breaker settings.
- *
- * A reconnect attempt creates a fresh connector and repeats AUTH and
- * photon.config. A value of zero disables reconnect attempts.
- */
+/** Reconnect and origin-fallback settings. */
 export interface ReconnectPolicyOptions {
-  /** Maximum connection attempts in one recovery cycle. Defaults to 3. */
-  maxReconnectAttempts?: number;
-  /** Initial full-jitter backoff cap in milliseconds. Defaults to 100. */
+  /**
+   * Origin fallback window for each outage, in milliseconds.
+   *
+   * `null`, `undefined`, or a negative value means indefinitely. Zero disables
+   * fallback, and a positive value allows fallback until that deadline.
+   */
+  fallbackDurationMs?: number | null;
+  /** Maximum attempts while initially opening the session. Defaults to 3. */
+  connectAttempts?: number;
+  /** Overall timeout for each initial connect, AUTH, and config attempt. */
+  connectionTimeoutMs?: number;
+  /** Initial reconnect delay in milliseconds. Defaults to 100. */
   baseDelayMs?: number;
-  /** Maximum full-jitter backoff cap in milliseconds. Defaults to 5,000. */
+  /** Maximum reconnect delay before jitter. Defaults to 3,200. */
   maxDelayMs?: number;
-  /** Failed recovery cycles before opening the circuit. Defaults to 3. */
-  circuitFailureThreshold?: number;
-  /** Time the circuit remains open before one half-open probe. Defaults to 30,000. */
-  circuitOpenDurationMs?: number;
+  /** Symmetric jitter ratio in `[0, 1)`. Defaults to 0.2. */
+  jitter?: number;
 }
 
 interface ReconnectPolicy {
-  maxReconnectAttempts: number;
+  fallbackWindowMs: number;
+  connectAttempts: number;
+  connectionTimeoutMs: number;
   baseDelayMs: number;
   maxDelayMs: number;
-  circuitFailureThreshold: number;
-  circuitOpenDurationMs: number;
+  jitter: number;
 }
 
-export type CircuitState = "closed" | "open" | "half-open";
+export type ConnectionState = "init" | "alive" | "reconnecting" | "closed";
 type SessionState = "created" | "open" | "closed";
 export type PhotonConnectorFactory = () => PhotonConnector;
 
-function validateNonNegativeInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new PhotonError(`${name} must be a non-negative integer`);
+function positiveFinite(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new PhotonConfigError(`${name} must be greater than zero`);
   }
   return value;
 }
 
-function validatePositiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new PhotonError(`${name} must be a positive integer`);
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new PhotonConfigError(`${name} must be a positive integer`);
   }
   return value;
+}
+
+function fallbackWindow(value: number | null | undefined): number {
+  if (value === null || value === undefined) return Number.POSITIVE_INFINITY;
+  if (!Number.isSafeInteger(value)) {
+    throw new PhotonConfigError(
+      "fallbackDurationMs must be a whole number of milliseconds, null, or undefined",
+    );
+  }
+  return value < 0 ? Number.POSITIVE_INFINITY : value;
 }
 
 function resolveReconnectPolicy(
   options: ReconnectPolicyOptions | undefined,
   reconnectable: boolean,
 ): ReconnectPolicy {
-  const policy = {
-    maxReconnectAttempts:
-      options?.maxReconnectAttempts ?? (reconnectable ? DEFAULT_MAX_RECONNECT_ATTEMPTS : 0),
-    baseDelayMs: options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS,
-    maxDelayMs: options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS,
-    circuitFailureThreshold: options?.circuitFailureThreshold ?? DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
-    circuitOpenDurationMs: options?.circuitOpenDurationMs ?? DEFAULT_CIRCUIT_OPEN_DURATION_MS,
-  };
-  validateNonNegativeInteger(policy.maxReconnectAttempts, "maxReconnectAttempts");
-  validatePositiveInteger(policy.baseDelayMs, "baseDelayMs");
-  validatePositiveInteger(policy.maxDelayMs, "maxDelayMs");
-  validatePositiveInteger(policy.circuitFailureThreshold, "circuitFailureThreshold");
-  validatePositiveInteger(policy.circuitOpenDurationMs, "circuitOpenDurationMs");
-  if (policy.maxDelayMs < policy.baseDelayMs) {
-    throw new PhotonError("maxDelayMs must be at least baseDelayMs");
+  const baseDelayMs = positiveFinite(options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS, "baseDelayMs");
+  const maxDelayMs = positiveFinite(options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS, "maxDelayMs");
+  if (maxDelayMs < baseDelayMs) {
+    throw new PhotonConfigError("maxDelayMs must be at least baseDelayMs");
   }
-  return policy;
+  const jitter = options?.jitter ?? DEFAULT_JITTER;
+  if (!Number.isFinite(jitter) || jitter < 0 || jitter >= 1) {
+    throw new PhotonConfigError("jitter must be in [0, 1)");
+  }
+  return {
+    fallbackWindowMs: fallbackWindow(options?.fallbackDurationMs),
+    connectAttempts: positiveInteger(
+      options?.connectAttempts ?? (reconnectable ? DEFAULT_CONNECT_ATTEMPTS : 1),
+      "connectAttempts",
+    ),
+    connectionTimeoutMs: positiveFinite(
+      options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+      "connectionTimeoutMs",
+    ),
+    baseDelayMs,
+    maxDelayMs,
+    jitter,
+  };
 }
 
-/**
- * Parse a host:port endpoint.
- *
- * Endpoint parsing lives in the session layer so the transport carries no
- * parsing logic. Splitting on the final colon preserves IPv6-like hosts.
- */
+/** Parse a host:port endpoint, preserving colons before the final port separator. */
 export function parseEndpoint(endpoint: string): [string, number] {
   const separator = endpoint.lastIndexOf(":");
   if (separator < 1 || separator === endpoint.length - 1) {
-    throw new PhotonError(`Invalid endpoint "${endpoint}": expected host:port`);
+    throw new PhotonConfigError(`Invalid endpoint "${endpoint}": expected host:port`);
   }
 
   const endpointHost = endpoint.slice(0, separator);
@@ -112,15 +131,15 @@ export function parseEndpoint(endpoint: string): [string, number] {
       : endpointHost;
   const portText = endpoint.slice(separator + 1);
   if (host.length === 0) {
-    throw new PhotonError(`Invalid endpoint "${endpoint}": host cannot be empty`);
+    throw new PhotonConfigError(`Invalid endpoint "${endpoint}": host cannot be empty`);
   }
   if (!/^[+-]?\d+$/.test(portText.trim())) {
-    throw new PhotonError(`Invalid port in endpoint "${endpoint}"`);
+    throw new PhotonConfigError(`Invalid port in endpoint "${endpoint}"`);
   }
 
   const port = Number(portText);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new PhotonError(`Port out of range in endpoint "${endpoint}": ${port}`);
+    throw new PhotonConfigError(`Port out of range in endpoint "${endpoint}": ${port}`);
   }
   return [host, port];
 }
@@ -143,13 +162,15 @@ export class PhotonSession {
   private _config: ResolvedConfig | undefined;
   private predicateEvaluator = PredicateEvaluator.compile(undefined);
   private state: SessionState = "created";
+  private connection: ConnectionState = "init";
   private readonly connectorFactory: PhotonConnectorFactory;
   private readonly reconnectPolicy: ReconnectPolicy;
+  private readonly reconnectable: boolean;
   private connector: PhotonConnector | undefined;
-  private recovery: Promise<PhotonConnector> | undefined;
-  private consecutiveRecoveryFailures = 0;
-  private circuit: CircuitState = "closed";
-  private circuitOpenUntil = 0;
+  private candidate: PhotonConnector | undefined;
+  private reconnectTask: Promise<void> | undefined;
+  private fallbackDeadline = 0;
+  private readonly disconnected = new WeakSet<PhotonConnector>();
   private readonly recoveryAbort = new AbortController();
 
   constructor(
@@ -157,11 +178,11 @@ export class PhotonSession {
     private readonly overrides: Readonly<Record<string, unknown>> = {},
     reconnectPolicy?: ReconnectPolicyOptions,
   ) {
-    const reconnectable = typeof connectorOrFactory === "function";
-    this.connectorFactory = reconnectable
-      ? connectorOrFactory
-      : singleConnectorFactory(connectorOrFactory);
-    this.reconnectPolicy = resolveReconnectPolicy(reconnectPolicy, reconnectable);
+    this.reconnectable = typeof connectorOrFactory === "function";
+    this.connectorFactory = this.reconnectable
+      ? (connectorOrFactory as PhotonConnectorFactory)
+      : singleConnectorFactory(connectorOrFactory as PhotonConnector);
+    this.reconnectPolicy = resolveReconnectPolicy(reconnectPolicy, this.reconnectable);
   }
 
   get config(): ResolvedConfig | undefined {
@@ -172,119 +193,148 @@ export class PhotonSession {
     return this.state === "open";
   }
 
-  get circuitState(): CircuitState {
-    return this.circuit;
+  get connectionState(): ConnectionState {
+    return this.connection;
   }
 
-  /** Bring the session up: transport connect, AUTH, then the config handshake. */
+  /** Open the initial connection with bounded retries. */
   async open(): Promise<void> {
     if (this.state !== "created") {
       throw new PhotonError(`open() called on a ${this.state} session`);
     }
 
-    try {
-      const connector = this.connectorFactory();
-      this.connector = connector;
-      const initialized = await this.initialize(connector);
+    let lastFailure: unknown = new PhotonConnectionError("Photon connection attempts exhausted");
+    for (let attempt = 1; attempt <= this.reconnectPolicy.connectAttempts; attempt++) {
       if (this.state !== "created") {
-        throw new PhotonError("session closed during open()");
+        throw new PhotonConnectionError("Session closed during open()");
       }
-      this.publishConnection(connector, initialized);
-      this.state = "open";
-    } catch (error) {
-      if (this.connector?.isReady) {
-        try {
-          await this.connector.close();
-        } catch {
-          // Preserve the error that caused session opening to fail.
+
+      let candidate: PhotonConnector | undefined;
+      try {
+        candidate = this.createCandidate();
+        const initialized = await this.initializeWithTimeout(
+          candidate,
+          this.reconnectPolicy.connectionTimeoutMs,
+        );
+        if (this.state !== "created") {
+          throw new PhotonConnectionError("Session closed during open()");
+        }
+        this.publishConnection(candidate, initialized);
+        this.candidate = undefined;
+        this.state = "open";
+        this.connection = "alive";
+        return;
+      } catch (error) {
+        lastFailure = error;
+        await this.closeCandidate(candidate);
+        if (
+          attempt < this.reconnectPolicy.connectAttempts &&
+          !(await this.waitBeforeRetry(attempt))
+        ) {
+          lastFailure = new PhotonConnectionError("Session closed during open()");
+          break;
         }
       }
-      this.state = "closed";
-      throw error;
     }
+
+    this.state = "closed";
+    this.connection = "closed";
+    if (lastFailure instanceof Error) throw lastFailure;
+    throw new PhotonConnectionError("Photon connection attempts exhausted", {
+      cause: lastFailure,
+    });
   }
 
   /**
-   * Send matching requests to Photon and decline unmatched requests.
+   * Send matching requests to Photon and decline requests that are safe to send
+   * to origin.
    *
-   * A request already admitted to a failed connection is never replayed because
-   * the server may have processed it. Its failure starts recovery in the
-   * background so idempotent middleware fallback is not delayed.
+   * A disconnected request has not been sent, so it may fall back while the
+   * per-outage window is open. Once execute starts, every failure propagates:
+   * the request may have reached Photon and must not be directly replayed.
    */
   async request(request: PhotonRequest): Promise<PhotonResponse | undefined> {
     if (this.state === "created") {
       throw new PhotonError("request() called on a created session");
     }
-
-    let active = this.connector;
-    const evaluator = this.predicateEvaluator;
-    if (this.state === "open" && !evaluator.shouldRouteToPhoton(request)) {
+    if (this.state === "open" && !this.predicateEvaluator.shouldRouteToPhoton(request)) {
       return undefined;
     }
-    if (this.state === "open" && (active === undefined || active.isDead)) {
-      active = await this.recover(active);
-      if (
-        this.predicateEvaluator !== evaluator &&
-        !this.predicateEvaluator.shouldRouteToPhoton(request)
-      ) {
-        return undefined;
-      }
+
+    let active = this.connector;
+    if (this.state === "open" && active?.isDead) {
+      this.handleDisconnect(active);
+      active = undefined;
+    }
+    if (this.state === "open" && active === undefined) {
+      if (performance.now() < this.fallbackDeadline) return undefined;
+      throw new PhotonCacheUnavailable(request.url);
     }
     if (active === undefined) {
       throw new PhotonConnectionError("Photon session has no active connection");
     }
 
     const [command, args] = serializeRequest(request);
-    try {
-      return parseRequestResponse(await active.execute(command, ...args));
-    } catch (error) {
-      if (this.state === "open" && active.isDead) {
-        this.recoverInBackground(active);
-      }
-      throw error;
-    }
+    return parseRequestResponse(await active.execute(command, ...args));
   }
 
   /** Close active and recovering connectors. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") return;
     this.state = "closed";
+    this.connection = "closed";
     this.recoveryAbort.abort();
     const active = this.connector;
-    const recovery = this.recovery;
-    await active?.close();
-    await recovery?.then(
-      async (recovered) => {
-        if (recovered !== active) await recovered.close();
-      },
-      () => undefined,
-    );
+    const candidate = this.candidate;
+    const reconnectTask = this.reconnectTask;
+    candidate?.destroy();
+    await Promise.all([active?.close(), candidate?.close(), reconnectTask?.catch(() => undefined)]);
   }
 
   /** Synchronous Node.js teardown used by AWS SDK client destroy(). */
   destroy(): void {
     if (this.state === "closed") return;
     this.state = "closed";
+    this.connection = "closed";
     this.recoveryAbort.abort();
+    this.candidate?.destroy();
     this.connector?.destroy();
+  }
+
+  private createCandidate(): PhotonConnector {
+    const candidate = this.connectorFactory();
+    candidate.onDisconnect = () => this.handleDisconnect(candidate);
+    this.candidate = candidate;
+    return candidate;
   }
 
   private async initialize(
     connector: PhotonConnector,
   ): Promise<{ config: ResolvedConfig; evaluator: PredicateEvaluator }> {
     await connector.connect();
+    await connector.authenticate();
+    const [command, args] = serializeConfig(this.overrides);
+    const config = parseConfigResponse(await connector.execute(command, ...args));
+    return { config, evaluator: PredicateEvaluator.compile(config.raw) };
+  }
+
+  private async initializeWithTimeout(
+    connector: PhotonConnector,
+    timeout: number,
+  ): Promise<{ config: ResolvedConfig; evaluator: PredicateEvaluator }> {
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await connector.authenticate();
-      const [command, args] = serializeConfig(this.overrides);
-      const config = parseConfigResponse(await connector.execute(command, ...args));
-      return { config, evaluator: PredicateEvaluator.compile(config.raw) };
-    } catch (error) {
-      try {
-        await connector.close();
-      } catch {
-        // Preserve the initialization error.
-      }
-      throw error;
+      return await Promise.race([
+        this.initialize(connector),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            connector.destroy();
+            reject(new PhotonConnectionError(`opening a connection timed out after ${timeout}ms`));
+          }, timeout);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -292,112 +342,81 @@ export class PhotonSession {
     connector: PhotonConnector,
     initialized: { config: ResolvedConfig; evaluator: PredicateEvaluator },
   ): void {
+    if (this.disconnected.has(connector) || connector.isDead) {
+      throw new PhotonConnectionError("Connection closed during initialization");
+    }
     this._config = initialized.config;
     this.predicateEvaluator = initialized.evaluator;
-    // Publish the connector last so requests see its matching config.
     this.connector = connector;
   }
 
-  private async recover(failedConnector: PhotonConnector | undefined): Promise<PhotonConnector> {
-    if (this.state !== "open") {
-      throw new PhotonConnectionError("Session closed during recovery");
-    }
-    if (
-      this.connector !== undefined &&
-      this.connector !== failedConnector &&
-      this.connector.isReady
-    ) {
-      return this.connector;
-    }
-    if (this.recovery !== undefined) return this.recovery;
+  private handleDisconnect(connector: PhotonConnector): void {
+    this.disconnected.add(connector);
+    if (this.state !== "open" || this.connector !== connector) return;
 
-    let halfOpenAttempt = false;
-    if (this.circuit === "open") {
-      if (performance.now() < this.circuitOpenUntil) {
-        throw new PhotonCircuitOpenError("Photon recovery circuit is open");
-      }
-      this.circuit = "half-open";
-      halfOpenAttempt = true;
-    }
+    // Open the fallback window before clearing the connector so a request that
+    // observes no connector always sees the current outage's deadline.
+    this.fallbackDeadline = performance.now() + this.reconnectPolicy.fallbackWindowMs;
+    this.connector = undefined;
+    this.connection = "reconnecting";
+    void connector.close().catch(() => undefined);
+    if (this.reconnectable) this.startReconnect();
+  }
 
-    const recovery = this.performRecovery(failedConnector, halfOpenAttempt);
-    this.recovery = recovery;
-    void recovery.then(
-      () => this.releaseRecovery(recovery),
-      () => this.releaseRecovery(recovery),
+  private startReconnect(): void {
+    if (this.reconnectTask !== undefined || this.state !== "open") return;
+    const task = this.reconnectForever();
+    this.reconnectTask = task;
+    void task.then(
+      () => this.releaseReconnectTask(task),
+      () => this.releaseReconnectTask(task),
     );
-    return recovery;
   }
 
-  private recoverInBackground(failedConnector: PhotonConnector): void {
-    void this.recover(failedConnector).catch(() => {
-      // Circuit state records the failure for subsequent requests.
-    });
-  }
-
-  private async performRecovery(
-    failedConnector: PhotonConnector | undefined,
-    halfOpenAttempt: boolean,
-  ): Promise<PhotonConnector> {
-    await failedConnector?.close();
-    let lastFailure: unknown = new PhotonConnectionError("Photon reconnect attempts exhausted");
-
-    for (let attempt = 1; attempt <= this.reconnectPolicy.maxReconnectAttempts; attempt++) {
-      if (this.state !== "open") {
-        lastFailure = new PhotonConnectionError("Session closed during recovery");
-        break;
-      }
-
+  private async reconnectForever(): Promise<void> {
+    let attempt = 0;
+    while (this.state === "open" && this.connection === "reconnecting") {
+      attempt++;
       let candidate: PhotonConnector | undefined;
       try {
-        candidate = this.connectorFactory();
+        candidate = this.createCandidate();
         const initialized = await this.initialize(candidate);
-        if (this.state !== "open") {
-          await candidate.close();
-          throw new PhotonConnectionError("Session closed during recovery");
+        if (this.state !== "open" || this.connection !== "reconnecting") {
+          await this.closeCandidate(candidate);
+          return;
         }
         this.publishConnection(candidate, initialized);
-        this.consecutiveRecoveryFailures = 0;
-        this.circuit = "closed";
-        this.circuitOpenUntil = 0;
-        return candidate;
-      } catch (error) {
-        lastFailure = error;
-        try {
-          await candidate?.close();
-        } catch {
-          // Preserve the reconnect failure.
-        }
-        if (
-          attempt < this.reconnectPolicy.maxReconnectAttempts &&
-          !(await this.waitBeforeRetry(attempt))
-        ) {
-          lastFailure = new PhotonConnectionError("Session closed during recovery");
-          break;
-        }
+        this.candidate = undefined;
+        this.connection = "alive";
+        this.fallbackDeadline = 0;
+        return;
+      } catch {
+        await this.closeCandidate(candidate);
+        if (!(await this.waitBeforeRetry(attempt))) return;
       }
     }
+  }
 
-    this.consecutiveRecoveryFailures++;
-    if (
-      halfOpenAttempt ||
-      this.consecutiveRecoveryFailures >= this.reconnectPolicy.circuitFailureThreshold
-    ) {
-      this.circuit = "open";
-      this.circuitOpenUntil = performance.now() + this.reconnectPolicy.circuitOpenDurationMs;
-    } else {
-      this.circuit = "closed";
+  private async closeCandidate(candidate: PhotonConnector | undefined): Promise<void> {
+    if (candidate === undefined) return;
+    try {
+      await candidate.close();
+    } catch {
+      // Preserve the connection or configuration failure.
+    } finally {
+      if (this.candidate === candidate) this.candidate = undefined;
     }
-    if (lastFailure instanceof PhotonError) throw lastFailure;
-    throw new PhotonConnectionError("Photon reconnect failed", { cause: lastFailure });
+  }
+
+  private delayFor(attempt: number): number {
+    const exponential = this.reconnectPolicy.baseDelayMs * 2 ** Math.max(0, attempt - 1);
+    const capped = Math.min(this.reconnectPolicy.maxDelayMs, exponential);
+    const spread = this.reconnectPolicy.jitter;
+    return capped * (1 - spread + Math.random() * spread * 2);
   }
 
   private async waitBeforeRetry(failedAttempt: number): Promise<boolean> {
-    const exponentialCap = this.reconnectPolicy.baseDelayMs * 2 ** Math.max(0, failedAttempt - 1);
-    const cap = Math.min(this.reconnectPolicy.maxDelayMs, exponentialCap);
-    const delay = Math.floor(Math.random() * (cap + 1));
-    if (delay === 0) return this.state === "open";
-
+    const delay = this.delayFor(failedAttempt);
     try {
       await new Promise<void>((resolve, reject) => {
         const signal = this.recoveryAbort.signal;
@@ -420,13 +439,13 @@ export class PhotonSession {
         }
         signal.addEventListener("abort", finishReject, { once: true });
       });
-      return this.state === "open";
+      return this.state !== "closed";
     } catch {
       return false;
     }
   }
 
-  private releaseRecovery(recovery: Promise<PhotonConnector>): void {
-    if (this.recovery === recovery) this.recovery = undefined;
+  private releaseReconnectTask(task: Promise<void>): void {
+    if (this.reconnectTask === task) this.reconnectTask = undefined;
   }
 }

@@ -74,6 +74,15 @@ with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
 
+Photon requests may complete out of order when the cache returns a request ID
+and later delivers the result in a `photon.response` RESP3 push. Deferred
+requests do not block later FIFO replies. If a deferred request times out, only
+that request is abandoned; a late push for its ID is dropped. A timeout while a
+request is still FIFO-correlated closes the connection to prevent reply
+misrouting. A RESP3 push with an unrecognized kind is treated as protocol
+corruption: it invalidates the stream and closes the connection, rather than
+being ignored.
+
 ## Manual lifecycle
 
 `PhotonHandle` and `PhotonAsyncHandle` expose the interceptor and matching HTTP

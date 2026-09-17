@@ -123,12 +123,18 @@ describe("client", () => {
     });
     const authOptions = mocks.buildCacheAuthProvider.mock.calls[0]![0];
     await expect(authOptions.credentials()).resolves.toBe(credentials);
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
+    connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       tls: false,
       requestTimeout: 1234,
       authProvider: "auth-provider",
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), { timeout: 42 });
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      {},
+    );
     expect(mocks.session.open).toHaveBeenCalledOnce();
     expect(mocks.handleConstructor).toHaveBeenCalledWith(sdkClient, mocks.session, "dynamodb");
     expect(mocks.handle.install).toHaveBeenCalledOnce();
@@ -150,17 +156,17 @@ describe("client", () => {
       cacheName: "my-cache",
       credentials: expect.any(Function),
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), {});
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.any(Function), {}, {});
   });
 
   it("passes reconnect policy to the session", async () => {
     setup();
     const reconnectPolicy = {
-      maxReconnectAttempts: 2,
+      connectAttempts: 2,
+      connectionTimeoutMs: 50,
       baseDelayMs: 5,
       maxDelayMs: 20,
-      circuitFailureThreshold: 4,
-      circuitOpenDurationMs: 100,
+      jitter: 0.1,
     };
 
     await client("dynamodb", FakeClient, { ...options, reconnectPolicy });
@@ -169,6 +175,18 @@ describe("client", () => {
       expect.any(Function),
       { timeout: 42 },
       reconnectPolicy,
+    );
+  });
+
+  it("converts the public fallback duration from seconds to milliseconds", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, { ...options, fallbackDuration: 60 });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      { fallbackDurationMs: 60_000 },
     );
   });
 

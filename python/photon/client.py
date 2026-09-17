@@ -7,12 +7,14 @@ import boto3
 from photon.auth import build_cache_auth_provider
 from photon.connection import PhotonConnector
 from photon.hooks import PhotonHandle
+from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 
 
 def client(service: str, *, endpoint: str, cache_name: str,
            region_name: str | None = None, user_id: str | None = None,
-           verify: bool = True, ca_certs: str | None = None, **overrides):
+           verify: bool = True, ca_certs: str | None = None,
+           fallback_duration: int | None = None, **overrides):
     """Create a boto3 client for ``service`` wired up with Photon.
 
     Returns the boto3 client (identical API). Calling ``close()`` on it disconnects
@@ -26,6 +28,11 @@ def client(service: str, *, endpoint: str, cache_name: str,
         user_id: Optional ElastiCache IAM user id (defaults to ``default.iam-user``).
         verify: Verify the cache's TLS certificate. False is for self-signed test rigs only.
         ca_certs: CA bundle to verify against instead of the system trust store.
+        fallback_duration: How long, in seconds, requests may be served directly by the origin
+            service while Photon has no connection to the cache. ``None`` (the default) or any
+            negative value means indefinitely, so a cache outage never becomes an application
+            outage. ``0`` means never — the first request after a connection is lost raises
+            :class:`~photon.exceptions.PhotonCacheUnavailable`.
         **overrides: Additional photon.config overrides.
 
     Example::
@@ -39,11 +46,18 @@ def client(service: str, *, endpoint: str, cache_name: str,
     auth_provider = build_cache_auth_provider(
         cache_name=cache_name, user_id=user_id, region=region_name
     )
-    connector = PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
-                                auth_provider=auth_provider)
+
+    def connector_factory() -> PhotonConnector:
+        return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
+                               auth_provider=auth_provider)
+
     # The session connects (IAM auth + photon.config handshake) before the hook is installed,
     # so the first intercepted request already has a ready session.
-    session = PhotonSession(connector, overrides=overrides or None)
+    session = PhotonSession(
+        connector_factory,
+        overrides=overrides or None,
+        policy=ReconnectPolicy(fallback_duration=fallback_duration),
+    )
     PhotonHandle(sdk_client, session)
 
     return sdk_client

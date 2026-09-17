@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import { PhotonError, PhotonProtocolError } from "../src/errors.js";
-import { decodeResp, encodeResp, IncompleteFrame, RespError } from "../src/resp.js";
+import { decodeResp, encodeResp, IncompleteFrame, RespError, RespPush } from "../src/resp.js";
 
 const CRLF = "\r\n";
 
@@ -50,8 +50,14 @@ describe("RESP codec", () => {
   });
 
   it("decodes a simple string", () => {
-    // Decodes a + simple string and reports bytes consumed.
-    expect(decodeResp(Buffer.from(`+OK${CRLF}`))).toEqual([Buffer.from("OK"), 5]);
+    // Simple strings remain distinguishable from binary-safe bulk strings.
+    expect(decodeResp(Buffer.from(`+OK${CRLF}`))).toEqual(["OK", 5]);
+  });
+
+  it("rejects a simple string that is not valid UTF-8", () => {
+    // Replacing invalid bytes would silently corrupt the value, so it is a protocol error.
+    const frame = Buffer.concat([Buffer.from("+"), Buffer.from([0xff]), Buffer.from(CRLF)]);
+    expect(() => decodeResp(frame)).toThrow(PhotonProtocolError);
   });
 
   it("decodes an integer", () => {
@@ -83,9 +89,22 @@ describe("RESP codec", () => {
     ).toEqual([[200, Buffer.from("hdrs"), Buffer.from("body")], 30]);
   });
 
-  it("decodes a push like an array", () => {
-    // A > push frame decodes like an array.
-    expect(decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toEqual([[1, 2], 12]);
+  it("decodes a push as a distinct RESP value", () => {
+    expect(decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toEqual([
+      new RespPush([1, 2]),
+      12,
+    ]);
+  });
+
+  it("decodes a photon.response push with a decimal request id", () => {
+    const frame = Buffer.from(
+      `>3${CRLF}$15${CRLF}photon.response${CRLF}:42${CRLF}*1${CRLF}:200${CRLF}`,
+    );
+
+    const [push, consumed] = decodeResp(frame);
+
+    expect(push).toEqual(new RespPush([Buffer.from("photon.response"), 42, [200]]));
+    expect(consumed).toBe(frame.length);
   });
 
   it("decodes a null array", () => {

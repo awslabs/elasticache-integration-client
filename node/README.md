@@ -13,22 +13,26 @@ This package currently ports the Python implementation's:
 - deterministic request-header normalization;
 - compiled CEL predicate evaluation for cacheability routing;
 - a single-connection TCP/TLS transport with FIFO response correlation,
-  bounded response frames, bounded in-flight requests, bounded send backpressure,
-  differentiated connect/request/initialization timeouts, idempotent close, and
-  injected AUTH credentials;
+  request-ID correlation for deferred cache responses delivered through later
+  RESP3 pushes,
+  bounded response frames, a single `maxPending` bound covering both
+  positional/FIFO and deferred requests, bounded send backpressure,
+  differentiated connect/request/initialization timeouts, idempotent close,
+  and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake,
-  reconnects failed transports with bounded exponential backoff, and circuit
-  breaks repeated recovery failures;
+  reconnects failed transports in the background, and controls safe origin
+  fallback with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers from the Photon copy, and routes idempotent Photon failures to
   the origin;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
-Automatic Photon failover to another endpoint, periodic config refresh, and
-out-of-band responses remain out of scope. The middleware sends requests with
-no matching predicate directly to origin and has a narrow origin fallback for
-idempotent requests when Photon fails; non-idempotent Photon failures and
-non-Photon errors propagate.
+Automatic Photon failover to another endpoint and periodic config refresh
+remain out of scope. Deferred cache responses are correlated by request
+ID and later `photon.response` pushes, while callers still receive ordinary
+promises. A timeout for a deferred request removes only that request and
+preserves the connection; a FIFO or write timeout remains connection-fatal. The
+middleware sends requests with no matching predicate directly to origin.
 
 ## Request routing
 
@@ -67,46 +71,57 @@ The factory completes IAM authentication and the `photon.config` handshake
 before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
-the original signed request remains untouched for origin pass-through. Photon
-errors for idempotent operations therefore return to the SDK's normal origin
-request and retry pipeline. Non-idempotent Photon errors and request validation
-errors propagate. Calling `destroy()` detaches Photon before SDK teardown,
-rejects in-flight Photon requests without passing shutdown failures to the
-origin, and is safe to repeat.
+the original signed request remains untouched for origin pass-through. Requests
+that Photon has not sent may use the normal origin pipeline. Once a request is
+sent to Photon, failures propagate without direct origin replay because the
+request may already have been processed. Calling `destroy()` detaches Photon
+before SDK teardown, rejects in-flight Photon requests, stops reconnect
+activity, and is safe to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`
 option.
 
-## Reconnection and circuit breaking
+## Reconnection and fallback
 
-When a Photon connection fails, the request that discovered the failure is not
-replayed through Photon because the cache may already have processed it. For an
-idempotent operation, the existing middleware fallback can proceed to the
-origin while one background recovery creates a new TLS connection, obtains
-fresh AUTH credentials, repeats `photon.config`, and recompiles its predicates.
-Concurrent requests share that recovery attempt.
+Client creation retries the initial connection a bounded number of times and
+still fails loudly if no attempt completes. After a live connection is lost,
+Photon reconnects in the background until it succeeds or the client is
+destroyed. Idle socket loss starts recovery without waiting for a request.
+Every replacement resolves fresh AUTH credentials, repeats `photon.config`, and
+recompiles the resolved predicates.
 
-Recovery uses bounded exponential backoff with full jitter. After repeated
-failed recovery cycles, the circuit opens and Photon requests fail immediately
-until one half-open recovery probe is allowed:
+While there is no connection, a routed request has not been sent to Photon and
+can safely use the origin. `fallbackDuration` controls that per-outage window:
+
+| `fallbackDuration`                         | Behavior                                                                         |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| `undefined` (default), `null`, or negative | Fall back indefinitely, so a cache outage does not become an application outage. |
+| Positive integer                           | Fall back for that many seconds, then raise `PhotonCacheUnavailable`.            |
+| `0`                                        | Never fall back; routed requests raise immediately while disconnected.           |
+
+The window resets after every successful reconnect. Requests that do not match
+the resolved predicates continue to origin even after a finite window expires.
+`PhotonCacheUnavailable` is exported and marked retryable for the AWS SDK.
 
 ```ts
 const dynamodb = await client("dynamodb", DynamoDBClient, {
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
+  fallbackDuration: 60,
   reconnectPolicy: {
-    maxReconnectAttempts: 3,
+    connectAttempts: 3,
+    connectionTimeoutMs: 5_000,
     baseDelayMs: 100,
-    maxDelayMs: 5_000,
-    circuitFailureThreshold: 3,
-    circuitOpenDurationMs: 30_000,
+    maxDelayMs: 3_200,
+    jitter: 0.2,
   },
 });
 ```
 
-Set `maxReconnectAttempts` to `0` to disable reconnection. Closing or destroying
-the SDK client cancels reconnect backoff and prevents further attempts.
+Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
+attempt including the capped tail. Closing or destroying the SDK client
+interrupts reconnect backoff and prevents further attempts.
 
 Authentication, transport, protocol, and middleware implementation details are
 internal to the package. Overrides use standard JSON-compatible values;

@@ -1,6 +1,6 @@
 import { buildCacheAuthProvider } from "./auth.js";
 import { PhotonConnector, type PhotonConnectorOptions } from "./connection.js";
-import { PhotonError } from "./errors.js";
+import { PhotonConfigError, PhotonError } from "./errors.js";
 import { PhotonHandle, type PhotonCompatibleClient } from "./middleware.js";
 import { parseEndpoint, PhotonSession, type ReconnectPolicyOptions } from "./session.js";
 
@@ -17,7 +17,12 @@ export interface PhotonClientOptions<TConfig extends object> {
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
   connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
-  /** Reconnection and circuit-breaker configuration. */
+  /**
+   * Seconds that disconnected requests may fall back to origin per outage.
+   * `null`, `undefined`, or a negative value means indefinitely; zero disables fallback.
+   */
+  fallbackDuration?: number | null;
+  /** Advanced reconnection and fallback configuration. */
   reconnectPolicy?: ReconnectPolicyOptions;
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
@@ -28,6 +33,7 @@ interface InitializeOptions {
   region?: string;
   userId?: string;
   connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
+  fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
   overrides: Readonly<Record<string, unknown>>;
 }
@@ -52,21 +58,18 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     ...(options.region === undefined ? {} : { region: options.region }),
     credentials: sdkClient.config.credentials,
   });
-  const createConnector = () =>
+  const connectorFactory = () =>
     new PhotonConnector(host, port, {
       ...options.connectorOptions,
       authProvider,
     });
-  let nextConnector: PhotonConnector | undefined = createConnector();
-  const connectorFactory = () => {
-    const connector = nextConnector ?? createConnector();
-    nextConnector = undefined;
-    return connector;
+  const reconnectPolicy = {
+    ...options.reconnectPolicy,
+    ...(options.fallbackDuration === undefined
+      ? {}
+      : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
   };
-  const session =
-    options.reconnectPolicy === undefined
-      ? new PhotonSession(connectorFactory, options.overrides)
-      : new PhotonSession(connectorFactory, options.overrides, options.reconnectPolicy);
+  const session = new PhotonSession(connectorFactory, options.overrides, reconnectPolicy);
   try {
     await session.open();
     const handle = new PhotonHandle(sdkClient, session, service);
@@ -79,6 +82,21 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     }
     throw error;
   }
+}
+
+function fallbackDurationMs(value: number | null): number | null {
+  if (value === null) return value;
+  if (!Number.isSafeInteger(value)) {
+    throw new PhotonConfigError(
+      "fallbackDuration must be a whole number of seconds, null, or undefined",
+    );
+  }
+  if (value < 0) return value;
+  const milliseconds = value * 1_000;
+  if (!Number.isSafeInteger(milliseconds)) {
+    throw new PhotonConfigError("fallbackDuration is too large");
+  }
+  return milliseconds;
 }
 
 /**
@@ -103,6 +121,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     userId,
     clientConfig,
     connectorOptions,
+    fallbackDuration,
     reconnectPolicy,
     overrides = {},
   } = options;
@@ -117,6 +136,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
       ...(connectorOptions === undefined ? {} : { connectorOptions }),
+      ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
       ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
       overrides,
     });

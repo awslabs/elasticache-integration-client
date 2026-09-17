@@ -86,16 +86,16 @@ require the corresponding tests, README, and package checks to change with it.
   teardown, replay an ambiguously completed request, create parallel recovery
   flights, reuse stale AUTH credentials, or publish a connector with stale
   predicates. Safe path: preserve the one-way lifecycle, cleanup on failed
-  open, single-flight bounded reconnects with fresh AUTH and config, background
-  recovery for the request that discovers failure, and idempotent
-  `close()`/`destroy()`.
+  open, one continuous background reconnect loop with fresh AUTH and config,
+  origin fallback only while no request has been sent and the per-outage window
+  permits it, and idempotent `close()`/`destroy()`.
 - **Middleware path:** flag changes that use a non-final serialized request,
   bypass normal SDK deserialization/retry behavior, silently add unsupported
   streaming-body behavior, or destroy the SDK before Photon. Safe path: preserve
   final serialized unsigned request ordering, synthetic responses, explicit
-  streaming-body rejection, idempotent Photon failures falling through to the
-  origin, non-idempotent/validation/shutdown failures propagating, and
-  Photon-first teardown.
+  streaming-body rejection, predicate and disconnected-session declines falling
+  through to origin, in-flight/validation/shutdown failures propagating without
+  direct replay, and Photon-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh

@@ -37,12 +37,12 @@ try {
     [
       "esm-consumer",
       "module",
-      'import * as photon from "photon-nodejs";\nif (typeof photon.client !== "function" || photon.version !== "0.0.1" || "PhotonError" in photon || "PhotonHandle" in photon) process.exit(1);\n',
+      'import * as photon from "photon-nodejs";\nif (typeof photon.client !== "function" || photon.version !== "0.0.1" || typeof photon.PhotonError !== "function" || typeof photon.PhotonConfigError !== "function" || typeof photon.PhotonCacheUnavailable !== "function" || "PhotonHandle" in photon) process.exit(1);\n',
     ],
     [
       "cjs-consumer",
       "commonjs",
-      'const photon = require("photon-nodejs");\nif (typeof photon.client !== "function" || photon.version !== "0.0.1" || "PhotonError" in photon || "PhotonHandle" in photon) process.exit(1);\n',
+      'const photon = require("photon-nodejs");\nif (typeof photon.client !== "function" || photon.version !== "0.0.1" || typeof photon.PhotonError !== "function" || typeof photon.PhotonConfigError !== "function" || typeof photon.PhotonCacheUnavailable !== "function" || "PhotonHandle" in photon) process.exit(1);\n',
     ],
   ]) {
     const consumer = join(smokeRoot, name);
