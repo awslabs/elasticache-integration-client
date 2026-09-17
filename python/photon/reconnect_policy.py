@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from photon.exceptions import PhotonConfigError
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True, slots=True)
 class ReconnectPolicy:
     """Configure reconnect backoff and fallback.
 

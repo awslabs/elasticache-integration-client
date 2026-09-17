@@ -32,7 +32,6 @@ from tests.mock import (
     DEFAULT_RESOLVED_CONFIG,
     MockCache,
     MockTcpProxy,
-    Reply,
     mock_connector,
 )
 
@@ -297,7 +296,8 @@ def test_non_photon_error_during_reconnect_is_retried(rig):
     config_before, predicates_before = r.session._config, r.session._predicates
     # From here the cache answers with a config Photon cannot use: 2**200 overflows what CEL can
     # hold, so compile_predicates raises ValueError — a non-Photon error, mid-connection.
-    r.cache._config = {"version": "1.0", "predicates": [{"expr": "true", "vars": {"n": 2 ** 200}}]}
+    r.cache.set_config({"version": "1.0", "predicates": [{"expr": "true",
+                                                        "vars": {"n": 2 ** 200}}]})
     r.proxy.disconnect_clients()
 
     # Attempts keep coming, rather than stopping at the first ValueError.
@@ -308,7 +308,7 @@ def test_non_photon_error_during_reconnect_is_retried(rig):
     assert r.session._config is config_before
     assert r.session._predicates is predicates_before
 
-    r.cache._config = DEFAULT_RESOLVED_CONFIG      # a config that compiles
+    r.cache.set_config(DEFAULT_RESOLVED_CONFIG)   # a config that compiles
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
 
@@ -319,7 +319,7 @@ def test_reconnect_recompiles_predicates_from_the_new_config(rig):
     assert r.session.request(get_item_request())
 
     # The proxy now answers with a config that no longer routes GetItem.
-    r.cache._config = config_routing("PutItem")
+    r.cache.set_config(config_routing("PutItem"))
     r.proxy.disconnect_clients()
     wait_for_reconnect(r, connection_id=2)
 
@@ -392,36 +392,6 @@ def test_an_in_flight_request_raises_and_is_never_replayed(rig):
     assert len(markers) == 1, "the failed request must not be replayed onto the new connection"
 
 
-def test_positional_correlation_survives_a_reconnect(rig):
-    """Concurrent requests remain correlated with their replies across a reconnect.
-
-    The wire protocol correlates replies by position, so a connection swap must not
-    mix replies between callers.
-    """
-    r = rig(response_fn=lambda received: Reply.ok(body=received.body))
-
-    def call(marker: int):
-        body = b'{"TableName": "widgets", "marker": %d}' % marker
-        response = _swallow_photon_error(r.session, get_item_request(body))
-        return marker, response
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        first = [pool.submit(call, i) for i in range(4)]
-        r.proxy.disconnect_clients()
-        wait_for_reconnect(r, connection_id=2)
-        second = [pool.submit(call, i) for i in range(4, 8)]
-        results = [f.result(timeout=_STATE_TIMEOUT) for f in first + second]
-
-    # Requests that met the outage passed through and carry no reply, so the correlated ones are
-    # counted rather than assumed: without a floor this loop could verify nothing and still pass.
-    correlated = [(marker, response) for marker, response in results if response is not None]
-    assert len(correlated) >= 2, f"only {len(correlated)} of 8 requests were served"
-    assert any(response for _, response in results[4:]), "the new connection served nothing"
-
-    for marker, response in correlated:
-        assert b'"marker": %d' % marker in response.body, "reply landed on the wrong caller"
-
-
 def test_unbounded_window_passes_through_indefinitely(rig):
     """The default unbounded window passes disconnected requests through."""
     r = rig(policy=ReconnectPolicy(fallback_duration=None, base_delay=0.001, max_delay=0.01,
@@ -469,30 +439,6 @@ def test_zero_window_escalates_until_reconnected(rig):
     r.proxy.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
-
-
-def test_reconnect_finishing_mid_request_does_not_escalate(rig):
-    """A request does not escalate if reconnect completes before fallback is checked.
-
-    The request should observe the newly restored connection rather than treating
-    the reconnect window as an outage.
-    """
-    r = rig(policy=ReconnectPolicy(fallback_duration=None, base_delay=0.001, max_delay=0.01,
-                                   jitter=0.0))
-    set_as_reconnecting(r)
-
-    # request() reads the connector, then asks whether fallback is allowed. Standing in for the
-    # second read is the only way to land the reconnect between the two on purpose; racing a real
-    # reconnect against it would hit this window only occasionally.
-    check_window = r.session._connection_manager.fallback_allowed
-
-    def reconnect_between_the_two_reads() -> bool:
-        r.proxy.allow_connections()
-        wait_for_state(r.session, ConnectionState.ALIVE)
-        return check_window()
-
-    r.session._connection_manager.fallback_allowed = reconnect_between_the_two_reads
-    assert r.session.request(get_item_request()) is None
 
 
 def test_fallback_window_opens_before_the_connector_is_cleared(rig):

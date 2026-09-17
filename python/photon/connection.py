@@ -22,6 +22,7 @@ import logging
 import ssl
 import threading
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
@@ -251,7 +252,6 @@ class PhotonConnector:
         socket_read_size: int = _DEFAULT_READ_SIZE,
         auth_provider=None,
         max_pending: int = _DEFAULT_MAX_PENDING,
-        on_disconnect=None,
     ) -> None:
         self._host = host
         self._port = port
@@ -265,9 +265,10 @@ class PhotonConnector:
         self._auth_provider = auth_provider
 
         #: Called once when this connection ends, for any reason, including a deliberate close().
+        #: Assigned by the owner after construction, because a connector factory takes no arguments.
         #: Must not block or re-enter the connector. It runs on whichever thread noticed the end:
         #: the one owning the I/O loop, or the caller of close() when that loop had already stopped.
-        self.on_disconnect = on_disconnect
+        self.on_disconnect: Callable[[], None] | None = None
         self._disconnect_notified = False
 
         self._reader: _SocketReader | None = None
@@ -482,12 +483,12 @@ class PhotonConnector:
     def _notify_disconnect(self) -> None:
         """Notify the owner that this connection has ended, at most once.
 
-        Callback failures are logged and suppressed so they cannot terminate the I/O
-        thread.
+        Callback failures are logged and suppressed so they cannot terminate the I/O thread.
         """
-        if self._disconnect_notified:
-            return
-        self._disconnect_notified = True
+        with self._state_lock:
+            if self._disconnect_notified:
+                return
+            self._disconnect_notified = True
         callback = self.on_disconnect
         if not callback:
             return

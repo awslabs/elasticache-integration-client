@@ -326,6 +326,14 @@ class MockCache:
         self.cert_path: str | None = None
         self._key_path: str | None = None
 
+    def set_config(self, config: dict) -> None:
+        """Answer later ``photon.config`` exchanges with ``config``.
+
+        Lets a test change what the cache resolves between connections — a reconnect picks up the new
+        one — without reaching into the mock's internals.
+        """
+        self._config = config
+
     # --- introspection --------------------------------------------------------
     @property
     def endpoint(self) -> str:
@@ -735,8 +743,8 @@ def mock_connector() -> PhotonConnector:
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
     """
     conn = create_autospec(PhotonConnector, instance=True)
-    # Instance attributes (set in __init__) and properties, which autospec leaves as bare Mocks;
-    # the session reads all three and compares two of them, so give them real values.
+    # config_timeout is an instance attribute, which autospec leaves as a bare Mock; the session
+    # passes it as a timeout, so it has to be a real number.
     conn.config_timeout = 2.0
 
     def _execute(command, *args, timeout=None):
