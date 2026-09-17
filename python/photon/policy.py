@@ -29,7 +29,6 @@ class ReconnectPolicy:
     base_delay: float = 0.1
     max_delay: float = 3.2
     jitter: float = 0.2
-    drain_timeout: float = 1.0  # how long a graceful replacement waits for in-flight requests
 
     def __post_init__(self) -> None:
         if self.fallback_duration is not None and (
@@ -47,8 +46,6 @@ class ReconnectPolicy:
             raise PhotonError("max_delay must be >= base_delay")
         if not (0 <= self.jitter < 1):
             raise PhotonError("jitter must be in [0, 1)")
-        if self.drain_timeout < 0:
-            raise PhotonError("drain_timeout must be >= 0")
 
     @property
     def fallback_window(self) -> float:

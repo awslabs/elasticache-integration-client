@@ -8,7 +8,6 @@ connector double.
 
 from __future__ import annotations
 
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -262,8 +261,8 @@ def test_request_that_discovers_the_failure_raises_rather_than_passing_through(r
         r.session.request(a_request())
 
 
-def test_positional_correlation_survives_a_replacement(rig):
-    """Concurrent requests remain correlated with their replies across replacement.
+def test_positional_correlation_survives_a_reconnect(rig):
+    """Concurrent requests remain correlated with their replies across a reconnect.
 
     The wire protocol correlates replies by position, so a connection swap must not
     mix replies between callers.
@@ -277,7 +276,8 @@ def test_positional_correlation_survives_a_replacement(rig):
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         first = [pool.submit(call, i) for i in range(4)]
-        r.session._replace_connection()
+        r.proxy.disconnect_clients()
+        wait_for_reconnect(r, connections=2)
         second = [pool.submit(call, i) for i in range(4, 8)]
         results = [f.result(timeout=_STATE_TIMEOUT) for f in first + second]
 
@@ -449,8 +449,6 @@ def test_policy_rejects_incoherent_settings():
     with pytest.raises(PhotonError):
         ReconnectPolicy(jitter=1.0)
     with pytest.raises(PhotonError):
-        ReconnectPolicy(drain_timeout=-1)
-    with pytest.raises(PhotonError):
         ReconnectPolicy(fallback_duration="60")
     with pytest.raises(PhotonError):
         ReconnectPolicy(fallback_duration=True)
@@ -463,79 +461,6 @@ def test_policy_rejects_incoherent_settings():
 def test_fallback_window_normalizes_both_unbounded_spellings(duration, expected):
     """``None`` and negative values normalize to infinity; ``0`` remains zero."""
     assert ReconnectPolicy(fallback_duration=duration).fallback_window == expected
-
-
-def test_replace_connection_builds_a_new_one(rig):
-    """An explicit replacement builds a new connection without a failure."""
-    r = rig()
-    r.session._replace_connection()
-    wait_for_reconnect(r, connections=2)
-
-    assert r.session.request(a_request())
-
-
-def test_graceful_replacement_fails_no_in_flight_request(rig):
-    """Graceful replacement lets in-flight requests finish before the connection closes."""
-    release = threading.Event()
-
-    def slow_reply(received):
-        release.wait(2.0)
-        return Reply.ok(body=received.body)
-
-    r = rig(response_fn=slow_reply)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        in_flight = pool.submit(r.session.request, a_request(b'{"TableName": "widgets", "n": 1}'))
-        _wait_until(lambda: r.session._connector.pending_count == 1)
-
-        replacing = pool.submit(r.session._replace_connection)
-        time.sleep(0.05)          # the replacement is now draining
-        release.set()
-
-        response = in_flight.result(timeout=_STATE_TIMEOUT)
-        replacing.result(timeout=_STATE_TIMEOUT)
-
-    assert response and response.status_code == 200
-    wait_for_reconnect(r, connections=2)
-
-
-def test_drain_timeout_gives_up_and_says_so(rig, caplog):
-    """A timed-out drain proceeds with replacement and logs a warning."""
-    release = threading.Event()
-    r = rig(policy=ReconnectPolicy(base_delay=0.001, max_delay=0.01, jitter=0.0,
-                                   drain_timeout=0.02),
-            response_fn=lambda received: (release.wait(2.0), Reply.ok(body=received.body))[1])
-    try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            in_flight = pool.submit(_swallow_photon_error, r.session, a_request())
-            _wait_until(lambda: r.session._connector.pending_count == 1)
-            with caplog.at_level("WARNING", logger="photon.session"):
-                r.session._replace_connection()
-            in_flight.result(timeout=_STATE_TIMEOUT)
-    finally:
-        release.set()
-
-    assert any("still in flight" in record.message for record in caplog.records)
-
-
-def test_replacement_is_idempotent_and_safe_concurrently(rig):
-    """Concurrent replacement requests collapse into one connection replacement."""
-    r = rig()
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for future in [pool.submit(r.session._replace_connection) for _ in range(4)]:
-            future.result(timeout=_STATE_TIMEOUT)
-
-    wait_for_reconnect(r, connections=2)
-    assert r.connector_count == 2, "four calls must not build four connections"
-
-
-def test_replacement_after_close_is_a_no_op(rig):
-    """Replacing a closed session is a no-op."""
-    r = rig()
-    r.session.close()
-    r.session._replace_connection()
-
-    assert r.session.state is SessionState.CLOSED
-    assert r.connector_count == 1
 
 
 def test_close_stops_reconnecting(rig):

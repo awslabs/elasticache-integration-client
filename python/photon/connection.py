@@ -94,12 +94,6 @@ class _PendingRequests:
                 raise PhotonError(f"too many in-flight requests (max {self._max_pending})")
             self._queue.append(future)
 
-    @property
-    def count(self) -> int:
-        """How many requests are waiting for a reply."""
-        with self._pending_requests_lock:
-            return len(self._queue) + len(self._async_responses)
-
     def resolve_oldest_request(self, value: RespValue) -> None:
         """Resolve the oldest waiting future with ``value`` (FIFO). No-op if none is waiting.
 
@@ -291,11 +285,6 @@ class PhotonConnector:
         Reconnecting creates a new connector.
         """
         return not self._closed
-
-    @property
-    def pending_count(self) -> int:
-        """How many requests are waiting for a reply."""
-        return self._pending.count
 
     # --- lifecycle -----------------------------------------------------------
     def connect(self) -> None:

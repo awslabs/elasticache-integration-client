@@ -285,50 +285,6 @@ class PhotonSession:
         logger.info("photon connection re-established after %d attempt(s)", attempt)
         return True
 
-    def _replace_connection(self, *, drain: bool = True) -> None:
-        """Replace the current connection through the normal reconnect path.
-
-        The current connection is removed and closed, then the reconnect thread is
-        signaled to build its replacement. This keeps intentional replacements on
-        the same single reconnect path as unexpected disconnects
-
-        With ``drain=True``, new requests are quiesced and in-flight requests are
-        given up to ``drain_timeout`` to finish before the connection is closed.
-        This allows a graceful replacement without failing in-flight requests.
-
-        Safe to call concurrently and during shutdown; both collapse into no-ops.
-        """
-        with self._lock:
-            if self._state is not SessionState.ALIVE:
-                return      # closed, still starting, or already reconnecting
-            connector = self._connector
-            self._fallback_deadline = time.monotonic() + self._policy.fallback_window
-            self._connector = None
-            self._state = SessionState.RECONNECTING
-        logger.info("photon replacing its connection")
-
-        if connector:
-            if drain:
-                self._drain(connector)
-            connector.close()
-        self._reconnect_needed.set()
-
-    def _drain(self, connector: PhotonConnector) -> None:
-        """Wait for in-flight requests to finish, up to ``drain_timeout``.
-
-        Requests that already captured the connector may still arrive while it is
-        draining. They either finish within the window or fail when the connector
-        is closed and follow the normal reactive path.
-        """
-        deadline = time.monotonic() + self._policy.drain_timeout
-        while connector.pending_count and time.monotonic() < deadline:
-            time.sleep(_DRAIN_POLL_INTERVAL)
-        if connector.pending_count:
-            logger.warning(
-                "photon drained for %.3fs with %d request(s) still in flight; they will fail",
-                self._policy.drain_timeout, connector.pending_count,
-            )
-
     def close(self) -> None:
         """Close the session and stop all reconnect activity. Idempotent."""
         with self._lock:
