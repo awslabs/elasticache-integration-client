@@ -104,10 +104,18 @@ public final class PhotonProtocol {
 
     /**
      * Serialize a config command with optional overrides.
+     *
+     * <p>{@code overrides == null} means "unchanged since last send" and sends
+     * {@code photon.config} with zero arguments. A non-null map, including an empty one, is sent
+     * explicitly as JSON; the server treats an explicit {@code {}} as a reset to its defaults, so
+     * that is not the same wire form as {@code null}.
      */
     public static SerializedCommand serializeConfig(Map<String, Object> overrides) {
+        if (overrides == null) {
+            return new SerializedCommand(CONFIG_COMMAND, Collections.emptyList());
+        }
         try {
-            byte[] jsonBytes = OBJECT_MAPPER.writeValueAsBytes(overrides != null ? overrides : Collections.emptyMap());
+            byte[] jsonBytes = OBJECT_MAPPER.writeValueAsBytes(overrides);
             return new SerializedCommand(CONFIG_COMMAND, Collections.singletonList(jsonBytes));
         } catch (Exception e) {
             throw new PhotonProtocolError("Failed to serialize config overrides: " + e.getMessage(), e);

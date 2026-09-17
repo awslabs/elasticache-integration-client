@@ -16,6 +16,9 @@ import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
+import software.amazon.photon.protocol.PhotonProtocol;
+import software.amazon.photon.resp.RespBulkString;
+import software.amazon.photon.resp.RespValue;
 
 import javax.net.ssl.SSLContext;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +35,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -945,6 +949,296 @@ class PhotonSessionTest {
                 throw new PhotonConnectionError("interrupted recovery", e);
             }
             super.connect();
+        }
+    }
+
+    // === Refresh: fetch and apply ===
+
+    @Test
+    void refreshOnce_sendsNoArgumentFormAfterBringUp() {
+        // Bring-up already sent the overrides; the first tick sends the no-argument form.
+        cache.setNoArgConfigReply(null); // RESP3 null: "unchanged"
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN,
+                Collections.singletonMap("flag", true));
+        try {
+            session.open();
+            int commandsBeforeTick = cache.getReceivedCommands().size();
+
+            session.refreshOnce();
+
+            assertEquals(commandsBeforeTick + 1, cache.getReceivedCommands().size());
+            assertFalse(cache.wasOverridesSupplied(),
+                    "the tick after bring-up should send the no-argument form");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_nullReplyLeavesConfigAndPredicatesUnchanged() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            PhotonRequest matchingRequest = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(), "{}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "GetItem"));
+            PhotonRequest nonMatchingRequest = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(), "{}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "CreateTable"));
+
+            assertNotNull(session.request(matchingRequest));
+            assertNull(session.request(nonMatchingRequest));
+            int commandsBeforeRefresh = cache.getReceivedCommands().size();
+
+            cache.setNoArgConfigReply(null); // Explicitly return RESP3 null.
+            session.refreshOnce();
+
+            assertEquals(commandsBeforeRefresh + 1, cache.getReceivedCommands().size());
+            assertSame(originalConfig, session.getConfig());
+            assertNotNull(session.request(matchingRequest));
+            assertNull(session.request(nonMatchingRequest));
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_noArgTickStillAppliesAServerInitiatedChange() {
+        // Even though the client sent the no-argument form, a resolved-config reply is applied,
+        // including its replacement predicate evaluator.
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            PhotonRequest matchingRequest = new PhotonRequest(
+                    "POST", "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(), "{}".getBytes(StandardCharsets.UTF_8),
+                    new RequestMetadata("dynamodb", "GetItem"));
+            assertNotNull(session.request(matchingRequest));
+            int commandsBeforeRefresh = cache.getReceivedCommands().size();
+
+            cache.setNoArgConfigReply(
+                    "{\"version\":\"2.0\",\"refresh_interval\":45,\"predicates\":[]}");
+
+            session.refreshOnce();
+
+            assertEquals(commandsBeforeRefresh + 1, cache.getReceivedCommands().size());
+            assertEquals("2.0", session.getConfig().getVersion());
+            assertEquals(Integer.valueOf(45), session.getConfig().getRefreshInterval());
+            assertNull(session.request(matchingRequest));
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_withUnacknowledgedOverrides_sendsThemAndAppliesReply() {
+        // Simulates a not-yet-reachable "overrides changed" state: once _overridesSent is false,
+        // the tick resends the overrides exactly like bring-up.
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN,
+                Collections.singletonMap("flag", true));
+        try {
+            session.open();
+            session.setOverridesSent(false);
+
+            session.refreshOnce();
+
+            assertTrue(cache.wasOverridesSupplied());
+            assertTrue(session.isOverridesSent());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_swallowsConnectorErrorAndKeepsCurrentConfig() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            cache.setFailureMode(MockCache.FailureMode.DROP);
+            cache.setFailureCommand("photon.config");
+
+            assertDoesNotThrow(session::refreshOnce);
+
+            assertSame(originalConfig, session.getConfig());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_swallowsMalformedReplyAndKeepsCurrentConfig() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+
+            assertDoesNotThrow(session::refreshOnce);
+
+            assertSame(originalConfig, session.getConfig());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void unacknowledgedOverrides_areSentAgainAfterAFailedTick() {
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN,
+                Collections.singletonMap("flag", true));
+        try {
+            session.open();
+            session.setOverridesSent(false);
+            // The tick with unacknowledged overrides sends the 1-argument form; make that reply
+            // malformed so the resend must happen again on the following tick.
+            cache.setConfigJson("{\"version\":\"1.0\"}"); // malformed: no refresh_interval
+
+            session.refreshOnce();
+            assertFalse(session.isOverridesSent(), "a malformed reply must not confirm the overrides");
+
+            cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,\"predicates\":[]}");
+            session.refreshOnce();
+
+            assertTrue(cache.wasOverridesSupplied());
+            assertTrue(session.isOverridesSent());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void refreshOnce_replyArrivingAfterClose_isIgnored() throws Exception {
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch releaseReply = new CountDownLatch(1);
+        PhotonConnector connector = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext) {
+            @Override
+            public RespValue execute(String command, byte[]... args) {
+                if (PhotonProtocol.CONFIG_COMMAND.equals(command)) {
+                    refreshStarted.countDown();
+                    try {
+                        if (!releaseReply.await(5, TimeUnit.SECONDS)) {
+                            throw new AssertionError("timed out waiting to release config reply");
+                        }
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        throw new RuntimeException(e);
+                    }
+                    return new RespBulkString((
+                            "{\"version\":\"2.0\",\"refresh_interval\":45,\"predicates\":[]}")
+                            .getBytes(StandardCharsets.UTF_8));
+                }
+                return super.execute(command, args);
+            }
+        };
+        PhotonSession session = new PhotonSession(connector, TEST_USER, TEST_TOKEN);
+        session.open();
+        ResolvedConfig originalConfig = session.getConfig();
+        AtomicReference<Throwable> refreshFailure = new AtomicReference<>();
+        Thread refreshThread = new Thread(() -> {
+            try {
+                session.refreshOnce();
+            } catch (Throwable failure) {
+                refreshFailure.set(failure);
+            }
+        });
+
+        try {
+            refreshThread.start();
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS), "refresh did not start");
+
+            session.close();
+            releaseReply.countDown();
+            refreshThread.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertFalse(refreshThread.isAlive(), "refresh thread did not finish");
+            assertNull(refreshFailure.get());
+            assertSame(originalConfig, session.getConfig());
+        } finally {
+            releaseReply.countDown();
+            session.close();
+            refreshThread.join(TimeUnit.SECONDS.toMillis(5));
+        }
+    }
+
+    @Test
+    void refreshOnce_replyFromReplacedConnectorIsIgnored() throws Exception {
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        CountDownLatch releaseReply = new CountDownLatch(1);
+        TestConnector initialConnector = new TestConnector(false, "true") {
+            @Override
+            public RespValue execute(String command, byte[]... args) {
+                refreshStarted.countDown();
+                try {
+                    if (!releaseReply.await(5, TimeUnit.SECONDS)) {
+                        throw new AssertionError("timed out waiting to release stale config reply");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new PhotonConnectionError("stale refresh interrupted", e);
+                }
+                return new RespBulkString((
+                        "{\"version\":\"stale\",\"refresh_interval\":90,"
+                                + "\"predicates\":[{\"expr\":\"true\"}]}")
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+        };
+        TestConnector replacementConnector = new TestConnector(false, "false") {
+            @Override
+            public ResolvedConfig configureAndStartReader(
+                    Map<String, Object> configOverrides) {
+                Map<String, Object> predicate =
+                        Collections.<String, Object>singletonMap("expr", "false");
+                Map<String, Object> rawConfig =
+                        Collections.<String, Object>singletonMap(
+                                "predicates", Collections.singletonList(predicate));
+                return new ResolvedConfig("replacement", 30, rawConfig);
+            }
+        };
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        PhotonSession session = new PhotonSession(
+                () -> connectionCreationCount.getAndIncrement() == 0
+                        ? initialConnector : replacementConnector,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        AtomicReference<Throwable> refreshFailure = new AtomicReference<>();
+        Thread refreshThread = new Thread(() -> {
+            try {
+                session.refreshOnce();
+            } catch (Throwable failure) {
+                refreshFailure.set(failure);
+            }
+        });
+
+        try {
+            session.open();
+            refreshThread.start();
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS), "refresh did not start");
+
+            initialConnector.fail();
+            assertNull(session.request(request()));
+            awaitState(session, PhotonSession.State.OPEN);
+            ResolvedConfig replacementConfig = session.getConfig();
+            assertEquals("replacement", replacementConfig.getVersion());
+
+            releaseReply.countDown();
+            refreshThread.join(TimeUnit.SECONDS.toMillis(5));
+
+            assertFalse(refreshThread.isAlive(), "refresh thread did not finish");
+            assertNull(refreshFailure.get());
+            assertSame(replacementConfig, session.getConfig());
+            assertNull(session.request(request()));
+            double nextDelay = session.refresher().nextRefreshDelaySeconds();
+            assertTrue(nextDelay >= 24 && nextDelay <= 36,
+                    "reconnect did not apply the replacement refresh interval: " + nextDelay);
+        } finally {
+            releaseReply.countDown();
+            session.close();
+            refreshThread.join(TimeUnit.SECONDS.toMillis(5));
         }
     }
 }

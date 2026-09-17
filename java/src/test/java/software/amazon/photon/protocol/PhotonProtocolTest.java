@@ -427,8 +427,17 @@ class PhotonProtocolTest {
     }
 
     @Test
-    void serializeConfig_null() {
+    void serializeConfig_null_sendsNoArgumentForm() {
+        // null means "unchanged since last send"; distinct from an explicit {}, which the
+        // server treats as a reset to its defaults.
         SerializedCommand cmd = PhotonProtocol.serializeConfig(null);
+        assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
+        assertEquals(0, cmd.getArgs().size());
+    }
+
+    @Test
+    void serializeConfig_emptyMap_sendsExplicitEmptyObject() {
+        SerializedCommand cmd = PhotonProtocol.serializeConfig(Collections.emptyMap());
         assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
         assertEquals(1, cmd.getArgs().size());
         assertEquals("{}", new String(cmd.getArgs().get(0), StandardCharsets.UTF_8));

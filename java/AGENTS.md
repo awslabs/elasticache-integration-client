@@ -118,10 +118,10 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Failover to another Photon endpoint and periodic config refresh are currently
-out of scope. CEL predicate routing, indefinite background reconnection with a
-bounded origin-fallback window, and deferred responses delivered by
-`photon.response` pushes are
+Failover to another Photon endpoint remains out of scope. CEL predicate routing,
+indefinite background reconnection with a bounded origin-fallback window,
+periodic config refresh, and deferred responses delivered by `photon.response`
+pushes are
 supported; other push kinds are fatal protocol corruption (raised as
 `PhotonProtocolError` and wrapped as `PhotonConnectionLost` by the reader
 loop), matching the Node and Python clients: a client that does not
@@ -131,13 +131,18 @@ mistake this contract for a review finding; intentional scope changes require
 README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
-Periodic config refresh is partially in scope: `ConfigRefresher` and its
-`PhotonSession` lifecycle exist as a skeleton, and `refresh_interval` is
-validated at parse time. The refresh callback is deliberately a no-op, so the
-periodic loop does not fetch, parse, or swap config yet. Configuration is still
-fetched and compiled during initial open and after every successful reconnect.
-Periodic fetching and atomic config replacement remain out of scope until a
-follow-up change.
+Periodic config refresh is in scope: each `ConfigRefresher` tick sends
+`photon.config`, using the zero-argument form once the session's overrides
+have been acknowledged by the server (an unacknowledged override map, including
+an explicit empty map, is resent), and applies the result. A RESP3 null reply
+means the server's config is unchanged, so nothing is applied or rescheduled;
+otherwise the reply is parsed, its predicates compiled, and both published
+together as one immutable snapshot, with the refresher's interval updated to
+match. A refresh failure (`PhotonError`) is logged and leaves the current
+config, predicates, and interval as last-known-good. If it kills the connector,
+the normal reconnect loop obtains a fresh connection and config; periodic ticks
+do nothing while reconnecting, and stale replies from replaced connectors are
+discarded.
 
 ## Security and test boundaries
 

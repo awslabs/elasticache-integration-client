@@ -100,6 +100,8 @@ public final class RespCodec {
                 return decodeArray(data, start);
             case '>':
                 return decodePush(data, start);
+            case '_':
+                return decodeNull(data, start);
             default:
                 throw new PhotonProtocolError("Unknown RESP prefix: " + (char) prefix + " (0x" + Integer.toHexString(prefix & 0xFF) + ")");
         }
@@ -193,6 +195,21 @@ public final class RespCodec {
         byte[] value = new byte[length];
         System.arraycopy(data, dataStart, value, 0, length);
         return new DecodeResult(new RespBulkString(value), dataEnd + 2);
+    }
+
+    /**
+     * Decode a RESP3 null ({@code _\r\n}). The header must be empty: there is no length or
+     * value, just the CRLF terminator immediately after the prefix.
+     */
+    private static DecodeResult decodeNull(byte[] data, int start) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1);
+        if (crlfPos < 0) {
+            throw new IncompleteFrame("Incomplete null");
+        }
+        if (crlfPos != start + 1) {
+            throw new PhotonProtocolError("Malformed RESP3 null: expected an empty header");
+        }
+        return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
     }
 
     private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrame {

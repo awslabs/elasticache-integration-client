@@ -162,6 +162,20 @@ class PhotonConnectorIntegrationTest {
         }
     }
 
+    @Test
+    void connectAndAuthenticate_withNullOverrides_sendsExplicitEmptyObject() {
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            ResolvedConfig config = conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN, null);
+
+            assertNotNull(config);
+            assertTrue(cache.wasOverridesSupplied(),
+                    "the initial handshake must send {}, not the zero-argument refresh form");
+        } finally {
+            conn.close();
+        }
+    }
+
     // === photon.request ===
 
     @Test
@@ -608,6 +622,61 @@ class PhotonConnectorIntegrationTest {
 
             assertThrows(PhotonTimeoutError.class, () -> conn.request(request));
             assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    // === Per-command timeout selection ===
+
+    @Test
+    void execute_configCommand_usesInitializationTimeoutNotRequestTimeout() {
+        // A short initializationTimeoutMs and a long requestTimeoutMs: a hung photon.config sent
+        // after bring-up (a refresh tick) must time out on the short budget, proving it is not
+        // sharing the request timeout.
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 200, 5000, PhotonConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            cache.setFailureMode(MockCache.FailureMode.HANG);
+            cache.setFailureCommand("photon.config");
+
+            long startNanos = System.nanoTime();
+            assertThrows(PhotonTimeoutError.class, () -> conn.execute(PhotonProtocol.CONFIG_COMMAND));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+            assertTrue(elapsedMillis < 2000,
+                    "execute(photon.config) took " + elapsedMillis + "ms; expected ~200ms (initializationTimeoutMs), not 5000ms (requestTimeoutMs)");
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void request_usesRequestTimeoutNotInitializationTimeout() {
+        // The inverse: a long initializationTimeoutMs and a short requestTimeoutMs. A hung
+        // photon.request must time out on the short budget.
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("photon.request");
+
+        PhotonConnector conn = new PhotonConnector(
+                "localhost", server.getPort(), clientSslContext,
+                5000, 5000, 200, PhotonConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            PhotonRequest request = new PhotonRequest(
+                    "GET", "https://example.com/item",
+                    Collections.emptyMap(), new byte[0],
+                    new RequestMetadata("dynamodb", "GetItem"));
+
+            long startNanos = System.nanoTime();
+            assertThrows(PhotonTimeoutError.class, () -> conn.request(request));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+            assertTrue(elapsedMillis < 2000,
+                    "request() took " + elapsedMillis + "ms; expected ~200ms (requestTimeoutMs), not 5000ms (initializationTimeoutMs)");
         } finally {
             conn.close();
         }

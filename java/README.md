@@ -31,15 +31,24 @@ operations.
 
 Expressions that cannot be compiled are ignored. Evaluation errors and
 malformed or non-object JSON bodies count as no match. The resolved config is
-compiled when the session opens and refreshed and recompiled after every
-successful reconnect.
+compiled when the session opens, after every successful reconnect, and whenever
+a periodic refresh returns an updated config. Config and compiled predicates
+are published together, so requests never observe values from different
+refreshes.
 
 The `photon.config` response must include `refresh_interval` as a positive JSON
 integer within the Java `Integer` range. Missing, null, fractional, non-positive,
 and overflowing values are protocol errors. The session starts a daemon
-refresher using this interval, but its periodic callback is currently a no-op;
-periodic config fetching and swapping remain future work. Successful reconnects
-still fetch and compile a fresh config.
+refresher using this interval. After the initial explicit override map is
+acknowledged, refreshes use the zero-argument `photon.config` form to indicate
+that the overrides are unchanged. A RESP3 null reply leaves the current config
+and interval unchanged; a valid config reply atomically replaces the config and
+predicates and sets the next refresh interval.
+
+Refresh failures retain the last-known-good config. If a failure makes the
+active connector unusable, the normal background reconnect loop replaces it
+and fetches a fresh config. Periodic refresh pauses while reconnecting, and a
+late reply from a closed or replaced connector is ignored.
 
 ## Synchronous client
 

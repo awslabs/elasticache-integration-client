@@ -41,7 +41,7 @@ class ConfigRefresher {
         boolean await(CountDownLatch stop, double timeoutSeconds) throws InterruptedException;
     }
 
-    private final double intervalSeconds;
+    private volatile double intervalSeconds;
     private final Runnable refreshOnce;
     private final boolean jitter;
     private final Random random;
@@ -95,13 +95,16 @@ class ConfigRefresher {
      *
      * <p>Idempotent: counting down an already-open latch and joining an already-dead thread are
      * both no-ops. An active callback is interrupted so an interruptible callback can finish
-     * before the join timeout expires. If the joining thread is interrupted, its interrupt status
+     * before the join timeout expires. When called from the refresher thread itself, the latch
+     * still ends the loop after the current callback, but interrupt and join are skipped to avoid
+     * self-interruption and self-join. If the joining thread is interrupted, its interrupt status
      * is restored rather than swallowed.
      */
     void stop(long timeoutMillis) {
         stop.countDown();
         Thread refreshThread = this.thread;
-        if (refreshThread != null && refreshThread.isAlive()) {
+        if (refreshThread != null && refreshThread.isAlive()
+                && refreshThread != Thread.currentThread()) {
             refreshThread.interrupt();
             try {
                 refreshThread.join(timeoutMillis);
@@ -109,6 +112,22 @@ class ConfigRefresher {
                 Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /**
+     * Change the interval used for all subsequent delays.
+     *
+     * <p>Validated before assignment, so an invalid interval leaves the previous one intact.
+     * Takes effect starting with the next call to {@link #nextRefreshDelaySeconds()}; a wait
+     * already in progress keeps using the delay it was given.
+     *
+     * @throws IllegalArgumentException if {@code intervalSeconds} is not positive
+     */
+    void setInterval(double intervalSeconds) {
+        if (intervalSeconds <= 0) {
+            throw new IllegalArgumentException("intervalSeconds must be positive: " + intervalSeconds);
+        }
+        this.intervalSeconds = intervalSeconds;
     }
 
     private void refreshLoop() {

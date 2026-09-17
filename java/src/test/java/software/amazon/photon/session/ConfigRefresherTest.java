@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
@@ -14,6 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -212,5 +214,57 @@ class ConfigRefresherTest {
         }
         assertTrue(timeouts.stream().distinct().count() > 1,
                 "jitter was not recalculated across cycles: " + timeouts);
+    }
+
+    // === setInterval ===
+
+    @Test
+    void setInterval_changesNextComputedDelay() {
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> { }, false, new Random(), null);
+        assertEquals(10.0, refresher.nextRefreshDelaySeconds());
+        refresher.setInterval(30);
+        assertEquals(30.0, refresher.nextRefreshDelaySeconds());
+    }
+
+    @Test
+    void setInterval_rejectsNonPositiveAndLeavesPreviousValueIntact() {
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> { }, false, new Random(), null);
+        assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(0));
+        assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(-5));
+        assertEquals(10.0, refresher.nextRefreshDelaySeconds());
+    }
+
+    @Test
+    void setInterval_doesNotAffectAWaitAlreadyInProgress() throws Exception {
+        // A delay already handed to the waiter before setInterval() must not change retroactively;
+        // only delays computed afterward use the new interval.
+        FakeWaiter waiter = new FakeWaiter(2);
+        ConfigRefresher refresher = track(new ConfigRefresher(10, () -> { }, false, new Random(), waiter));
+        refresher.setInterval(99); // before start(): every computed delay uses the new interval
+        refresher.start();
+        refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
+
+        assertEquals(Arrays.asList(99.0, 99.0, 99.0), waiter.timeouts());
+    }
+
+    // === Self-join guard ===
+
+    @Test
+    void stop_calledFromWithinTheCallback_doesNotDeadlock() throws Exception {
+        // Simulates PhotonSession's refresh callback stopping the refresher after observing a
+        // dead connector: stop() must not try to join the thread it is running on.
+        CountDownLatch stopped = new CountDownLatch(1);
+        ConfigRefresher[] holder = new ConfigRefresher[1];
+        ConfigRefresher refresher = new ConfigRefresher(0.01, () -> {
+            holder[0].stop();
+            stopped.countDown();
+        });
+        holder[0] = refresher;
+        track(refresher);
+        refresher.start();
+
+        assertTrue(stopped.await(5, TimeUnit.SECONDS), "self-stop() call blocked");
+        refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
+        assertFalse(refresher.thread().isAlive());
     }
 }
