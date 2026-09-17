@@ -72,6 +72,12 @@ def test_decode_null_bulk_string():
     assert decode_resp(b"$-1\r\n") == (None, 5)
 
 
+def test_decode_resp3_null():
+    """Decodes the RESP3 null `_` to None. Once the connection is RESP3 the server encodes
+    nulls this way instead of as $-1, so both forms must reach the caller as None."""
+    assert decode_resp(b"_\r\n") == (None, 3)
+
+
 def test_decode_array():
     """Decodes a *3 array containing an int and two bulk strings."""
     frame = b"*3\r\n:200\r\n$4\r\nhdrs\r\n$4\r\nbody\r\n"
@@ -163,6 +169,7 @@ def test_decode_negative_map_length_raises_protocol_error():
         (b"*2\r\n:1\r\n", "incomplete frame"),
         (b">2\r\n:1\r\n", "incomplete frame"),
         (b":", "incomplete frame"),
+        (b"_", "incomplete frame"),
     ],
 )
 def test_truncation_raises_incomplete_frame(partial, message):

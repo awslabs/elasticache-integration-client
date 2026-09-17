@@ -39,7 +39,7 @@ class RespPush:
 
 
 # A decoded RESP value: integer, simple string (str), bulk string (bytes), array (list),
-# map (dict), error, or push.
+# map (dict), error, push, or null (None).
 RespValue = int | str | bytes | list["RespValue"] | dict["RespValue", "RespValue"] | RespError | RespPush | None
 
 
@@ -88,6 +88,11 @@ def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     text = header.decode("utf-8", errors="replace")
     code, _, message = text.partition(" ")
     return RespError(code=code, message=message), after_header
+
+
+def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``_`` null, the RESP3 form. The line carries no payload, so it is ignored."""
+    return None, after_header
 
 
 def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
@@ -149,6 +154,7 @@ _DECODERS = {
     b"+": _decode_simple_string,
     b":": _decode_integer,
     b"-": _decode_error,
+    b"_": _decode_null,
     b"$": _decode_bulk_string,
     b"*": _decode_array,
     b">": _decode_push,
