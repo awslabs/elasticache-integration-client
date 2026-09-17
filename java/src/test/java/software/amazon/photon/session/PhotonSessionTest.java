@@ -217,6 +217,61 @@ class PhotonSessionTest {
         assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a failed open()");
     }
 
+    @Test
+    void close_duringConcurrentOpen_doesNotLeakRefresherThread() throws Exception {
+        // Credential resolution is application code and may block indefinitely. close() must still
+        // win the lifecycle, close the connector, and prevent open() from starting a refresher.
+        CountDownLatch authProviderEntered = new CountDownLatch(1);
+        CountDownLatch releaseAuthProvider = new CountDownLatch(1);
+        PhotonSession blockingSession = new PhotonSession(createConnection(), () -> {
+            authProviderEntered.countDown();
+            try {
+                releaseAuthProvider.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return new AuthCredentials(TEST_USER, TEST_TOKEN);
+        });
+
+        // Daemon so a reintroduced deadlock hangs neither the JVM shutdown nor the test runner;
+        // capture uncaught exceptions so a thread dying silently can't produce a false pass.
+        List<Throwable> openerFailure = new ArrayList<>();
+        List<Throwable> closerFailure = new ArrayList<>();
+        Thread opener = new Thread(blockingSession::open);
+        opener.setDaemon(true);
+        opener.setUncaughtExceptionHandler((t, e) -> openerFailure.add(e));
+        Thread closer = new Thread(blockingSession::close);
+        closer.setDaemon(true);
+        closer.setUncaughtExceptionHandler((t, e) -> closerFailure.add(e));
+
+        opener.start();
+        try {
+            assertTrue(authProviderEntered.await(5, TimeUnit.SECONDS));
+
+            closer.start();
+            closer.join(5000);
+            assertFalse(closer.isAlive(), "close() blocked behind an in-flight open()");
+            assertTrue(closerFailure.isEmpty(), "close() threw unexpectedly: " + closerFailure);
+            assertEquals(PhotonSession.State.CLOSED, blockingSession.getState());
+        } finally {
+            if (closer.getState() == Thread.State.NEW) {
+                closer.start();
+            }
+            releaseAuthProvider.countDown();
+            opener.join(5000);
+            closer.join(5000);
+        }
+
+        // A timeout above leaves the thread alive (join() with a timeout does not fail by itself),
+        // so assert completion explicitly rather than letting a hung thread slide into the state
+        // assertions below and produce a false pass.
+        assertFalse(opener.isAlive(), "open() did not complete within timeout; likely deadlocked");
+        assertEquals(1, openerFailure.size(), "open() should fail after close() wins the lifecycle");
+
+        assertEquals(PhotonSession.State.CLOSED, blockingSession.getState());
+        assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a close() racing open()");
+    }
+
     /** True if any live thread is named "photon-refresher". */
     private static boolean refresherThreadExists() {
         Thread[] threads = new Thread[Thread.activeCount() * 2];
