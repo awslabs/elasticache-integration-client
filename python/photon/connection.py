@@ -5,6 +5,13 @@ loop a function that registers a future for the reply and writes the frame; a re
 same loop turns arriving bytes into RESP values and gives each one to the oldest waiting
 future.
 
+Replies are correlated two ways. Serialized writes + strict RESP request/response ⇒ response
+order equals request order ⇒ FIFO correlation for synchronous replies. When the cache defers a
+request (a cache miss requiring an origin fetch), it replies with a request id and delivers the
+real response later as a RESP3 push keyed by that id; the reader moves the request's future from
+the FIFO into an id-keyed map, so one slow cache miss no longer blocks the pipelined replies
+behind it, and a timeout on such a request no longer kills the connection.
+
 _LoopThread owns the thread and the loop, and lasts exactly as long as the connection.
 """
 
@@ -15,6 +22,7 @@ import logging
 import ssl
 import threading
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
@@ -25,17 +33,18 @@ from photon.exceptions import (
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import IncompleteFrame, RespError, RespValue, decode_resp, encode_resp
+from photon.protocol import PUSH_KIND_RESPONSE, parse_response_push
+from photon.resp import IncompleteFrame, RespError, RespPush, RespValue, decode_resp, encode_resp
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
 _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
-_AUTH_OK = b"OK"  # the RESP simple string "+OK", decoded
+OK = "OK"  # the RESP simple string "+OK", decoded
 _DEFAULT_MAX_PENDING = 100
-
-logger = logging.getLogger(__name__)
 
 
 class _SocketReader:
@@ -66,16 +75,23 @@ class _SocketReader:
 
 
 class _PendingRequests:
-    """Thread-safe FIFO of pending request futures; the reader resolves them in registration order."""
+    """Thread-safe home of every in-flight request future, in one of two structures.
+
+    The FIFO deque holds futures whose replies are matched by position (reply order equals
+    request order), and ``_async_responses`` holds futures whose replies are matched by request
+    id (deferred requests). Both live under one lock so moving a future between them is atomic:
+    a future is always in exactly one structure, which the timeout path relies on.
+    """
 
     def __init__(self, max_pending: int = _DEFAULT_MAX_PENDING) -> None:
-        self._queue_lock = threading.Lock()
+        self._pending_requests_lock = threading.Lock()
         self._queue: deque[Future] = deque()
+        self._async_responses: dict[str, Future] = {}
         self._max_pending = max_pending
 
     def register_new_request(self, future: Future) -> None:
-        with self._queue_lock:
-            if len(self._queue) >= self._max_pending:
+        with self._pending_requests_lock:
+            if len(self._queue) + len(self._async_responses) >= self._max_pending:
                 raise PhotonError(f"too many in-flight requests (max {self._max_pending})")
             self._queue.append(future)
 
@@ -85,16 +101,56 @@ class _PendingRequests:
         A ``RespError`` is a value, not an exception, so it is delivered as the future's result;
         the caller-facing ``parse_*`` functions raise on it.
         """
-        with self._queue_lock:
+        with self._pending_requests_lock:
             future = self._queue.popleft() if self._queue else None
         if future and not future.done():
             future.set_result(value)
 
+    def move_head_to_async_responses(self, request_id: str) -> None:
+        """Move the oldest future out of the FIFO into ``_async_responses[request_id]``;
+        the push for ``request_id`` resolves it. The caller keeps blocking on the same future,
+        but its pipeline (FIFO) slot is freed."""
+        with self._pending_requests_lock:
+            if not self._queue:
+                raise PhotonProtocolError("request id reply with no pending request")
+            if request_id in self._async_responses:
+                # There can never be two live requests with the same id; a duplicate means
+                # the stream cannot be trusted (a silent overwrite would orphan a caller).
+                raise PhotonProtocolError(f"duplicate request id {request_id!r}")
+            self._async_responses[request_id] = self._queue.popleft()
+
+    def resolve_async(self, request_id: str, outcome: RespValue | BaseException) -> bool:
+        """Resolve the future stored under ``request_id``. False: unknown id (removed earlier)."""
+        with self._pending_requests_lock:
+            future = self._async_responses.pop(request_id, None)
+        # gone: the reader resolved this push while we were running this function, or
+        # fail_if_async resolved the future with an exception
+        if not future:
+            return False
+        if isinstance(outcome, BaseException):
+            future.set_exception(outcome)
+        else:
+            future.set_result(outcome)
+        return True
+
+    def fail_if_async(self, future: Future, exc: BaseException) -> bool:
+        """Fail a deferred ``future`` with ``exc``. True: it was deferred, or the reader settled it
+        first, so nothing more is needed. False: it still holds a FIFO slot."""
+        with self._pending_requests_lock:
+            request_id = next(
+                (rid for rid, tracked in self._async_responses.items() if tracked is future),
+                None,
+            )
+        if request_id and self.resolve_async(request_id, exc):
+            return True
+        return future.done()  # True if the future was settled while we were timing out
     def fail_all(self, exc: BaseException) -> None:
-        """Fail every waiting future with ``exc`` and clear the queue."""
-        with self._queue_lock:
+        """Fail every waiting future — FIFO and async alike — with ``exc`` and clear both."""
+        with self._pending_requests_lock:
             pending = list(self._queue)
+            pending.extend(self._async_responses.values())
             self._queue.clear()
+            self._async_responses.clear()
         for future in pending:
             if not future.done():
                 future.set_exception(exc)
@@ -208,12 +264,28 @@ class PhotonConnector:
         self._read_size = socket_read_size
         self._auth_provider = auth_provider
 
+        #: Called once when this connection ends, for any reason, including a deliberate close().
+        #: Assigned by the owner after construction, because a connector factory takes no arguments.
+        #: Must not block or re-enter the connector. It runs on whichever thread noticed the end:
+        #: the one owning the I/O loop, or the caller of close() when that loop had already stopped.
+        self.on_disconnect: Callable[[], None] | None = None
+        self._disconnect_notified = False
+
         self._reader: _SocketReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._io_loop_thread = _LoopThread()
         self._pending = _PendingRequests(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
+
+    @property
+    def is_alive(self) -> bool:
+        """Whether this connection is still open.
+
+        A connector is single-use: once closed, it never becomes alive again.
+        Reconnecting creates a new connector.
+        """
+        return not self._closed
 
     # --- lifecycle -----------------------------------------------------------
     def connect(self) -> None:
@@ -343,13 +415,13 @@ class PhotonConnector:
     def _verify_auth_reply(self, reply: RespValue) -> None:
         """Validate an AUTH reply. Raises PhotonConnectionError on rejection or unexpected shape.
 
-        A success reply is the RESP simple string "+OK" (decoded to b"OK"); anything else is
+        A success reply is the RESP simple string "+OK" (decoded to "OK"); anything else is
         rejected rather than treated as success. The token is never included in error messages.
         """
         if isinstance(reply, RespError):
             self.close()
             raise PhotonConnectionError(f"IAM AUTH rejected: {reply.code}")
-        if reply != _AUTH_OK:
+        if reply != OK:
             self.close()
             raise PhotonConnectionError(f"IAM AUTH failed: unexpected reply {reply!r}")
 
@@ -385,6 +457,9 @@ class PhotonConnector:
             logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
         # The I/O thread has already done this, unless the join above expired.
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
+        # If the join expired the I/O thread never got to notify, and the owner
+        # would go on believing this connection is usable.
+        self._notify_disconnect()
 
     def _release_conn(self) -> None:
         """Abort the transport, fail every waiting caller, and forget the connection.
@@ -403,6 +478,24 @@ class PhotonConnector:
             except Exception:
                 logger.warning("photon connector transport abort failed", exc_info=True)
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
+        self._notify_disconnect()
+
+    def _notify_disconnect(self) -> None:
+        """Notify the owner that this connection has ended, at most once.
+
+        Callback failures are logged and suppressed so they cannot terminate the I/O thread.
+        """
+        with self._state_lock:
+            if self._disconnect_notified:
+                return
+            self._disconnect_notified = True
+        callback = self.on_disconnect
+        if not callback:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.warning("photon connector on_disconnect callback failed", exc_info=True)
 
     # --- send path -----------------------------------------------------------
     def _send(self, frame: bytes, reply_future: Future) -> None:
@@ -448,13 +541,21 @@ class PhotonConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
-        timeout = timeout or self._request_timeout
+        # Not `timeout or ...`: an explicit timeout=0 means "do not wait for a reply", and `or`
+        # would quietly turn it into the default instead.
+        if timeout is None:
+            timeout = self._request_timeout
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:
-            # Intentional: one timeout resets the whole connection. close() fails every other
-            # in-flight request too — a late reply would otherwise be FIFO-matched to the
-            # wrong caller.
+            error = PhotonTimeoutError(f"async request timed out after {timeout}s")
+            if self._pending.fail_if_async(reply_future, error):
+                # Deferred request: it holds no FIFO slot, so abandoning it is harmless and
+                # the connection survives..
+                return reply_future.result()
+            # Still in the FIFO: a late reply would be FIFO-matched to the wrong caller and
+            # desynchronize every reply behind it, so the connection must die. close() fails
+            # every other in-flight request too.
             self.close()
             raise PhotonTimeoutError(f"request timed out after {timeout}s") from exc
 
@@ -469,8 +570,16 @@ class PhotonConnector:
             while not self._closed:
                 # Block until one complete RESP frame has arrived off the socket.
                 value = await self._reader.read_frame()
-                # Hand it to the oldest waiting caller (FIFO), waking their future.result().
-                self._pending.resolve_oldest_request(value)
+                if isinstance(value, RespPush):
+                    # Out-of-band frame: a deferred request's response, matched by id.
+                    self._handle_push(value)
+                elif isinstance(value, str) and value != OK:
+                    # A request id reply: the cache deferred the oldest request. Move its
+                    # future out of the FIFO (freeing the pipeline slot); the push resolves it.
+                    self._pending.move_head_to_async_responses(value)
+                else:
+                    # Hand it to the oldest waiting caller (FIFO), waking their future.result().
+                    self._pending.resolve_oldest_request(value)
         except PhotonConnectionLost as exc:
             self._mark_closed(exc)
         except PhotonProtocolError as exc:
@@ -484,6 +593,17 @@ class PhotonConnector:
             error = PhotonConnectionLost("socket read failed")
             error.__cause__ = exc
             self._mark_closed(error)
+
+    def _handle_push(self, push: RespPush) -> None:
+        """Route a push by its kind: ``photon.response`` resolves the future mapped to the
+        request id it carries. Any other kind, or a structurally broken payload, means the
+        stream cannot be trusted, so the error propagates and kills the connection."""
+        if push.kind == PUSH_KIND_RESPONSE:
+            request_id, response = parse_response_push(push)
+            if not self._pending.resolve_async(request_id, response):
+                logger.warning("push for unknown request id (timed out earlier); dropped")
+            return
+        raise PhotonProtocolError(f"unknown push kind {push.kind!r}")
 
     def _mark_closed(self, exc: BaseException) -> None:
         """Refuse further sends and fail every waiting caller. Releases nothing."""

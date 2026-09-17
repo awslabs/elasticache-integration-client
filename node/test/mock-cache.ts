@@ -29,12 +29,20 @@ function _bulk(value: Buffer): Buffer {
   return Buffer.concat([Buffer.from(`$${value.length}`), CRLF, value, CRLF]);
 }
 
-function _int(value: number): Buffer {
+function _simple(value: Buffer): Buffer {
+  return Buffer.concat([Buffer.from("+"), value, CRLF]);
+}
+
+function _int(value: number | bigint): Buffer {
   return Buffer.concat([Buffer.from(`:${value}`), CRLF]);
 }
 
 function _array(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`*${values.length}`), CRLF, ...values]);
+}
+
+function _push(values: Buffer[]): Buffer {
+  return Buffer.concat([Buffer.from(`>${values.length}`), CRLF, ...values]);
 }
 
 function _error(code: string, message: string): Buffer {
@@ -66,6 +74,25 @@ export class Reply {
   /** A RESP error reply `-<CODE> <message>`. */
   static error(code = "ERR", message = "mock error reply"): Reply {
     return new Reply(_error(code, message));
+  }
+
+  /** The immediate request-id simple string that precedes a deferred push. */
+  static requestId(id: number | bigint): Reply {
+    return new Reply(_simple(Buffer.from(String(id), "ascii")));
+  }
+
+  /** An immediate request-id response followed by its photon.response push. */
+  static asyncResponse(id: number | bigint, reply = Reply.ok()): Reply {
+    return new Reply(
+      Buffer.concat([
+        _simple(Buffer.from(String(id), "ascii")),
+        _push([
+          _bulk(Buffer.from("photon.response", "ascii")),
+          _bulk(Buffer.from(String(id), "ascii")),
+          reply.toBytes(),
+        ]),
+      ]),
+    );
   }
 }
 
@@ -314,6 +341,28 @@ export class MockCache {
         socket.write(this.handle(args));
       }
     });
+  }
+
+  /** Send a deferred response push to the active client without interleaving writes. */
+  sendPush(
+    requestId: number | bigint,
+    reply = Reply.ok(),
+    kind = Buffer.from("photon.response", "ascii"),
+    kindEncoding: "bulk" | "simple" = "bulk",
+  ): void {
+    const socket = this.onlySocket();
+    const encodedKind = kindEncoding === "simple" ? _simple(kind) : _bulk(kind);
+    socket.write(
+      _push([encodedKind, _bulk(Buffer.from(String(requestId), "ascii")), reply.toBytes()]),
+    );
+  }
+
+  private onlySocket(): Socket {
+    const socket = this.sockets.values().next().value as Socket | undefined;
+    if (socket === undefined) {
+      throw new Error("mock cache has no active client socket");
+    }
+    return socket;
   }
 }
 

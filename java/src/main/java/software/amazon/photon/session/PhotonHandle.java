@@ -236,7 +236,7 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
-         * Set reconnect and circuit-breaker behavior.
+         * Set reconnect and origin-fallback behavior.
          */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {

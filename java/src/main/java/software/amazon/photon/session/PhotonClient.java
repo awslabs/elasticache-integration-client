@@ -262,7 +262,7 @@ public final class PhotonClient {
         }
 
         /**
-         * Set reconnect and circuit-breaker behavior for sync and async clients.
+         * Set reconnect and origin-fallback behavior for sync and async clients.
          */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {

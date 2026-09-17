@@ -99,8 +99,7 @@ public final class RespCodec {
             case '*':
                 return decodeArray(data, start);
             case '>':
-                // Push type decoded same as array
-                return decodeArray(data, start);
+                return decodePush(data, start);
             default:
                 throw new PhotonProtocolError("Unknown RESP prefix: " + (char) prefix + " (0x" + Integer.toHexString(prefix & 0xFF) + ")");
         }
@@ -225,6 +224,16 @@ public final class RespCodec {
             pos = element.getPosition();
         }
         return new DecodeResult(new RespArray(elements), pos);
+    }
+
+    private static DecodeResult decodePush(byte[] data, int start) throws IncompleteFrame {
+        DecodeResult result = decodeArray(data, start);
+        if (!(result.getValue() instanceof RespArray)) {
+            throw new PhotonProtocolError(
+                    "Invalid RESP3 push payload: expected a non-null element list");
+        }
+        RespArray array = (RespArray) result.getValue();
+        return new DecodeResult(new RespPush(array.getElements()), result.getPosition());
     }
 
     /**

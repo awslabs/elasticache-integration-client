@@ -11,7 +11,7 @@ import io
 import pytest
 
 from photon.resp import RespError, decode_resp
-from tests.mock import MockCache, _read_command
+from tests.mock import MockCache, Reply, _read_command
 
 _REQUEST = [b"photon.request", b"POST", b"https://x/", b"hdrs", b"body", b"service=s&op=o"]
 
@@ -75,3 +75,12 @@ def test_request_metadata_is_decoded_onto_the_record():
     cache.handle(_REQUEST)
     metadata = cache.last_request.metadata
     assert (metadata.service, metadata.operation) == ("s", "o")
+
+
+def test_push_response_builds_both_halves_of_a_deferred_exchange():
+    """Reply.push_response is the id reply followed by the photon.response push for that id."""
+    reply = Reply.ok(body=b"body")
+    assert Reply.push_response(42, reply).frame == (
+        b"+42\r\n"
+        b">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n" + reply.frame
+    )

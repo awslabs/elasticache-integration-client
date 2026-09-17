@@ -40,9 +40,6 @@ class PhotonSessionTest {
 
     private static final String TEST_USER = "test-user";
     private static final String TEST_TOKEN = "test-token";
-    private static final long CIRCUIT_OPEN_DURATION_MS = 50;
-    // Allow the open interval to expire plus a small scheduling margin.
-    private static final long HALF_OPEN_PROBE_WAIT_MS = CIRCUIT_OPEN_DURATION_MS + 25;
     private static final long ASYNC_OBSERVATION_MS = 25;
 
     private MockCache cache;
@@ -308,6 +305,7 @@ class PhotonSessionTest {
                     // A request already admitted to the failed socket is not replayed.
                 }
 
+                awaitState(handle.getSession(), PhotonSession.State.OPEN);
                 PhotonResponse response = handle.getSession().request(request());
                 assertEquals("reconnected",
                         new String(response.getBody(), StandardCharsets.UTF_8));
@@ -345,6 +343,7 @@ class PhotonSessionTest {
             assertFalse(allowRecovery.await(ASYNC_OBSERVATION_MS, TimeUnit.MILLISECONDS));
 
             allowRecovery.countDown();
+            awaitState(session, PhotonSession.State.OPEN);
             assertEquals(200, session.request(request()).getStatusCode());
             assertEquals(2, connectionCreationCount.get());
         } finally {
@@ -355,13 +354,12 @@ class PhotonSessionTest {
     }
 
     @Test
-    void circuitOpensAndHalfOpenProbeRestoresConnection() throws Exception {
+    void fallbackWindowExpiresWhileReconnectContinues() throws Exception {
         ReconnectPolicy policy = ReconnectPolicy.builder()
-                .maxReconnectAttempts(1)
+                .fallbackDurationSeconds(0)
                 .baseDelayMs(1)
                 .maxDelayMs(1)
-                .circuitFailureThreshold(1)
-                .circuitOpenDurationMs(CIRCUIT_OPEN_DURATION_MS)
+                .jitterFactor(0)
                 .build();
 
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
@@ -377,20 +375,13 @@ class PhotonSessionTest {
             try {
                 handle.open();
                 proxy.disableForwardingAndDisconnectClients();
-                assertThrows(PhotonError.class, () -> handle.getSession().request(request()));
-                awaitCircuitState(handle.getSession(), PhotonSession.CircuitState.OPEN);
-                assertEquals(PhotonSession.CircuitState.OPEN,
-                        handle.getSession().getCircuitState());
-
-                int attemptsWhileOpened = proxy.getAcceptedConnections();
-                assertThrows(PhotonError.class, () -> handle.getSession().request(request()));
-                assertEquals(attemptsWhileOpened, proxy.getAcceptedConnections());
+                awaitState(handle.getSession(), PhotonSession.State.RECONNECTING);
+                assertThrows(software.amazon.photon.exception.PhotonCacheUnavailable.class,
+                        () -> handle.getSession().request(request()));
 
                 proxy.enableForwarding();
-                Thread.sleep(HALF_OPEN_PROBE_WAIT_MS);
+                awaitState(handle.getSession(), PhotonSession.State.OPEN);
                 assertEquals(200, handle.getSession().request(request()).getStatusCode());
-                assertEquals(PhotonSession.CircuitState.CLOSED,
-                        handle.getSession().getCircuitState());
             } finally {
                 handle.close();
             }
@@ -398,7 +389,7 @@ class PhotonSessionTest {
     }
 
     @Test
-    void failedHalfOpenProbeReopensCircuit() throws Exception {
+    void unlimitedFallbackDeclinesWhileReconnectKeepsTrying() throws Exception {
         AtomicInteger connectionCreationCount = new AtomicInteger();
         TestConnector initialConnector = new TestConnector();
         PhotonSession session = new PhotonSession(
@@ -407,32 +398,29 @@ class PhotonSessionTest {
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 ReconnectPolicy.builder()
-                        .maxReconnectAttempts(1)
+                        .fallbackDurationSeconds(-1)
                         .baseDelayMs(1)
                         .maxDelayMs(1)
-                        .circuitFailureThreshold(1)
-                        .circuitOpenDurationMs(CIRCUIT_OPEN_DURATION_MS)
+                        .jitterFactor(0)
                         .build());
         try {
             session.open();
             initialConnector.fail();
-            assertThrows(PhotonError.class, () -> session.request(request()));
-            assertEquals(PhotonSession.CircuitState.OPEN, session.getCircuitState());
-
-            Thread.sleep(HALF_OPEN_PROBE_WAIT_MS);
-            assertThrows(PhotonError.class, () -> session.request(request()));
-            assertEquals(PhotonSession.CircuitState.OPEN, session.getCircuitState());
-            assertEquals(3, connectionCreationCount.get());
-
-            assertThrows(PhotonError.class, () -> session.request(request()));
-            assertEquals(3, connectionCreationCount.get());
+            assertNull(session.request(request()));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+            while (connectionCreationCount.get() < 3 && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertTrue(connectionCreationCount.get() >= 3);
+            assertEquals(PhotonSession.State.RECONNECTING, session.getState());
+            assertNull(session.request(request()));
         } finally {
             session.close();
         }
     }
 
     @Test
-    void reconnectReevaluatesRequestWithFreshPredicates() {
+    void reconnectReevaluatesRequestWithFreshPredicates() throws Exception {
         TestConnector initialConnector = new TestConnector(false, "true");
         TestConnector replacementConnector = new TestConnector(false, "false");
         AtomicInteger connectionCreationCount = new AtomicInteger();
@@ -446,6 +434,8 @@ class PhotonSessionTest {
             session.open();
             initialConnector.fail();
 
+            assertNull(session.request(request()));
+            awaitState(session, PhotonSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(2, connectionCreationCount.get());
             assertEquals(0, replacementConnector.getRequestCount());
@@ -477,11 +467,13 @@ class PhotonSessionTest {
             CompletableFuture<?>[] requests = new CompletableFuture<?>[8];
             for (int i = 0; i < requests.length; i++) {
                 requests[i] = CompletableFuture.runAsync(
-                        () -> assertEquals(200, session.request(request()).getStatusCode()),
+                        () -> session.request(request()),
                         requestExecutor);
             }
             CompletableFuture.allOf(requests).get(5, TimeUnit.SECONDS);
 
+            awaitState(session, PhotonSession.State.OPEN);
+            assertEquals(200, session.request(request()).getStatusCode());
             assertEquals(2, connectionCreationCount.get());
             assertEquals(2, credentialsCallCount.get());
         } finally {
@@ -500,18 +492,14 @@ class PhotonSessionTest {
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
                 ReconnectPolicy.builder()
-                        .maxReconnectAttempts(10)
                         .baseDelayMs(1_000)
                         .maxDelayMs(1_000)
-                        .circuitFailureThreshold(1)
-                        .circuitOpenDurationMs(1_000)
+                        .jitterFactor(0)
                         .build());
-        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         try {
             session.open();
             initialConnector.fail();
-            CompletableFuture<?> requestFuture = CompletableFuture.runAsync(
-                    () -> session.request(request()), requestExecutor);
+            assertNull(session.request(request()));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (connectionCreationCount.get() < 2 && System.nanoTime() < deadline) {
                 Thread.yield();
@@ -519,25 +507,20 @@ class PhotonSessionTest {
             assertTrue(connectionCreationCount.get() >= 2);
 
             session.close();
-            assertThrows(ExecutionException.class,
-                    () -> requestFuture.get(1, TimeUnit.SECONDS));
             int attemptsAfterClose = connectionCreationCount.get();
             Thread.sleep(ASYNC_OBSERVATION_MS);
             assertEquals(attemptsAfterClose, connectionCreationCount.get());
             assertEquals(PhotonSession.State.CLOSED, session.getState());
         } finally {
             session.close();
-            requestExecutor.shutdownNow();
         }
     }
 
     private static ReconnectPolicy fastPolicy() {
         return ReconnectPolicy.builder()
-                .maxReconnectAttempts(3)
                 .baseDelayMs(1)
                 .maxDelayMs(2)
-                .circuitFailureThreshold(2)
-                .circuitOpenDurationMs(CIRCUIT_OPEN_DURATION_MS)
+                .jitterFactor(0)
                 .build();
     }
 
@@ -548,13 +531,14 @@ class PhotonSessionTest {
                 new RequestMetadata("dynamodb", "GetItem"));
     }
 
-    private static void awaitCircuitState(PhotonSession session,
-                                          PhotonSession.CircuitState expected)
+    private static void awaitState(PhotonSession session,
+                                   PhotonSession.State expected)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
-        while (session.getCircuitState() != expected && System.nanoTime() < deadline) {
+        while (session.getState() != expected && System.nanoTime() < deadline) {
             Thread.sleep(1);
         }
+        assertEquals(expected, session.getState());
     }
 
     private static class TestConnector extends PhotonConnector {

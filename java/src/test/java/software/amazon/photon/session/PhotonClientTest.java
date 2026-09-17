@@ -34,6 +34,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -304,17 +305,16 @@ class PhotonClientTest {
                      .sslContext(clientSslContext)
                      .originHttpClient(origin)
                      .reconnectPolicy(ReconnectPolicy.builder()
-                             .maxReconnectAttempts(3)
+                             .fallbackDurationSeconds(-1)
                              .baseDelayMs(1)
                              .maxDelayMs(2)
-                             .circuitFailureThreshold(2)
-                             .circuitOpenDurationMs(50)
+                             .jitterFactor(0)
                              .build())
                      .origin(DynamoDbClient.builder(), sdkConfig)
                      .build()) {
             proxy.disconnectClients();
 
-            result.client().listTables();
+            awaitRecovered(result.handle().getSession(), credentialsCallCount);
             assertEquals(Collections.singletonList("reconnected"),
                     result.client().listTables().tableNames());
             assertEquals(2, credentialsCallCount.get());
@@ -440,6 +440,18 @@ class PhotonClientTest {
         cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,"
                 + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
                 + "&& operation == 'ListTables'\",\"vars\":{}}]}");
+    }
+
+    private static void awaitRecovered(PhotonSession session, AtomicInteger credentialsCallCount)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while ((credentialsCallCount.get() < 2
+                || session.getState() != PhotonSession.State.OPEN)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(2, credentialsCallCount.get());
+        assertEquals(PhotonSession.State.OPEN, session.getState());
     }
 
     private static Map<String, String> mapOf(String key1, String value1,

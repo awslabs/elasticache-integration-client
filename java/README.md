@@ -74,36 +74,48 @@ with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
 
-## Reconnection and circuit breaking
+## Reconnection and fallback
 
-Sync and async clients share the same recovery behavior. When a connection is
-lost, one caller performs recovery while concurrent callers wait for that
-single attempt. Recovery creates a new TLS connection, resolves fresh
-credentials, repeats `AUTH` and `photon.config`, and uses exponential backoff
-with full jitter between a bounded number of attempts.
+Sync and async clients share the same recovery behavior. A disconnect starts
+one background reconnect loop immediately, even while the client is idle. Each
+attempt creates a new TLS connection, resolves fresh credentials, repeats
+`AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
+Reconnect attempts continue until one succeeds or the session closes.
 
-The request that discovers a broken connection is not replayed through Photon
-because it may already have been processed. It follows the normal signed origin
-fallback path while Photon recovery proceeds in the background. Requests
-admitted after recovery use the new Photon connection.
+Initial startup remains bounded: by default Photon makes three attempts, and
+each complete connect, authentication, and configuration attempt is limited to
+five seconds.
+
+While reconnecting, cache-eligible requests may use the signed origin fallback.
+`fallbackDurationSeconds` controls that window: a negative value allows
+fallback indefinitely, zero disables fallback, and a positive value allows
+fallback for that many seconds. Once the window ends, Photon raises a retryable
+transport failure for the AWS SDK to handle. Requests already admitted to a
+failed Photon connection are also returned to the SDK as transport failures;
+they are never directly replayed against origin because Photon may have
+processed them.
 
 Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
 
 ```java
 .reconnectPolicy(ReconnectPolicy.builder()
-        .maxReconnectAttempts(3)
+        .fallbackDurationSeconds(30)
+        .connectAttempts(3)
+        .connectionTimeoutMs(5_000)
         .baseDelayMs(100)
-        .maxDelayMs(5_000)
-        .circuitFailureThreshold(3)
-        .circuitOpenDurationMs(30_000)
+        .maxDelayMs(3_200)
+        .jitterFactor(0.2)
         .build())
 ```
 
-After the configured number of failed recovery cycles, the circuit enters
-`OPEN` and requests use origin fallback without attempting Photon. When the
-open duration expires, one caller performs a `HALF_OPEN` recovery probe.
-Success returns the circuit to `CLOSED`; failure reopens it. The current state
-is available from `PhotonSession.getCircuitState()`.
+Photon requests may complete out of order when the cache returns a request ID
+and later delivers the result in a `photon.response` RESP3 push. Deferred
+requests do not block later FIFO replies. If a deferred request times out, only
+that request is abandoned; a late push for its ID is dropped. A timeout while a
+request is still FIFO-correlated closes the connection to prevent reply
+misrouting. A RESP3 push with an unrecognized kind is treated as protocol
+corruption: it invalidates the stream and closes the connection, rather than
+being ignored.
 
 ## Manual lifecycle
 

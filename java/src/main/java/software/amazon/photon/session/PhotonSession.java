@@ -3,7 +3,7 @@ package software.amazon.photon.session;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
-import software.amazon.photon.exception.PhotonCircuitOpenError;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
@@ -14,111 +14,73 @@ import software.amazon.photon.predicate.PredicateEvaluator;
 import java.io.Closeable;
 import java.util.Collections;
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
 /**
- * Owns the active Photon connector and recovers it after transport failure.
+ * Owns the active Photon connector and replaces it after transport failure.
  *
- * <p>A session orchestrates connection bring-up (transport connect, AUTH, and
- * the mandatory {@code photon.config} handshake) and exposes a synchronous
- * {@link #request(PhotonRequest)} method for the SDK transport to call.
+ * <p>Initial connection is bounded by {@link ReconnectPolicy#getConnectAttempts()}
+ * and {@link ReconnectPolicy#getConnectionTimeoutMs()}. Once open, an idle or
+ * in-flight disconnect starts one background reconnect loop. The loop obtains
+ * fresh credentials, repeats {@code AUTH} and {@code photon.config}, and keeps
+ * trying until it succeeds or the session closes.
  *
- * <p>Lifecycle: {@code CREATED} to {@code OPEN} to {@code CLOSED}.
- *
- * <p>Recovery is single-flight. Each bounded reconnect attempt creates a new
- * connector, resolves fresh authentication credentials, and repeats the
- * mandatory configuration handshake. Failed requests are not replayed because
- * the server may have processed them before the connection was lost.
- *
- * <p>Resolved CEL predicates determine which requests are sent to Photon.
- * Requests with no matching predicate are declined for origin pass-through.
- * Predicates are recompiled from each successfully resolved reconnect config.
- *
- * <p>Usage:
- * <pre>{@code
- * PhotonSession session = new PhotonSession(connector, authProvider, overrides);
- * session.open();
- * try {
- *     PhotonResponse response = session.request(photonRequest);
- * } finally {
- *     session.close();
- * }
- * }</pre>
+ * <p>Requests are never replayed after being admitted to Photon. While no
+ * connector is available, matching requests use origin fallback until the
+ * configured fallback duration expires.
  */
 public class PhotonSession implements Closeable {
 
-    private static final AtomicInteger RECOVERY_THREAD_IDS = new AtomicInteger();
+    private static final AtomicInteger THREAD_IDS = new AtomicInteger();
 
-    /**
-     * Session lifecycle state.
-     */
     public enum State {
-        /** Session created but not yet opened. */
+        /** Created but not opened. */
         CREATED,
-        /** Session is open and ready for requests. */
+        /** A configured connector is available. */
         OPEN,
-        /** Session is closed and cannot be reopened. */
+        /** No connector is available and background recovery is active. */
+        RECONNECTING,
+        /** Terminal state. */
         CLOSED
-    }
-
-    /**
-     * Recovery circuit state.
-     */
-    public enum CircuitState {
-        /** Recovery attempts are allowed. */
-        CLOSED,
-        /** Recovery attempts are blocked until the configured open duration expires. */
-        OPEN,
-        /** One recovery probe is allowed to determine whether the circuit can close. */
-        HALF_OPEN
     }
 
     private final Supplier<PhotonConnector> connectorFactory;
     private final Supplier<AuthCredentials> authProvider;
     private final Map<String, Object> overrides;
     private final ReconnectPolicy reconnectPolicy;
-    private final ExecutorService recoveryExecutor = Executors.newSingleThreadExecutor(runnable -> {
+    private final ExecutorService reconnectExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable,
-                "photon-recovery-" + RECOVERY_THREAD_IDS.incrementAndGet());
+                "photon-reconnect-" + THREAD_IDS.incrementAndGet());
         thread.setDaemon(true);
         return thread;
     });
-    private final Object lifecycleLock = new Object();
-    private final Object recoveryLock = new Object();
+    private final Object stateLock = new Object();
 
     private volatile State state = State.CREATED;
-    private volatile CircuitState circuitState = CircuitState.CLOSED;
     private volatile PhotonConnector connector;
+    private volatile PhotonConnector candidate;
     private volatile ResolvedConfig config;
     private volatile PredicateEvaluator predicateEvaluator;
-
-    private CompletableFuture<PhotonConnector> recovery;
-    private int consecutiveRecoveryFailures;
-    private long circuitOpenUntilNanos;
+    private volatile long fallbackDeadlineNanos;
+    private boolean reconnectRunning;
 
     /**
-     * Create a session with the given connector and auth provider.
+     * Create a session around one concrete connector.
      *
-     * <p>A session constructed with a concrete connector cannot reconnect
-     * because it has no connector factory.
-     *
-     * @param connector    the underlying connector (not yet connected)
-     * @param authProvider supplies fresh AUTH credentials
-     * @param overrides    optional config overrides (may be null)
-     * @throws NullPointerException if connector or authProvider is null
+     * <p>This compatibility constructor cannot create replacement connectors.
      */
     public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider,
                          Map<String, Object> overrides) {
         this(singleConnectorFactory(connector), authProvider, overrides,
-                ReconnectPolicy.builder().maxReconnectAttempts(0).build());
+                ReconnectPolicy.builder().connectAttempts(1).build());
     }
 
     PhotonSession(Supplier<PhotonConnector> connectorFactory,
@@ -137,390 +99,346 @@ public class PhotonSession implements Closeable {
         this.reconnectPolicy = reconnectPolicy != null ? reconnectPolicy : ReconnectPolicy.defaults();
     }
 
-    /**
-     * Create a session with the given connection and static auth credentials.
-     *
-     * @param connector       the underlying connector (not yet connected)
-     * @param userId          the user ID for AUTH
-     * @param authToken       the AUTH token
-     * @param overrides optional config overrides (may be null)
-     */
+    /** Create a concrete-connector session with static credentials. */
     public PhotonSession(PhotonConnector connector, String userId, String authToken,
                          Map<String, Object> overrides) {
         this(connector, () -> new AuthCredentials(userId, authToken), overrides);
     }
 
-    /**
-     * Create a session with default config overrides.
-     *
-     * @param connector    the underlying connector
-     * @param authProvider supplies the AUTH credentials
-     */
+    /** Create a concrete-connector session with no config overrides. */
     public PhotonSession(PhotonConnector connector, Supplier<AuthCredentials> authProvider) {
         this(connector, authProvider, null);
     }
 
-    /**
-     * Create a session with default config overrides and static auth credentials.
-     *
-     * @param connector  the underlying connector
-     * @param userId     the user ID for AUTH
-     * @param authToken  the AUTH token
-     */
+    /** Create a concrete-connector session with static credentials and no overrides. */
     public PhotonSession(PhotonConnector connector, String userId, String authToken) {
         this(connector, userId, authToken, null);
     }
 
-    /**
-     * Get the current session lifecycle state.
-     *
-     * @return the current lifecycle state
-     */
+    /** Return the current lifecycle state. */
     public State getState() {
         return state;
     }
 
-    /**
-     * Get the current recovery circuit state.
-     *
-     * @return the current circuit state
-     */
-    public CircuitState getCircuitState() {
-        return circuitState;
-    }
-
-    /**
-     * Get the resolved configuration from the config handshake.
-     *
-     * @return the resolved config, or null if the session has not opened
-     */
+    /** Return the latest successfully resolved Photon configuration. */
     public ResolvedConfig getConfig() {
         return config;
     }
 
     /**
-     * Open the session: connect, authenticate, and perform the config handshake.
+     * Open and configure the first connection.
      *
-     * @throws PhotonError if already opened/closed or if any handshake step fails
+     * <p>Each attempt uses a new connector and fresh credentials. Startup fails
+     * after the configured number of attempts rather than returning an
+     * indefinitely uncached client.
      */
     public void open() {
-        synchronized (lifecycleLock) {
+        synchronized (stateLock) {
             if (state != State.CREATED) {
                 throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
             }
+        }
 
-            connector = connectorFactory.get();
+        RuntimeException lastFailure = null;
+        for (int attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
+            PhotonConnector next = null;
             try {
-                ResolvedConfig initialConfig = initialize(connector);
-                PredicateEvaluator initialPredicateEvaluator =
-                        PredicateEvaluator.compile(initialConfig.getRaw());
-                config = initialConfig;
-                predicateEvaluator = initialPredicateEvaluator;
-                state = State.OPEN;
+                next = connectorFactory.get();
+                synchronized (stateLock) {
+                    if (state != State.CREATED) {
+                        next.close();
+                        throw new PhotonConnectionError("Session closed while opening");
+                    }
+                    candidate = next;
+                }
+                ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                synchronized (stateLock) {
+                    candidate = null;
+                    if (state != State.CREATED || !next.isReady()) {
+                        next.close();
+                        throw new PhotonConnectionError(
+                                state == State.CREATED
+                                        ? "Photon connection closed while opening"
+                                        : "Session closed while opening");
+                    }
+                    publish(next, snapshot);
+                    state = State.OPEN;
+                }
+                return;
             } catch (RuntimeException failure) {
-                state = State.CLOSED;
-                connector.close();
-                recoveryExecutor.shutdownNow();
-                throw failure;
+                lastFailure = failure;
+                synchronized (stateLock) {
+                    if (candidate == next) {
+                        candidate = null;
+                    }
+                }
+                if (next != null) {
+                    next.close();
+                }
+                if (attempt < reconnectPolicy.getConnectAttempts()) {
+                    sleep(reconnectPolicy.delayFor(attempt));
+                }
             }
         }
+
+        synchronized (stateLock) {
+            state = State.CLOSED;
+        }
+        reconnectExecutor.shutdownNow();
+        throw lastFailure != null
+                ? lastFailure
+                : new PhotonConnectionError("Photon initial connection failed");
     }
 
     /**
-     * Route a request to Photon when a resolved CEL predicate matches.
+     * Route a request through Photon when eligible.
      *
-     * <p>A {@code null} return means no predicate matched and the caller should
-     * send the request to the origin service. A dead connection triggers
-     * single-flight recovery. A request that discovers failure while in flight
-     * is not replayed.</p>
-     *
-     * @param request the request to send
-     * @return the Photon response, or null when Photon declines the request
-     * @throws PhotonError if the session is not open or Photon cannot serve the request
+     * @return a Photon response, or {@code null} for signed origin fallback
      */
     public PhotonResponse request(PhotonRequest request) {
         return request(request, new PhotonRequestCancellation());
     }
 
     PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
-        ensureOpen();
+        ensureUsable();
         if (cancellation.isCancelled()) {
             throw new PhotonRequestCancellation.CancelledException();
         }
 
-        PhotonConnector active = connector;
-        PredicateEvaluator activePredicateEvaluator = predicateEvaluator;
-        if (!activePredicateEvaluator.shouldRouteToPhoton(request)) {
+        PredicateEvaluator evaluator = predicateEvaluator;
+        if (evaluator != null && !evaluator.shouldRouteToPhoton(request)) {
             return null;
         }
-        if (active == null || active.isDead()) {
-            active = recover(active);
-            PredicateEvaluator recoveredPredicateEvaluator = predicateEvaluator;
-            if (recoveredPredicateEvaluator != activePredicateEvaluator
-                    && !recoveredPredicateEvaluator.shouldRouteToPhoton(request)) {
+
+        PhotonConnector active = connector;
+        if (active == null || !active.isReady()) {
+            beginReconnect(active);
+            if (fallbackAllowed()) {
                 return null;
             }
+            throw new PhotonCacheUnavailable(
+                    "Photon has no cache connection and origin fallback is no longer allowed");
         }
 
         try {
             return active.request(request, cancellation);
         } catch (PhotonError failure) {
-            if (state == State.OPEN && active.isDead()) {
-                recoverInBackground(active);
+            if (active.isDead()) {
+                beginReconnect(active);
             }
             throw failure;
         }
     }
 
-    /**
-     * Close the session and interrupt any recovery backoff. Idempotent.
-     */
     @Override
     public void close() {
-        synchronized (lifecycleLock) {
+        PhotonConnector active;
+        PhotonConnector opening;
+        synchronized (stateLock) {
             if (state == State.CLOSED) {
                 return;
             }
             state = State.CLOSED;
+            active = connector;
+            opening = candidate;
+            connector = null;
+            stateLock.notifyAll();
         }
-
-        CompletableFuture<PhotonConnector> activeRecovery;
-        synchronized (recoveryLock) {
-            activeRecovery = recovery;
-            recoveryLock.notifyAll();
+        if (opening != null && opening != active) {
+            opening.close();
         }
-        if (activeRecovery != null) {
-            activeRecovery.completeExceptionally(
-                    new PhotonConnectionError("Session closed during recovery"));
+        if (active != null) {
+            active.close();
         }
-        recoveryExecutor.shutdownNow();
-
-        if (connector != null) {
-            connector.close();
-        }
+        reconnectExecutor.shutdownNow();
     }
 
-    /**
-     * Check whether the session is open and ready for requests.
-     *
-     * @return true when the lifecycle state is OPEN
-     */
+    /** Return whether requests may use this session. */
     public boolean isOpen() {
-        return state == State.OPEN;
+        State current = state;
+        return current == State.OPEN || current == State.RECONNECTING;
     }
 
-    private ResolvedConfig initialize(PhotonConnector candidate) {
-        candidate.connect();
+    private ConnectionSnapshot initializeWithTimeout(PhotonConnector next) {
+        FutureTask<ConnectionSnapshot> task = new FutureTask<>(() -> initialize(next));
+        Thread thread = new Thread(task, "photon-connect-" + THREAD_IDS.incrementAndGet());
+        thread.setDaemon(true);
+        thread.start();
+        try {
+            return task.get(reconnectPolicy.getConnectionTimeoutMs(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            next.close();
+            task.cancel(true);
+            throw new PhotonConnectionError(
+                    "Opening Photon connection timed out after "
+                            + reconnectPolicy.getConnectionTimeoutMs() + "ms", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            next.close();
+            throw new PhotonConnectionError("Interrupted while opening Photon connection", e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new PhotonConnectionError("Photon connection initialization failed", cause);
+        }
+    }
+
+    private ConnectionSnapshot initialize(PhotonConnector next) {
+        next.setOnDisconnect(() -> beginReconnect(next));
+        next.connect();
         AuthCredentials credentials;
         try {
             credentials = authProvider.get();
         } catch (RuntimeException failure) {
-            candidate.close();
             throw new PhotonConnectionError("Auth provider failed", failure);
         }
         if (credentials == null) {
-            candidate.close();
             throw new PhotonConnectionError("Auth provider returned null credentials");
         }
-        candidate.authenticate(credentials.getUserId(), credentials.getToken());
-        return candidate.configureAndStartReader(overrides);
+        next.authenticate(credentials.getUserId(), credentials.getToken());
+        ResolvedConfig nextConfig = next.configureAndStartReader(overrides);
+        return new ConnectionSnapshot(
+                nextConfig, PredicateEvaluator.compile(nextConfig.getRaw()));
     }
 
-    private PhotonConnector recover(PhotonConnector failedConnector) {
-        CompletableFuture<PhotonConnector> flight;
-        boolean owner = false;
-        boolean halfOpenAttempt = false;
-
-        synchronized (recoveryLock) {
-            ensureOpen();
-            if (connector != null
-                    && connector != failedConnector
-                    && connector.isReady()) {
-                return connector;
+    private void beginReconnect(PhotonConnector failed) {
+        synchronized (stateLock) {
+            if (state == State.CLOSED || state == State.CREATED) {
+                return;
             }
-            if (recovery != null) {
-                flight = recovery;
-            } else {
-                long now = System.nanoTime();
-                if (circuitState == CircuitState.OPEN) {
-                    if (now < circuitOpenUntilNanos) {
-                        throw new PhotonCircuitOpenError("Photon recovery circuit is open");
-                    }
-                    circuitState = CircuitState.HALF_OPEN;
-                    halfOpenAttempt = true;
+            if (state == State.OPEN) {
+                PhotonConnector current = connector;
+                if (failed != null && current != failed && current != null && current.isReady()) {
+                    return;
                 }
-                flight = new CompletableFuture<>();
-                recovery = flight;
-                owner = true;
+                fallbackDeadlineNanos = fallbackDeadline();
+                connector = null;
+                state = State.RECONNECTING;
+                if (current != null) {
+                    current.close();
+                }
             }
-        }
-
-        if (owner) {
-            performRecovery(flight, failedConnector, halfOpenAttempt);
-        }
-        return awaitRecovery(flight);
-    }
-
-    private void recoverInBackground(PhotonConnector failedConnector) {
-        try {
-            recoveryExecutor.execute(() -> {
+            if (!reconnectRunning) {
+                reconnectRunning = true;
                 try {
-                    recover(failedConnector);
-                } catch (PhotonError ignored) {
-                    // The circuit state records the failure for subsequent requests.
+                    reconnectExecutor.execute(this::reconnectForever);
+                } catch (RejectedExecutionException ignored) {
+                    reconnectRunning = false;
                 }
-            });
-        } catch (RejectedExecutionException ignored) {
-            // close() may race with a transport failure.
-        }
-    }
-
-    /**
-     * Own the shared recovery flight, retry connection initialization, and
-     * publish either the recovered connector or the terminal failure.
-     *
-     * @param flight the future shared by callers waiting for this recovery
-     * @param failedConnector the connector being replaced, if present
-     * @param halfOpenAttempt true when this recovery is the circuit's probe
-     */
-    private void performRecovery(CompletableFuture<PhotonConnector> flight,
-                                 PhotonConnector failedConnector,
-                                 boolean halfOpenAttempt) {
-        if (failedConnector != null) {
-            failedConnector.close();
-        }
-
-        PhotonError lastFailure = new PhotonConnectionError("Photon reconnect attempts exhausted");
-        PhotonConnector recovered = null;
-        ResolvedConfig recoveredConfig = null;
-        PredicateEvaluator recoveredPredicateEvaluator = null;
-
-        // Use a long counter so Integer.MAX_VALUE attempts remain bounded.
-        for (long attempt = 1; attempt <= reconnectPolicy.getMaxReconnectAttempts(); attempt++) {
-            if (state != State.OPEN) {
-                lastFailure = new PhotonConnectionError("Session closed during recovery");
-                break;
-            }
-
-            PhotonConnector candidate = null;
-            try {
-                candidate = connectorFactory.get();
-                recoveredConfig = initialize(candidate);
-                recoveredPredicateEvaluator =
-                        PredicateEvaluator.compile(recoveredConfig.getRaw());
-                recovered = candidate;
-                break;
-            } catch (RuntimeException failure) {
-                if (candidate != null) {
-                    candidate.close();
-                }
-                lastFailure = failure instanceof PhotonError
-                        ? (PhotonError) failure
-                        : new PhotonConnectionError("Photon reconnect failed", failure);
-                if (attempt < reconnectPolicy.getMaxReconnectAttempts()
-                        && !waitBeforeRetry(attempt)) {
-                    lastFailure = new PhotonConnectionError("Session closed during recovery");
-                    break;
-                }
-            }
-        }
-
-        synchronized (recoveryLock) {
-            try {
-                if (recovered != null && state == State.OPEN) {
-                    config = recoveredConfig;
-                    predicateEvaluator = recoveredPredicateEvaluator;
-                    // Publish the connector last so readers see its matching config.
-                    connector = recovered;
-                    consecutiveRecoveryFailures = 0;
-                    circuitState = CircuitState.CLOSED;
-                    circuitOpenUntilNanos = 0;
-                    flight.complete(recovered);
-                } else {
-                    if (recovered != null) {
-                        recovered.close();
-                    }
-                    consecutiveRecoveryFailures++;
-                    if (halfOpenAttempt
-                            || consecutiveRecoveryFailures
-                            >= reconnectPolicy.getCircuitFailureThreshold()) {
-                        circuitState = CircuitState.OPEN;
-                        circuitOpenUntilNanos = System.nanoTime()
-                                + TimeUnit.MILLISECONDS.toNanos(
-                                reconnectPolicy.getCircuitOpenDurationMs());
-                    } else {
-                        circuitState = CircuitState.CLOSED;
-                    }
-                    flight.completeExceptionally(lastFailure);
-                }
-            } finally {
-                if (recovery == flight) {
-                    recovery = null;
-                }
-                recoveryLock.notifyAll();
             }
         }
     }
 
-    /**
-     * Wait using capped exponential full jitter after a failed reconnect.
-     *
-     * @param failedAttempt the one-based reconnect attempt that just failed
-     * @return true if the session remains open and another attempt may proceed
-     */
-    private boolean waitBeforeRetry(long failedAttempt) {
-        long cap = reconnectPolicy.getBaseDelayMs();
-        for (int i = 1; i < failedAttempt && cap < reconnectPolicy.getMaxDelayMs(); i++) {
-            // Guard the doubling operation itself from overflowing long.
-            long doubledCap = cap > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : cap * 2;
-            // Never let exponential growth exceed the configured maximum delay.
-            cap = Math.min(reconnectPolicy.getMaxDelayMs(), doubledCap);
+    private void reconnectForever() {
+        long attempt = 0;
+        try {
+            while (state == State.RECONNECTING) {
+                attempt++;
+                PhotonConnector next = null;
+                try {
+                    next = connectorFactory.get();
+                    synchronized (stateLock) {
+                        if (state == State.CLOSED) {
+                            next.close();
+                            return;
+                        }
+                        candidate = next;
+                    }
+                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    synchronized (stateLock) {
+                        candidate = null;
+                        if (state == State.CLOSED || !next.isReady()) {
+                            next.close();
+                            if (state == State.CLOSED) {
+                                return;
+                            }
+                            throw new PhotonConnectionError(
+                                    "Photon reconnect candidate closed before publication");
+                        }
+                        publish(next, snapshot);
+                        state = State.OPEN;
+                    }
+                    return;
+                } catch (RuntimeException failure) {
+                    synchronized (stateLock) {
+                        if (candidate == next) {
+                            candidate = null;
+                        }
+                    }
+                    if (next != null) {
+                        next.close();
+                    }
+                    if (!waitForRetry(reconnectPolicy.delayFor(attempt))) {
+                        return;
+                    }
+                }
+            }
+        } finally {
+            synchronized (stateLock) {
+                reconnectRunning = false;
+                if (state == State.RECONNECTING) {
+                    beginReconnect(null);
+                }
+            }
         }
-        // nextLong(bound) cannot express an inclusive Long.MAX_VALUE upper limit.
-        long delay = cap == Long.MAX_VALUE
-                ? ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE
-                : ThreadLocalRandom.current().nextLong(cap + 1);
-        if (delay == 0) {
-            return state == State.OPEN;
+    }
+
+    private void publish(PhotonConnector next, ConnectionSnapshot snapshot) {
+        config = snapshot.config;
+        predicateEvaluator = snapshot.predicateEvaluator;
+        connector = next;
+    }
+
+    private boolean fallbackAllowed() {
+        long deadline = fallbackDeadlineNanos;
+        return deadline == Long.MAX_VALUE || System.nanoTime() < deadline;
+    }
+
+    private long fallbackDeadline() {
+        long seconds = reconnectPolicy.getFallbackDurationSeconds();
+        if (seconds < 0) {
+            return Long.MAX_VALUE;
         }
-        synchronized (recoveryLock) {
-            if (state != State.OPEN) {
+        long duration = TimeUnit.SECONDS.toNanos(seconds);
+        long now = System.nanoTime();
+        return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
+    }
+
+    private boolean waitForRetry(long delayMs) {
+        synchronized (stateLock) {
+            if (state != State.RECONNECTING) {
                 return false;
             }
             try {
-                recoveryLock.wait(delay);
+                stateLock.wait(delayMs);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
             }
-            return state == State.OPEN;
+            return state == State.RECONNECTING;
         }
     }
 
-    private PhotonConnector awaitRecovery(CompletableFuture<PhotonConnector> flight) {
+    private static void sleep(long delayMs) {
         try {
-            return flight.get();
+            Thread.sleep(delayMs);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new PhotonConnectionError("Interrupted while waiting for Photon recovery", e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof PhotonError) {
-                throw (PhotonError) cause;
-            }
-            throw new PhotonConnectionError("Photon recovery failed", cause);
+            throw new PhotonConnectionError("Interrupted during Photon connection backoff", e);
         }
     }
 
-    private void ensureOpen() {
-        if (state != State.OPEN) {
+    private void ensureUsable() {
+        State current = state;
+        if (current != State.OPEN && current != State.RECONNECTING) {
             throw new PhotonError(
-                    "request() called on a " + state.name().toLowerCase() + " session");
+                    "request() called on a " + current.name().toLowerCase() + " session");
         }
     }
 
-    private static Supplier<PhotonConnector> singleConnectorFactory(
-            PhotonConnector connector) {
+    private static Supplier<PhotonConnector> singleConnectorFactory(PhotonConnector connector) {
         if (connector == null) {
             throw new NullPointerException("connector");
         }
@@ -537,5 +455,16 @@ public class PhotonSession implements Closeable {
                 return connector;
             }
         };
+    }
+
+    private static final class ConnectionSnapshot {
+        private final ResolvedConfig config;
+        private final PredicateEvaluator predicateEvaluator;
+
+        private ConnectionSnapshot(ResolvedConfig config,
+                                   PredicateEvaluator predicateEvaluator) {
+            this.config = config;
+            this.predicateEvaluator = predicateEvaluator;
+        }
     }
 }
