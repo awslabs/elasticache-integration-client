@@ -124,6 +124,33 @@ def test_decode_null_array():
     assert decode_resp(b"*-1\r\n") == (None, 5)
 
 
+def test_decode_map():
+    """A % map decodes to a dict. Keys arrive as bulk strings (bytes), values keep their own
+    types — this is the shape of a HELLO reply, which the client reads to confirm RESP3."""
+    frame = b"%2\r\n$5\r\nproto\r\n:3\r\n$6\r\nserver\r\n$6\r\nvalkey\r\n"
+    value, nxt = decode_resp(frame)
+    assert value == {b"proto": 3, b"server": b"valkey"}
+    assert nxt == len(frame)
+
+
+def test_decode_empty_map():
+    """A zero-length map decodes to an empty dict."""
+    assert decode_resp(b"%0\r\n") == ({}, 4)
+
+
+def test_decode_map_with_aggregate_key_raises_protocol_error():
+    """An array key is legal RESP3 but cannot key a dict. Rejected as a protocol error rather
+    than raising an unhandled TypeError out of the codec."""
+    with pytest.raises(PhotonProtocolError, match="Unhashable RESP map key"):
+        decode_resp(b"%1\r\n*1\r\n:1\r\n:2\r\n")
+
+
+def test_decode_negative_map_length_raises_protocol_error():
+    """There is no null map in RESP3, so a negative length is garbage, not a null."""
+    with pytest.raises(PhotonProtocolError, match="Malformed RESP map length"):
+        decode_resp(b"%-1\r\n")
+
+
 # --- AC4: truncation raises IncompleteFrame -----------------------------------
 
 @pytest.mark.parametrize(

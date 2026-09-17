@@ -39,8 +39,8 @@ class RespPush:
 
 
 # A decoded RESP value: integer, simple string (str), bulk string (bytes), array (list),
-# error, or push.
-RespValue = int | str | bytes | list["RespValue"] | RespError | RespPush | None
+# map (dict), error, or push.
+RespValue = int | str | bytes | list["RespValue"] | dict["RespValue", "RespValue"] | RespError | RespPush | None
 
 
 class IncompleteFrame(Exception):
@@ -127,6 +127,23 @@ def _decode_push(data: bytes, header: bytes, after_header: int) -> tuple[RespVal
     return RespPush(kind=kind, items=items), pos
 
 
+def _decode_map(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``%`` map into a ``dict``. Keys and values are each any RESP value."""
+    count = _parse_int(header, "map length")
+    if count < 0:
+        raise PhotonProtocolError(f"Malformed RESP map length: {header!r}")
+    items: dict[RespValue, RespValue] = {}
+    pos = after_header
+    for _ in range(count):
+        key, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
+        value, pos = decode_resp(data, pos)
+        try:
+            items[key] = value
+        except TypeError as exc:  # aggregate key: legal RESP3, unusable as a dict key
+            raise PhotonProtocolError(f"Unhashable RESP map key: {key!r}") from exc
+    return items, pos
+
+
 # Prefix → decoder dispatch.
 _DECODERS = {
     b"+": _decode_simple_string,
@@ -135,6 +152,7 @@ _DECODERS = {
     b"$": _decode_bulk_string,
     b"*": _decode_array,
     b">": _decode_push,
+    b"%": _decode_map,
 }
 
 
