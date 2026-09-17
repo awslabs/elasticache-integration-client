@@ -409,9 +409,14 @@ class PhotonConnector:
         try:
             reply = self.execute("HELLO", b"3", b"AUTH", user_id.encode(), token.encode(),
                                  timeout=self.config_timeout)
-        except PhotonTimeoutError:
+        except PhotonTimeoutError as exc:
             self.close()
-            raise PhotonConnectionError("HELLO 3 timed out — connection closed")
+            raise PhotonConnectionError("HELLO 3 timed out — connection closed") from exc
+        except PhotonConnectionLost as exc:
+            # A peer that refuses the handshake by dropping the connection, rather than
+            # answering, would otherwise surface as a bare lost connection.
+            self.close()
+            raise PhotonConnectionError("HELLO 3 failed: connection lost") from exc
         self._verify_hello_reply(reply)
 
     def _verify_hello_reply(self, reply: RespValue) -> None:
