@@ -203,45 +203,66 @@ class TestPhotonConnector:
         assert conn._writer is None
 
     # ======================================================================== #
-    # 2. Authentication — the AUTH exchange
+    # 2. Handshake — the HELLO 3 exchange, carrying the credentials
     # ======================================================================== #
 
-    def test_auth_silence_times_out_and_kills_connection(self):
-        """A server that goes silent on AUTH trips the request timeout: authenticate()
-        raises PhotonConnectionError and the connection is closed."""
-        self.start_cache(failure="hang", failure_command="auth")
+    def test_hello_silence_times_out_and_kills_connection(self):
+        """A server that goes silent on HELLO trips the request timeout: handshake() raises
+        PhotonConnectionError and the connection is closed. The token never appears in
+        the message."""
+        self.start_cache(failure="hang", failure_command="hello")
         self.connect(
             request_timeout=0.3,
             auth_provider=lambda: ("test-user", "test-token"),
         )
-        with pytest.raises(PhotonConnectionError, match="AUTH timed out"):
-            self.conn.authenticate()
+        with pytest.raises(PhotonConnectionError, match="HELLO 3 timed out") as excinfo:
+            self.conn.handshake()
+        assert "test-token" not in str(excinfo.value)
         assert self.conn._closed
 
-    def test_auth_accepted(self):
-        """The RESP +OK reply (decoded to "OK") is accepted.
-        Internals: _verify_auth_reply is pure reply validation, tested directly."""
+    def test_hello_accepted(self):
+        """A map reporting proto 3 confirms the switch.
+        Internals: _verify_hello_reply is pure reply validation, tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
-        conn._verify_auth_reply("OK")  # must not raise
-        assert conn._closed is False
+        conn._verify_hello_reply({b"server": b"valkey", b"proto": 3})  # must not raise
+        assert not conn._closed
 
-    def test_auth_rejected_kills_connection(self):
-        """An -ERR AUTH reply raises PhotonConnectionError AND closes the connection:
-        an unauthenticated connection has no valid next use. The token never appears in
-        the message. Internals: _verify_auth_reply tested directly."""
+    @pytest.mark.parametrize("code", ["NOPROTO", "invalid-iam-credentials"])
+    def test_hello_rejected_kills_connection(self, code):
+        """One frame carries both halves of the handshake, so a refused protocol version and a
+        refused credential arrive the same way: an error reply. Either closes the connection —
+        RESP2 makes deferred responses silently unavailable, and an unauthenticated connection
+        has no valid next use — and the code is surfaced.
+        Internals: _verify_hello_reply tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError) as excinfo:
-            conn._verify_auth_reply(RespError("invalid-iam-credentials", "nope"))
-        assert "invalid-iam-credentials" in str(excinfo.value)
-        assert conn._closed is True
+            conn._verify_hello_reply(RespError(code, "nope"))
+        assert code in str(excinfo.value)
+        assert conn._closed
 
-    def test_auth_unexpected_reply_kills_connection(self):
-        """A non-error, non-OK AUTH reply is rejected and closes the connection.
-        Internals: _verify_auth_reply tested directly."""
+    @pytest.mark.parametrize("reply", [
+        {b"server": b"valkey", b"proto": 2},   # switch refused, reported as RESP2
+        {b"server": b"valkey"},                # no proto entry at all
+        "OK",                                  # not a map
+    ], ids=["proto-2", "no-proto", "not-a-map"])
+    def test_hello_unconfirmed_switch_kills_connection(self, reply):
+        """Anything that does not positively confirm proto 3 closes the connection: continuing
+        would leave head-of-line blocking in place with nothing reporting it."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError):
-            conn._verify_auth_reply(123)
-        assert conn._closed is True
+            conn._verify_hello_reply(reply)
+        assert conn._closed
+
+    def test_handshake_carries_the_credentials_inline(self):
+        """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's FAS from the
+        credentials arriving on the HELLO, so no separate AUTH is sent."""
+        self.start_cache()
+        self.connect(auth_provider=lambda: ("test-user", "test-token"))
+        self.conn.handshake()
+        assert self.cache.photon_command_log == ["hello"]
+        assert self.cache.received_commands[0] == [
+            b"HELLO", b"3", b"AUTH", b"test-user", b"test-token",
+        ]
 
     # ======================================================================== #
     # 3. Send path — what a caller experiences calling execute

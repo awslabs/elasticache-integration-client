@@ -41,9 +41,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
-_DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
+_DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: HELLO and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
+_RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
 _DEFAULT_MAX_PENDING = 100
 
 
@@ -391,39 +392,36 @@ class PhotonConnector:
             self._reader = _SocketReader(stream_reader, self._read_size)
             self._writer = writer
 
-    def authenticate(self) -> None:
-        """Send AUTH using the injected provider. No-op if no provider was set.
+    def handshake(self) -> None:
+        """Negotiate RESP3 and authenticate in one ``HELLO 3 AUTH <user> <token>``.
 
-        Must be called after connect() and before the config handshake. On timeout, force-closes
+        Must be called after connect() and before the config exchange. On timeout, force-closes
         the connection to avoid FIFO desync.
 
         Raises:
-            PhotonConnectionError: If AUTH is rejected or times out.
-            PhotonError: If the provider fails to generate a token.
+            PhotonConnectionError: If the handshake is rejected or times out.
+            PhotonError: If there is no auth provider, or it fails to generate a token.
         """
-        if not self._auth_provider:
-            return
+        if self._auth_provider is None:
+            raise PhotonError("PhotonConnector requires an auth provider to handshake")
         user_id, token = self._auth_provider()
         try:
-            reply = self.execute("AUTH", user_id.encode(), token.encode(),
+            reply = self.execute("HELLO", b"3", b"AUTH", user_id.encode(), token.encode(),
                                  timeout=self.config_timeout)
         except PhotonTimeoutError:
             self.close()
-            raise PhotonConnectionError("IAM AUTH timed out — connection closed")
-        self._verify_auth_reply(reply)
+            raise PhotonConnectionError("HELLO 3 timed out — connection closed")
+        self._verify_hello_reply(reply)
 
-    def _verify_auth_reply(self, reply: RespValue) -> None:
-        """Validate an AUTH reply. Raises PhotonConnectionError on rejection or unexpected shape.
-
-        A success reply is the RESP simple string "+OK" (decoded to "OK"); anything else is
-        rejected rather than treated as success. The token is never included in error messages.
-        """
+    def _verify_hello_reply(self, reply: RespValue) -> None:
+        """Require a map reporting ``proto`` 3; an error reply or any other shape closes the
+        connection."""
         if isinstance(reply, RespError):
             self.close()
-            raise PhotonConnectionError(f"IAM AUTH rejected: {reply.code}")
-        if reply != OK:
+            raise PhotonConnectionError(f"HELLO 3 rejected: {reply.code}")
+        if not isinstance(reply, dict) or reply.get(b"proto") != _RESP3_PROTO:
             self.close()
-            raise PhotonConnectionError(f"IAM AUTH failed: unexpected reply {reply!r}")
+            raise PhotonConnectionError(f"HELLO 3 failed: unexpected reply {reply!r}")
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """TLS policy for the connection: TLS 1.2+, hostname check, required verification."""

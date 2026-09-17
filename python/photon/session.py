@@ -87,10 +87,10 @@ class PhotonSession:
         return self._connection_manager.state
 
     def _configure(self, connector: PhotonConnector) -> None:
-        """Authenticate a freshly connected connector and resolve its config, making it usable.
+        """Hand shake with a freshly connected connector and resolve its config, making it usable.
 
-        Called for the initial connection and for every reconnect, so each connection
-        authenticates with fresh credentials and routes by the latest resolved config.
+        Called for the initial connection and for every reconnect, so each connection negotiates
+        RESP3, authenticates with fresh credentials, and routes by the latest resolved config.
 
         Neither result is published unless both succeed, so a configure that fails half-way leaves
         the session routing by the config it was already using rather than pairing a new config with
@@ -99,7 +99,7 @@ class PhotonSession:
 
         The connection manager owns the connector and closes it if this raises.
         """
-        connector.authenticate()
+        connector.handshake()
         command, args = serialize_config(self._overrides)
         config = parse_config_response(
             connector.execute(command, *args, timeout=connector.config_timeout)

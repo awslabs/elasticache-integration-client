@@ -64,9 +64,9 @@ def test_get_item(cache):
     assert result["ResponseMetadata"]["HTTPStatusCode"] == 200
     assert result["Item"] == ITEM
 
-    # Handshake ordering: auth -> config -> request.
+    # Handshake ordering: hello -> config -> request.
     log = cache.photon_command_log
-    assert log.index("auth") < log.index("photon.config") < log.index("photon.request")
+    assert log.index("hello") < log.index("photon.config") < log.index("photon.request")
 
     # Check what photon sent to the cache.
     method, url, headers, req_body, metadata = cache.last_request_args[:5]

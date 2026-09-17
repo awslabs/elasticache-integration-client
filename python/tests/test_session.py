@@ -21,12 +21,12 @@ from tests.mock import mock_connector
 # --- lifecycle: opening the connection --------------------------------------------------------
 
 def test_connect_and_configure_order():
-    """Construction drives connect(), authenticate(), then the photon.config exchange."""
+    """Construction drives connect(), handshake(), then the photon.config exchange."""
     connector = mock_connector()
     PhotonSession(lambda: connector, overrides={"flag": True})
     assert [c[0] for c in connector.method_calls] == [
         "connect",
-        "authenticate",
+        "handshake",
         "execute",
     ]
     connector.execute.assert_called_once_with("photon.config", b'{"flag":true}',
@@ -42,7 +42,7 @@ def test_resolved_config_stored_on_construction():
     assert session._config.refresh_interval == 60
 
 
-@pytest.mark.parametrize("failing_step", ["authenticate", "execute"])
+@pytest.mark.parametrize("failing_step", ["handshake", "execute"])
 def test_a_failed_configure_closes_everything(failing_step):
     """If any configure step after connect() raises, construction closes the connector
     (no leaked connection) and the session object never exists."""
