@@ -572,8 +572,9 @@ class MockTcpProxy:
     Point the client at :attr:`port` instead of the cache's own port.
 
     * :meth:`disconnect_clients` closes existing connections and triggers EOF.
-    * :meth:`disable_forwarding` rejects new connections and closes existing ones.
-    * :meth:`enable_forwarding` allows new connections to reach the cache again.
+    * :meth:`disconnect_and_block` closes existing connections and refuses new ones, so every
+      reconnect attempt fails too.
+    * :meth:`allow_connections` lets new connections reach the cache again.
     * :attr:`accepted_connections` counts client connections, which can be used
       to detect duplicate or concurrent reconnect attempts.
     """
@@ -600,11 +601,12 @@ class MockTcpProxy:
     def endpoint(self) -> str:
         return f"{self.host}:{self.port}"
 
-    def enable_forwarding(self) -> None:
+    def allow_connections(self) -> None:
+        """Let new connections through to the cache again."""
         self._forwarding = True
 
-    def disable_forwarding(self) -> None:
-        """Reject new connections and close existing ones."""
+    def disconnect_and_block(self) -> None:
+        """Close every connection and refuse new ones, so reconnect attempts keep failing."""
         self._forwarding = False
         self.disconnect_clients()
 

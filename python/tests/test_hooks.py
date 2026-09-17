@@ -130,27 +130,16 @@ def test_non_photon_error_propagates():
         _emit(sdk)
 
 
-def test_cache_unavailable_is_not_swallowed_by_hooks():
-    """Escalated cache-unavailable errors reach the application instead of passing through."""
+@pytest.mark.parametrize("caught_as", [
+    PhotonCacheUnavailable,  # reaches the application instead of being passed through
+    ConnectionClosedError,   # under the botocore name an application already handles
+])
+def test_cache_unavailable_reaches_the_application(caught_as):
+    """An escalated cache-unavailable error propagates, under either of its names."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = PhotonCacheUnavailable(endpoint_url="https://host/")
     hooks.PhotonHandle(sdk, session)
 
-    with pytest.raises(PhotonCacheUnavailable):
-        _emit(sdk)
-
-
-def test_cache_unavailable_is_catchable_as_a_botocore_transport_error():
-    """Cache-unavailable errors remain catchable as botocore transport errors.
-
-    This keeps Photon compatible with applications that already handle AWS
-    transport errors.
-    """
-    sdk = MockClient()
-    session = mock_session()
-    session.request.side_effect = PhotonCacheUnavailable(endpoint_url="https://host/")
-    hooks.PhotonHandle(sdk, session)
-
-    with pytest.raises(ConnectionClosedError):
+    with pytest.raises(caught_as):
         _emit(sdk)

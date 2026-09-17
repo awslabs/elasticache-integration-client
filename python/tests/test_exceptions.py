@@ -6,6 +6,7 @@ from botocore.exceptions import ConnectionClosedError
 
 from photon.exceptions import (
     PhotonCacheUnavailable,
+    PhotonConfigError,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
@@ -14,6 +15,7 @@ from photon.exceptions import (
 )
 
 _SUBCLASSES = [
+    PhotonConfigError,
     PhotonConnectionError,
     PhotonProtocolError,
     PhotonConnectionLost,
@@ -51,10 +53,20 @@ def test_cache_unavailable_message_says_the_cache_is_unavailable():
 def test_public_api_surface():
     """Verify that only the intended application-facing API is exported.
 
-    ``PhotonCacheUnavailable`` is the one Photon error applications are expected
-    to handle. Other error classes remain internal in ``photon.exceptions``.
+    Three errors are reachable by an application and so are named here: ``PhotonCacheUnavailable``
+    when a request cannot be served and fallback has closed, ``PhotonConfigError`` when
+    ``photon.client()`` is given something unusable, and ``PhotonError`` as the base for anything
+    else that creating a client can raise. The per-failure-mode classes stay internal in
+    ``photon.exceptions``, because the request path converts them to botocore's transport errors
+    before an application ever sees them.
     """
     import photon
 
-    assert photon.__all__ == ["client", "PhotonCacheUnavailable", "__version__"]
+    assert photon.__all__ == [
+        "client",
+        "PhotonCacheUnavailable",
+        "PhotonConfigError",
+        "PhotonError",
+        "__version__",
+    ]
     assert photon.PhotonCacheUnavailable is PhotonCacheUnavailable

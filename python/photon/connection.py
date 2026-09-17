@@ -540,7 +540,10 @@ class PhotonConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
-        timeout = timeout or self._request_timeout
+        # Not `timeout or ...`: an explicit timeout=0 means "do not wait for a reply", and `or`
+        # would quietly turn it into the default instead.
+        if timeout is None:
+            timeout = self._request_timeout
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:

@@ -6,12 +6,12 @@ import math
 import random
 from dataclasses import dataclass
 
-from photon.exceptions import PhotonError
+from photon.exceptions import PhotonConfigError
 
 
 @dataclass(frozen=True)
 class ReconnectPolicy:
-    """Configure reconnect backoff, fallback, and connection draining.
+    """Configure reconnect backoff and fallback.
 
     ``fallback_duration`` controls how long requests may fall back to the
     origin while the cache is disconnected:
@@ -25,6 +25,10 @@ class ReconnectPolicy:
 
     fallback_duration: int | None = None
     connect_attempts: int = 3
+    # How long one bring-up may take: transport connect, AUTH and the config handshake together,
+    # bounded from outside while the steps keep their own timeouts underneath. It caps every
+    # attempt, so creating a session takes at most connect_attempts of these plus the backoff
+    # between them, and each later reconnect attempt is capped by one.
     connection_timeout: float = 5.0
     base_delay: float = 0.1
     max_delay: float = 3.2
@@ -35,17 +39,17 @@ class ReconnectPolicy:
             isinstance(self.fallback_duration, bool)
             or not isinstance(self.fallback_duration, int)
         ):
-            raise PhotonError("fallback_duration must be a whole number of seconds or None")
+            raise PhotonConfigError("fallback_duration must be a whole number of seconds or None")
         if self.connect_attempts < 1:
-            raise PhotonError("connect_attempts must be >= 1")
+            raise PhotonConfigError("connect_attempts must be >= 1")
         if self.connection_timeout <= 0:
-            raise PhotonError("connection_timeout must be > 0")
+            raise PhotonConfigError("connection_timeout must be > 0")
         if self.base_delay <= 0:
-            raise PhotonError("base_delay must be > 0")
+            raise PhotonConfigError("base_delay must be > 0")
         if self.max_delay < self.base_delay:
-            raise PhotonError("max_delay must be >= base_delay")
+            raise PhotonConfigError("max_delay must be >= base_delay")
         if not (0 <= self.jitter < 1):
-            raise PhotonError("jitter must be in [0, 1)")
+            raise PhotonConfigError("jitter must be in [0, 1)")
 
     @property
     def fallback_window(self) -> float:

@@ -11,7 +11,7 @@ test_protocol.py; these tests assert only session behavior (lifecycle + delegati
 
 import pytest
 
-from photon.exceptions import PhotonError
+from photon.exceptions import PhotonConfigError, PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
@@ -122,5 +122,5 @@ def test_parse_endpoint_valid(endpoint, expected):
 )
 def test_parse_endpoint_invalid(bad):
     """Malformed endpoints (empty, no port, empty port, empty host, port 0, port > 65535, non-numeric port) are rejected."""
-    with pytest.raises(PhotonError):
+    with pytest.raises(PhotonConfigError):
         parse_endpoint(bad)

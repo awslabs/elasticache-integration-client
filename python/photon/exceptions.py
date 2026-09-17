@@ -15,6 +15,15 @@ class PhotonError(Exception):
     """Base class for all Photon errors."""
 
 
+class PhotonConfigError(PhotonError, ValueError):
+    """Photon was configured with something it cannot use — a bad endpoint or policy setting.
+
+    Raised while building a client, before any I/O, so it reports a mistake in the calling code
+    rather than a runtime failure. Also a ``ValueError``, which is what bad arguments raise in
+    Python, so either name catches it.
+    """
+
+
 class PhotonConnectionError(PhotonError):
     """Connection bring-up failed (DNS, TCP connect, or TLS handshake)."""
 
@@ -34,7 +43,9 @@ class PhotonTimeoutError(PhotonError):
 class PhotonCacheUnavailable(ConnectionClosedError):
     """Photon has no connection to the cache and the fallback window has closed."""
 
+    #: ``endpoint_url`` is the request's own destination — the origin service — which is what every
+    #: botocore transport error carries and what identifies the call that was refused.
     fmt = (
-        'Photon has no connection to the cache, so this request could not be served from it: '
-        '"{endpoint_url}".'
+        'Photon has no connection to the cache, so this request to "{endpoint_url}" could not be '
+        'served from it.'
     )
