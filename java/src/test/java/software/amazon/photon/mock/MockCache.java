@@ -5,6 +5,7 @@ import software.amazon.photon.resp.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -29,9 +30,12 @@ public class MockCache {
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;
+    private BiFunction<String, String, RespValue> authReplyFunction =
+            (userId, token) -> new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8));
 
     private final List<String> receivedCommands = new ArrayList<>();
     private final List<ReceivedRequest> requests = new ArrayList<>();
+    private final List<AuthAttempt> authAttempts = new ArrayList<>();
 
     public void setReply(Reply reply) {
         this.reply = reply;
@@ -64,6 +68,14 @@ public class MockCache {
 
     public FailureMode getFailureMode() {
         return failureMode;
+    }
+
+    public void setAuthReplyFunction(BiFunction<String, String, RespValue> authReplyFunction) {
+        this.authReplyFunction = Objects.requireNonNull(authReplyFunction, "authReplyFunction");
+    }
+
+    public List<AuthAttempt> getAuthAttempts() {
+        return Collections.unmodifiableList(authAttempts);
     }
 
     public List<String> getReceivedCommands() {
@@ -105,7 +117,7 @@ public class MockCache {
         RespValue response;
         switch (cmdName) {
             case "AUTH":
-                response = new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8));
+                response = handleAuth(command);
                 break;
             case "PHOTON.CONFIG":
                 response = handleConfig(command);
@@ -127,6 +139,35 @@ public class MockCache {
         }
 
         return response;
+    }
+
+    private RespValue handleAuth(List<RespValue> command) {
+        if (command.size() != 3) {
+            return new RespError(
+                    "ERR", "AUTH requires exactly 2 arguments, got " + (command.size() - 1));
+        }
+        String userId = extractString(command.get(1));
+        String token = extractString(command.get(2));
+        authAttempts.add(new AuthAttempt(userId, token));
+        return authReplyFunction.apply(userId, token);
+    }
+
+    public static final class AuthAttempt {
+        private final String userId;
+        private final String token;
+
+        private AuthAttempt(String userId, String token) {
+            this.userId = userId;
+            this.token = token;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public String getToken() {
+            return token;
+        }
     }
 
     private RespValue handleConfig(List<RespValue> command) {

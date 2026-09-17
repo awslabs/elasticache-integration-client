@@ -8,6 +8,12 @@ configured DynamoDB origin transport. Expected Photon failures also fall back
 to origin. SDK retries, response deserialization, and caller-provided override
 configuration remain in the normal SDK pipeline.
 
+IAM token generation is provided by the Amazon ElastiCache developer toolkit.
+The toolkit validates and lowercases cache names and user IDs, resolves fresh
+AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
+contract. Photon sends the resulting bearer token only in the TLS-protected
+`AUTH` exchange; origin request signing remains owned by the AWS SDK.
+
 ## Request routing
 
 Opening a Photon session compiles the CEL predicates returned by
@@ -30,7 +36,11 @@ compiled once when the session opens.
 ```java
 try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
         .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuthProvider)
+        .authProvider(IamAuthTokenProvider.builder()
+                .cacheName("my-cache")
+                .userId("my-iam-user")
+                .region(Region.US_EAST_1)
+                .build())
         .origin(DynamoDbClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))
         .build()) {
@@ -46,7 +56,11 @@ a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 ```java
 try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
         .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuthProvider)
+        .authProvider(IamAuthTokenProvider.builder()
+                .cacheName("my-cache")
+                .userId("my-iam-user")
+                .region(Region.US_EAST_1)
+                .build())
         .buildAsync(DynamoDbAsyncClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))) {
     CompletableFuture<ListTablesResponse> response =
@@ -92,3 +106,10 @@ through Photon.
 
 Close the handle and SDK client when they are no longer needed. The factory
 result types close both resources and are intended for try-with-resources.
+
+## Development
+
+Until the Java toolkit is published to a Maven repository, it is pinned as a
+Git submodule and built as part of `./gradlew build`. Initialize it after
+cloning with `git submodule update --init --recursive`. Maven must be available
+on `PATH` for the sourced toolkit build.

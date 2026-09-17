@@ -132,10 +132,20 @@ class MockCacheTest {
 
     @Test
     void handleAuth() {
-        List<RespValue> command = Arrays.asList(bs("AUTH"), bs("password123"));
+        List<RespValue> command =
+                Arrays.asList(bs("AUTH"), bs("iam-user"), bs("password123"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespSimpleString);
         assertArrayEquals("OK".getBytes(), ((RespSimpleString) response).getValue());
+        assertEquals("iam-user", cache.getAuthAttempts().get(0).getUserId());
+        assertEquals("password123", cache.getAuthAttempts().get(0).getToken());
+    }
+
+    @Test
+    void handleAuth_wrongArgCount() {
+        RespValue response = cache.handle(Arrays.asList(bs("AUTH"), bs("password123")));
+        assertTrue(response instanceof RespError);
+        assertTrue(((RespError) response).getMessage().contains("exactly 2 arguments"));
     }
 
     // === Reply configuration ===
