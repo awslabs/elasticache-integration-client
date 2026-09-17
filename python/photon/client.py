@@ -51,7 +51,7 @@ def client(service: str, *, endpoint: str, cache_name: str,
         return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
                                auth_provider=auth_provider)
 
-    # The session connects (IAM auth + photon.config handshake) before the hook is installed,
+    # The session connects (HELLO 3 handshake + photon.config exchange) before the hook is installed,
     # so the first intercepted request already has a ready session.
     session = PhotonSession(
         connector_factory,
