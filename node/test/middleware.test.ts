@@ -6,7 +6,13 @@ import { HttpRequest, HttpResponse } from "@smithy/core/protocols";
 import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smithy/types";
 import { Readable } from "node:stream";
 
-import { PhotonConnectionLost, PhotonError, PhotonTimeoutError } from "../src/errors.js";
+import {
+  PhotonConnectionLost,
+  PhotonError,
+  PhotonProtocolError,
+  PhotonRejectedError,
+  PhotonTimeoutError,
+} from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata } from "../src/models.js";
 import {
   awsToPhotonRequest,
@@ -262,7 +268,7 @@ describe("photon middleware", () => {
     });
     const session = fakeSession({
       request: vi.fn(async () => {
-        throw new PhotonError("cache unavailable");
+        throw new PhotonTimeoutError("cache unavailable");
       }),
     });
     const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
@@ -318,23 +324,24 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes response-level Photon failures through for non-idempotent operations", async () => {
+  it.each([
+    new PhotonRejectedError("cache rejected request"),
+    new PhotonProtocolError("malformed response"),
+  ])("does not replay non-idempotent Photon failure %s", async (photonError) => {
     const session = fakeSession({
       request: vi.fn(async () => {
-        throw new PhotonError("cache rejected request");
+        throw photonError;
       }),
     });
-    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
-      response: new HttpResponse({ statusCode: 503 }),
-    }));
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
     const handler = photonMiddleware("dynamodb", session)(next, {
       commandName: "UpdateItemCommand",
     });
 
-    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
-      response: expect.any(HttpResponse),
-    });
-    expect(next).toHaveBeenCalledOnce();
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("runs after final serialization and returns through the deserializer", async () => {

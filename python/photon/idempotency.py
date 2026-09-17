@@ -1,35 +1,21 @@
-"""Replay-safe operations copied from ``shared/idempotent-operations.json``."""
+"""Replay-safe operations loaded from the shared language-neutral catalog."""
 
-IDEMPOTENT_OPERATIONS = {
-    "dynamodb": frozenset({
-        "BatchGetItem",
-        "DescribeBackup",
-        "DescribeContinuousBackups",
-        "DescribeContributorInsights",
-        "DescribeEndpoints",
-        "DescribeExport",
-        "DescribeGlobalTable",
-        "DescribeGlobalTableSettings",
-        "DescribeImport",
-        "DescribeKinesisStreamingDestination",
-        "DescribeLimits",
-        "DescribeTable",
-        "DescribeTableReplicaAutoScaling",
-        "DescribeTimeToLive",
-        "GetItem",
-        "GetResourcePolicy",
-        "ListBackups",
-        "ListContributorInsights",
-        "ListExports",
-        "ListGlobalTables",
-        "ListImports",
-        "ListTables",
-        "ListTagsOfResource",
-        "Query",
-        "Scan",
-        "TransactGetItems",
-    }),
-}
+import json
+from pathlib import Path
+
+
+def _catalog_path() -> Path:
+    repository_catalog = Path(__file__).resolve().parents[2] / "shared" / "idempotent-operations.json"
+    if repository_catalog.is_file():
+        return repository_catalog
+    return Path(__file__).with_name("idempotent-operations.json")
+
+
+with _catalog_path().open() as catalog_file:
+    IDEMPOTENT_OPERATIONS = {
+        service: frozenset(operations)
+        for service, operations in json.load(catalog_file).items()
+    }
 
 
 def is_idempotent_operation(service: str, operation: str) -> bool:

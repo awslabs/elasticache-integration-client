@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { PhotonError } from "../src/errors.js";
+import { PhotonError, PhotonProtocolError, PhotonRejectedError } from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import {
   CONFIG_COMMAND,
@@ -249,12 +249,12 @@ describe("Photon protocol", () => {
 
   it("rejects request response error frames", () => {
     // A RespError request reply raises rather than being returned as a response.
-    expect(() => parseRequestResponse(new RespError("ERR", "boom"))).toThrow(PhotonError);
+    expect(() => parseRequestResponse(new RespError("ERR", "boom"))).toThrow(PhotonRejectedError);
   });
 
   it("rejects non-array request responses", () => {
     // A non-array request reply, such as a bare bulk string, is malformed.
-    expect(() => parseRequestResponse(Buffer.from("not-an-array"))).toThrow(PhotonError);
+    expect(() => parseRequestResponse(Buffer.from("not-an-array"))).toThrow(PhotonProtocolError);
   });
 
   it("rejects unsupported request body types", () => {

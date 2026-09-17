@@ -16,6 +16,15 @@ repositories {
     mavenCentral()
 }
 
+sourceSets {
+    main {
+        resources {
+            srcDir("../shared")
+            include("idempotent-operations.json")
+        }
+    }
+}
+
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
     implementation("dev.cel:compiler:0.14.0")

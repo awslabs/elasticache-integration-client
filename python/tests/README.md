@@ -52,7 +52,7 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | `test_connection.py` | component + integration | `photon.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `PhotonConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
 | `test_session.py` | component | `photon.session.PhotonSession` sync API, driven by the `mock_connector()` autospec double |
 | `test_hooks.py` | component | `photon.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
-| `test_idempotency.py` | component | packaged replay-safe operation catalog matches the shared language-neutral source |
+| `test_idempotency.py` | component | replay-safe operation lookup loads the shared language-neutral catalog |
 | `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
 | `test_ddb.py` | **end-to-end** | the full path `photon.client → boto3 GetItem → hook → PhotonSession → real PhotonConnector (TLS) → MockCache` |
 

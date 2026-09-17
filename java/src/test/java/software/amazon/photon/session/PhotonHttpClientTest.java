@@ -13,6 +13,7 @@ import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -77,6 +78,32 @@ class PhotonHttpClientTest {
                 () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void nonIdempotentMalformedResponseDoesNotContactOrigin() {
+        StubSession session = new StubSession();
+        session.failure = new PhotonProtocolError("malformed response");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        IOException failure = assertThrows(IOException.class,
+                () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void shutdownFailureDoesNotStartIdempotentFallback() {
+        StubSession session = new StubSession();
+        session.open = false;
+        session.failure = new PhotonConnectionLost("session closed");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false);
+
+        assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
         assertEquals(0, origin.prepareCount.get());
     }
 
@@ -247,12 +274,18 @@ class PhotonHttpClientTest {
     private static final class StubSession extends PhotonSession {
         private PhotonResponse response;
         private RuntimeException failure;
+        private boolean open = true;
         private final AtomicInteger requestCount = new AtomicInteger();
         private final CountDownLatch requestStarted = new CountDownLatch(1);
         private volatile boolean blockUntilCancelled;
 
         private StubSession() {
             super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        public boolean isOpen() {
+            return open;
         }
 
         @Override

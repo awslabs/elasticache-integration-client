@@ -2,6 +2,7 @@ package software.amazon.photon.protocol;
 
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -206,7 +207,7 @@ class PhotonProtocolTest {
     @Test
     void parseRequestResponse_errorFrame() {
         RespError error = new RespError("CACHE", "miss");
-        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseRequestResponse(error));
+        assertThrows(PhotonRejectedError.class, () -> PhotonProtocol.parseRequestResponse(error));
     }
 
     // === deserializeResponse tests ===

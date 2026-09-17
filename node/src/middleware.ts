@@ -19,12 +19,7 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import {
-  PhotonConnectionError,
-  PhotonConnectionLost,
-  PhotonError,
-  PhotonTimeoutError,
-} from "./errors.js";
+import { PhotonError } from "./errors.js";
 import { isIdempotentOperation } from "./idempotency.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
 import type { PhotonResponse } from "./models.js";
@@ -101,14 +96,6 @@ export function photonToHttpResponse(response: PhotonResponse): HttpResponse {
   });
 }
 
-function isTransportFailure(error: PhotonError): boolean {
-  return (
-    error instanceof PhotonTimeoutError ||
-    error instanceof PhotonConnectionLost ||
-    error instanceof PhotonConnectionError
-  );
-}
-
 export function photonMiddleware<Input extends object, Output extends object>(
   service: string,
   session: PhotonSession,
@@ -121,13 +108,12 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (response === undefined) return next(args);
       return { response: photonToHttpResponse(response) };
     } catch (error) {
-      if (error instanceof PhotonError && session.isOpen) {
-        if (
-          !isTransportFailure(error) ||
-          isIdempotentOperation(request.metadata.service, request.metadata.operation)
-        ) {
-          return next(args);
-        }
+      if (
+        error instanceof PhotonError &&
+        session.isOpen &&
+        isIdempotentOperation(request.metadata.service, request.metadata.operation)
+      ) {
+        return next(args);
       }
       throw error;
     }

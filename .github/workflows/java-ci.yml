@@ -11,6 +11,7 @@ on:
     branches: [main]
     paths:
       - "java/**"
+      - "shared/idempotent-operations.json"
       - ".github/workflows/java-ci.yml"
 
 permissions:

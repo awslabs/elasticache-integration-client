@@ -35,6 +35,7 @@ from photon.exceptions import (
     PhotonConnectionError,
     PhotonConnectionLost,
     PhotonError,
+    PhotonProtocolError,
     PhotonTimeoutError,
 )
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
@@ -136,14 +137,10 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. That happens for two reasons: the
-        session declined the request (no resolved predicate matched — the normal per-request steady
-        state, logged at debug), or Photon replied with something unusable (degrades to a cache
-        miss, logged as a warning). Non-Photon exceptions propagate.
-
-        Transport failures do NOT pass through: if the cache never answered, the request's fate is
-        unknown — so re-sending it on the application's behalf could apply it twice. 
-        Those raise botocore's own transport errors, and the application decides whether to retry.
+        request down the pipeline. Predicate declines always do that. Photon failures do it only
+        while the session is open and the operation is in the replay-safe catalog. Failures for
+        other operations propagate; transport and malformed-response failures are translated to
+        botocore's own transport errors.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
@@ -153,20 +150,23 @@ class PhotonHandle:
                              http_request.metadata.operation)
                 return None
             return _photon_to_aws_response(request.url, response)
-        except (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError) as exc:
-            if is_idempotent_operation(
+        except PhotonError as exc:
+            if self._session.is_open and is_idempotent_operation(
                 http_request.metadata.service, http_request.metadata.operation
             ):
                 logger.warning(
-                    "Photon transport failed for idempotent %s; passing through to the service",
+                    "Photon failed for idempotent %s; passing through to the service",
                     http_request.metadata.operation,
                     exc_info=True,
                 )
                 return None
-            _raise_as_botocore_error(exc, request.url)
-        except PhotonError:
-            logger.warning("Photon request failed; passing through to the service", exc_info=True)
-            return None
+            if isinstance(
+                exc,
+                (PhotonTimeoutError, PhotonConnectionLost,
+                 PhotonConnectionError, PhotonProtocolError),
+            ):
+                _raise_as_botocore_error(exc, request.url)
+            raise
 
 
 def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
@@ -181,6 +181,8 @@ def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
     if isinstance(exc, PhotonTimeoutError):
         raise ReadTimeoutError(endpoint_url=endpoint_url) from exc
     if isinstance(exc, PhotonConnectionLost):
+        raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
+    if isinstance(exc, PhotonProtocolError):
         raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
     if isinstance(exc, PhotonConnectionError):
         raise EndpointConnectionError(endpoint_url=endpoint_url) from exc

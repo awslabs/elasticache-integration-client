@@ -18,6 +18,10 @@ class PhotonProtocolError(PhotonError):
     """A RESP frame was malformed or could not be decoded."""
 
 
+class PhotonRejectedError(PhotonError):
+    """Photon explicitly rejected a request with a RESP error reply."""
+
+
 class PhotonConnectionLost(PhotonError):
     """The socket died mid-flight; pending requests are failed."""
 

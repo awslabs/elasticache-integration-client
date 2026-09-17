@@ -7,6 +7,7 @@ import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTlsServer;
@@ -314,7 +315,7 @@ class PhotonConnectorIntegrationTest {
                     new RequestMetadata("dynamodb", "GetItem")
             );
 
-            assertThrows(PhotonProtocolError.class, () -> conn.request(request));
+            assertThrows(PhotonRejectedError.class, () -> conn.request(request));
         } finally {
             conn.close();
         }

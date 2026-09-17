@@ -10,9 +10,6 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonConnectionError;
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 
@@ -187,10 +184,9 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
             Throwable cause = unwrap(photonFailure);
             if (cause instanceof PhotonError) {
-                if (isTransportFailure((PhotonError) cause)
-                        && !Idempotency.isIdempotent(capturedRequest.getMetadata())) {
-                    fail(result, request.responseHandler(), new java.io.IOException(
-                            "Photon transport failed for non-idempotent operation", cause));
+                if (!PhotonFallbackPolicy.shouldFallback(session, capturedRequest)) {
+                    fail(result, request.responseHandler(),
+                            PhotonFallbackPolicy.noFallback((PhotonError) cause));
                 } else {
                     fallbackToOrigin(copyWithBody(request, body));
                 }
@@ -239,12 +235,6 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 }
             });
         }
-    }
-
-    private static boolean isTransportFailure(PhotonError failure) {
-        return failure instanceof PhotonTimeoutError
-                || failure instanceof PhotonConnectionLost
-                || failure instanceof PhotonConnectionError;
     }
 
     @Override

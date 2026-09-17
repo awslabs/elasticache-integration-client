@@ -1,6 +1,6 @@
 import { TextDecoder } from "node:util";
 
-import { PhotonError } from "./errors.js";
+import { PhotonError, PhotonProtocolError, PhotonRejectedError } from "./errors.js";
 import { PhotonResponse, ResolvedConfig, type PhotonRequest } from "./models.js";
 import { RespError, type RespValue } from "./resp.js";
 
@@ -96,7 +96,7 @@ function parseHeaders(raw: Buffer): Record<string, string> {
   try {
     text = valueAsText(raw);
   } catch (cause) {
-    throw new PhotonError("Invalid UTF-8 in response headers", { cause });
+    throw new PhotonProtocolError("Invalid UTF-8 in response headers", { cause });
   }
   const headers: Record<string, string> = {};
 
@@ -119,7 +119,7 @@ function parseHeaders(raw: Buffer): Record<string, string> {
 function parseStatus(raw: unknown): number {
   if (typeof raw === "number") {
     if (!Number.isFinite(raw)) {
-      throw new PhotonError(`Invalid status code: ${String(raw)}`);
+      throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
     }
     return Math.trunc(raw);
   }
@@ -128,16 +128,16 @@ function parseStatus(raw: unknown): number {
   try {
     text = valueAsText(raw);
   } catch (cause) {
-    throw new PhotonError("Invalid UTF-8 in response status", { cause });
+    throw new PhotonProtocolError("Invalid UTF-8 in response status", { cause });
   }
   // Accept an integer status string with optional surrounding whitespace, such as " 200 ".
   // Decimal, exponent, and other numeric formats are rejected.
   if (!/^\s*[+-]?\d+\s*$/.test(text)) {
-    throw new PhotonError(`Invalid status code: ${String(raw)}`);
+    throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
   }
   const value = Number(text);
   if (!Number.isFinite(value)) {
-    throw new PhotonError(`Invalid status code: ${String(raw)}`);
+    throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
   }
   return value;
 }
@@ -150,7 +150,7 @@ function parseStatus(raw: unknown): number {
  */
 export function deserializeResponse(elements: readonly unknown[] | null): PhotonResponse {
   if (!Array.isArray(elements) || elements.length !== 3) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed response: expected 3 elements [status, headers, body], got ${
         elements === null
           ? "None"
@@ -164,10 +164,12 @@ export function deserializeResponse(elements: readonly unknown[] | null): Photon
   const [statusRaw, headersRaw, bodyRaw] = elements;
   const status = parseStatus(statusRaw);
   if (status < MIN_STATUS || status > MAX_STATUS) {
-    throw new PhotonError(`Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`);
+    throw new PhotonProtocolError(
+      `Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`,
+    );
   }
   if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
     );
   }
@@ -292,15 +294,14 @@ export function serializeRequest(
 /**
  * Interpret a `photon.request` reply into a PhotonResponse.
  *
- * Expects a 3-element array `[status, headers, body]`. Raises `PhotonError` on a `RespError`
- * reply or a malformed shape.
+ * Expects a 3-element array `[status, headers, body]`.
  */
 export function parseRequestResponse(value: RespValue): PhotonResponse {
   if (value instanceof RespError) {
-    throw new PhotonError(`photon.request failed: ${value.toString()}`);
+    throw new PhotonRejectedError(`photon.request failed: ${value.toString()}`);
   }
   if (!Array.isArray(value)) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed request response: expected array, got ${value === null ? "null" : typeof value}`,
     );
   }

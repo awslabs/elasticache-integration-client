@@ -12,6 +12,9 @@ export class PhotonConnectionError extends PhotonError {}
 /** A RESP frame was malformed or could not be decoded. */
 export class PhotonProtocolError extends PhotonError {}
 
+/** Photon explicitly rejected a request with a RESP error reply. */
+export class PhotonRejectedError extends PhotonError {}
+
 /** The socket died mid-flight; pending requests are failed. */
 export class PhotonConnectionLost extends PhotonError {}
 

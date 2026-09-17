@@ -1,6 +1,6 @@
 /**
- * Replay-safe operations copied from ../shared/idempotent-operations.json.
- * The consistency test fails if this packaged copy drifts from the shared catalog.
+ * Generated from ../../shared/idempotent-operations.json.
+ * Run `npm run generate:idempotency` after changing the shared catalog.
  */
 export const IDEMPOTENT_OPERATIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   dynamodb: new Set([

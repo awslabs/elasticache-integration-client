@@ -7,12 +7,14 @@ from photon.exceptions import (
     PhotonConnectionError,
     PhotonError,
     PhotonProtocolError,
+    PhotonRejectedError,
     PhotonTimeoutError,
 )
 
 _SUBCLASSES = [
     PhotonConnectionError,
     PhotonProtocolError,
+    PhotonRejectedError,
     PhotonConnectionLost,
     PhotonTimeoutError,
 ]

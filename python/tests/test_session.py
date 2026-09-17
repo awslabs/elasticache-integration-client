@@ -75,17 +75,15 @@ def test_request_delegates_to_connector():
     assert kwargs == {}
 
 
-def test_request_after_close_propagates_connector_error():
-    """After close(), request() propagates the connector's error (no session-level state check)."""
+def test_request_after_close_is_rejected_before_connector_use():
     connector = mock_connector()
     session = PhotonSession(connector)
     session.close()
     connector.execute.reset_mock()  # discard the constructor's config call
-    connector.execute.side_effect = PhotonError("connection is closed")
     with pytest.raises(PhotonError):
         session.request(PhotonRequest(method="POST", url="https://x/",
                                       metadata=RequestMetadata(service="dynamodb", operation="GetItem")))
-    connector.execute.assert_called_once()  # the call reached the connector: no session-level gate
+    connector.execute.assert_not_called()
 
 
 # --- lifecycle: close -----------------------------------------------------------
@@ -97,6 +95,14 @@ def test_close_delegates_to_connector():
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
+
+
+def test_is_open_tracks_lifecycle():
+    connector = mock_connector()
+    session = PhotonSession(connector)
+    assert session.is_open
+    session.close()
+    assert not session.is_open
 
 
 # --- endpoint parsing -----------------------------------------------------------

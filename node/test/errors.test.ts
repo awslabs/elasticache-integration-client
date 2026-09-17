@@ -5,6 +5,7 @@ import {
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
+  PhotonRejectedError,
   PhotonTimeoutError,
 } from "../src/errors.js";
 import * as photon from "../src/index.js";
@@ -13,6 +14,7 @@ const ERROR_TYPES = [
   PhotonError,
   PhotonConnectionError,
   PhotonProtocolError,
+  PhotonRejectedError,
   PhotonConnectionLost,
   PhotonTimeoutError,
 ] as const;

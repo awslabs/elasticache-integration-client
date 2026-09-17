@@ -53,6 +53,7 @@ class PhotonSession:
     def __init__(self, connector: PhotonConnector, overrides: dict | None = None) -> None:
         self._connector = connector
         self._overrides = overrides or {}
+        self._is_open = False
         self._connector.connect()
         try:
             self._connector.authenticate()
@@ -62,6 +63,7 @@ class PhotonSession:
             )
             # Compile the resolved predicates once; the request path evaluates them per request.
             self._predicates = compile_predicates(self._config.raw)
+            self._is_open = True
         except BaseException:
             self.close()
             raise
@@ -74,6 +76,8 @@ class PhotonSession:
         :class:`PhotonResponse`, every failure raises), so ``None`` is unambiguous. Connector and
         protocol errors propagate.
         """
+        if not self._is_open:
+            raise PhotonError("request() called on a closed session")
         if not should_route_to_photon(self._predicates, request):
             return None
         command, args = serialize_request(request)
@@ -81,4 +85,10 @@ class PhotonSession:
 
     def close(self) -> None:
         """Close the connector. Idempotent (connector.close() handles it)."""
+        self._is_open = False
         self._connector.close()
+
+    @property
+    def is_open(self) -> bool:
+        """Whether the session can safely initiate fallback work."""
+        return self._is_open

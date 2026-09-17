@@ -10,10 +10,11 @@ contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
 The language-neutral replay-safety catalog is
-`shared/idempotent-operations.json`. Each packaged client keeps a local copy
-that is checked against this source of truth in its tests. Transport failures
-fall back to the origin only for cataloged operations; mixed or unknown
-operations are treated as non-idempotent.
+`shared/idempotent-operations.json`. Java packages it as a resource, Python
+copies it into built packages, and Node generates its compiled lookup from the
+same source with a CI freshness check. Photon failures fall back to the origin
+only for cataloged operations; mixed or unknown operations are treated as
+non-idempotent.
 
 ## Repository layout
 

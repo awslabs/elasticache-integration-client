@@ -36,6 +36,7 @@ jobs:
           cache: npm
           cache-dependency-path: node/package-lock.json
       - run: npm ci
+      - run: npm run check:idempotency
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck

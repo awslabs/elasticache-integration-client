@@ -621,5 +621,6 @@ def mock_connector() -> PhotonConnector:
 def mock_session() -> PhotonSession:
     """A ``create_autospec(PhotonSession)`` double that returns a 200 PhotonResponse by default."""
     session = create_autospec(PhotonSession, instance=True)
+    session.is_open = True
     session.request.return_value = PhotonResponse(status_code=200, headers={}, body=b"{}")
     return session

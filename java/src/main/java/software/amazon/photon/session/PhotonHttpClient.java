@@ -7,9 +7,6 @@ import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonConnectionError;
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -23,8 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
  * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
- * Photon. Predicate declines and expected Photon failures transparently
- * delegate the original signed SDK request to the configured origin transport.
+ * Photon. Predicate declines delegate to the origin. Photon failures do so only
+ * for replay-safe operations while the session remains open.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
@@ -77,11 +74,8 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     if (aborted.get()) {
                         throw new IOException("Request was aborted", photonFailure);
                     }
-                    if (isTransportFailure(photonFailure)
-                            && !Idempotency.isIdempotent(capturedRequest.getMetadata())) {
-                        throw new IOException(
-                                "Photon transport failed for non-idempotent operation",
-                                photonFailure);
+                    if (!PhotonFallbackPolicy.shouldFallback(session, capturedRequest)) {
+                        throw PhotonFallbackPolicy.noFallback(photonFailure);
                     }
                     return callOrigin();
                 } finally {
@@ -127,12 +121,6 @@ public final class PhotonHttpClient implements SdkHttpClient {
                 }
             }
         };
-    }
-
-    private static boolean isTransportFailure(PhotonError failure) {
-        return failure instanceof PhotonTimeoutError
-                || failure instanceof PhotonConnectionLost
-                || failure instanceof PhotonConnectionError;
     }
 
     @Override
