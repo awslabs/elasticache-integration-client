@@ -23,6 +23,7 @@ import {
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
+  PhotonProtocolError,
   PhotonTimeoutError,
 } from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
@@ -287,19 +288,44 @@ export class PhotonSession {
       return;
     }
     const [command, args] = serializeConfig(this.overridesSent ? null : this.overrides);
+    let value;
     try {
-      const value = await connector.execute(command, ...args);
-      // Ignore a reply from a connector that was replaced while refresh was in flight.
+      value = await connector.execute(command, ...args);
+    } catch (error) {
+      if (!(error instanceof PhotonError)) throw error;
       if (
-        this.state !== "open" ||
-        this.connection !== "alive" ||
-        this.connector !== connector ||
-        this.refresher !== refresher ||
-        value === null
+        error instanceof PhotonConnectionLost ||
+        error instanceof PhotonProtocolError ||
+        error instanceof PhotonTimeoutError
       ) {
+        if (this.state === "open" && this.connector === connector) {
+          this.handleDisconnect(connector);
+        }
         return;
       }
+      if (
+        this.state === "open" &&
+        this.connection === "alive" &&
+        this.connector === connector &&
+        this.refresher === refresher
+      ) {
+        console.warn(`photon.config refresh failed, keeping the previous config: ${error.message}`);
+      }
+      return;
+    }
 
+    // Ignore a reply from a connector that was replaced while refresh was in flight.
+    if (
+      this.state !== "open" ||
+      this.connection !== "alive" ||
+      this.connector !== connector ||
+      this.refresher !== refresher ||
+      value === null
+    ) {
+      return;
+    }
+
+    try {
       const config = parseConfigResponse(value);
       // Reschedule first: an interval this refresher cannot schedule is a malformed config, and
       // rejecting it before the swap keeps the whole previous config rather than half of it.
@@ -309,12 +335,6 @@ export class PhotonSession {
       this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
     } catch (error) {
       if (!(error instanceof PhotonError)) throw error;
-      if (error instanceof PhotonConnectionLost || error instanceof PhotonTimeoutError) {
-        if (this.state === "open" && this.connector === connector) {
-          this.handleDisconnect(connector);
-        }
-        return;
-      }
       if (
         this.state === "open" &&
         this.connection === "alive" &&

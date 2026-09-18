@@ -168,6 +168,8 @@ export class MockCache {
    * Mutable between refresh cycles so a test can simulate a cache-side config change.
    */
   noArgConfigReply?: Record<string, unknown>;
+  /** Raw no-argument config frame override for transport/protocol failure tests. */
+  noArgConfigFrame?: Buffer;
   readonly host = "127.0.0.1";
   port?: number;
   certPath?: string;
@@ -252,6 +254,7 @@ export class MockCache {
       }
       if (args.length === 0) {
         this.configOverrides.push(null);
+        if (this.noArgConfigFrame !== undefined) return this.noArgConfigFrame;
         if (this.noArgConfigReply === undefined) return _null();
         return _bulk(Buffer.from(JSON.stringify(this.noArgConfigReply)));
       }

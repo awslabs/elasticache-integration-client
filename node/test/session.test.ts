@@ -374,6 +374,32 @@ describe("PhotonSession", () => {
     await session.close();
   });
 
+  it("reconnects when a refresh receives a malformed RESP frame", async () => {
+    const cache = new MockCache();
+    await cache.start();
+    const factory = vi.fn(
+      () =>
+        new PhotonConnector(cache.host, cache.port!, {
+          tls: false,
+          authProvider: () => ["test-user", "test-token"],
+        }),
+    );
+    const session = new PhotonSession(factory, {}, { baseDelayMs: 1, maxDelayMs: 1, jitter: 0 });
+    try {
+      await session.open();
+      cache.noArgConfigFrame = Buffer.from("_unexpected\r\n");
+
+      await refreshOnce(session);
+      await waitForState(session, "alive");
+
+      expect(session.isOpen).toBe(true);
+      expect(factory).toHaveBeenCalledTimes(2);
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
+  });
+
   it("does not log an in-flight refresh failure during shutdown", async () => {
     let rejectRefresh!: (error: unknown) => void;
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -1157,6 +1183,7 @@ describe("PhotonSession config refresh", () => {
     await expect(refreshOnce(session)).resolves.toBeUndefined();
 
     expect(session.config).toBe(config);
+    expect(session.isOpen).toBe(true);
     // The predicates from the opening config still route requests to Photon.
     vi.mocked(connector.execute).mockResolvedValue([200, Buffer.alloc(0), Buffer.alloc(0)]);
     await expect(session.request(putItem())).resolves.toBeDefined();
