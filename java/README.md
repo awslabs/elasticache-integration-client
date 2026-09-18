@@ -34,6 +34,13 @@ malformed or non-object JSON bodies count as no match. The resolved config is
 compiled when the session opens and refreshed and recompiled after every
 successful reconnect.
 
+The `photon.config` response must include `refresh_interval` as a positive JSON
+integer within the Java `Integer` range. Missing, null, fractional, non-positive,
+and overflowing values are protocol errors. The session starts a daemon
+refresher using this interval, but its periodic callback is currently a no-op;
+periodic config fetching and swapping remain future work. Successful reconnects
+still fetch and compile a fresh config.
+
 ## Synchronous client
 
 ```java
