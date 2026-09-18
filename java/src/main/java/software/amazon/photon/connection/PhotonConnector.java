@@ -109,6 +109,8 @@ public class PhotonConnector implements Closeable {
     private Thread readerThread;
     private volatile boolean dead = false;
     private volatile boolean closed = false;
+    private volatile Runnable onDisconnect;
+    private final AtomicBoolean disconnectNotified = new AtomicBoolean();
 
     // Send lock - serializes register + write to maintain FIFO correlation
     private final Lock sendLock = new ReentrantLock();
@@ -512,6 +514,16 @@ public class PhotonConnector implements Closeable {
         }
     }
 
+    /**
+     * Register a callback invoked once when this connector becomes unusable.
+     */
+    public void setOnDisconnect(Runnable onDisconnect) {
+        this.onDisconnect = onDisconnect;
+        if (dead) {
+            notifyDisconnect();
+        }
+    }
+
     @Override
     public void close() {
         synchronized (stateLock) {
@@ -550,12 +562,24 @@ public class PhotonConnector implements Closeable {
      * Idempotent.
      */
     private void markDead() {
+        boolean changed = false;
         synchronized (stateLock) {
             if (dead) {
                 return;
             }
             dead = true;
+            changed = true;
             closeSocketQuietly();
+        }
+        if (changed) {
+            notifyDisconnect();
+        }
+    }
+
+    private void notifyDisconnect() {
+        Runnable callback = onDisconnect;
+        if (callback != null && disconnectNotified.compareAndSet(false, true)) {
+            callback.run();
         }
     }
 

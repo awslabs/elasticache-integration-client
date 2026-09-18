@@ -3,6 +3,7 @@ package software.amazon.photon.session;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import software.amazon.awssdk.core.exception.RetryableException;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
@@ -12,7 +13,9 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.exception.PhotonTimeoutError;
@@ -202,7 +205,7 @@ class PhotonAsyncHttpClientTest {
     void cancellationDuringOriginFallbackCancelsOriginFuture() throws Exception {
         BlockingOrigin origin = new BlockingOrigin();
         PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new FailingSession(),
+                new GenericFailingSession(),
                 preparedContext(),
                 origin,
                 false,
@@ -216,6 +219,23 @@ class PhotonAsyncHttpClientTest {
 
         assertTrue(origin.result.isCancelled());
         assertTrue(request.isCancelled());
+        client.close();
+    }
+
+    @Test
+    void idempotentTransportFailureDelegatesToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new TimeoutSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
         client.close();
     }
 
@@ -234,7 +254,7 @@ class PhotonAsyncHttpClientTest {
                 ExecutionException.class,
                 () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
-        assertTrue(failure.getCause() instanceof IOException);
+        assertTrue(failure.getCause() instanceof RetryableException);
         assertTrue(failure.getCause().getCause() instanceof PhotonTimeoutError);
         assertEquals(0, origin.executeCount.get());
         client.close();
@@ -275,6 +295,23 @@ class PhotonAsyncHttpClientTest {
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
         assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void expiredFallbackWindowDoesNotContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new CacheUnavailableSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        assertThrows(ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        assertEquals(0, origin.executeCount.get());
         client.close();
     }
 
@@ -475,6 +512,20 @@ class PhotonAsyncHttpClientTest {
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
             throw new PhotonConnectionLost("session closed");
+        }
+    }
+
+    private static final class CacheUnavailableSession extends OpenSession {
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonCacheUnavailable("fallback window expired");
+        }
+    }
+
+    private static final class GenericFailingSession extends OpenSession {
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonError("cache declined request");
         }
     }
 

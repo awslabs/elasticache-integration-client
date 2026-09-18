@@ -19,8 +19,10 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
@@ -198,32 +200,36 @@ class PhotonAsyncClientTest {
     }
 
     @Test
-    void photonTimeoutFallsBackToSignedAsyncOrigin() throws Exception {
-        cache.setFailureMode(MockCache.FailureMode.HANG);
-        cache.setFailureCommand("photon.request");
+    void asyncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        cache.setReply(Reply.ok(
+                200,
+                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[\"reconnected\"]}"));
+        AtomicInteger credentialsCallCount = new AtomicInteger();
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
 
-        Consumer<DynamoDbAsyncClientBuilder> originConfig = builder -> builder
-                .region(Region.US_EAST_1)
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("access-key", "secret-key")))
-                .endpointOverride(URI.create("http://localhost:8080"));
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+             PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+                     .endpoint("localhost:" + proxy.getPort())
+                     .authProvider(() -> new AuthCredentials(
+                             "test-user", "token-" + credentialsCallCount.incrementAndGet()))
+                     .sslContext(clientSslContext)
+                     .originAsyncHttpClient(origin)
+                     .reconnectPolicy(ReconnectPolicy.builder()
+                             .fallbackDurationSeconds(-1)
+                             .baseDelayMs(1)
+                             .maxDelayMs(2)
+                             .jitterFactor(0)
+                             .build())
+                     .buildAsync(DynamoDbAsyncClient.builder(), sdkConfig)) {
+            proxy.disconnectClients();
 
-        try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials("test-user", "test-token")
-                .sslContext(clientSslContext)
-                .requestTimeoutMs(100)
-                .originAsyncHttpClient(origin)
-                .buildAsync(DynamoDbAsyncClient.builder(), originConfig)) {
-            assertEquals(Collections.emptyList(),
+            awaitRecovered(result.handle().getSession(), credentialsCallCount);
+            assertEquals(Collections.singletonList("reconnected"),
                     result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
+            assertEquals(2, credentialsCallCount.get());
+            assertEquals(2, proxy.getAcceptedConnections());
         }
-
-        assertNotNull(origin.request.get());
-        assertTrue(origin.request.get().firstMatchingHeader("Authorization").isPresent());
-        assertTrue(origin.body.get().length > 0);
-        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
     }
 
     @Test
@@ -259,9 +265,8 @@ class PhotonAsyncClientTest {
                     result.client().listTables();
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
 
-            // The first request times out, but the fallback origin is used to complete it.
-            assertEquals(Collections.emptyList(),
-                    timedOut.get(5, TimeUnit.SECONDS).tableNames());
+            // ListTables is replay-safe, so the timed-out Photon request falls back to origin.
+            assertTrue(timedOut.get(5, TimeUnit.SECONDS).tableNames().isEmpty());
             assertNotNull(origin.request.get());
 
             // The request ID was already removed after timeout, so this push is treated as unknown and dropped.
@@ -337,6 +342,18 @@ class PhotonAsyncClientTest {
         headers.put("content-type", "application/x-amz-json-1.0");
         headers.put(key, value);
         return headers;
+    }
+
+    private static void awaitRecovered(PhotonSession session, AtomicInteger credentialsCallCount)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while ((credentialsCallCount.get() < 2
+                || session.getState() != PhotonSession.State.OPEN)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(2, credentialsCallCount.get());
+        assertEquals(PhotonSession.State.OPEN, session.getState());
     }
 
     private static RespPush responsePush(long requestId, RespValue response) {

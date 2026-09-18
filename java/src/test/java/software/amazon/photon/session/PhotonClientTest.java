@@ -18,8 +18,10 @@ import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
@@ -32,6 +34,7 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -285,6 +288,41 @@ class PhotonClientTest {
     }
 
     @Test
+    void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        configureListTablesPredicate();
+        cache.setReply(Reply.ok(
+                200,
+                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                "{\"TableNames\":[\"reconnected\"]}"));
+        AtomicInteger credentialsCallCount = new AtomicInteger();
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+             PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                     .endpoint("localhost:" + proxy.getPort())
+                     .authProvider(() -> new AuthCredentials(
+                             TEST_USER, "token-" + credentialsCallCount.incrementAndGet()))
+                     .sslContext(clientSslContext)
+                     .originHttpClient(origin)
+                     .reconnectPolicy(ReconnectPolicy.builder()
+                             .fallbackDurationSeconds(-1)
+                             .baseDelayMs(1)
+                             .maxDelayMs(2)
+                             .jitterFactor(0)
+                             .build())
+                     .origin(DynamoDbClient.builder(), sdkConfig)
+                     .build()) {
+            proxy.disconnectClients();
+
+            awaitRecovered(result.handle().getSession(), credentialsCallCount);
+            assertEquals(Collections.singletonList("reconnected"),
+                    result.client().listTables().tableNames());
+            assertEquals(2, credentialsCallCount.get());
+            assertEquals(2, proxy.getAcceptedConnections());
+        }
+    }
+
+    @Test
     void builder_withOverrides_passesToSession() {
         try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                 .endpoint("localhost:" + server.getPort())
@@ -402,6 +440,18 @@ class PhotonClientTest {
         cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,"
                 + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
                 + "&& operation == 'ListTables'\",\"vars\":{}}]}");
+    }
+
+    private static void awaitRecovered(PhotonSession session, AtomicInteger credentialsCallCount)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while ((credentialsCallCount.get() < 2
+                || session.getState() != PhotonSession.State.OPEN)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(1);
+        }
+        assertEquals(2, credentialsCallCount.get());
+        assertEquals(PhotonSession.State.OPEN, session.getState());
     }
 
     private static Map<String, String> mapOf(String key1, String value1,

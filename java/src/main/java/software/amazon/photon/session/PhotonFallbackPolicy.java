@@ -1,6 +1,7 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 
@@ -17,6 +18,7 @@ final class PhotonFallbackPolicy {
     static boolean shouldFallback(PhotonSession session, PhotonRequest request,
                                   PhotonError failure) {
         return session.isOpen()
+                && !(failure instanceof PhotonCacheUnavailable)
                 && (failure instanceof PhotonRejectedError
                 || Idempotency.isIdempotent(request.getMetadata()));
     }

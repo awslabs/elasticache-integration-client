@@ -118,8 +118,10 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Reconnection, circuit breaking, and periodic config refresh are currently out
-of scope. Deferred responses delivered by `photon.response` pushes are
+Failover to another Photon endpoint and periodic config refresh are currently
+out of scope. CEL predicate routing, indefinite background reconnection with a
+bounded origin-fallback window, and deferred responses delivered by
+`photon.response` pushes are
 supported; other push kinds are fatal protocol corruption (raised as
 `PhotonProtocolError` and wrapped as `PhotonConnectionLost` by the reader
 loop), matching the Node and Python clients: a client that does not
