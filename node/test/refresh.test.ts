@@ -38,22 +38,22 @@ describe("ConfigRefresher", () => {
     vi.useRealTimers();
   });
 
-  it("invokes the callback once per interval, indefinitely", () => {
+  it("invokes the callback once per interval, indefinitely", async () => {
     const refreshOnce = vi.fn();
     const refresher = new ConfigRefresher(60, refreshOnce, { jitter: 0 });
 
     refresher.start();
     expect(refreshOnce).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(refreshOnce).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(180_000);
+    await vi.advanceTimersByTimeAsync(180_000);
     expect(refreshOnce).toHaveBeenCalledTimes(4);
 
     refresher.stop();
   });
 
-  it("recomputes jitter for every cycle", () => {
+  it("recomputes jitter for every cycle", async () => {
     const delays = trackDelays();
     const randomValues = [0, 0.5, 1];
     let index = 0;
@@ -62,19 +62,19 @@ describe("ConfigRefresher", () => {
     });
 
     refresher.start();
-    vi.advanceTimersByTime(60_000);
+    await vi.advanceTimersByTimeAsync(60_000);
     refresher.stop();
 
     // 10s +/- 20%: random 0 -> 8s, 0.5 -> 10s, 1 -> 12s.
     expect(delays.slice(0, 3)).toEqual([8_000, 10_000, 12_000]);
   });
 
-  it("keeps every jittered delay within the interval bounds", () => {
+  it("keeps every jittered delay within the interval bounds", async () => {
     const delays = trackDelays();
     const refresher = new ConfigRefresher(10, () => undefined);
 
     refresher.start();
-    vi.advanceTimersByTime(500_000);
+    await vi.advanceTimersByTimeAsync(500_000);
     refresher.stop();
 
     expect(delays.length).toBeGreaterThan(10);
@@ -84,18 +84,18 @@ describe("ConfigRefresher", () => {
     }
   });
 
-  it("uses the exact interval when jitter is disabled", () => {
+  it("uses the exact interval when jitter is disabled", async () => {
     const delays = trackDelays();
     const refresher = new ConfigRefresher(10, () => undefined, { jitter: 0 });
 
     refresher.start();
-    vi.advanceTimersByTime(100_000);
+    await vi.advanceTimersByTimeAsync(100_000);
     refresher.stop();
 
     expect(new Set(delays)).toEqual(new Set([10_000]));
   });
 
-  it("swallows a throwing callback and keeps refreshing", () => {
+  it("swallows a throwing callback and keeps refreshing", async () => {
     const refreshOnce = vi.fn(() => {
       throw new Error("refresh failed");
     });
@@ -103,7 +103,7 @@ describe("ConfigRefresher", () => {
 
     refresher.start();
     // An escaping throw would become an uncaughtException and kill the process.
-    expect(() => vi.advanceTimersByTime(30_000)).not.toThrow();
+    await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
 
     refresher.stop();
@@ -121,7 +121,7 @@ describe("ConfigRefresher", () => {
     expect(refreshOnce).not.toHaveBeenCalled();
   });
 
-  it("does not reschedule when the callback stops the refresher", () => {
+  it("does not reschedule when the callback stops the refresher", async () => {
     const refresher: ConfigRefresher = new ConfigRefresher(
       10,
       () => {
@@ -131,7 +131,7 @@ describe("ConfigRefresher", () => {
     );
 
     refresher.start();
-    vi.advanceTimersByTime(100_000);
+    await vi.advanceTimersByTimeAsync(100_000);
 
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -180,6 +180,56 @@ describe("ConfigRefresher", () => {
     refresher.stop();
 
     expect(delays[0]).toBeLessThanOrEqual(2 ** 31 - 1);
+  });
+
+  it("awaits an async callback before scheduling the next cycle", async () => {
+    let running = 0;
+    let overlapped = false;
+    const refreshOnce = vi.fn(async () => {
+      running += 1;
+      if (running > 1) overlapped = true;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      running -= 1;
+    });
+    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+
+    refresher.start();
+    await vi.advanceTimersByTimeAsync(60_000);
+    refresher.stop();
+
+    expect(overlapped).toBe(false);
+    expect(refreshOnce).toHaveBeenCalledTimes(4);
+  });
+
+  it("swallows a rejected callback and keeps refreshing", async () => {
+    const refreshOnce = vi.fn(() => Promise.reject(new Error("refresh failed")));
+    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+
+    refresher.start();
+    await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
+    expect(refreshOnce).toHaveBeenCalledTimes(3);
+
+    refresher.stop();
+  });
+
+  it("does not reschedule after stop during an in-flight callback", async () => {
+    let finishRefresh!: () => void;
+    const refreshOnce = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+
+    refresher.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    refresher.stop();
+    finishRefresh();
+    await Promise.resolve();
+
+    expect(refreshOnce).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it.each([-0.1, 1, 1.5, Number.NaN])("rejects the invalid jitter %s", (jitter) => {

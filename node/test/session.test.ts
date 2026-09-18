@@ -367,6 +367,40 @@ describe("PhotonSession", () => {
     },
   );
 
+  it("awaits an in-flight refresh and does not reschedule after close", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    let finishRefresh!: () => void;
+    const session = new PhotonSession(fakeConnector());
+    const refreshOnce = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRefresh = resolve;
+        }),
+    );
+    (
+      session as unknown as {
+        refreshOnce: () => Promise<void>;
+      }
+    ).refreshOnce = refreshOnce;
+
+    try {
+      await session.open();
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(refreshOnce).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+
+      await session.close();
+      finishRefresh();
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      random.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("enforces the CREATED -> OPEN -> CLOSED lifecycle", async () => {
     const connector = fakeConnector();
     const session = new PhotonSession(connector);

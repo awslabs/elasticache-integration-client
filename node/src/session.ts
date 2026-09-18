@@ -364,9 +364,9 @@ export class PhotonSession {
     if (this.disconnected.has(connector) || connector.isDead) {
       throw new PhotonConnectionError("Connection closed during initialization");
     }
-    const refresher = new ConfigRefresher(initialized.config.refreshInterval, () => {
-      this.refreshOnce();
-    });
+    const refresher = new ConfigRefresher(initialized.config.refreshInterval, () =>
+      this.refreshOnce(),
+    );
     this.refresher?.stop();
     this._config = initialized.config;
     this.predicateEvaluator = initialized.evaluator;

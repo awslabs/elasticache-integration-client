@@ -4,7 +4,7 @@
  * The refresher knows nothing about Photon, sessions, or config. It invokes a
  * no-argument callback on a jittered interval until stopped. The timer is
  * unref'd so a running refresher never keeps the Node.js process alive, and a
- * throwing callback is swallowed so it can neither crash the host process nor
+ * failing callback is swallowed so it can neither crash the host process nor
  * stop future cycles.
  */
 import { PhotonError } from "./errors.js";
@@ -37,7 +37,7 @@ export class ConfigRefresher {
 
   constructor(
     private readonly intervalSeconds: number,
-    private readonly refreshOnce: () => void,
+    private readonly refreshOnce: () => void | Promise<void>,
     options: ConfigRefresherOptions = {},
   ) {
     if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
@@ -74,26 +74,28 @@ export class ConfigRefresher {
   }
 
   /**
-   * Schedule one cycle, then reschedule from inside the callback so each delay
-   * gets freshly computed jitter.
+   * Schedule one cycle, then reschedule once it finishes so each delay gets
+   * freshly computed jitter and refreshes never overlap.
    */
   private schedule(): void {
     const timer = setTimeout(() => {
       this.timer = undefined;
       if (this.stopped) return;
-      try {
-        this.refreshOnce();
-      } catch {
-        // A failed refresh keeps the previous config; the next cycle retries.
-        // An unhandled throw here would surface as an uncaughtException and
-        // take down the host process. Swallowed for now as refreshOnce is
-        // currently a no-op.
-      }
-      if (!this.stopped) this.schedule();
+      void this.runCycle();
     }, this.nextDelayMs());
     // Node.js only; a timer object from a fake-timer implementation may not have it.
     timer.unref?.();
     this.timer = timer;
+  }
+
+  /** Await one refresh, then schedule the next. Never rejects. */
+  private async runCycle(): Promise<void> {
+    try {
+      await this.refreshOnce();
+    } catch {
+      // A failed refresh keeps the previous config; the next cycle retries.
+    }
+    if (!this.stopped) this.schedule();
   }
 
   private nextDelayMs(): number {
