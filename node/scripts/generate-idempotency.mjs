@@ -4,10 +4,12 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { format, resolveConfig } from "prettier";
 
+import { validateIdempotencyCatalog } from "./idempotency-catalog.mjs";
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const catalogPath = resolve(scriptDir, "../../shared/idempotent-operations.json");
 const outputPath = resolve(scriptDir, "../src/idempotency.ts");
-const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+const catalog = validateIdempotencyCatalog(JSON.parse(readFileSync(catalogPath, "utf8")));
 const prettierConfig = (await resolveConfig(outputPath)) ?? {};
 
 const serviceEntries = Object.entries(catalog)
