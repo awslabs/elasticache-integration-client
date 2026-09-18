@@ -134,6 +134,10 @@ describe("RESP codec", () => {
     expect(decodeResp(Buffer.from(`*2${CRLF}_${CRLF}:1${CRLF}`))).toEqual([[null, 1], 11]);
   });
 
+  it("rejects a RESP3 null with a non-empty header", () => {
+    expect(() => decodeResp(Buffer.from(`_unexpected${CRLF}`))).toThrow(PhotonProtocolError);
+  });
+
   it.each([
     Buffer.from(`$5${CRLF}helloXX`), // body is followed by a non-CRLF terminator
     Buffer.from(`$-2${CRLF}`), // only -1 is a valid null bulk length

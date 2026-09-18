@@ -144,8 +144,11 @@ function decodeBulkString(data: Buffer, header: Buffer, afterHeader: number): [R
   return [data.subarray(afterHeader, end), end + CRLF.length];
 }
 
-/** Decode a `_` RESP3 null. No body - the header line is empty. */
-function decodeNull(_data: Buffer, _header: Buffer, afterHeader: number): [RespValue, number] {
+/** Decode a `_` RESP3 null. No body - the header line must be empty. */
+function decodeNull(_data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+  if (header.length !== 0) {
+    throw new PhotonProtocolError(`Malformed RESP null: ${header.toString()}`);
+  }
   return [null, afterHeader];
 }
 

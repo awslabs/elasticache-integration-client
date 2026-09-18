@@ -21,7 +21,9 @@ import {
   PhotonCacheUnavailable,
   PhotonConfigError,
   PhotonConnectionError,
+  PhotonConnectionLost,
   PhotonError,
+  PhotonTimeoutError,
 } from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
 import {
@@ -268,8 +270,10 @@ export class PhotonSession {
    * other reply is parsed, installed with its recompiled predicates, and the refresher is
    * rescheduled on the new config's interval.
    *
-   * A `PhotonError` from any step is logged rather than escaping into the refresher: the current
-   * config and schedule stay in place and the next cycle retries.
+   * Invalid config replies and cache-level errors are logged rather than escaping into the
+   * refresher: the current config and schedule stay in place and the next cycle retries.
+   * A timeout or connection loss moves the session into recovery because the connector cannot be
+   * reused.
    */
   private async refreshOnce(): Promise<void> {
     const connector = this.connector;
@@ -305,7 +309,20 @@ export class PhotonSession {
       this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
     } catch (error) {
       if (!(error instanceof PhotonError)) throw error;
-      console.warn(`photon.config refresh failed, keeping the previous config: ${error.message}`);
+      if (error instanceof PhotonConnectionLost || error instanceof PhotonTimeoutError) {
+        if (this.state === "open" && this.connector === connector) {
+          this.handleDisconnect(connector);
+        }
+        return;
+      }
+      if (
+        this.state === "open" &&
+        this.connection === "alive" &&
+        this.connector === connector &&
+        this.refresher === refresher
+      ) {
+        console.warn(`photon.config refresh failed, keeping the previous config: ${error.message}`);
+      }
     }
   }
 
@@ -430,7 +447,9 @@ export class PhotonSession {
     // Open the fallback window before clearing the connector so a request that
     // observes no connector always sees the current outage's deadline.
     this.fallbackDeadline = performance.now() + this.reconnectPolicy.fallbackWindowMs;
-    this.refresher?.stop();
+    const refresher = this.refresher;
+    this.refresher = undefined;
+    refresher?.stop();
     this.connector = undefined;
     this.connection = "reconnecting";
     void connector.close().catch(() => undefined);

@@ -6,6 +6,7 @@ import {
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
+  PhotonTimeoutError,
 } from "../src/errors.js";
 import { PhotonConnector } from "../src/connection.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
@@ -344,6 +345,55 @@ describe("PhotonSession", () => {
     await expect(session.open()).rejects.toThrow("config failed");
     expect(refresherOf(session)).toBeUndefined();
     expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it("reconnects when a refresh timeout makes the connector unusable", async () => {
+    const initial = controlledConnector();
+    const replacement = controlledConnector();
+    const factory = vi
+      .fn<() => PhotonConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new PhotonSession(factory, {}, { baseDelayMs: 1, maxDelayMs: 1, jitter: 0 });
+    await session.open();
+    const refresher = refresherOf(session);
+    if (refresher === undefined) throw new Error("expected a refresher");
+    const stop = vi.spyOn(refresher, "stop");
+    vi.mocked(initial.connector.execute).mockRejectedValue(
+      new PhotonTimeoutError("request timed out during refresh"),
+    );
+
+    await refreshOnce(session);
+    await waitForState(session, "alive");
+
+    expect(session.isOpen).toBe(true);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(initial.connector.close).toHaveBeenCalledOnce();
+    expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledTimes(2);
+    await session.close();
+  });
+
+  it("does not log an in-flight refresh failure during shutdown", async () => {
+    let rejectRefresh!: (error: unknown) => void;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    vi.mocked(connector.execute).mockImplementation(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectRefresh = reject;
+        }),
+    );
+
+    const refreshing = refreshOnce(session);
+    await session.close();
+    rejectRefresh(new PhotonConnectionLost("connection closed"));
+    await refreshing;
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it.each(["close", "destroy"] as const)(

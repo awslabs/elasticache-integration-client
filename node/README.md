@@ -49,9 +49,10 @@ Evaluation errors and malformed or non-object JSON bodies count as no match.
 
 The predicates are compiled when the session opens and recompiled whenever a
 refresh returns a new config. A refresh sends `photon.config` with no argument;
-a RESP3 null reply means the config is unchanged. A failed or malformed refresh
-keeps the last known-good config, predicates, and refresh interval, and the next
-cycle retries.
+a RESP3 null reply means the config is unchanged. A failed or malformed config
+reply keeps the last known-good config, predicates, and refresh interval, and
+the next cycle retries. A transport timeout or connection loss discards the
+unusable connector and starts background recovery.
 
 ## Client
 
