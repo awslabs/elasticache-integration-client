@@ -3,6 +3,8 @@ package software.amazon.photon.session;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Generic periodic-callback runner used to drive config refresh.
@@ -21,6 +23,8 @@ import java.util.concurrent.TimeUnit;
  * <p>Package-private: this is internal machinery and is not part of the public API.
  */
 class ConfigRefresher {
+
+    private static final Logger LOGGER = Logger.getLogger(ConfigRefresher.class.getName());
 
     /** Jitter bounds: the delay is the interval scaled between {@code 0.8x} and {@code 1.2x}. */
     private static final double JITTER_MIN = 0.8;
@@ -79,7 +83,8 @@ class ConfigRefresher {
     }
 
     /**
-     * Signal the loop to stop and wait up to five seconds for the thread to exit. Idempotent.
+     * Signal the loop to stop, interrupt an active callback, and wait up to five seconds for the
+     * thread to exit. Idempotent.
      */
     void stop() {
         stop(DEFAULT_STOP_TIMEOUT_MILLIS);
@@ -89,14 +94,15 @@ class ConfigRefresher {
      * Signal the loop to stop and wait up to {@code timeoutMillis} for the thread to exit.
      *
      * <p>Idempotent: counting down an already-open latch and joining an already-dead thread are
-     * both no-ops. There is no self-join guard because no code path calls {@code stop()} from
-     * inside the refresher thread itself. If the joining thread is interrupted, its interrupt
-     * status is restored rather than swallowed.
+     * both no-ops. An active callback is interrupted so an interruptible callback can finish
+     * before the join timeout expires. If the joining thread is interrupted, its interrupt status
+     * is restored rather than swallowed.
      */
     void stop(long timeoutMillis) {
         stop.countDown();
         Thread refreshThread = this.thread;
         if (refreshThread != null && refreshThread.isAlive()) {
+            refreshThread.interrupt();
             try {
                 refreshThread.join(timeoutMillis);
             } catch (InterruptedException e) {
@@ -108,7 +114,13 @@ class ConfigRefresher {
     private void refreshLoop() {
         try {
             while (!waiter.await(stop, nextRefreshDelaySeconds())) {
-                refreshOnce.run();
+                try {
+                    refreshOnce.run();
+                } catch (RuntimeException e) {
+                    // One failed callback must not silently terminate the daemon and disable
+                    // every future refresh.
+                    LOGGER.log(Level.WARNING, "Config refresh callback failed", e);
+                }
             }
         } catch (InterruptedException e) {
             // Interruption is treated as a stop signal; restore the flag and exit the loop.

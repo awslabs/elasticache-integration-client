@@ -112,6 +112,45 @@ class ConfigRefresherTest {
     }
 
     @Test
+    void stop_interruptsAnInFlightCallback() throws Exception {
+        CountDownLatch callbackStarted = new CountDownLatch(1);
+        CountDownLatch callbackInterrupted = new CountDownLatch(1);
+        ConfigRefresher refresher = track(new ConfigRefresher(0.01, () -> {
+            callbackStarted.countDown();
+            try {
+                new CountDownLatch(1).await();
+            } catch (InterruptedException e) {
+                callbackInterrupted.countDown();
+                Thread.currentThread().interrupt();
+            }
+        }));
+        refresher.start();
+
+        assertTrue(callbackStarted.await(5, TimeUnit.SECONDS), "callback did not start");
+        refresher.stop(1000);
+
+        assertTrue(callbackInterrupted.await(1, TimeUnit.SECONDS),
+                "stop() did not interrupt the active callback");
+        assertFalse(refresher.thread().isAlive());
+    }
+
+    @Test
+    void callbackFailure_doesNotStopLaterRefreshes() throws Exception {
+        AtomicInteger invocations = new AtomicInteger();
+        FakeWaiter waiter = new FakeWaiter(3);
+        ConfigRefresher refresher = track(new ConfigRefresher(60, () -> {
+            invocations.incrementAndGet();
+            throw new RuntimeException("refresh failed");
+        }, false, new Random(), waiter));
+
+        refresher.start();
+        refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
+
+        assertEquals(3, invocations.get());
+        assertFalse(refresher.thread().isAlive());
+    }
+
+    @Test
     void stop_isIdempotent() {
         ConfigRefresher refresher = track(new ConfigRefresher(100, () -> { }));
         refresher.start();
