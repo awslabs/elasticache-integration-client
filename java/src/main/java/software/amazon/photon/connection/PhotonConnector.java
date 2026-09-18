@@ -46,7 +46,7 @@ import java.util.function.Supplier;
  * <p>Handles TLS setup, AUTH, the {@code photon.config} handshake, and
  * {@code photon.request} command execution. Multiple threads can safely call
  * {@link #request(PhotonRequest)} concurrently — responses are correlated via
- * a FIFO queue.
+ * FIFO position or deferred request ID.
  *
  * <p>Lifecycle: {@code connect()} → {@code authenticate(String, String)} → {@code configureAndStartReader()}
  * → {@code request()} (repeated) → {@code close()}.
@@ -57,13 +57,12 @@ import java.util.function.Supplier;
  * <h3>Thread Safety</h3>
  * <p>This connection is thread-safe once fully connected. The {@code request()}
  * method uses a send-lock to serialize writes while allowing concurrent callers.
- * A background reader thread resolves responses in FIFO order.
+ * A background reader thread resolves positional and request-ID responses.
  *
  * <h3>Timeout Behavior</h3>
- * <p>When a read timeout occurs, the connection is closed and all pending
- * requests are failed. This is intentional: the FIFO protocol requires strict
- * ordering, and after a timeout we cannot reliably determine which request
- * the next response belongs to.
+ * <p>A timeout while a request is still FIFO-correlated closes the connection,
+ * because a late reply could be matched to the wrong caller. A deferred request
+ * tracked by ID can time out independently; a later push for that ID is dropped.
  */
 public class PhotonConnector implements Closeable {
 
@@ -148,7 +147,7 @@ public class PhotonConnector implements Closeable {
      * @param sslContext       the SSL context
      * @param connectTimeoutMs connection timeout in milliseconds
      * @param readTimeoutMs    read timeout in milliseconds
-     * @param maxPending       maximum concurrent pending requests
+     * @param maxPending       maximum requests awaiting either a FIFO or a deferred reply
      */
     public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int readTimeoutMs, int maxPending) {
@@ -164,7 +163,7 @@ public class PhotonConnector implements Closeable {
      * @param connectTimeoutMs        TCP connection timeout in milliseconds
      * @param initializationTimeoutMs TLS, AUTH, and config timeout in milliseconds
      * @param requestTimeoutMs        total timeout for each Photon request attempt
-     * @param maxPending              maximum concurrent pending requests
+     * @param maxPending              maximum requests awaiting either a FIFO or a deferred reply
      */
     public PhotonConnector(String host, int port, SSLContext sslContext,
                             int connectTimeoutMs, int initializationTimeoutMs,
@@ -303,7 +302,7 @@ public class PhotonConnector implements Closeable {
         }
 
         try {
-            byte[] authCmd = RespCodec.encodeCommand("AUTH", 
+            byte[] authCmd = RespCodec.encodeCommand("AUTH",
                     userId.getBytes(StandardCharsets.UTF_8),
                     authToken.getBytes(StandardCharsets.UTF_8));
             sendRawDirect(authCmd);
@@ -433,12 +432,12 @@ public class PhotonConnector implements Closeable {
      * Send a {@code photon.request} and return the parsed response.
      *
      * <p>This method is thread-safe and can be called concurrently from multiple
-     * threads. Responses are correlated in FIFO order.
+     * threads. Responses are correlated by FIFO position or deferred request ID.
      *
      * @param request the request to send
      * @return the cache response
      * @throws PhotonConnectionLost     if the connection dies
-     * @throws PhotonTimeoutError if the read times out (connection is then closed)
+     * @throws PhotonTimeoutError       if the request times out
      */
     public PhotonResponse request(PhotonRequest request) {
         return request(request, new PhotonRequestCancellation());
@@ -458,7 +457,7 @@ public class PhotonConnector implements Closeable {
         byte[] encoded = RespCodec.encodeCommand(cmd.getCommandName(),
                 cmd.getArgs().toArray(new byte[0][]));
 
-        RespValue reply = sendAndAwait(encoded, cancellation);
+        RespValue reply = sendAndAwait(encoded, cancellation, true);
         return PhotonProtocol.parseRequestResponse(reply);
     }
 
@@ -608,10 +607,11 @@ public class PhotonConnector implements Closeable {
      * Uses the send lock to ensure atomic register+send.
      */
     private RespValue sendAndAwait(byte[] encoded) {
-        return sendAndAwait(encoded, new PhotonRequestCancellation());
+        return sendAndAwait(encoded, new PhotonRequestCancellation(), false);
     }
 
-    private RespValue sendAndAwait(byte[] encoded, PhotonRequestCancellation cancellation) {
+    private RespValue sendAndAwait(byte[] encoded, PhotonRequestCancellation cancellation,
+                                   boolean deferredResponseAllowed) {
         if (cancellation.isCancelled()) {
             throw new PhotonRequestCancellation.CancelledException();
         }
@@ -638,7 +638,7 @@ public class PhotonConnector implements Closeable {
             }
 
             // Must register before sending to maintain FIFO correlation
-            future = pending.registerNewRequest();
+            future = pending.registerNewRequest(deferredResponseAllowed);
 
             // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
             OutputStream out;
@@ -666,8 +666,8 @@ public class PhotonConnector implements Closeable {
             sendLock.unlock();
         }
 
-        Runnable cancellationAction = () -> future.completeExceptionally(
-                new PhotonRequestCancellation.CancelledException());
+        Runnable cancellationAction = () -> pending.cancel(
+                future, new PhotonRequestCancellation.CancelledException());
         cancellation.register(cancellationAction);
 
         // Wait for response
@@ -678,12 +678,33 @@ public class PhotonConnector implements Closeable {
             }
             return future.get(remainingNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
-            // Timeout waiting for response - connection must die for FIFO safety
-            markDead();
             PhotonTimeoutError timeout = new PhotonTimeoutError(
                     "Photon request timed out after " + requestTimeoutMs + "ms", e);
-            pending.failAll(timeout);
-            throw timeout;
+            PendingRequests.TimeoutDisposition disposition =
+                    pending.onTimeout(future, timeout);
+            switch (disposition) {
+                case ASYNC_REMOVED:
+                    throw timeout;
+                case COMPLETED:
+                    try {
+                        return future.get();
+                    } catch (ExecutionException completedFailure) {
+                        throw requestFailure(completedFailure.getCause());
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        markDead();
+                        PhotonConnectionLost failure =
+                                new PhotonConnectionLost("Request interrupted", interrupted);
+                        pending.failAll(failure);
+                        throw failure;
+                    }
+                case FATAL:
+                    markDead();
+                    throw timeout;
+                default:
+                    throw new IllegalStateException(
+                            "Unknown timeout disposition: " + disposition);
+            }
         } catch (ExecutionException e) {
             // Reader thread failed the future - preserve the original exception type
             Throwable cause = e.getCause();
@@ -706,6 +727,14 @@ public class PhotonConnector implements Closeable {
         } finally {
             cancellation.clear(cancellationAction);
         }
+    }
+
+    private PhotonError requestFailure(Throwable cause) {
+        if (cause instanceof PhotonError) {
+            return (PhotonError) cause;
+        }
+        return new PhotonConnectionLost(
+                "Photon request failed before a response was received", cause);
     }
 
     private static long deadlineAfter(int timeoutMs) {

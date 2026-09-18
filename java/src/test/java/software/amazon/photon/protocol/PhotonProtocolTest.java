@@ -1,6 +1,7 @@
 package software.amazon.photon.protocol;
 
 import org.junit.jupiter.api.Test;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
@@ -161,7 +162,8 @@ class PhotonProtocolTest {
     @Test
     void parseConfigResponse_errorFrame() {
         RespError error = new RespError("ERR", "something failed");
-        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(error));
+        PhotonError thrown = assertThrows(PhotonError.class, () -> PhotonProtocol.parseConfigResponse(error));
+        assertFalse(thrown instanceof PhotonProtocolError);
     }
 
     @Test

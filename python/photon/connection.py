@@ -22,6 +22,7 @@ import logging
 import ssl
 import threading
 from collections import deque
+from collections.abc import Callable
 from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeout
 
@@ -263,12 +264,28 @@ class PhotonConnector:
         self._read_size = socket_read_size
         self._auth_provider = auth_provider
 
+        #: Called once when this connection ends, for any reason, including a deliberate close().
+        #: Assigned by the owner after construction, because a connector factory takes no arguments.
+        #: Must not block or re-enter the connector. It runs on whichever thread noticed the end:
+        #: the one owning the I/O loop, or the caller of close() when that loop had already stopped.
+        self.on_disconnect: Callable[[], None] | None = None
+        self._disconnect_notified = False
+
         self._reader: _SocketReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._io_loop_thread = _LoopThread()
         self._pending = _PendingRequests(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
+
+    @property
+    def is_alive(self) -> bool:
+        """Whether this connection is still open.
+
+        A connector is single-use: once closed, it never becomes alive again.
+        Reconnecting creates a new connector.
+        """
+        return not self._closed
 
     # --- lifecycle -----------------------------------------------------------
     def connect(self) -> None:
@@ -440,6 +457,9 @@ class PhotonConnector:
             logger.warning("photon connector I/O thread did not stop within %ss", _CLOSE_TIMEOUT)
         # The I/O thread has already done this, unless the join above expired.
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
+        # If the join expired the I/O thread never got to notify, and the owner
+        # would go on believing this connection is usable.
+        self._notify_disconnect()
 
     def _release_conn(self) -> None:
         """Abort the transport, fail every waiting caller, and forget the connection.
@@ -458,6 +478,24 @@ class PhotonConnector:
             except Exception:
                 logger.warning("photon connector transport abort failed", exc_info=True)
         self._pending.fail_all(PhotonConnectionLost("connection closed"))
+        self._notify_disconnect()
+
+    def _notify_disconnect(self) -> None:
+        """Notify the owner that this connection has ended, at most once.
+
+        Callback failures are logged and suppressed so they cannot terminate the I/O thread.
+        """
+        with self._state_lock:
+            if self._disconnect_notified:
+                return
+            self._disconnect_notified = True
+        callback = self.on_disconnect
+        if not callback:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.warning("photon connector on_disconnect callback failed", exc_info=True)
 
     # --- send path -----------------------------------------------------------
     def _send(self, frame: bytes, reply_future: Future) -> None:
@@ -503,7 +541,10 @@ class PhotonConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise PhotonConnectionLost("connection closed") from exc
-        timeout = timeout or self._request_timeout
+        # Not `timeout or ...`: an explicit timeout=0 means "do not wait for a reply", and `or`
+        # would quietly turn it into the default instead.
+        if timeout is None:
+            timeout = self._request_timeout
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:

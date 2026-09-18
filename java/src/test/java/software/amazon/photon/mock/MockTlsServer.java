@@ -30,6 +30,8 @@ public class MockTlsServer implements Closeable {
     private final Thread serverThread;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final SSLContext sslContext;
+    private final Object writeLock = new Object();
+    private volatile OutputStream activeOutput;
 
     public MockTlsServer(MockCache cache) throws Exception {
         this.cache = cache;
@@ -68,6 +70,7 @@ public class MockTlsServer implements Closeable {
     private void handleClient(Socket client) {
         try (InputStream in = client.getInputStream();
              OutputStream out = client.getOutputStream()) {
+            activeOutput = out;
             byte[] buffer = new byte[8192];
             ByteArrayOutputStream accum = new ByteArrayOutputStream();
 
@@ -90,9 +93,7 @@ public class MockTlsServer implements Closeable {
                             RespArray array = (RespArray) value;
                             RespValue response = cache.handle(array.getElements());
                             if (response != null) {
-                                byte[] encoded = encodeResponse(response);
-                                out.write(encoded);
-                                out.flush();
+                                write(out, encodeResponse(response));
                             } else if (cache.getFailureMode() == MockCache.FailureMode.HANG) {
                                 // Keep the connection open without responding.
                             } else {
@@ -116,6 +117,27 @@ public class MockTlsServer implements Closeable {
             }
         } catch (IOException e) {
             // Client disconnected
+        } finally {
+            activeOutput = null;
+        }
+    }
+
+    public void sendPush(RespPush push) throws IOException {
+        sendRaw(encodeResponse(push));
+    }
+
+    public void sendRaw(byte[] frame) throws IOException {
+        OutputStream out = activeOutput;
+        if (out == null) {
+            throw new IOException("No active client connection");
+        }
+        write(out, frame);
+    }
+
+    private void write(OutputStream out, byte[] frame) throws IOException {
+        synchronized (writeLock) {
+            out.write(frame);
+            out.flush();
         }
     }
 
@@ -152,6 +174,14 @@ public class MockTlsServer implements Closeable {
         } else if (value instanceof RespArray) {
             List<RespValue> elements = ((RespArray) value).getElements();
             String header = "*" + elements.size() + "\r\n";
+            byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
+            out.write(headerBytes, 0, headerBytes.length);
+            for (RespValue element : elements) {
+                encodeValue(out, element);
+            }
+        } else if (value instanceof RespPush) {
+            List<RespValue> elements = ((RespPush) value).getElements();
+            String header = ">" + elements.size() + "\r\n";
             byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
             out.write(headerBytes, 0, headerBytes.length);
             for (RespValue element : elements) {

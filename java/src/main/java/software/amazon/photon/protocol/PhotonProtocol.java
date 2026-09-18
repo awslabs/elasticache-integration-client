@@ -2,6 +2,7 @@ package software.amazon.photon.protocol;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
@@ -36,6 +37,7 @@ public final class PhotonProtocol {
 
     public static final String CONFIG_COMMAND = "photon.config";
     public static final String REQUEST_COMMAND = "photon.request";
+    public static final String PUSH_KIND_RESPONSE = "photon.response";
 
     private static final Set<String> EXCLUDED_HEADERS;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -118,8 +120,7 @@ public final class PhotonProtocol {
     public static ResolvedConfig parseConfigResponse(RespValue value) {
         if (value instanceof RespError) {
             RespError error = (RespError) value;
-            throw new PhotonProtocolError(
-                    "Server error: " + error.getCode() + " " + error.getMessage());
+            throw new PhotonError("Server error: " + error.getCode() + " " + error.getMessage());
         }
         if (value instanceof RespArray) {
             throw new PhotonProtocolError("Unexpected array response for config");
