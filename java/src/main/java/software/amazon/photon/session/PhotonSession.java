@@ -140,7 +140,7 @@ public class PhotonSession implements Closeable {
         }
 
         RuntimeException lastFailure = null;
-        for (int attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
+        for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
             PhotonConnector next = null;
             try {
                 next = connectorFactory.get();

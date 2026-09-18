@@ -445,6 +445,80 @@ class PhotonSessionTest {
     }
 
     @Test
+    void reconnectRetriesWhenCandidateDiesBeforePublication() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        DiesBeforePublishConnector dyingReplacement = new DiesBeforePublishConnector();
+        TestConnector stableReplacement = new TestConnector();
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        PhotonSession session = new PhotonSession(
+                () -> {
+                    int connection = connectionCreationCount.getAndIncrement();
+                    if (connection == 0) {
+                        return initialConnector;
+                    }
+                    return connection == 1 ? dyingReplacement : stableReplacement;
+                },
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        try {
+            session.open();
+            initialConnector.fail();
+
+            assertNull(session.request(request()));
+            awaitState(session, PhotonSession.State.OPEN);
+
+            assertEquals(200, session.request(request()).getStatusCode());
+            assertEquals(3, connectionCreationCount.get());
+            assertTrue(dyingReplacement.isDead());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void reconnectRetriesNonPhotonConfigFailureWithoutPublishingPartialState()
+            throws Exception {
+        TestConnector initialConnector = new TestConnector(false, "true");
+        FailingConfigConnector failingReplacement = new FailingConfigConnector();
+        CountDownLatch stableStarted = new CountDownLatch(1);
+        CountDownLatch allowStable = new CountDownLatch(1);
+        BlockingConnectConnector stableReplacement =
+                new BlockingConnectConnector(stableStarted, allowStable, "false");
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        PhotonSession session = new PhotonSession(
+                () -> {
+                    int connection = connectionCreationCount.getAndIncrement();
+                    if (connection == 0) {
+                        return initialConnector;
+                    }
+                    return connection == 1 ? failingReplacement : stableReplacement;
+                },
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        try {
+            session.open();
+            ResolvedConfig initialConfig = session.getConfig();
+            initialConnector.fail();
+
+            assertNull(session.request(request()));
+            assertTrue(stableStarted.await(1, TimeUnit.SECONDS));
+            assertEquals(PhotonSession.State.RECONNECTING, session.getState());
+            assertSame(initialConfig, session.getConfig());
+            assertTrue(failingReplacement.isDead());
+
+            allowStable.countDown();
+            awaitState(session, PhotonSession.State.OPEN);
+            assertNull(session.request(request()));
+            assertEquals(3, connectionCreationCount.get());
+        } finally {
+            allowStable.countDown();
+            session.close();
+        }
+    }
+
+    @Test
     void concurrentCallersShareOneRecoveryFlight() throws Exception {
         TestConnector initialConnector = new TestConnector();
         TestConnector replacementConnector = new TestConnector();
@@ -624,11 +698,37 @@ class PhotonSessionTest {
         }
     }
 
+    private static final class DiesBeforePublishConnector extends TestConnector {
+        private boolean firstReadinessCheck = true;
+
+        @Override
+        public boolean isReady() {
+            if (firstReadinessCheck) {
+                firstReadinessCheck = false;
+                fail();
+            }
+            return super.isReady();
+        }
+    }
+
+    private static final class FailingConfigConnector extends TestConnector {
+        @Override
+        public ResolvedConfig configureAndStartReader(Map<String, Object> configOverrides) {
+            throw new IllegalStateException("injected non-Photon config failure");
+        }
+    }
+
     private static final class BlockingConnectConnector extends TestConnector {
         private final CountDownLatch started;
         private final CountDownLatch proceed;
 
         private BlockingConnectConnector(CountDownLatch started, CountDownLatch proceed) {
+            this(started, proceed, "true");
+        }
+
+        private BlockingConnectConnector(CountDownLatch started, CountDownLatch proceed,
+                                         String predicateExpression) {
+            super(false, predicateExpression);
             this.started = started;
             this.proceed = proceed;
         }
