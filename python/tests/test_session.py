@@ -10,6 +10,8 @@ Command building/normalization details are protocol.py's contract and are covere
 test_protocol.py; these tests assert only session behavior (lifecycle + delegation).
 """
 
+import json
+
 import pytest
 
 from photon.exceptions import PhotonConfigError, PhotonError
@@ -102,6 +104,120 @@ def test_a_failed_refresher_closes_everything(failing_step, monkeypatch):
     with pytest.raises(RuntimeError):
         PhotonSession(lambda: connector)
     connector.close.assert_called_once_with()
+
+
+# --- refresh: fetch and apply ----------------------------------------------------
+
+def test_refresh_once_sends_the_no_argument_form():
+    """A refresh tick sends photon.config with no argument: the connection was configured with
+    the current overrides before it was published, so the server already has them."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector, overrides={"flag": True})
+    connector.execute.reset_mock()  # discard the configure call
+    session._refresh_once()
+    connector.execute.assert_called_once_with("photon.config", timeout=connector.config_timeout)
+    session.close()
+
+
+def test_refresh_once_null_reply_leaves_config_and_predicates_unchanged():
+    """A RESP3 null reply (decoded to None) means the server's config is unchanged too: no swap,
+    no reschedule."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    original_config = session._config
+    session._refresher.set_interval = lambda interval: pytest.fail(
+        "must not reschedule on a null reply"
+    )
+    session._refresh_once()  # mock_connector answers the no-argument form with a null
+    assert session._config is original_config
+    session.close()
+
+
+def test_refresh_once_applies_a_server_initiated_change():
+    """A resolved-config reply to a no-argument tick is installed and reschedules the loop: the
+    branch is driven by the reply received, not by what was sent."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = json.dumps(
+        {"version": "1.0", "refresh_interval": 45, "predicates": []}
+    ).encode()
+    session._refresh_once()
+    assert session._config.refresh_interval == 45
+    assert session._refresher._interval == 45
+    session.close()
+
+
+def test_refresh_once_does_nothing_while_no_connection_is_available():
+    """A tick landing mid-reconnect sends nothing and keeps the current config, since whichever
+    connection comes back resolves its own config as it is configured."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    original_config = session._config
+    session._connection_manager._connector = None
+    connector.execute.reset_mock()
+    session._refresh_once()  # must not raise
+    connector.execute.assert_not_called()
+    assert session._config is original_config
+    session.close()
+
+
+def test_configuring_a_connection_reschedules_the_refresher():
+    """Configuring a connection installs its config the same way a refresh does, so a reconnect
+    that resolves a new interval reschedules the loop."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    reconnected = mock_connector()
+    reconnected.execute.side_effect = None
+    reconnected.execute.return_value = json.dumps(
+        {"version": "1.0", "refresh_interval": 45, "predicates": []}
+    ).encode()
+    session._configure(reconnected)
+    assert session._refresher._interval == 45
+    session.close()
+
+
+def test_refresh_once_swallows_connector_error_and_keeps_current_config():
+    """A PhotonError from execute() must not escape _refresh_once: it would propagate out of the
+    refresher loop and silently kill the thread, stopping every future refresh."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    original_config = session._config
+    connector.execute.side_effect = PhotonError("connection lost")
+    session._refresh_once()  # must not raise
+    assert session._config is original_config
+    session.close()
+
+
+def test_refresh_once_swallows_malformed_reply_and_keeps_current_config():
+    """A reply that fails to parse leaves the last known good config installed — _replace_config
+    is never reached, so no code is needed to retain it."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    original_config = session._config
+    connector.execute.side_effect = None
+    connector.execute.return_value = b'{"version":"1.0"}'  # no refresh_interval: malformed
+    session._refresh_once()  # must not raise
+    assert session._config is original_config
+    session.close()
+
+
+def test_predicates_swap_is_visible_to_the_next_request():
+    """A predicate recompiled by _replace_config takes effect on the very next request() call."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    # A config with no predicates at all: every request must now pass through (None).
+    empty_config = {"version": "1.0", "refresh_interval": 60, "predicates": []}
+    connector.execute.side_effect = None
+    connector.execute.return_value = json.dumps(empty_config).encode()
+    session._refresh_once()
+    request = PhotonRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        metadata=RequestMetadata(service="dynamodb", operation="GetItem"),
+    )
+    assert session.request(request) is None  # no predicate left to match
+    session.close()
 
 
 # --- request path ---------------------------------------------------------------

@@ -80,6 +80,12 @@ def test_stop_is_idempotent():
     refresher.stop()  # must not raise
 
 
+def test_stop_without_start_does_not_raise():
+    """stop() before start() is a no-op: there is no thread to join. Reachable in production via
+    PhotonSession.__init__'s failure path, which closes a session that never started a refresher."""
+    ConfigRefresher(10, lambda: None).stop()
+
+
 def test_next_refresh_delay_without_jitter_is_exact():
     refresher = ConfigRefresher(10, lambda: None, jitter=0.0)
     for _ in range(5):
@@ -100,6 +106,41 @@ def test_jitter_actually_varies_the_delay():
     """
     refresher = ConfigRefresher(10, lambda: None)
     assert len({refresher._next_refresh_delay() for _ in range(50)}) > 1
+
+
+def test_set_interval_changes_next_computed_delay():
+    """set_interval takes effect on the next _next_refresh_delay() call."""
+    refresher = ConfigRefresher(10, lambda: None, jitter=0.0)
+    assert refresher._next_refresh_delay() == 10
+    refresher.set_interval(30)
+    assert refresher._next_refresh_delay() == 30
+
+
+def test_set_interval_before_start_applies_to_every_delay():
+    """An interval set before the thread exists is in place by the time the loop computes its
+    first delay, so no delay ever uses the constructor's interval."""
+    refresh_once, get_count = _counter()
+    wait, calls = _fake_wait(stop_after=2)
+    refresher = ConfigRefresher(10, refresh_once, jitter=0.0, wait=wait)
+    refresher.set_interval(99)
+    refresher.start()
+    refresher._thread.join(timeout=5)
+    assert calls == [99, 99, 99]
+
+
+def test_set_interval_from_the_callback_applies_only_to_later_delays():
+    """The reschedule path as production drives it: set_interval is called from inside the
+    callback, after a wait has returned. The delay already handed to `wait` keeps the old
+    interval; every delay computed afterward uses the new one."""
+    wait, calls = _fake_wait(stop_after=2)
+
+    def refresh_once():
+        refresher.set_interval(99)
+
+    refresher = ConfigRefresher(10, refresh_once, jitter=0.0, wait=wait)
+    refresher.start()
+    refresher._thread.join(timeout=5)
+    assert calls == [10, 99, 99]
 
 
 def test_thread_is_daemon():

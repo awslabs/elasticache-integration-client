@@ -189,6 +189,7 @@ def test_truncation_raises_incomplete_frame(partial, message):
         (b"$notanint\r\n", "Malformed RESP bulk length"),
         (b"*notanint\r\n", "Malformed RESP array length"),
         (b">2\r\n:1\r\n:2\r\n", "Invalid RESP push kind"),
+        (b"_bogus\r\n", "Malformed RESP null"),
     ],
 )
 def test_decode_garbage_raises_protocol_error(garbage, message):

@@ -44,6 +44,14 @@ class ConfigRefresher:
         if self._thread:
             self._thread.join(timeout=timeout)
 
+    def set_interval(self, interval: float) -> None:
+        """Change the interval used for all subsequent delays.
+
+        Applies starting with the next computed delay. Only called from the refresher's own
+        thread, so no lock is needed.
+        """
+        self._interval = interval
+
     def _refresh_loop(self) -> None:
         # wait() -> True means stop() fired (quit); False means the interval elapsed (refresh)
         while not self._wait(self._stop, self._next_refresh_delay()):

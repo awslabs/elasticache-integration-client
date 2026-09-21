@@ -63,8 +63,13 @@ def _parse_headers(raw_headers: bytes) -> dict[str, str]:
     }
 
 
-def serialize_config(overrides: dict) -> tuple[str, list[bytes]]:
-    """Build the ``photon.config`` command from an overrides dict."""
+def serialize_config(overrides: dict | None) -> tuple[str, list[bytes]]:
+    """Build the ``photon.config`` command. ``overrides=None`` means "unchanged since
+    last send"; a dict (including ``{}``) is sent explicitly, and the server resets to
+    its defaults on an explicit ``{}``.
+    """
+    if overrides is None:
+        return CONFIG_COMMAND, []
     return CONFIG_COMMAND, [json.dumps(overrides, separators=(",", ":")).encode()]
 
 

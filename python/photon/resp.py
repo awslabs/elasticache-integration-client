@@ -91,7 +91,10 @@ def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
 
 
 def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
-    """Decode a ``_`` null, the RESP3 form. The line carries no payload, so it is ignored."""
+    """Decode a ``_`` null, the RESP3 form. A valid one carries no body, so a payload is
+    rejected rather than ignored: a garbled null would otherwise pass as a real one."""
+    if header:
+        raise PhotonProtocolError(f"Malformed RESP null: {header!r}")
     return None, after_header
 
 

@@ -9,18 +9,21 @@ While no connection is available, requests are declined so the caller sends them
 service itself — for as long as the fallback window allows.
 
 A :class:`~photon.refresh.ConfigRefresher` runs for as long as the session is open, so the config
-can be re-resolved on the live connection rather than only when a new one is built. Here it is
-lifecycle only: ``_refresh_once`` is a no-op, so nothing is fetched or applied yet.
+can be re-resolved on the live connection rather than only when a new one is built. A refresh that
+fails leaves the current config in place; recording failures and raising a staleness flag are not
+yet implemented.
 """
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable
 
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
-from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError
-from photon.models import PhotonRequest, PhotonResponse
+from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
+from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
@@ -30,6 +33,8 @@ from photon.protocol import (
     serialize_request,
 )
 from photon.refresh import ConfigRefresher
+
+logger = logging.getLogger(__name__)
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -84,6 +89,7 @@ class PhotonSession:
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
+        self._predicates_lock = threading.Lock()
         self._refresher: ConfigRefresher | None = None
         self._connection_manager = ConnectionManager(
             connector_factory, self._configure, policy or ReconnectPolicy()
@@ -106,10 +112,8 @@ class PhotonSession:
         Called for the initial connection and for every reconnect, so each connection negotiates
         RESP3, authenticates with fresh credentials, and routes by the latest resolved config.
 
-        Neither result is published unless both succeed, so a configure that fails half-way leaves
-        the session routing by the config it was already using rather than pairing a new config with
-        the predicates of an older one. The two stores are not atomic together, so a request can
-        briefly see the new config beside the old predicates; nothing reads both today.
+        Nothing is installed unless the whole exchange succeeds, so a configure that fails
+        half-way leaves the session routing by the config it was already using.
 
         The connection manager owns the connector and closes it if this raises.
         """
@@ -118,12 +122,51 @@ class PhotonSession:
         config = parse_config_response(
             connector.execute(command, *args, timeout=connector.config_timeout)
         )
-        # Compile the resolved predicates once; the request path evaluates them per request.
+        self._replace_config(config)
+
+    def _replace_config(self, config: ResolvedConfig) -> None:
+        """Install a resolved config, the predicates compiled from it, and its refresh interval.
+
+        Called when a connection is configured and after each successful refresh, so both paths
+        install a new config the same way, and this is the only place either store is written.
+
+        ``_predicates`` is the one store with a concurrent reader — ``request()``, on the caller
+        thread — so only its write takes ``_predicates_lock``, and compiling happens outside it.
+        The two stores are therefore not atomic together: a request can briefly see the new config
+        beside the old predicates. Nothing reads both.
+        """
         predicates = compile_predicates(config.raw)
-        self._config, self._predicates = config, predicates
+        self._config = config
+        with self._predicates_lock:
+            self._predicates = predicates
+        if self._refresher:
+            self._refresher.set_interval(config.refresh_interval)
 
     def _refresh_once(self) -> None:
-        """Placeholder. Fetching, parsing, and swapping in a new config is not yet implemented."""
+        """Send one ``photon.config`` refresh and apply the result.
+
+        Always the no-argument form: a connection is configured with the overrides before it is
+        published, so the server already has them. A RESP3 null reply means the config has not
+        changed and nothing happens; any other reply is installed by ``_replace_config``, which
+        also reschedules the refresher on the interval the new config carries.
+
+        Nothing is sent while no connection is available, since the next connection resolves its
+        own config as it comes up.
+
+        A :class:`PhotonError` from any step is caught so it cannot escape the refresher thread
+        and kill it: the current config and schedule stay in place and the next tick retries.
+        """
+        connector = self._connection_manager.connector
+        if not connector:
+            return
+        command, args = serialize_config(None)
+        try:
+            reply = connector.execute(command, *args, timeout=connector.config_timeout)
+            if reply is None:
+                return
+            self._replace_config(parse_config_response(reply))
+        except PhotonError:
+            logger.warning("Config refresh failed; keeping the current config", exc_info=True)
 
     def request(self, request: PhotonRequest) -> PhotonResponse | None:
         """Route a request to Photon, or return None to let the caller handle it.
@@ -141,7 +184,9 @@ class PhotonSession:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
                 window has closed.
         """
-        if not should_route_to_photon(self._predicates, request):
+        with self._predicates_lock:
+            predicates = self._predicates
+        if not should_route_to_photon(predicates, request):
             return None
 
         # Read the connector once; the reconnect thread may replace it concurrently.

@@ -298,6 +298,8 @@ class MockCache:
         failure: str | None = None,
         failure_command: str = "photon.request",  # which command triggers `failure` (e.g. "auth")
         failure_after_reply: bool = False,  # reply normally first, then apply `failure`
+        no_arg_config_reply: dict | None = None,  # reply for no-arg photon.config; None = RESP3
+                                                   # null ("unchanged"). Mutable between ticks.
     ) -> None:
         self._config = config or DEFAULT_RESOLVED_CONFIG
         self.tls = tls
@@ -311,12 +313,13 @@ class MockCache:
         self.failure = failure
         self.failure_command = failure_command.lower()
         self.failure_after_reply = failure_after_reply
+        self.no_arg_config_reply = no_arg_config_reply
 
         # Recording, for test assertions.
         self.received_commands: list[list[bytes]] = []  # every command, full arg list incl. name
         self.photon_command_log: list[str] = []  # names of auth/photon.* commands, in order
         self.requests: list[ReceivedRequest] = []  # decoded photon.request records, in order
-        self.config_overrides: list[dict] = []  # decoded photon.config overrides, in order
+        self.config_overrides: list[dict | None] = []  # decoded photon.config overrides, in order
         self.protocol_errors: list[str] = []  # RESP framing violations by the client, in order
 
         # Server state.
@@ -398,8 +401,13 @@ class MockCache:
 
         if name == "photon.config":
             self.photon_command_log.append(name)
+            if len(args) == 0:
+                self.config_overrides.append(None)
+                if self.no_arg_config_reply is None:
+                    return b"_\r\n"
+                return _bulk(json.dumps(self.no_arg_config_reply).encode("utf-8"))
             if len(args) != 1:
-                return _error(CODE_CONFIG_INVALID, f"expected 1 arg, got {len(args)}")
+                return _error(CODE_CONFIG_INVALID, f"expected 0 or 1 args, got {len(args)}")
             try:
                 overrides = json.loads(args[0])
             except (ValueError, UnicodeDecodeError):
@@ -776,6 +784,8 @@ def mock_connector() -> PhotonConnector:
 
     def _execute(command, *args, timeout=None):
         if command == "photon.config":
+            if not args:
+                return None
             return json.dumps(DEFAULT_RESOLVED_CONFIG).encode()
         return [200, b"content-type:application/json", b'{"ok":true}']
 

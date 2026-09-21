@@ -39,6 +39,14 @@ def test_serialize_config_compact_json():
     assert json.loads(args[0]) == {"b": 2, "a": 1}
 
 
+def test_serialize_config_none_sends_no_argument_form():
+    """overrides=None builds the no-argument photon.config command ('unchanged since last send'),
+    distinct from an explicit {} (which the server treats as resetting to its own defaults)."""
+    cmd, args = serialize_config(None)
+    assert cmd == CONFIG_COMMAND
+    assert args == []
+
+
 def test_parse_config_response_json_bulk_string():
     """Parses a JSON bulk-string config reply into a ResolvedConfig."""
     cfg = parse_config_response(b'{"version":"v3","refresh_interval":60,"ttl":300,"predicates":[]}')

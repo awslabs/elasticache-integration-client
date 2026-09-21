@@ -106,6 +106,14 @@ class TestPhotonConnector:
         assert cfg["version"] == "1.0"
         assert cfg["refresh_interval"] == 60
 
+    def test_no_arg_config_round_trips_resp3_null(self):
+        """A no-argument photon.config ('overrides unchanged') gets back the literal RESP3
+        null byte sequence (`_\\r\\n`) from a real server over a real socket, decoded to None —
+        proving the wire-level path end-to-end, not just resp.py's decoder in isolation."""
+        self.connect()
+        reply = self.conn.execute("photon.config")
+        assert reply is None
+
     def test_connect_to_nothing_raises(self):
         """Connecting to a port with nothing listening raises PhotonConnectionError."""
         # Reserve a port then free it so nothing is listening -> TCP connect fails.

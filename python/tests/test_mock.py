@@ -7,6 +7,7 @@ test_connection.py and test_ddb.py.
 """
 
 import io
+import json
 
 import pytest
 
@@ -30,9 +31,28 @@ def test_read_command_rejects_non_bulk_arg():
         _read_command(frame)
 
 
+def test_config_with_no_args_replies_null():
+    """A no-argument photon.config ('overrides unchanged') is valid: the default mock replies
+    with the RESP3 null (nothing changed), and records the tick as None in config_overrides."""
+    cache = MockCache()
+    value, _ = decode_resp(cache.handle([b"photon.config"]))
+    assert value is None
+    assert cache.config_overrides == [None]
+
+
+def test_config_with_no_args_can_reply_a_resolved_config():
+    """When no_arg_config_reply is set, a no-argument photon.config replies with it instead of
+    null — simulating the server changing its own settings independently of the client."""
+    changed = {"version": "1.0", "refresh_interval": 30, "predicates": []}
+    cache = MockCache(no_arg_config_reply=changed)
+    value, _ = decode_resp(cache.handle([b"photon.config"]))
+    assert json.loads(value) == changed
+
+
 def test_config_with_wrong_arg_count_is_rejected():
-    """photon.config with the wrong number of args is rejected by the mock with a CONFIG_INVALID error."""
-    value, _ = decode_resp(MockCache().handle([b"photon.config"]))  # needs exactly 1 arg
+    """photon.config with 2+ args is rejected by the mock with a CONFIG_INVALID error (0 args is
+    the valid no-argument form; 1 arg is the valid explicit-overrides form)."""
+    value, _ = decode_resp(MockCache().handle([b"photon.config", b"{}", b"extra"]))
     assert isinstance(value, RespError)
     assert value.code == "CONFIG_INVALID"
 
