@@ -938,6 +938,63 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  // These two run in this order deliberately, and together they pin the bug: the warning
+  // latches once per process, so a connector that never performs an unverified handshake must
+  // leave the latch alone. If the first test consumed it, the second would be silent.
+  it("does not warn when TLS is off and verification is moot", async () => {
+    const cache = await startCache();
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      insecureSkipVerify: true,
+    });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).not.toHaveBeenCalled();
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("warns on the first handshake that waives verification", async () => {
+    const cache = await startCache({ tls: true });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).toHaveBeenCalledWith(
+        expect.stringContaining("insecureSkipVerify"),
+        "PhotonInsecureTlsWarning",
+      );
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("accepts an untrusted TLS certificate when verification is skipped", async () => {
+    const cache = await startCache({ tls: true });
+    // Same server and same absent CA as the test above, so the flag is the only difference.
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    await connector.connect();
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await connector.close();
+  });
+
+  it("still rejects an untrusted TLS certificate when verification is not skipped", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: false });
+
+    await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
+    await connector.close();
+  });
+
   it("cleans up a TLS handshake timeout without an unhandled socket error", async () => {
     const sockets = new Set<Socket>();
     const server = createServer((socket) => {

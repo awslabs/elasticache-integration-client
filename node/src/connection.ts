@@ -228,6 +228,17 @@ export interface PhotonConnectorOptions {
   configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
+  /**
+   * Accept the server's certificate without verifying it. Local and test endpoints only.
+   *
+   * Distinct from `tls: false`, which drops TLS entirely: this keeps the encrypted channel
+   * and waives only the identity check, which is what a self-signed endpoint needs. SNI is
+   * still sent, so a server that routes on it is unaffected.
+   *
+   * Prefer `caCerts` whenever the endpoint's CA can be supplied; reach for this only when it
+   * cannot, such as a certificate minted per test run for a name that is not the one dialled.
+   */
+  insecureSkipVerify?: boolean;
   /** Maximum size requested from a socket read. */
   readSize?: number;
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
@@ -252,6 +263,29 @@ export type AuthProvider =
 
 type ConnectedSocket = Socket | TLSSocket;
 
+let warnedInsecureSkipVerify = false;
+
+/**
+ * Announce once per process that certificate verification is off.
+ *
+ * Emitted from the handshake that actually waives verification, not from construction: a
+ * connector built with `tls: false`, or one that never connects, must not consume the latch and
+ * leave the first genuinely unverified handshake silent.
+ *
+ * A silent opt-out is the dangerous one: this is the only signal that separates a test rig
+ * from a production misconfiguration, so it is emitted rather than logged and carries its own
+ * name for a consumer that filters warnings.
+ */
+function warnInsecureSkipVerify(): void {
+  if (warnedInsecureSkipVerify) return;
+  warnedInsecureSkipVerify = true;
+  process.emitWarning(
+    "Photon TLS certificate verification is disabled (insecureSkipVerify). " +
+      "Expected only against a local or test endpoint.",
+    "PhotonInsecureTlsWarning",
+  );
+}
+
 /**
  * A single Photon TCP/TLS connection with serialized writes and FIFO/request-ID responses.
  *
@@ -266,6 +300,7 @@ export class PhotonConnector {
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
   private readonly caCerts: PhotonConnectorOptions["caCerts"];
+  private readonly insecureSkipVerify: boolean;
   private readonly readSize: number;
   private readonly maxResponseSize: number;
   private readonly authProvider: PhotonConnectorOptions["authProvider"];
@@ -291,6 +326,7 @@ export class PhotonConnector {
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
+    this.insecureSkipVerify = options.insecureSkipVerify ?? false;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
     this.maxResponseSize = validatePositiveInteger(
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
@@ -635,9 +671,10 @@ export class PhotonConnector {
         socket,
         servername: this.host,
         minVersion: "TLSv1.2",
-        rejectUnauthorized: true,
+        rejectUnauthorized: !this.insecureSkipVerify,
       };
       if (this.caCerts !== undefined) options.ca = this.caCerts;
+      if (this.insecureSkipVerify) warnInsecureSkipVerify();
 
       const secured = connectTls(options);
       this.openingSocket = secured;

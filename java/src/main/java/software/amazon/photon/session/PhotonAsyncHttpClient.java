@@ -3,6 +3,7 @@ package software.amazon.photon.session;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import software.amazon.awssdk.core.exception.RetryableException;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.async.AsyncExecuteRequest;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
@@ -10,6 +11,10 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
+import software.amazon.photon.exception.PhotonConnectionError;
+import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 
@@ -184,9 +189,12 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
 
             Throwable cause = unwrap(photonFailure);
             if (cause instanceof PhotonError) {
-                // Expected Photon availability failures preserve SDK behavior
-                // by delegating the original signed request to the origin.
-                fallbackToOrigin(copyWithBody(request, body));
+                if (isRetryableTransportFailure((PhotonError) cause)) {
+                    fail(result, request.responseHandler(),
+                            RetryableException.create("Photon transport failed", cause));
+                } else {
+                    fallbackToOrigin(copyWithBody(request, body));
+                }
             } else {
                 fail(result, request.responseHandler(), cause);
             }
@@ -232,6 +240,13 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 }
             });
         }
+    }
+
+    private static boolean isRetryableTransportFailure(PhotonError failure) {
+        return failure instanceof PhotonCacheUnavailable
+                || failure instanceof PhotonConnectionLost
+                || failure instanceof PhotonTimeoutError
+                || failure instanceof PhotonConnectionError;
     }
 
     @Override

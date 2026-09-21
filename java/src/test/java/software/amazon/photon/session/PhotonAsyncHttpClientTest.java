@@ -13,6 +13,7 @@ import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -196,7 +197,7 @@ class PhotonAsyncHttpClientTest {
     void cancellationDuringOriginFallbackCancelsOriginFuture() throws Exception {
         BlockingOrigin origin = new BlockingOrigin();
         PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new FailingSession(),
+                new GenericFailingSession(),
                 preparedContext(),
                 origin,
                 false,
@@ -210,6 +211,22 @@ class PhotonAsyncHttpClientTest {
 
         assertTrue(origin.result.isCancelled());
         assertTrue(request.isCancelled());
+        client.close();
+    }
+
+    @Test
+    void connectionFailureReturnsTransportErrorWithoutCallingOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new FailingSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        assertTrue(client.execute(executeRequest()).isCompletedExceptionally());
+        assertEquals(0, origin.executeCount.get());
         client.close();
     }
 
@@ -334,6 +351,17 @@ class PhotonAsyncHttpClientTest {
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
             throw new PhotonConnectionLost("cache unavailable");
+        }
+    }
+
+    private static final class GenericFailingSession extends PhotonSession {
+        private GenericFailingSession() {
+            super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonError("cache declined request");
         }
     }
 

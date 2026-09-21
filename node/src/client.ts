@@ -16,7 +16,7 @@ export interface PhotonClientOptions<TConfig extends object> {
   /** AWS SDK v3 client configuration. */
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
-  connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
+  connectorOptions?: PhotonConnectorOptions;
   /**
    * Seconds that disconnected requests may fall back to origin per outage.
    * `null`, `undefined`, or a negative value means indefinitely; zero disables fallback.
@@ -32,7 +32,7 @@ interface InitializeOptions {
   cacheName: string;
   region?: string;
   userId?: string;
-  connectorOptions?: Omit<PhotonConnectorOptions, "authProvider">;
+  connectorOptions?: PhotonConnectorOptions;
   fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
   overrides: Readonly<Record<string, unknown>>;
@@ -52,12 +52,15 @@ async function initialize<TClient extends PhotonCompatibleClient>(
   options: InitializeOptions,
 ): Promise<PhotonHandle> {
   const [host, port] = parseEndpoint(endpoint);
-  const authProvider = await buildCacheAuthProvider({
-    cacheName: options.cacheName,
-    ...(options.userId === undefined ? {} : { userId: options.userId }),
-    ...(options.region === undefined ? {} : { region: options.region }),
-    credentials: sdkClient.config.credentials,
-  });
+  // A caller-supplied provider replaces token generation rather than competing with it.
+  const authProvider =
+    options.connectorOptions?.authProvider ??
+    (await buildCacheAuthProvider({
+      cacheName: options.cacheName,
+      ...(options.userId === undefined ? {} : { userId: options.userId }),
+      ...(options.region === undefined ? {} : { region: options.region }),
+      credentials: sdkClient.config.credentials,
+    }));
   const connectorFactory = () =>
     new PhotonConnector(host, port, {
       ...options.connectorOptions,
