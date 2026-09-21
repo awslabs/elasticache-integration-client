@@ -23,9 +23,8 @@ This package currently ports the Python implementation's:
   reconnects failed transports in the background, and controls safe origin
   fallback with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the Photon copy, sends predicate declines and disconnected,
-  unsent requests to the origin, and propagates failures after Photon may have
-  received a request;
+  SigV4 headers from the Photon copy, and routes idempotent Photon failures to
+  the origin;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover to another endpoint and periodic config refresh
@@ -72,12 +71,12 @@ The factory completes IAM authentication and the `photon.config` handshake
 before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
-the original signed request remains untouched for origin pass-through. Requests
-that Photon has not sent may use the normal origin pipeline. Once a request is
-sent to Photon, failures propagate without direct origin replay because the
-request may already have been processed. Calling `destroy()` detaches Photon
-before SDK teardown, rejects in-flight Photon requests, stops reconnect
-activity, and is safe to repeat.
+the original signed request remains untouched for origin pass-through. Photon
+errors for idempotent operations therefore return to the SDK's normal origin
+request and retry pipeline. Non-idempotent Photon errors, fallback-window
+exhaustion, and request validation errors propagate. Calling `destroy()`
+detaches Photon before SDK teardown, rejects in-flight Photon requests, stops
+reconnect activity, and is safe to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`

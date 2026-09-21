@@ -4,6 +4,7 @@ import { formatUrl } from "@aws-sdk/core/util";
 import { constructStack } from "@smithy/core/client";
 import { HttpRequest, HttpResponse } from "@smithy/core/protocols";
 import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smithy/types";
+import { SMITHY_CONTEXT_KEY } from "@smithy/types";
 import { Readable } from "node:stream";
 
 import { PhotonCacheUnavailable, PhotonConnectionLost, PhotonError } from "../src/errors.js";
@@ -36,6 +37,15 @@ function fakeSession(overrides: Partial<PhotonSession> & { isOpen?: boolean } = 
     destroy: vi.fn(),
     ...overrides,
   } as PhotonSession;
+}
+
+function contextWithSchema(schema: unknown) {
+  return {
+    commandName: "RunCommand",
+    [SMITHY_CONTEXT_KEY]: {
+      commandInstance: { schema } as never,
+    },
+  };
 }
 
 describe("awsToPhotonRequest", () => {
@@ -247,7 +257,7 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("does not directly replay an in-flight Photon failure at the origin", async () => {
+  it("passes idempotent Photon failures through to the origin", async () => {
     const signedRequest = new HttpRequest({
       protocol: "https:",
       hostname: "dynamodb.us-east-1.amazonaws.com",
@@ -265,17 +275,23 @@ describe("photon middleware", () => {
         throw new PhotonError("cache unavailable");
       }),
     });
-    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
-      throw new Error("origin must not be called");
+    const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
+      expect(args.request).toBe(signedRequest);
+      expect((args.request as HttpRequest).headers.authorization).toBe(
+        "AWS4-HMAC-SHA256 Credential=example",
+      );
+      expect((args.request as HttpRequest).headers["x-amz-date"]).toBe("20260812T000000Z");
+      return { response: new HttpResponse({ statusCode: 503 }) };
     });
-    const handler = photonMiddleware("svc", session)(next, {
-      commandName: "RunCommand",
-    });
-
-    await expect(handler({ input: {}, request: signedRequest })).rejects.toThrow(
-      "cache unavailable",
+    const handler = photonMiddleware("svc", session)(
+      next,
+      contextWithSchema([9, "svc", "Run", 0b10, "input", "output"]),
     );
-    expect(next).not.toHaveBeenCalled();
+
+    await expect(handler({ input: {}, request: signedRequest })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it("does not pass shutdown Photon failures through to the origin", async () => {
@@ -289,9 +305,10 @@ describe("photon middleware", () => {
     const next = vi.fn<FinalizeHandler<object, object>>(async () => {
       throw new Error("origin must not be called");
     });
-    const handler = photonMiddleware("svc", session)(next, {
-      commandName: "RunCommand",
-    });
+    const handler = photonMiddleware("svc", session)(
+      next,
+      contextWithSchema([9, "svc", "Run", 0b10, "input", "output"]),
+    );
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(connectionClosed);
     expect(next).not.toHaveBeenCalled();
@@ -312,6 +329,25 @@ describe("photon middleware", () => {
     });
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(unavailable);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not replay non-idempotent Photon failures at the origin", async () => {
+    const photonError = new PhotonError("cache unavailable");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("svc", session)(
+      next,
+      contextWithSchema([9, "svc", "Run", 0, "input", "output"]),
+    );
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
     expect(next).not.toHaveBeenCalled();
   });
 
