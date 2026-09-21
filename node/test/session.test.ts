@@ -33,6 +33,8 @@ function controlledConnector(
   options: {
     predicate?: string;
     connect?: () => Promise<void>;
+    authenticate?: () => Promise<void>;
+    config?: () => Promise<unknown>;
     request?: () => Promise<unknown>;
   } = {},
 ) {
@@ -49,9 +51,12 @@ function controlledConnector(
       await options.connect?.();
       dead = false;
     }),
-    authenticate: vi.fn(async () => undefined),
+    authenticate: vi.fn(async () => {
+      await options.authenticate?.();
+    }),
     execute: vi.fn(async (command: string) => {
       if (command === "photon.config") {
+        if (options.config !== undefined) return options.config();
         return Buffer.from(
           JSON.stringify({
             predicates: [{ expr: options.predicate ?? "true", vars: {} }],
@@ -619,7 +624,17 @@ describe("PhotonSession", () => {
 
     await expect(session.request(testRequest())).resolves.toBeUndefined();
     await new Promise((resolve) => setTimeout(resolve, 10));
-    await expect(session.request(testRequest())).rejects.toBeInstanceOf(PhotonCacheUnavailable);
+    const request = new PhotonRequest({
+      method: "GET",
+      url: "https://user:secret@x:8443/path?token=sensitive",
+      body: "{}",
+      metadata: new RequestMetadata({ service: "svc", operation: "GetItem" }),
+    });
+    const error = await session.request(request).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(PhotonCacheUnavailable);
+    expect(error).toMatchObject({ endpointUrl: "https://x:8443" });
+    expect(String(error)).not.toContain("secret");
+    expect(String(error)).not.toContain("token");
     await session.close();
   });
 
@@ -735,10 +750,11 @@ describe("PhotonSession", () => {
         expect(failedReplacement.connector.connect).toHaveBeenCalledOnce();
       });
 
+      const started = performance.now();
       await session.close();
+      expect(performance.now() - started).toBeLessThan(500);
       await expect(request).resolves.toBeUndefined();
       const callsAfterClose = factory.mock.calls.length;
-      await new Promise((resolve) => setTimeout(resolve, 10));
       expect(factory).toHaveBeenCalledTimes(callsAfterClose);
     } finally {
       random.mockRestore();
@@ -746,14 +762,68 @@ describe("PhotonSession", () => {
     }
   });
 
+  it.each(["authenticate", "config"] as const)(
+    "times out reconnect when %s hangs and allows shutdown",
+    async (failure) => {
+      const initial = controlledConnector();
+      const never = () => new Promise<never>(() => undefined);
+      const replacement = controlledConnector({
+        ...(failure === "authenticate" ? { authenticate: never } : { config: never }),
+      });
+      const factory = vi
+        .fn<() => PhotonConnector>()
+        .mockReturnValueOnce(initial.connector)
+        .mockReturnValue(replacement.connector);
+      const session = new PhotonSession(
+        factory,
+        {},
+        {
+          connectionTimeoutMs: 25,
+          baseDelayMs: 10_000,
+          maxDelayMs: 10_000,
+          jitter: 0,
+        },
+      );
+      await session.open();
+      initial.fail();
+
+      await vi.waitFor(() => {
+        if (failure === "authenticate") {
+          expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+        } else {
+          expect(replacement.connector.execute).toHaveBeenCalledWith(
+            "photon.config",
+            Buffer.from("{}"),
+          );
+        }
+      });
+
+      const started = performance.now();
+      await session.close();
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(replacement.connector.destroy).toHaveBeenCalled();
+      expect(factory).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("validates reconnect policy bounds", () => {
     const connector = fakeConnector();
+    const aboveTimerLimit = 2_147_483_648;
 
     expect(() => new PhotonSession(() => connector, {}, { connectAttempts: 0 })).toThrow(
       PhotonConfigError,
     );
     expect(() => new PhotonSession(() => connector, {}, { baseDelayMs: 0 })).toThrow(
       "greater than zero",
+    );
+    expect(
+      () => new PhotonSession(() => connector, {}, { connectionTimeoutMs: aboveTimerLimit }),
+    ).toThrow("at most 2147483647");
+    expect(() => new PhotonSession(() => connector, {}, { baseDelayMs: aboveTimerLimit })).toThrow(
+      "at most 2147483647",
+    );
+    expect(() => new PhotonSession(() => connector, {}, { maxDelayMs: aboveTimerLimit })).toThrow(
+      "at most 2147483647",
     );
     expect(
       () => new PhotonSession(() => connector, {}, { baseDelayMs: 10, maxDelayMs: 5 }),
@@ -767,6 +837,23 @@ describe("PhotonSession", () => {
     expect(() => new PhotonSession(() => connector, {}, { fallbackDurationMs: -0.5 })).toThrow(
       "whole number",
     );
+
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999);
+    try {
+      const session = new PhotonSession(
+        () => connector,
+        {},
+        { baseDelayMs: 2_147_483_647, maxDelayMs: 2_147_483_647, jitter: 0.999 },
+      );
+      const delay = (
+        session as unknown as {
+          delayFor(attempt: number): number;
+        }
+      ).delayFor(1);
+      expect(delay).toBe(2_147_483_647);
+    } finally {
+      random.mockRestore();
+    }
   });
 });
 

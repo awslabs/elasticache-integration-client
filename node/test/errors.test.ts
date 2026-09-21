@@ -52,12 +52,12 @@ describe("Photon errors", () => {
   });
 
   it("makes cache unavailability retryable without putting it in PhotonError", () => {
-    const error = new PhotonCacheUnavailable("https://origin.example/");
+    const error = new PhotonCacheUnavailable("https://origin.example:8443");
 
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(PhotonError);
-    expect(error.endpointUrl).toBe("https://origin.example/");
+    expect(error.endpointUrl).toBe("https://origin.example:8443");
     expect(error.$retryable).toEqual({});
-    expect(error.message).toContain("https://origin.example/");
+    expect(error.message).toContain("https://origin.example:8443");
   });
 });

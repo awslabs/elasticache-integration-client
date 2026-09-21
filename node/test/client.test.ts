@@ -190,6 +190,17 @@ describe("client", () => {
     );
   });
 
+  it.each([0.5, Number.MAX_SAFE_INTEGER])(
+    "rejects unsupported fallback duration %s",
+    async (fallbackDuration) => {
+      setup();
+
+      await expect(
+        client("dynamodb", FakeClient, { ...options, fallbackDuration }),
+      ).rejects.toThrow("fallbackDuration must be a whole number of seconds");
+    },
+  );
+
   it.each(["auth", "open", "install"])(
     "cleans up owned resources when %s initialization fails",
     async (failure) => {

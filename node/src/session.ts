@@ -29,6 +29,7 @@ const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DELAY_MS = 100;
 const DEFAULT_MAX_DELAY_MS = 3_200;
 const DEFAULT_JITTER = 0.2;
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Reconnect and origin-fallback settings. */
 export interface ReconnectPolicyOptions {
@@ -64,9 +65,11 @@ export type ConnectionState = "init" | "alive" | "reconnecting" | "closed";
 type SessionState = "created" | "open" | "closed";
 export type PhotonConnectorFactory = () => PhotonConnector;
 
-function positiveFinite(value: number, name: string): number {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new PhotonConfigError(`${name} must be greater than zero`);
+function timerDelay(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0 || value > MAX_TIMER_DELAY_MS) {
+    throw new PhotonConfigError(
+      `${name} must be greater than zero and at most ${MAX_TIMER_DELAY_MS}`,
+    );
   }
   return value;
 }
@@ -92,8 +95,8 @@ function resolveReconnectPolicy(
   options: ReconnectPolicyOptions | undefined,
   reconnectable: boolean,
 ): ReconnectPolicy {
-  const baseDelayMs = positiveFinite(options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS, "baseDelayMs");
-  const maxDelayMs = positiveFinite(options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS, "maxDelayMs");
+  const baseDelayMs = timerDelay(options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS, "baseDelayMs");
+  const maxDelayMs = timerDelay(options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS, "maxDelayMs");
   if (maxDelayMs < baseDelayMs) {
     throw new PhotonConfigError("maxDelayMs must be at least baseDelayMs");
   }
@@ -107,7 +110,7 @@ function resolveReconnectPolicy(
       options?.connectAttempts ?? (reconnectable ? DEFAULT_CONNECT_ATTEMPTS : 1),
       "connectAttempts",
     ),
-    connectionTimeoutMs: positiveFinite(
+    connectionTimeoutMs: timerDelay(
       options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
       "connectionTimeoutMs",
     ),
@@ -261,21 +264,21 @@ export class PhotonSession {
       return undefined;
     }
 
-    let active = this.connector;
-    if (this.state === "open" && active?.isDead) {
-      this.handleDisconnect(active);
-      active = undefined;
+    let currentConnector = this.connector;
+    if (this.state === "open" && currentConnector?.isDead) {
+      this.handleDisconnect(currentConnector);
+      currentConnector = undefined;
     }
-    if (this.state === "open" && active === undefined) {
+    if (this.state === "open" && currentConnector === undefined) {
       if (performance.now() < this.fallbackDeadline) return undefined;
-      throw new PhotonCacheUnavailable(request.url);
+      throw new PhotonCacheUnavailable(sanitizeEndpoint(request.url));
     }
-    if (active === undefined) {
+    if (currentConnector === undefined) {
       throw new PhotonConnectionError("Photon session has no active connection");
     }
 
     const [command, args] = serializeRequest(request);
-    return parseRequestResponse(await active.execute(command, ...args));
+    return parseRequestResponse(await currentConnector.execute(command, ...args));
   }
 
   /** Close active and recovering connectors. Idempotent. */
@@ -380,7 +383,10 @@ export class PhotonSession {
       let candidate: PhotonConnector | undefined;
       try {
         candidate = this.createCandidate();
-        const initialized = await this.initialize(candidate);
+        const initialized = await this.initializeWithTimeout(
+          candidate,
+          this.reconnectPolicy.connectionTimeoutMs,
+        );
         if (this.state !== "open" || this.connection !== "reconnecting") {
           await this.closeCandidate(candidate);
           return;
@@ -412,7 +418,8 @@ export class PhotonSession {
     const exponential = this.reconnectPolicy.baseDelayMs * 2 ** Math.max(0, attempt - 1);
     const capped = Math.min(this.reconnectPolicy.maxDelayMs, exponential);
     const spread = this.reconnectPolicy.jitter;
-    return capped * (1 - spread + Math.random() * spread * 2);
+    const jittered = capped * (1 - spread + Math.random() * spread * 2);
+    return Math.min(MAX_TIMER_DELAY_MS, jittered);
   }
 
   private async waitBeforeRetry(failedAttempt: number): Promise<boolean> {
@@ -447,5 +454,13 @@ export class PhotonSession {
 
   private releaseReconnectTask(task: Promise<void>): void {
     if (this.reconnectTask === task) this.reconnectTask = undefined;
+  }
+}
+
+function sanitizeEndpoint(requestUrl: string): string {
+  try {
+    return new URL(requestUrl).origin;
+  } catch {
+    return "unknown endpoint";
   }
 }

@@ -86,15 +86,11 @@ async function initialize<TClient extends PhotonCompatibleClient>(
 
 function fallbackDurationMs(value: number | null): number | null {
   if (value === null) return value;
-  if (!Number.isSafeInteger(value)) {
+  const milliseconds = value * 1_000;
+  if (!Number.isSafeInteger(milliseconds) || milliseconds % 1_000 !== 0) {
     throw new PhotonConfigError(
       "fallbackDuration must be a whole number of seconds, null, or undefined",
     );
-  }
-  if (value < 0) return value;
-  const milliseconds = value * 1_000;
-  if (!Number.isSafeInteger(milliseconds)) {
-    throw new PhotonConfigError("fallbackDuration is too large");
   }
   return milliseconds;
 }

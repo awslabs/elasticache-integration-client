@@ -34,7 +34,7 @@ export class PhotonCacheUnavailable extends Error {
 
   constructor(endpointUrl: string) {
     super(
-      `Photon has no connection to the cache, so this request to "${endpointUrl}" could not be served from it.`,
+      `Photon has no connection to the cache, so the request to endpoint "${endpointUrl}" could not be served from it.`,
     );
     this.name = new.target.name;
     this.endpointUrl = endpointUrl;

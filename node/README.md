@@ -23,8 +23,9 @@ This package currently ports the Python implementation's:
   reconnects failed transports in the background, and controls safe origin
   fallback with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the Photon copy, and routes idempotent Photon failures to
-  the origin;
+  SigV4 headers from the Photon copy, sends predicate declines and disconnected,
+  unsent requests to the origin, and propagates failures after Photon may have
+  received a request;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover to another endpoint and periodic config refresh
