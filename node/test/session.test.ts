@@ -722,6 +722,7 @@ describe("PhotonSession", () => {
   });
 
   it("interrupts reconnect backoff when closed", async () => {
+    vi.useFakeTimers();
     const initial = controlledConnector();
     const failedReplacement = controlledConnector({
       connect: async () => {
@@ -732,7 +733,6 @@ describe("PhotonSession", () => {
       .fn<() => PhotonConnector>()
       .mockReturnValueOnce(initial.connector)
       .mockReturnValue(failedReplacement.connector);
-    const random = vi.spyOn(Math, "random").mockReturnValue(0.999);
     const session = new PhotonSession(
       factory,
       {},
@@ -755,10 +755,11 @@ describe("PhotonSession", () => {
       expect(performance.now() - started).toBeLessThan(500);
       await expect(request).resolves.toBeUndefined();
       const callsAfterClose = factory.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10_001);
       expect(factory).toHaveBeenCalledTimes(callsAfterClose);
     } finally {
-      random.mockRestore();
       await session.close();
+      vi.useRealTimers();
     }
   });
 
