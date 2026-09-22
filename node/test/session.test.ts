@@ -1370,7 +1370,7 @@ describe("PhotonSession config refresh", () => {
       });
     });
     vi.mocked(connector.close).mockImplementation(async () => {
-      // markStale() closing the connector is what rejects requests already in flight.
+      // Staleness recovery closes the connector, rejecting requests already in flight.
       rejectRequest(connectionLost);
     });
 
