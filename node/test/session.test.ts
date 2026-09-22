@@ -1302,6 +1302,174 @@ describe("PhotonSession config refresh", () => {
     await session.close();
   });
 
+  it("enters outage fallback once soft failures leave the config stale", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    let clock = 0;
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
+
+    // Just under the threshold: the soft failure is logged but the session stays open.
+    clock = 999;
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+
+    // At the threshold: the config has been unconfirmed long enough to replace the connector.
+    clock = 1000;
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("stale"));
+    expect(connector.close).toHaveBeenCalledOnce();
+    expect(connector.destroy).not.toHaveBeenCalled();
+
+    // The request has not been sent while there is no connector, so it can use outage fallback.
+    vi.mocked(connector.execute).mockClear();
+    await expect(session.request(putItem())).resolves.toBeUndefined();
+    expect(connector.execute).not.toHaveBeenCalled();
+
+    // Explicit close() remains terminal and does not tear the discarded connector down twice.
+    await session.close();
+    expect(connector.close).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("propagates an in-flight request error when it races staleness recovery", async () => {
+    // request() itself cannot tell whether this request already reached Photon before the
+    // connector closed, so it must not silently convert the failure into an origin fallback: only
+    // the middleware knows whether the request is idempotent enough to safely retry.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    let clock = 0;
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+
+    let rejectRequest!: (error: unknown) => void;
+    const connectionLost = new PhotonConnectionLost("connection closed");
+    vi.mocked(connector.execute).mockImplementation((command: string) => {
+      if (command === "photon.config") {
+        return Promise.reject(new PhotonError("photon.config failed"));
+      }
+      return new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      });
+    });
+    vi.mocked(connector.close).mockImplementation(async () => {
+      // markStale() closing the connector is what rejects requests already in flight.
+      rejectRequest(connectionLost);
+    });
+
+    // Started while the session is still open, so it reaches the connector.
+    const requesting = session.request(putItem());
+
+    clock = 1000;
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+
+    await expect(requesting).rejects.toBe(connectionLost);
+    await session.close();
+    warn.mockRestore();
+  });
+
+  it("resets the staleness clock on a null (unchanged) reply", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    let clock = 0;
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+
+    clock = 900;
+    vi.mocked(connector.execute).mockResolvedValueOnce(null);
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+
+    // Without the reset above, this soft failure at clock=1800 (1800ms after the last success at
+    // clock=0) would already be past the threshold; with it, only 900ms have elapsed.
+    clock = 1800;
+    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("resets the staleness clock on a valid installed config", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    let clock = 0;
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+
+    clock = 900;
+    vi.mocked(connector.execute).mockResolvedValueOnce(REFRESHED_CONFIG);
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+    expect(session.config?.version).toBe("v2");
+
+    clock = 1800;
+    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
+    await refreshOnce(session);
+    expect(session.isOpen).toBe(true);
+    warn.mockRestore();
+  });
+
+  it("counts a malformed config reply toward staleness and starts recovery", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    let clock = 0;
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockResolvedValue(Buffer.from("not json"));
+
+    clock = 1000;
+    await refreshOnce(session);
+
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("stale"));
+    expect(connector.close).toHaveBeenCalledOnce();
+    expect(connector.destroy).not.toHaveBeenCalled();
+    await expect(session.request(putItem())).resolves.toBeUndefined();
+    await session.close();
+    warn.mockRestore();
+  });
+
   it("does not install a config that arrives after teardown", async () => {
     let resolveConfig!: (value: Buffer) => void;
     const connector = fakeConnector();

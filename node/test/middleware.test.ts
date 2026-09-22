@@ -22,7 +22,8 @@ import {
   photonToHttpResponse,
   photonMiddleware,
 } from "../src/middleware.js";
-import type { PhotonSession } from "../src/session.js";
+import { PhotonSession } from "../src/session.js";
+import type { PhotonConnector } from "../src/connection.js";
 
 const request = (body?: unknown) =>
   new HttpRequest({
@@ -44,6 +45,22 @@ function fakeSession(overrides: Partial<PhotonSession> & { isOpen?: boolean } = 
     destroy: vi.fn(),
     ...overrides,
   } as PhotonSession;
+}
+
+/** A minimal PhotonConnector double for real-session recovery tests. */
+function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
+  return {
+    connect: vi.fn(async () => undefined),
+    authenticate: vi.fn(async () => undefined),
+    execute: vi.fn(async (command: string) =>
+      command === "photon.config"
+        ? Buffer.from('{"refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}')
+        : undefined,
+    ),
+    close: vi.fn(async () => undefined),
+    destroy: vi.fn(() => undefined),
+    ...overrides,
+  } as unknown as PhotonConnector;
 }
 
 describe("awsToPhotonRequest", () => {
@@ -325,6 +342,117 @@ describe("photon middleware", () => {
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(unavailable);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the origin while stale config triggers recovery", async () => {
+    let clock = 0;
+    const connector = fakeConnector();
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
+    clock = 1000;
+    // Drive staleness recovery exactly as ConfigRefresher would, without waiting on real timers.
+    await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    // Idempotency does not matter here: the request has not reached Photon while reconnecting.
+    const handler = photonMiddleware("svc", session)(next, { commandName: "RunCommand" });
+
+    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
+
+    await session.close();
+  });
+
+  /**
+   * Bring up a real session, then leave a request in flight against the connector at the exact
+   * moment stale config starts recovery, so closing the connector rejects that request.
+   */
+  async function staleRaceSession(): Promise<{
+    session: PhotonSession;
+    connectionLost: PhotonConnectionLost;
+    goStale: () => Promise<void>;
+  }> {
+    let clock = 0;
+    let rejectRequest!: (error: unknown) => void;
+    const connectionLost = new PhotonConnectionLost("connection closed");
+    const connector = fakeConnector();
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        configStalenessThresholdMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockImplementation((command: string) => {
+      if (command === "photon.config")
+        return Promise.reject(new PhotonError("photon.config failed"));
+      return new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      });
+    });
+    vi.mocked(connector.close).mockImplementation(async () => {
+      // Staleness recovery closing the connector rejects the request already in flight.
+      rejectRequest(connectionLost);
+    });
+    return {
+      session,
+      connectionLost,
+      goStale: async () => {
+        clock = 1000;
+        await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+        expect(session.connectionState).toBe("reconnecting");
+      },
+    };
+  }
+
+  it("falls back to the origin for an idempotent request racing staleness recovery", async () => {
+    const { session, goStale } = await staleRaceSession();
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    const handling = handler({ input: {}, request: request() });
+    await goStale();
+
+    await expect(handling).resolves.toEqual({ response: expect.any(HttpResponse) });
+    expect(next).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("does not replay a non-idempotent request racing staleness recovery", async () => {
+    const { session, connectionLost, goStale } = await staleRaceSession();
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "PutItemCommand",
+    });
+
+    const handling = handler({ input: {}, request: request() });
+    await goStale();
+
+    await expect(handling).rejects.toBe(connectionLost);
+    expect(next).not.toHaveBeenCalled();
+    await session.close();
   });
 
   it("does not replay non-idempotent Photon failures at the origin", async () => {

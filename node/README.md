@@ -58,10 +58,12 @@ Evaluation errors and malformed or non-object JSON bodies count as no match.
 
 The predicates are compiled when the session opens and recompiled whenever a
 refresh returns a new config. A refresh sends `photon.config` with no argument;
-a RESP3 null reply means the config is unchanged. A failed or malformed config
-reply keeps the last known-good config, predicates, and refresh interval, and
-the next cycle retries. A transport timeout or connection loss discards the
-unusable connector and starts background recovery.
+a RESP3 null reply means unchanged and resets the staleness clock. Failed or
+malformed replies keep the last-known-good state and retry. After
+`configStalenessThreshold` seconds (default 3600), the session discards the
+current connector and starts background recovery. Requests then follow the
+configured outage fallback window; in-flight failures fall back only when
+idempotent. Transport timeouts and connection loss trigger the same recovery.
 
 ## Client
 
@@ -98,8 +100,10 @@ passing shutdown failures to the origin, stops reconnect activity, and is safe
 to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
-Node-specific; all `photon.config` overrides are passed through the `overrides`
-option.
+Node-specific; all `photon.config` overrides are passed through `overrides`.
+`configStalenessThreshold` is the positive whole number of seconds allowed
+between successful refreshes before the active connector is replaced (default
+3600).
 
 ## Reconnection and fallback
 
