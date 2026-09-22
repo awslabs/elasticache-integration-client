@@ -1073,6 +1073,7 @@ describe("PhotonSession config refresh", () => {
 
     await refreshOnce(session);
 
+    expect(connector.execute).toHaveBeenCalledOnce();
     expect(connector.execute).toHaveBeenCalledWith("photon.config");
     await session.close();
   });
@@ -1086,11 +1087,17 @@ describe("PhotonSession config refresh", () => {
     vi.mocked(connector.execute).mockClear();
 
     await refreshOnce(session);
-    expect(connector.execute).toHaveBeenLastCalledWith("photon.config", Buffer.from('{"ttl":300}'));
 
     // The reply parsed, so the next refresh drops the overrides.
     await refreshOnce(session);
-    expect(connector.execute).toHaveBeenLastCalledWith("photon.config");
+
+    expect(connector.execute).toHaveBeenCalledTimes(2);
+    expect(connector.execute).toHaveBeenNthCalledWith(
+      1,
+      "photon.config",
+      Buffer.from('{"ttl":300}'),
+    );
+    expect(connector.execute).toHaveBeenNthCalledWith(2, "photon.config");
     await session.close();
   });
 
