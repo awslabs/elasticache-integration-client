@@ -95,7 +95,8 @@ describe("ConfigRefresher", () => {
     expect(new Set(delays)).toEqual(new Set([10_000]));
   });
 
-  it("swallows a throwing callback and keeps refreshing", async () => {
+  it("swallows a throwing callback, logs it, and keeps refreshing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const refreshOnce = vi.fn(() => {
       throw new Error("refresh failed");
     });
@@ -105,6 +106,7 @@ describe("ConfigRefresher", () => {
     // An escaping throw would become an uncaughtException and kill the process.
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(3);
 
     refresher.stop();
   });
@@ -205,7 +207,8 @@ describe("ConfigRefresher", () => {
     expect(new Set(delays.filter((delay) => delay === 10_000)).size).toBe(1);
   });
 
-  it("swallows a rejected callback and keeps refreshing", async () => {
+  it("swallows a rejected callback, logs it, and keeps refreshing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const refreshOnce = vi.fn(() => Promise.reject(new Error("refresh failed")));
     const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
 
@@ -213,6 +216,7 @@ describe("ConfigRefresher", () => {
     // An escaping rejection would become an unhandledRejection and kill the process.
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledTimes(3);
 
     refresher.stop();
   });
@@ -249,6 +253,25 @@ describe("ConfigRefresher", () => {
 
     // The first cycle already scheduled its 10s successor before the interval changed.
     expect(delays).toEqual([10_000, 10_000, 30_000, 30_000]);
+  });
+
+  it("applies an interval set from inside the callback starting the next cycle", async () => {
+    // Mirrors the production shape: the refresh callback itself calls setInterval() once it
+    // learns the server's new interval, rather than a test calling it from outside a cycle.
+    const delays = trackDelays();
+    const refresher: ConfigRefresher = new ConfigRefresher(
+      10,
+      () => {
+        refresher.setInterval(30);
+      },
+      { jitter: 0 },
+    );
+
+    refresher.start();
+    await vi.advanceTimersByTimeAsync(40_000);
+    refresher.stop();
+
+    expect(delays).toEqual([10_000, 30_000, 30_000]);
   });
 
   it("leaves a wait already in progress alone when the interval changes", async () => {

@@ -109,10 +109,11 @@ export class ConfigRefresher {
   private async runCycle(): Promise<void> {
     try {
       await this.refreshOnce();
-    } catch {
+    } catch (error) {
       // A failed refresh keeps the previous config; the next cycle retries. An
       // unhandled rejection here would surface as an unhandledRejection and can
-      // take down the host process.
+      // take down the host process, so it is logged and swallowed instead.
+      console.warn("Config refresh callback failed:", error);
     }
     if (!this.stopped) this.schedule();
   }
