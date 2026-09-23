@@ -153,6 +153,7 @@ public final class PhotonClient {
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
+        private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private SdkHttpClient originHttpClient;
         private SdkAsyncHttpClient originAsyncHttpClient;
         private Executor asyncExecutor;
@@ -257,6 +258,17 @@ public final class PhotonClient {
          */
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set reconnect and origin-fallback behavior for sync and async clients.
+         */
+        public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+            if (reconnectPolicy == null) {
+                throw new NullPointerException("reconnectPolicy");
+            }
+            this.reconnectPolicy = reconnectPolicy;
             return this;
         }
 
@@ -459,6 +471,7 @@ public final class PhotonClient {
                     .connectTimeoutMs(connectTimeoutMs)
                     .initializationTimeoutMs(initializationTimeoutMs)
                     .requestTimeoutMs(requestTimeoutMs)
+                    .reconnectPolicy(reconnectPolicy)
                     .originHttpClient(originHttpClient)
                     .build();
         }
@@ -475,6 +488,7 @@ public final class PhotonClient {
                     .connectTimeoutMs(connectTimeoutMs)
                     .initializationTimeoutMs(initializationTimeoutMs)
                     .requestTimeoutMs(requestTimeoutMs)
+                    .reconnectPolicy(reconnectPolicy)
                     .originHttpClient(originAsyncHttpClient)
                     .executor(asyncExecutor)
                     .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)

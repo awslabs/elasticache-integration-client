@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PhotonCacheUnavailable,
+  PhotonConfigError,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
@@ -11,6 +13,7 @@ import * as photon from "../src/index.js";
 
 const ERROR_TYPES = [
   PhotonError,
+  PhotonConfigError,
   PhotonConnectionError,
   PhotonProtocolError,
   PhotonConnectionLost,
@@ -42,7 +45,19 @@ describe("Photon errors", () => {
     expect(error.name).toBe(ErrorType.name);
   });
 
-  it("does not expose internal error types from the package entry point", () => {
-    expect("PhotonError" in photon).toBe(false);
+  it("exposes the public configuration and availability errors", () => {
+    expect(photon.PhotonError).toBe(PhotonError);
+    expect(photon.PhotonConfigError).toBe(PhotonConfigError);
+    expect(photon.PhotonCacheUnavailable).toBe(PhotonCacheUnavailable);
+  });
+
+  it("makes cache unavailability retryable without putting it in PhotonError", () => {
+    const error = new PhotonCacheUnavailable("https://origin.example:8443");
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PhotonError);
+    expect(error.endpointUrl).toBe("https://origin.example:8443");
+    expect(error.$retryable).toEqual({});
+    expect(error.message).toContain("https://origin.example:8443");
   });
 });

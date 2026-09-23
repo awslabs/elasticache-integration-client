@@ -4,9 +4,11 @@ Photon integration for AWS SDK for Java v2 DynamoDB clients.
 
 Photon connects and authenticates before returning the SDK client. Requests are
 sent to Photon when the configured predicates match and otherwise use the
-configured DynamoDB origin transport. Expected Photon failures also fall back
-to origin. SDK retries, response deserialization, and caller-provided override
-configuration remain in the normal SDK pipeline.
+configured DynamoDB origin transport. Predicate declines and non-transport
+Photon failures use origin fallback. Connection loss, request timeouts, and an
+expired reconnect fallback window are returned to the SDK as retryable
+transport failures. SDK retries, response deserialization, and caller-provided
+override configuration remain in the normal SDK pipeline.
 
 ## Request routing
 
@@ -23,7 +25,8 @@ operations.
 
 Expressions that cannot be compiled are ignored. Evaluation errors and
 malformed or non-object JSON bodies count as no match. The resolved config is
-compiled once when the session opens.
+compiled when the session opens and refreshed and recompiled after every
+successful reconnect.
 
 ## Synchronous client
 
@@ -73,6 +76,40 @@ a bounded daemon executor. Applications can supply a caller-managed executor
 with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
+
+## Reconnection and fallback
+
+Sync and async clients share the same recovery behavior. A disconnect starts
+one background reconnect loop immediately, even while the client is idle. Each
+attempt creates a new TLS connection, resolves fresh credentials, repeats
+`AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
+Reconnect attempts continue until one succeeds or the session closes.
+
+Initial startup remains bounded: by default Photon makes three attempts, and
+each complete connect, authentication, and configuration attempt is limited to
+five seconds.
+
+While reconnecting, cache-eligible requests may use the signed origin fallback.
+`fallbackDurationSeconds` controls that window: a negative value allows
+fallback indefinitely, zero disables fallback, and a positive value allows
+fallback for that many seconds. Once the window ends, Photon raises a retryable
+transport failure for the AWS SDK to handle. Requests already admitted to a
+failed Photon connection are also returned to the SDK as transport failures;
+they are never directly replayed against origin because Photon may have
+processed them.
+
+Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
+
+```java
+.reconnectPolicy(ReconnectPolicy.builder()
+        .fallbackDurationSeconds(30)
+        .connectAttempts(3)
+        .connectionTimeoutMs(5_000)
+        .baseDelayMs(100)
+        .maxDelayMs(3_200)
+        .jitterFactor(0.2)
+        .build())
+```
 
 Photon requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `photon.response` RESP3 push. Deferred

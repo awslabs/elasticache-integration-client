@@ -134,6 +134,7 @@ public final class PhotonAsyncHandle implements Closeable {
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
+        private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private SdkAsyncHttpClient originHttpClient;
         private Executor executor;
         private int maxBufferedRequestBytes = DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
@@ -184,6 +185,17 @@ public final class PhotonAsyncHandle implements Closeable {
 
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set reconnect and origin-fallback behavior.
+         */
+        public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
+            if (reconnectPolicy == null) {
+                throw new NullPointerException("reconnectPolicy");
+            }
+            this.reconnectPolicy = reconnectPolicy;
             return this;
         }
 
@@ -269,10 +281,14 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         private PhotonSession createSession(SSLContext resolvedSslContext) {
-            PhotonConnector connector = new PhotonConnector(
-                    host, port, resolvedSslContext, connectTimeoutMs, initializationTimeoutMs,
-                    requestTimeoutMs, PhotonConnector.DEFAULT_MAX_PENDING);
-            return new PhotonSession(connector, authProvider, overrides);
+            return new PhotonSession(
+                    () -> new PhotonConnector(
+                            host, port, resolvedSslContext, connectTimeoutMs,
+                            initializationTimeoutMs, requestTimeoutMs,
+                            PhotonConnector.DEFAULT_MAX_PENDING),
+                    authProvider,
+                    overrides,
+                    reconnectPolicy);
         }
 
         private static ExecutorService createDefaultExecutor() {
