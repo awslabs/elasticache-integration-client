@@ -12,7 +12,12 @@
  *   the mock over plaintext or TLS.
  */
 import { readFileSync } from "node:fs";
-import { createServer, type Server as NetServer, type Socket } from "node:net";
+import {
+  connect as connectTcp,
+  createServer,
+  type Server as NetServer,
+  type Socket,
+} from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
@@ -29,12 +34,20 @@ function _bulk(value: Buffer): Buffer {
   return Buffer.concat([Buffer.from(`$${value.length}`), CRLF, value, CRLF]);
 }
 
-function _int(value: number): Buffer {
+function _simple(value: Buffer): Buffer {
+  return Buffer.concat([Buffer.from("+"), value, CRLF]);
+}
+
+function _int(value: number | bigint): Buffer {
   return Buffer.concat([Buffer.from(`:${value}`), CRLF]);
 }
 
 function _array(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`*${values.length}`), CRLF, ...values]);
+}
+
+function _push(values: Buffer[]): Buffer {
+  return Buffer.concat([Buffer.from(`>${values.length}`), CRLF, ...values]);
 }
 
 function _error(code: string, message: string): Buffer {
@@ -66,6 +79,25 @@ export class Reply {
   /** A RESP error reply `-<CODE> <message>`. */
   static error(code = "ERR", message = "mock error reply"): Reply {
     return new Reply(_error(code, message));
+  }
+
+  /** The immediate request-id simple string that precedes a deferred push. */
+  static requestId(id: number | bigint): Reply {
+    return new Reply(_simple(Buffer.from(String(id), "ascii")));
+  }
+
+  /** An immediate request-id response followed by its photon.response push. */
+  static asyncResponse(id: number | bigint, reply = Reply.ok()): Reply {
+    return new Reply(
+      Buffer.concat([
+        _simple(Buffer.from(String(id), "ascii")),
+        _push([
+          _bulk(Buffer.from("photon.response", "ascii")),
+          _bulk(Buffer.from(String(id), "ascii")),
+          reply.toBytes(),
+        ]),
+      ]),
+    );
   }
 }
 
@@ -129,7 +161,7 @@ export class MockCache {
   keyPath?: string;
 
   // Contract-engine state.
-  private readonly config: Record<string, unknown>;
+  private config: Record<string, unknown>;
   private readonly authResponse?: Reply;
   private readonly response?: Reply;
   private readonly responseFn?: ReplyFactory;
@@ -177,6 +209,11 @@ export class MockCache {
   /** The most recent decoded `photon.request` record, or `undefined`. */
   get lastRequest(): ReceivedRequest | undefined {
     return this.requests.at(-1);
+  }
+
+  /** Change the config returned by subsequent connection handshakes. */
+  setConfig(config: Record<string, unknown>): void {
+    this.config = config;
   }
 
   /**
@@ -314,6 +351,111 @@ export class MockCache {
         socket.write(this.handle(args));
       }
     });
+  }
+
+  /** Send a deferred response push to the active client without interleaving writes. */
+  sendPush(
+    requestId: number | bigint,
+    reply = Reply.ok(),
+    kind = Buffer.from("photon.response", "ascii"),
+    kindEncoding: "bulk" | "simple" = "bulk",
+  ): void {
+    const socket = this.onlySocket();
+    const encodedKind = kindEncoding === "simple" ? _simple(kind) : _bulk(kind);
+    socket.write(
+      _push([encodedKind, _bulk(Buffer.from(String(requestId), "ascii")), reply.toBytes()]),
+    );
+  }
+
+  private onlySocket(): Socket {
+    const socket = this.sockets.values().next().value as Socket | undefined;
+    if (socket === undefined) {
+      throw new Error("mock cache has no active client socket");
+    }
+    return socket;
+  }
+}
+
+/** Controllable TCP relay used to exercise idle disconnect and reconnect behavior. */
+export class MockTcpProxy {
+  readonly host = "127.0.0.1";
+  port?: number;
+  acceptedConnections = 0;
+
+  private server?: NetServer;
+  private forwarding = true;
+  private readonly sockets = new Set<Socket>();
+
+  constructor(
+    private readonly targetHost: string,
+    private readonly targetPort: number,
+  ) {}
+
+  async start(): Promise<void> {
+    const server = createServer((client) => this.accept(client));
+    this.server = server;
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, this.host, () => {
+        server.off("error", reject);
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("mock proxy did not bind"));
+          return;
+        }
+        this.port = address.port;
+        resolve();
+      });
+    });
+  }
+
+  disconnectClients(): void {
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+  }
+
+  disconnectAndBlock(): void {
+    this.forwarding = false;
+    this.disconnectClients();
+  }
+
+  allowConnections(): void {
+    this.forwarding = true;
+  }
+
+  async stop(): Promise<void> {
+    this.disconnectClients();
+    const server = this.server;
+    this.server = undefined;
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  private accept(client: Socket): void {
+    this.acceptedConnections++;
+    if (!this.forwarding) {
+      client.destroy();
+      return;
+    }
+
+    const upstream = connectTcp({ host: this.targetHost, port: this.targetPort });
+    this.track(client);
+    this.track(upstream);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const closePair = () => {
+      client.destroy();
+      upstream.destroy();
+    };
+    client.once("error", closePair);
+    upstream.once("error", closePair);
+    client.once("close", closePair);
+    upstream.once("close", closePair);
+  }
+
+  private track(socket: Socket): void {
+    this.sockets.add(socket);
+    socket.once("close", () => this.sockets.delete(socket));
   }
 }
 

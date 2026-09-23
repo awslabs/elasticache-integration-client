@@ -176,6 +176,10 @@ public class MockCache {
         // Use reply function if set, otherwise use static reply
         Reply effectiveReply = replyFunction != null ? replyFunction.apply(req) : reply;
 
+        if (effectiveReply.hasRequestId()) {
+            return new RespSimpleString(Long.toString(effectiveReply.getRequestId())
+                    .getBytes(StandardCharsets.UTF_8));
+        }
         if (effectiveReply.isError()) {
             return new RespError(effectiveReply.getErrorCode(), effectiveReply.getErrorMessage());
         }

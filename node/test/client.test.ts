@@ -123,12 +123,18 @@ describe("client", () => {
     });
     const authOptions = mocks.buildCacheAuthProvider.mock.calls[0]![0];
     await expect(authOptions.credentials()).resolves.toBe(credentials);
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
+    connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       tls: false,
       requestTimeout: 1234,
       authProvider: "auth-provider",
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), { timeout: 42 });
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      {},
+    );
     expect(mocks.session.open).toHaveBeenCalledOnce();
     expect(mocks.handleConstructor).toHaveBeenCalledWith(sdkClient, mocks.session, "dynamodb");
     expect(mocks.handle.install).toHaveBeenCalledOnce();
@@ -150,7 +156,69 @@ describe("client", () => {
       cacheName: "my-cache",
       credentials: expect.any(Function),
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), {});
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.any(Function), {}, {});
+  });
+
+  it("passes reconnect policy to the session", async () => {
+    setup();
+    const reconnectPolicy = {
+      connectAttempts: 2,
+      connectionTimeoutMs: 50,
+      baseDelayMs: 5,
+      maxDelayMs: 20,
+      jitter: 0.1,
+    };
+
+    await client("dynamodb", FakeClient, { ...options, reconnectPolicy });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      reconnectPolicy,
+    );
+  });
+
+  it("converts the public fallback duration from seconds to milliseconds", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, { ...options, fallbackDuration: 60 });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      { fallbackDurationMs: 60_000 },
+    );
+  });
+
+  it.each([0.5, Number.MAX_SAFE_INTEGER])(
+    "rejects unsupported fallback duration %s",
+    async (fallbackDuration) => {
+      setup();
+
+      await expect(
+        client("dynamodb", FakeClient, { ...options, fallbackDuration }),
+      ).rejects.toThrow("fallbackDuration must be a whole number of seconds");
+    },
+  );
+
+  it("uses a supplied authProvider instead of generating a token", async () => {
+    setup();
+    const authProvider = () => ["injected-user", "injected-token"] as [string, string];
+
+    await client("dynamodb", FakeClient, {
+      endpoint: options.endpoint,
+      cacheName: options.cacheName,
+      clientConfig: { credentials },
+      connectorOptions: { tls: false, authProvider },
+    });
+
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
+    connectorFactory();
+    expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
+      tls: false,
+      authProvider,
+    });
   });
 
   it.each(["auth", "open", "install"])(

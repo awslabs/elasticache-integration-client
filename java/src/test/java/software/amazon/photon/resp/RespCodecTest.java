@@ -5,6 +5,7 @@ import software.amazon.photon.exception.PhotonProtocolError;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -15,8 +16,8 @@ class RespCodecTest {
 
     @Test
     void encodeCommand_simpleCommand() {
-        byte[] result = RespCodec.encodeCommand("PING");
-        String expected = "*1\r\n$4\r\nPING\r\n";
+        byte[] result = RespCodec.encodeCommand("TEST");
+        String expected = "*1\r\n$4\r\nTEST\r\n";
         assertEquals(expected, new String(result, StandardCharsets.UTF_8));
     }
 
@@ -194,12 +195,27 @@ class RespCodecTest {
     // === Decode tests - Push (>) ===
 
     @Test
-    void decode_push_decodedAsArray() throws IncompleteFrame {
+    void decode_push_decodedAsDistinctPushValue() throws IncompleteFrame {
         byte[] data = ">2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
-        assertTrue(result.getValue() instanceof RespArray);
-        RespArray array = (RespArray) result.getValue();
-        assertEquals(2, array.getElements().size());
+        assertTrue(result.getValue() instanceof RespPush);
+        RespPush push = (RespPush) result.getValue();
+        assertEquals(2, push.getElements().size());
+        assertFalse(result.getValue() instanceof RespArray);
+    }
+
+    @Test
+    void decode_emptyPush() throws IncompleteFrame {
+        DecodeResult result = RespCodec.decode(">0\r\n".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(new RespPush(Collections.emptyList()), result.getValue());
+    }
+
+    @Test
+    void decode_nullPush_throwsProtocolError() {
+        byte[] data = ">-1\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
     }
 
     // === Incomplete frame tests ===

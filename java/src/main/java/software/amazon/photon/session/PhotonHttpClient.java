@@ -7,6 +7,10 @@ import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
+import software.amazon.photon.exception.PhotonConnectionError;
+import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -74,6 +78,9 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     if (aborted.get()) {
                         throw new IOException("Request was aborted", photonFailure);
                     }
+                    if (isRetryableTransportFailure(photonFailure)) {
+                        throw new IOException("Photon transport failed", photonFailure);
+                    }
                     return callOrigin();
                 } finally {
                     activePhotonRequest.compareAndSet(photonCancellation, null);
@@ -118,6 +125,13 @@ public final class PhotonHttpClient implements SdkHttpClient {
                 }
             }
         };
+    }
+
+    private static boolean isRetryableTransportFailure(PhotonError failure) {
+        return failure instanceof PhotonCacheUnavailable
+                || failure instanceof PhotonConnectionLost
+                || failure instanceof PhotonTimeoutError
+                || failure instanceof PhotonConnectionError;
     }
 
     @Override

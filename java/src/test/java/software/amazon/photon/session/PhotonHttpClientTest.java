@@ -13,6 +13,7 @@ import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -50,19 +51,14 @@ class PhotonHttpClientTest {
     }
 
     @Test
-    void photonFailureDelegatesExactSignedRequest() throws Exception {
+    void connectionFailureReturnsTransportErrorWithoutCallingOrigin() {
         StubSession session = new StubSession();
         session.failure = new PhotonConnectionLost("cache unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
-        HttpExecuteRequest signedRequest = signedRequest();
-
-        HttpExecuteResponse response = client.prepareRequest(signedRequest).call();
-
-        assertEquals(201, response.httpResponse().statusCode());
-        assertSame(signedRequest, origin.request.get());
-        assertEquals("signed-value",
-                origin.request.get().httpRequest().firstMatchingHeader("Authorization").orElse(null));
+        assertThrows(IOException.class,
+                () -> client.prepareRequest(signedRequest()).call());
+        assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
@@ -140,7 +136,7 @@ class PhotonHttpClientTest {
     @Test
     void abortReachesActiveOriginRequest() throws Exception {
         StubSession session = new StubSession();
-        session.failure = new PhotonConnectionLost("cache unavailable");
+        session.failure = new PhotonError("cache declined request");
         RecordingHttpClient origin = new RecordingHttpClient();
         origin.blockCall = true;
         PhotonRequestContext context = new PhotonRequestContext();

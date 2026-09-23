@@ -27,8 +27,20 @@ class RespError:
         return f"{self.code} {self.message}".strip()
 
 
-# A decoded RESP value: integer, bulk/simple string (bytes), array (list), or error.
-RespValue = int | bytes | list["RespValue"] | RespError | None
+@dataclass(slots=True, frozen=True)
+class RespPush:
+    """A RESP3 push frame (``>``): an out-of-band message, not the reply to any command.
+
+    The first element is the kind (e.g. ``b"photon.response"``); the rest are its items.
+    """
+
+    kind: bytes
+    items: list["RespValue"]
+
+
+# A decoded RESP value: integer, simple string (str), bulk string (bytes), array (list),
+# map (dict), error, push, or null (None).
+RespValue = int | str | bytes | list["RespValue"] | dict["RespValue", "RespValue"] | RespError | RespPush | None
 
 
 class IncompleteFrame(Exception):
@@ -62,8 +74,8 @@ def _parse_int(header: bytes, what: str) -> int:
 
 
 def _decode_simple_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
-    """Decode a ``+`` simple string. The raw header bytes are the value."""
-    return header, after_header
+    """Decode a ``+`` simple string to ``str``. Bulk strings stay ``bytes``."""
+    return header.decode(), after_header
 
 
 def _decode_integer(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
@@ -78,6 +90,11 @@ def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     return RespError(code=code, message=message), after_header
 
 
+def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``_`` null, the RESP3 form. The line carries no payload, so it is ignored."""
+    return None, after_header
+
+
 def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``$`` bulk string, or ``None`` for the ``$-1`` null bulk."""
     length = _parse_int(header, "bulk length")
@@ -90,7 +107,7 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
 
 
 def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
-    """Decode a ``*`` array or ``>`` push, or ``None`` for the ``*-1`` null array."""
+    """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
     if count == -1:
         return None, after_header
@@ -102,14 +119,46 @@ def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     return items, pos
 
 
-# Prefix → decoder dispatch. ``*`` (array) and ``>`` (push) share the same list semantics.
+def _decode_push(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``>`` push: array element semantics, first element is the kind, rest are items."""
+    elements, pos = _decode_array(data, header, after_header)
+    if not elements:  # ``>0`` or the null ``>-1``
+        return RespPush(kind=b"", items=[]), pos
+    kind, *items = elements
+    if isinstance(kind, str):  # a kind sent as a simple string rather than a bulk string
+        kind = kind.encode()
+    elif not isinstance(kind, bytes):
+        raise PhotonProtocolError(f"Invalid RESP push kind: {kind!r}")
+    return RespPush(kind=kind, items=items), pos
+
+
+def _decode_map(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``%`` map into a ``dict``. Keys and values are each any RESP value."""
+    count = _parse_int(header, "map length")
+    if count < 0:
+        raise PhotonProtocolError(f"Malformed RESP map length: {header!r}")
+    items: dict[RespValue, RespValue] = {}
+    pos = after_header
+    for _ in range(count):
+        key, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
+        value, pos = decode_resp(data, pos)
+        try:
+            items[key] = value
+        except TypeError as exc:  # aggregate key: legal RESP3, unusable as a dict key
+            raise PhotonProtocolError(f"Unhashable RESP map key: {key!r}") from exc
+    return items, pos
+
+
+# Prefix → decoder dispatch.
 _DECODERS = {
     b"+": _decode_simple_string,
     b":": _decode_integer,
     b"-": _decode_error,
+    b"_": _decode_null,
     b"$": _decode_bulk_string,
     b"*": _decode_array,
-    b">": _decode_array,
+    b">": _decode_push,
+    b"%": _decode_map,
 }
 
 
@@ -119,7 +168,7 @@ def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
     consumed frame — pass it back as ``start`` to read the next frame::
 
-        decode_resp(b"+OK\\r\\n")               -> (b"OK", 5)
+        decode_resp(b"+OK\\r\\n")               -> ("OK", 5)
         decode_resp(b"$5\\r\\nhello\\r\\n")     -> (b"hello", 11)
         decode_resp(b"*2\\r\\n:1\\r\\n:2\\r\\n") -> ([1, 2], 12)
 

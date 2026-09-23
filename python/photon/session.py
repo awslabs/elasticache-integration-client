@@ -1,19 +1,27 @@
-"""PhotonSession: connection bring-up and the synchronous request API.
+"""PhotonSession serves requests over a cache connection, and decides what to do when there is none.
 
-:class:`PhotonSession` owns a :class:`~photon.connection.PhotonConnector`, performs connection
-bring-up (transport connect + AUTH + the mandatory ``photon.config`` handshake) on construction,
-and exposes a **synchronous** ``request()`` for the boto3 ``before-send`` hook to call.
+The connection itself is owned by a :class:`~photon.connection_manager.ConnectionManager`, which
+brings it up, rebuilds it when it is lost, and holds the fallback window open meanwhile. The session
+supplies the Photon half: the AUTH and config exchange each new connection needs, the predicates
+cacheable, and the request path.
 
-Scope: no degradation/circuit-breaking/retry and no periodic ``photon.config`` refresh. Requests are
-routed to the cache only when a resolved CEL predicate matches; everything else is passed through by
-the caller. Errors propagate.
+While no connection is available, requests are declined so the caller sends them to the origin
+service itself — for as long as the fallback window allows.
+
+A :class:`~photon.refresh.ConfigRefresher` runs for as long as the session is open, so the config
+can be re-resolved on the live connection rather than only when a new one is built. Here it is
+lifecycle only: ``_refresh_once`` is a no-op, so nothing is fetched or applied yet.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from photon.connection import PhotonConnector
-from photon.exceptions import PhotonError
+from photon.connection_manager import ConnectionManager, ConnectionState
+from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError
 from photon.models import PhotonRequest, PhotonResponse
+from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
     parse_config_response,
@@ -21,64 +29,136 @@ from photon.protocol import (
     serialize_config,
     serialize_request,
 )
+from photon.refresh import ConfigRefresher
 
 
-def parse_endpoint(endpoint: str) -> tuple[str, int]: 
+def parse_endpoint(endpoint: str) -> tuple[str, int]:
     """Parse a ``host:port`` endpoint into ``(host, port)``.
 
     Lives in the session layer (not the transport) so the transport carries no parsing logic.
     Uses ``rpartition(":")`` so IPv6/host forms with colons keep the final ``:port``.
     """
     if not endpoint or ":" not in endpoint:
-        raise PhotonError(f"Invalid endpoint '{endpoint}': expected host:port")
+        raise PhotonConfigError(f"Invalid endpoint '{endpoint}': expected host:port")
     host, _, port_str = endpoint.rpartition(":")
     if not host:
-        raise PhotonError(f"Invalid endpoint '{endpoint}': host cannot be empty")
+        raise PhotonConfigError(f"Invalid endpoint '{endpoint}': host cannot be empty")
     try:
         port = int(port_str)
     except ValueError as exc:
-        raise PhotonError(f"Invalid port in endpoint '{endpoint}'") from exc
+        raise PhotonConfigError(f"Invalid port in endpoint '{endpoint}'") from exc
     if not (1 <= port <= 65535):
-        raise PhotonError(f"Port out of range in endpoint '{endpoint}': {port}")
+        raise PhotonConfigError(f"Port out of range in endpoint '{endpoint}': {port}")
     return host, port
 
 
 class PhotonSession:
-    """Owns a connection to the cache. Open on construction, closed explicitly.
+    """Serves requests over the connection a :class:`ConnectionManager` keeps alive.
 
-    The session owns the connector and closes it, on failure or on close().
-    A closed connector cannot be reopened.
+    Stays open until ``close()``.
     """
 
-    def __init__(self, connector: PhotonConnector, overrides: dict | None = None) -> None:
-        self._connector = connector
+    def __init__(
+        self,
+        connector_factory: Callable[[], PhotonConnector],
+        overrides: dict | None = None,
+        *,
+        policy: ReconnectPolicy | None = None,
+    ) -> None:
+        """Create a session and open its connection, so it is ready to serve requests.
+
+        Args:
+            connector_factory: Returns a new, unconnected connector each time it is called.
+            overrides: ``photon.config`` overrides to send when configuring. The proxy resolves
+                them and answers with the config the session then routes by.
+            policy: Reconnect and fallback behavior; see
+                :class:`~photon.reconnect_policy.ReconnectPolicy`.
+
+        Raises:
+            PhotonError: The connection could not be opened; see
+                :meth:`ConnectionManager.init_connection`.
+                Creating a session fails loudly rather than handing back one that never caches.
+            RuntimeError: The refresher thread could not be started. The connection is closed
+                first, so a session that cannot refresh never leaves one open behind it.
+        """
         self._overrides = overrides or {}
-        self._connector.connect()
+        self._config = None
+        self._predicates = None
+        self._refresher: ConfigRefresher | None = None
+        self._connection_manager = ConnectionManager(
+            connector_factory, self._configure, policy or ReconnectPolicy()
+        )
+        self._connection_manager.init_connection()
         try:
-            self._connector.authenticate()
-            command, args = serialize_config(self._overrides)
-            self._config = parse_config_response(
-                self._connector.execute(command, *args, timeout=self._connector.config_timeout)
-            )
-            # Compile the resolved predicates once; the request path evaluates them per request.
-            self._predicates = compile_predicates(self._config.raw)
+            self._refresher = ConfigRefresher(self._config.refresh_interval, self._refresh_once)
+            self._refresher.start()
         except BaseException:
             self.close()
             raise
 
-    def request(self, request: PhotonRequest) -> PhotonResponse | None:
-        """Route ``request`` to the cache and return its response, or None to pass it through.
+    @property
+    def state(self) -> ConnectionState:
+        return self._connection_manager.state
 
-        ``None`` means no resolved predicate matched — the caller sends the request to the origin
-        service itself. The two outcomes are disjoint (a served request is always a
-        :class:`PhotonResponse`, every failure raises), so ``None`` is unambiguous. Connector and
-        protocol errors propagate.
+    def _configure(self, connector: PhotonConnector) -> None:
+        """Handshake with a freshly connected connector and resolve its config, making it usable.
+
+        Called for the initial connection and for every reconnect, so each connection negotiates
+        RESP3, authenticates with fresh credentials, and routes by the latest resolved config.
+
+        Neither result is published unless both succeed, so a configure that fails half-way leaves
+        the session routing by the config it was already using rather than pairing a new config with
+        the predicates of an older one. The two stores are not atomic together, so a request can
+        briefly see the new config beside the old predicates; nothing reads both today.
+
+        The connection manager owns the connector and closes it if this raises.
+        """
+        connector.handshake()
+        command, args = serialize_config(self._overrides)
+        config = parse_config_response(
+            connector.execute(command, *args, timeout=connector.config_timeout)
+        )
+        # Compile the resolved predicates once; the request path evaluates them per request.
+        predicates = compile_predicates(config.raw)
+        self._config, self._predicates = config, predicates
+
+    def _refresh_once(self) -> None:
+        """Placeholder. Fetching, parsing, and swapping in a new config is not yet implemented."""
+
+    def request(self, request: PhotonRequest) -> PhotonResponse | None:
+        """Route a request to Photon, or return None to let the caller handle it.
+
+        A request is passed through when it does not match any resolved predicate,
+        or when the cache is disconnected and the fallback window is still open.
+        In both cases, the request has not been sent, so falling back is safe.
+
+        Once a request is sent to Photon, failures are propagated rather than
+        retried or passed through, since the request may have reached the cache.
+        These failures are converted to botocore transport errors, and the SDK
+        decides whether to retry them.
+
+        Raises:
+            PhotonCacheUnavailable: If the cache is disconnected and the fallback
+                window has closed.
         """
         if not should_route_to_photon(self._predicates, request):
             return None
+
+        # Read the connector once; the reconnect thread may replace it concurrently.
+        connector = self._connection_manager.connector
+        if not connector:
+            if not self._connection_manager.fallback_allowed():
+                raise PhotonCacheUnavailable(endpoint_url=request.url)
+            return     # pass through
+
         command, args = serialize_request(request)
-        return parse_request_response(self._connector.execute(command, *args))
+        return parse_request_response(connector.execute(command, *args))
 
     def close(self) -> None:
-        """Close the connector. Idempotent (connector.close() handles it)."""
-        self._connector.close()
+        """Stop the refresher, then close the session's connection and all reconnect activity.
+
+        Idempotent.
+        """
+        if self._refresher:
+            self._refresher.stop()
+        self._connection_manager.close()

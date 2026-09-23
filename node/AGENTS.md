@@ -81,9 +81,12 @@ require the corresponding tests, README, and package checks to change with it.
   connects. Safe path: reject use before connect, register before writing,
   enforce the response-size bound, and reset the whole connection on timeout
   so late replies cannot match later requests.
-- **Session lifecycle:** flag changes that permit requests before
+- **Session lifecycle and recovery:** flag changes that permit requests before
   `connect → authenticate → photon.config`, use after close, or duplicate
-  teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
+  teardown, create parallel recovery flights, reuse stale AUTH credentials, or
+  publish a connector with stale predicates. Safe path: preserve the one-way
+  lifecycle, cleanup on failed open, one continuous background reconnect loop
+  with fresh AUTH and config, per-outage origin fallback while disconnected,
   and idempotent `close()`/`destroy()`.
 - **Middleware path:** flag changes that use a non-final serialized request,
   bypass normal SDK deserialization/retry behavior, silently add unsupported
@@ -93,11 +96,12 @@ require the corresponding tests, README, and package checks to change with it.
   origin, non-idempotent/validation/shutdown failures propagating, and
   Photon-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after AUTH failure, disabled
-  TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh scheme-free 15-minute token, confine tokens to
-  AUTH, and keep verified TLS as the default; plaintext is explicit local/test
-  behavior.
+  provider, stale IAM tokens, reusable connections after AUTH failure, TLS
+  verification that is off by default or off implicitly, or plaintext by
+  default. Safe path: force-refresh credentials for each fresh scheme-free
+  15-minute token, confine tokens to AUTH, and keep verified TLS as the default;
+  plaintext (`tls: false`) and unverified TLS (`insecureSkipVerify`) are
+  explicit, opt-in local/test behavior.
 - **Client readiness:** flag returning a partially initialized client or
   masking an initialization error with cleanup failures. Safe path: return
   only after auth, session opening, and middleware installation succeed, and
@@ -146,7 +150,8 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
 
 ## Security and test boundaries
 
-- TLS and certificate verification are enabled by default. Use `tls: false`
+- TLS and certificate verification are enabled by default. Use `tls: false` (no
+  TLS at all) or `insecureSkipVerify` (TLS without certificate verification)
   only for local or test endpoints.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material. Wrapped requests are fully serialized but not

@@ -4,18 +4,20 @@ import json
 
 import pytest
 
-from photon.exceptions import PhotonError
+from photon.exceptions import PhotonError, PhotonProtocolError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig
 from photon.protocol import (
     CONFIG_COMMAND,
+    PUSH_KIND_RESPONSE,
     REQUEST_COMMAND,
     serialize_config,
     serialize_request,
     normalize_headers,
     parse_config_response,
     parse_request_response,
+    parse_response_push,
 )
-from photon.resp import RespError
+from photon.resp import RespError, RespPush
 
 
 # --- AC3: config command + parse ----------------------------------------------
@@ -47,12 +49,31 @@ def test_parse_config_response_json_bulk_string():
     assert cfg.raw == {"version": "v3", "refresh_interval": 60, "ttl": 300, "predicates": []}
 
 
-def test_parse_config_response_missing_fields_default_to_none():
-    """A config reply that omits the named fields yields None for them while still capturing the full document on .raw."""
-    cfg = parse_config_response(b'{"predicates":[]}')
+def test_parse_config_response_missing_version_defaults_to_none():
+    """A config reply omitting 'version' yields None for it while still capturing the full
+    document on .raw. 'refresh_interval' is required, so it must still be present."""
+    cfg = parse_config_response(b'{"refresh_interval":60,"predicates":[]}')
     assert cfg.version is None
-    assert cfg.refresh_interval is None
-    assert cfg.raw == {"predicates": []}
+    assert cfg.refresh_interval == 60
+    assert cfg.raw == {"refresh_interval": 60, "predicates": []}
+
+
+@pytest.mark.parametrize(
+    "body, expected_message",
+    [
+        (b'{"predicates":[]}', "missing required field 'refresh_interval'"),  # missing entirely
+        (b'{"refresh_interval":null,"predicates":[]}', "missing required field 'refresh_interval'"),  # explicit null
+        (b'{"refresh_interval":"60","predicates":[]}', "expected int, got str"),  # wrong type: str
+        (b'{"refresh_interval":60.0,"predicates":[]}', "expected int, got float"),  # wrong type: float
+        (b'{"refresh_interval":true,"predicates":[]}', "expected int, got bool"),  # wrong type: bool
+        (b'{"refresh_interval":0,"predicates":[]}', "must be positive"),  # not positive
+        (b'{"refresh_interval":-1,"predicates":[]}', "must be positive"),  # not positive
+    ],
+)
+def test_parse_config_response_rejects_invalid_refresh_interval(body, expected_message):
+    """Invalid refresh_interval must fail parsing here, not crash a background refresher later."""
+    with pytest.raises(PhotonError, match=expected_message):
+        parse_config_response(body)
 
 
 def test_parse_config_response_rejects_error_frame():
@@ -231,3 +252,37 @@ def test_parse_request_response_rejects_wrong_element_types(elements):
     """A well-shaped reply with non-bytes headers/body fails as PhotonError, not a raw crash."""
     with pytest.raises(PhotonError):
         parse_request_response(elements)
+
+
+# --- out-of-band response push ------------------------------------------------
+
+def test_parse_response_push_splits_id_and_reply():
+    """The id comes back as the str form the id reply used; the reply is handed over untouched
+    for parse_request_response."""
+    push = RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", [200, b"", b"body"]])
+    assert parse_response_push(push) == ("7", [200, b"", b"body"])
+
+
+def test_parse_response_push_keeps_an_error_reply():
+    """A failed request answers with a RespError inside the push, passed through as the value."""
+    error = RespError("PHOTON_AUTH_ERROR", "nope")
+    assert parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", error])) == (
+        "7",
+        error,
+    )
+
+
+@pytest.mark.parametrize(
+    "items, message",
+    [
+        ([], "takes 2 items"),
+        ([b"7"], "takes 2 items"),
+        ([b"7", [200], b"extra"], "takes 2 items"),
+        ([7, [200]], "Invalid push request id"),
+    ],
+)
+def test_parse_response_push_rejects_wrong_payload(items, message):
+    """A push whose payload cannot be read is a protocol error: the stream is untrustworthy,
+    unlike a reply that merely carries an error."""
+    with pytest.raises(PhotonProtocolError, match=message):
+        parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=items))

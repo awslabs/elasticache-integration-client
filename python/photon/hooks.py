@@ -83,10 +83,13 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
     except (AttributeError, ValueError) as exc:
         raise PhotonError(f"Malformed before-send event name: {event_name!r}") from exc
     # header values arrive from botocore as bytes; convert them to strings
-    headers = {
-        k: v.decode() if isinstance(v, bytes) else v
-        for k, v in (request.headers or {}).items()
-    }
+    try:
+        headers = {
+            k: v.decode() if isinstance(v, bytes) else v
+            for k, v in (request.headers or {}).items()
+        }
+    except UnicodeDecodeError as exc:
+        raise PhotonError("Undecodable header value in prepared request") from exc
     body = request.body or b""
     return PhotonRequest(
         method=request.method,
@@ -135,10 +138,11 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. That happens for two reasons: the
-        session declined the request (no resolved predicate matched — the normal per-request steady
-        state, logged at debug), or Photon replied with something unusable (degrades to a cache
-        miss, logged as a warning). Non-Photon exceptions propagate.
+        request down the pipeline and keeps the original behavior. The session declines a request
+        either because no resolved predicate matched it — the normal per-request steady state — or
+        because there is no connection to the cache and its fallback window is still open; both are
+        logged at debug. Photon replying with something unusable also passes through (it degrades to
+        a cache miss) and is logged as a warning. Non-Photon exceptions propagate.
 
         Transport failures do NOT pass through: if the cache never answered, the request's fate is
         unknown — so re-sending it on the application's behalf could apply it twice. 
@@ -148,8 +152,10 @@ class PhotonHandle:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
             response = self._session.request(http_request)
             if response is None:
-                logger.debug("No predicate matched %s; passing through to the service",
-                             http_request.metadata.operation)
+                logger.debug(
+                    "Photon declined %s; passing through to the service",
+                    http_request.metadata.operation,
+                )
                 return None
             return _photon_to_aws_response(request.url, response)
         except (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError) as exc:

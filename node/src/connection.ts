@@ -12,7 +12,16 @@ import {
   PhotonProtocolError,
   PhotonTimeoutError,
 } from "./errors.js";
-import { decodeResp, IncompleteFrame, RespError, encodeResp, type RespValue } from "./resp.js";
+import { PUSH_KIND_RESPONSE, REQUEST_COMMAND } from "./protocol.js";
+import {
+  decodeResp,
+  IncompleteFrame,
+  RespError,
+  RespPush,
+  encodeResp,
+  STRICT_UTF8,
+  type RespValue,
+} from "./resp.js";
 
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
@@ -108,26 +117,44 @@ export class SocketReader {
 }
 
 interface PendingRequest {
+  readonly promise: Promise<RespValue>;
   resolve: (value: RespValue) => void;
   reject: (reason: unknown) => void;
   settled: boolean;
+  writeCompleted: boolean;
+  deferredResponseAllowed: boolean;
 }
 
 /** Thread-safe-in-spirit FIFO for promises registered by concurrent callers. */
 export class PendingRequests {
   private readonly queue: PendingRequest[] = [];
+  private readonly asyncResponses = new Map<string, PendingRequest>();
 
   constructor(private readonly maxPending = 100) {
     validatePositiveInteger(maxPending, "maxPending");
   }
 
-  registerNewRequest(): Promise<RespValue> {
-    if (this.queue.length >= this.maxPending) {
+  registerNewRequest(deferredResponseAllowed = true): PendingRequest {
+    if (this.queue.length + this.asyncResponses.size >= this.maxPending) {
       throw new PhotonError(`maximum pending requests of ${this.maxPending} reached`);
     }
-    return new Promise<RespValue>((resolve, reject) => {
-      this.queue.push({ resolve, reject, settled: false });
+
+    let resolveRequest!: (value: RespValue) => void;
+    let rejectRequest!: (reason: unknown) => void;
+    const promise = new Promise<RespValue>((resolve, reject) => {
+      resolveRequest = resolve;
+      rejectRequest = reject;
     });
+    const request: PendingRequest = {
+      promise,
+      resolve: resolveRequest,
+      reject: rejectRequest,
+      settled: false,
+      writeCompleted: false,
+      deferredResponseAllowed,
+    };
+    this.queue.push(request);
+    return request;
   }
 
   resolveOldestRequest(value: RespValue): void {
@@ -137,14 +164,57 @@ export class PendingRequests {
     request.resolve(value);
   }
 
+  moveNextToAsyncResponses(requestId: string): boolean {
+    if (this.queue.length === 0) {
+      throw new PhotonProtocolError(
+        `received async response id without a pending FIFO request: ${requestId}`,
+      );
+    }
+    if (!this.queue[0]!.deferredResponseAllowed) {
+      return false;
+    }
+    if (this.asyncResponses.has(requestId)) {
+      throw new PhotonProtocolError(`duplicate async response id: ${requestId}`);
+    }
+    this.asyncResponses.set(requestId, this.queue.shift()!);
+    return true;
+  }
+
+  resolveAsync(requestId: string, value: RespValue): boolean {
+    const request = this.asyncResponses.get(requestId);
+    if (request === undefined) return false;
+    this.asyncResponses.delete(requestId);
+    if (request.settled) return true;
+    request.settled = true;
+    request.resolve(value);
+    return true;
+  }
+
+  removeFromAsync(request: PendingRequest): boolean {
+    for (const [requestId, candidate] of this.asyncResponses) {
+      if (candidate === request) {
+        this.asyncResponses.delete(requestId);
+        return true;
+      }
+    }
+    return false;
+  }
+
   failAll(error: unknown): void {
     const requests = this.queue.splice(0);
+    requests.push(...this.asyncResponses.values());
+    this.asyncResponses.clear();
     for (const request of requests) {
       if (request.settled) continue;
       request.settled = true;
       request.reject(error);
     }
   }
+}
+
+interface SentRequest {
+  readonly pending: PendingRequest;
+  readonly response: Promise<RespValue>;
 }
 
 export interface PhotonConnectorOptions {
@@ -158,11 +228,25 @@ export interface PhotonConnectorOptions {
   configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
+  /**
+   * Accept the server's certificate without verifying it. Local and test endpoints only.
+   *
+   * Distinct from `tls: false`, which drops TLS entirely: this keeps the encrypted channel
+   * and waives only the identity check, which is what a self-signed endpoint needs. SNI is
+   * still sent, so a server that routes on it is unaffected.
+   *
+   * Prefer `caCerts` whenever the endpoint's CA can be supplied; reach for this only when it
+   * cannot, such as a certificate minted per test run for a name that is not the one dialled.
+   */
+  insecureSkipVerify?: boolean;
   /** Maximum size requested from a socket read. */
   readSize?: number;
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
   maxResponseSize?: number;
-  /** Maximum number of registered requests. Defaults to 100. */
+  /**
+   * Maximum number of requests still awaiting a reply, including deferred
+   * requests awaiting their async `photon.response` push. Defaults to 100.
+   */
   maxPending?: number;
   /** Provider for the `(userId, token)` credentials used by `AUTH`. */
   authProvider?: AuthProvider;
@@ -179,11 +263,34 @@ export type AuthProvider =
 
 type ConnectedSocket = Socket | TLSSocket;
 
+let warnedInsecureSkipVerify = false;
+
 /**
- * A single Photon TCP/TLS connection with serialized writes and FIFO responses.
+ * Announce once per process that certificate verification is off.
  *
- * Timeouts close the connection because accepting a late response would make FIFO
- * correlation unsafe for every request sent afterward.
+ * Emitted from the handshake that actually waives verification, not from construction: a
+ * connector built with `tls: false`, or one that never connects, must not consume the latch and
+ * leave the first genuinely unverified handshake silent.
+ *
+ * A silent opt-out is the dangerous one: this is the only signal that separates a test rig
+ * from a production misconfiguration, so it is emitted rather than logged and carries its own
+ * name for a consumer that filters warnings.
+ */
+function warnInsecureSkipVerify(): void {
+  if (warnedInsecureSkipVerify) return;
+  warnedInsecureSkipVerify = true;
+  process.emitWarning(
+    "Photon TLS certificate verification is disabled (insecureSkipVerify). " +
+      "Expected only against a local or test endpoint.",
+    "PhotonInsecureTlsWarning",
+  );
+}
+
+/**
+ * A single Photon TCP/TLS connection with serialized writes and FIFO/request-ID responses.
+ *
+ * Positional and write timeouts close the connection; deferred request-ID timeouts remove only
+ * that request because a late push cannot be mis-correlated with a later FIFO response.
  */
 export class PhotonConnector {
   private readonly host: string;
@@ -193,17 +300,23 @@ export class PhotonConnector {
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
   private readonly caCerts: PhotonConnectorOptions["caCerts"];
+  private readonly insecureSkipVerify: boolean;
   private readonly readSize: number;
   private readonly maxResponseSize: number;
   private readonly authProvider: PhotonConnectorOptions["authProvider"];
 
   private socket: ConnectedSocket | undefined;
+  private openingSocket: ConnectedSocket | undefined;
   // Kept while the reader is active so close() can still await it after destroy().
   private readerTask: Promise<void> | undefined;
   private readonly pending: PendingRequests;
   private connecting = false;
   private dead = false;
   private closed = false;
+  private disconnectNotified = false;
+
+  /** Called once when this connector ends, including deliberate close. */
+  onDisconnect: (() => void) | undefined;
 
   constructor(host: string, port: number, options: PhotonConnectorOptions = {}) {
     this.host = host;
@@ -213,6 +326,7 @@ export class PhotonConnector {
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
+    this.insecureSkipVerify = options.insecureSkipVerify ?? false;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
     this.maxResponseSize = validatePositiveInteger(
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
@@ -238,8 +352,10 @@ export class PhotonConnector {
     let socket: ConnectedSocket | undefined;
     try {
       socket = await this.openTcp();
+      this.openingSocket = socket;
       if (this.useTls) {
         socket = await this.openTls(socket);
+        this.openingSocket = socket;
       }
       socket.setNoDelay(true);
       socket.setTimeout(0);
@@ -248,6 +364,7 @@ export class PhotonConnector {
         throw new PhotonConnectionError("PhotonConnector closed during connect()");
       }
       this.socket = socket;
+      this.openingSocket = undefined;
       this.dead = false;
       const reader = new SocketReader(socket, this.readSize, this.maxResponseSize);
       const readerTask = this.readerLoop(reader);
@@ -265,6 +382,7 @@ export class PhotonConnector {
         cause: error,
       });
     } finally {
+      this.openingSocket = undefined;
       this.connecting = false;
     }
   }
@@ -306,9 +424,12 @@ export class PhotonConnector {
     this.pending.failAll(new PhotonConnectionLost("connection closed"));
     const socket = this.socket;
     try {
+      this.openingSocket?.destroy();
       socket?.destroy();
     } finally {
+      this.openingSocket = undefined;
       this.socket = undefined;
+      this.notifyDisconnect();
     }
   }
 
@@ -335,32 +456,60 @@ export class PhotonConnector {
       throw new PhotonConnectionLost("connection is closed");
     }
 
+    let sent: SentRequest | undefined;
     try {
-      const response = this.send(command, ...args);
-      return await this.waitForResponse(response, this.timeoutFor(command));
+      sent = this.send(command, ...args);
+      return await this.waitForResponse(sent.response, this.timeoutFor(command));
     } catch (error) {
       if (error instanceof PhotonTimeoutError) {
-        // FIFO correlation cannot safely discard a late reply, so one timeout resets the
-        // connection and fails every other in-flight request as well.
+        // Once the request has moved out of the FIFO, a late response cannot be matched to
+        // another caller. Remove that map entry and preserve the connection.
+        if (
+          sent !== undefined &&
+          sent.pending.writeCompleted &&
+          this.pending.removeFromAsync(sent.pending)
+        ) {
+          const asyncTimeout = new PhotonTimeoutError(
+            `async request timed out after ${this.timeoutFor(command)}ms`,
+          );
+          sent.pending.settled = true;
+          sent.pending.reject(asyncTimeout);
+          throw asyncTimeout;
+        }
+
+        // A positional or partially-written request still makes a late reply unsafe.
         await this.close();
       }
       throw error;
     }
   }
 
-  private send(command: string, ...args: Buffer[]): Promise<RespValue> {
+  /** Whether this connector has failed or been closed and must be replaced. */
+  get isDead(): boolean {
+    return this.dead || this.closed;
+  }
+
+  /** Whether this connector currently has a usable socket. */
+  get isReady(): boolean {
+    return this.socket !== undefined && !this.dead && !this.closed;
+  }
+
+  private send(command: string, ...args: Buffer[]): SentRequest {
     if (this.dead || this.socket === undefined) {
       throw new PhotonConnectionLost("connection is closed");
     }
 
     const frame = encodeResp(command, ...args);
-    const response = this.pending.registerNewRequest();
+    const response = this.pending.registerNewRequest(command.toLowerCase() === REQUEST_COMMAND);
     const socket = this.socket;
     if (socket === undefined) {
       throw new PhotonConnectionLost("connection is closed");
     }
 
-    return this.writeAndWait(socket, frame, response);
+    return {
+      pending: response,
+      response: this.writeAndWait(socket, frame, response),
+    };
   }
 
   /**
@@ -373,7 +522,7 @@ export class PhotonConnector {
   private async writeAndWait(
     socket: ConnectedSocket,
     frame: Buffer,
-    response: Promise<RespValue>,
+    pending: PendingRequest,
   ): Promise<RespValue> {
     // This is the local write/drain boundary, not an acknowledgement from the server.
     let writeCompleted = false;
@@ -386,7 +535,8 @@ export class PhotonConnector {
       }
       // Errors after this point are response/connection failures, not send failures.
       writeCompleted = true;
-      return await response;
+      pending.writeCompleted = true;
+      return await pending.promise;
     } catch (error) {
       if (writeCompleted) throw error;
       // The frame may be partially written. Reusing the stream could mis-correlate a late
@@ -397,7 +547,7 @@ export class PhotonConnector {
           : new PhotonConnectionLost("send failed", { cause: error });
       // `close()` rejects this response too; consume that rejection because the send error
       // is the failure reported to the caller.
-      void response.catch(() => undefined);
+      void pending.promise.catch(() => undefined);
       await this.close();
       throw failure;
     }
@@ -461,6 +611,7 @@ export class PhotonConnector {
   private async openTcp(): Promise<Socket> {
     return new Promise<Socket>((resolve, reject) => {
       const socket = connectTcp({ host: this.host, port: this.port });
+      this.openingSocket = socket;
       let settled = false;
       const timer = setTimeout(() => {
         const error = new PhotonConnectionError(
@@ -476,6 +627,7 @@ export class PhotonConnector {
         clearTimeout(timer);
         socket.removeListener("connect", onConnect);
         socket.removeListener("error", onError);
+        socket.removeListener("close", onClose);
         socket.removeListener("timeout", onTimeout);
         if (value instanceof Error) reject(value);
         else resolve(value);
@@ -489,6 +641,15 @@ export class PhotonConnector {
         socket.destroy();
         finish(wrapped);
       };
+      const onClose = () => {
+        finish(
+          new PhotonConnectionError(
+            this.closed
+              ? "PhotonConnector closed during connect()"
+              : `Connection closed while connecting to ${this.host}:${this.port}`,
+          ),
+        );
+      };
       const onTimeout = () => {
         const error = new PhotonConnectionError(
           `Timed out connecting to ${this.host}:${this.port}`,
@@ -499,6 +660,7 @@ export class PhotonConnector {
 
       socket.once("connect", onConnect);
       socket.once("error", onError);
+      socket.once("close", onClose);
       socket.once("timeout", onTimeout);
     });
   }
@@ -509,11 +671,13 @@ export class PhotonConnector {
         socket,
         servername: this.host,
         minVersion: "TLSv1.2",
-        rejectUnauthorized: true,
+        rejectUnauthorized: !this.insecureSkipVerify,
       };
       if (this.caCerts !== undefined) options.ca = this.caCerts;
+      if (this.insecureSkipVerify) warnInsecureSkipVerify();
 
       const secured = connectTls(options);
+      this.openingSocket = secured;
       let settled = false;
       const timer = setTimeout(() => {
         const error = new PhotonConnectionError(
@@ -529,6 +693,7 @@ export class PhotonConnector {
         clearTimeout(timer);
         secured.removeListener("secureConnect", onSecureConnect);
         secured.removeListener("error", onError);
+        secured.removeListener("close", onClose);
         if (value instanceof Error) reject(value);
         else resolve(value);
       };
@@ -541,9 +706,19 @@ export class PhotonConnector {
         secured.destroy();
         finish(wrapped);
       };
+      const onClose = () => {
+        finish(
+          new PhotonConnectionError(
+            this.closed
+              ? "PhotonConnector closed during connect()"
+              : `TLS connection closed during handshake to ${this.host}:${this.port}`,
+          ),
+        );
+      };
 
       secured.once("secureConnect", onSecureConnect);
       secured.once("error", onError);
+      secured.once("close", onClose);
     });
   }
 
@@ -551,16 +726,68 @@ export class PhotonConnector {
     try {
       while (!this.dead) {
         const value = await reader.readFrame();
-        this.pending.resolveOldestRequest(value);
+        if (value instanceof RespPush) {
+          this.handlePush(value.items);
+        } else if (
+          typeof value === "string" &&
+          value !== "OK" &&
+          this.pending.moveNextToAsyncResponses(value)
+        ) {
+          continue;
+        } else {
+          this.pending.resolveOldestRequest(value);
+        }
       }
     } catch (error) {
       if (this.dead) return;
       const failure =
-        error instanceof PhotonConnectionLost || error instanceof PhotonProtocolError
+        error instanceof PhotonConnectionLost
           ? error
-          : new PhotonConnectionLost("socket read failed", { cause: error });
+          : error instanceof PhotonProtocolError
+            ? new PhotonConnectionLost("reply stream corrupt", { cause: error })
+            : new PhotonConnectionLost("socket read failed", { cause: error });
       this.markDead(failure);
     }
+  }
+
+  private handlePush(items: RespValue[]): void {
+    const [kind] = items;
+    if (items.length === 0 || (!Buffer.isBuffer(kind) && typeof kind !== "string")) {
+      throw new PhotonProtocolError("Malformed RESP push payload");
+    }
+
+    const kindMatches = Buffer.isBuffer(kind)
+      ? kind.equals(PUSH_KIND_RESPONSE)
+      : kind === PUSH_KIND_RESPONSE.toString("ascii");
+    if (!kindMatches) {
+      throw new PhotonProtocolError(`Unknown RESP push kind: ${String(kind)}`);
+    }
+    if (items.length !== 3) {
+      throw new PhotonProtocolError(
+        `Malformed ${PUSH_KIND_RESPONSE.toString("ascii")} push payload`,
+      );
+    }
+
+    const requestId = items[1];
+    const response = items[2]!;
+    if (!Buffer.isBuffer(requestId)) {
+      throw new PhotonProtocolError(
+        `Malformed ${PUSH_KIND_RESPONSE.toString("ascii")} push request id`,
+      );
+    }
+    // Decode with the same strict UTF-8 codec used for the simple-string request
+    // id that seeded the FIFO->async correlation key, so the two keys always
+    // agree; a looser or differently-lossy decoding could mis-correlate a
+    // deferred response with a different in-flight request.
+    let requestIdKey: string;
+    try {
+      requestIdKey = STRICT_UTF8.decode(requestId);
+    } catch {
+      throw new PhotonProtocolError(
+        `Malformed ${PUSH_KIND_RESPONSE.toString("ascii")} push request id`,
+      );
+    }
+    this.pending.resolveAsync(requestIdKey, response);
   }
 
   private releaseReaderTask(readerTask: Promise<void> | undefined): void {
@@ -575,6 +802,17 @@ export class PhotonConnector {
     this.dead = true;
     this.pending.failAll(error);
     this.socket?.destroy();
+    this.notifyDisconnect();
+  }
+
+  private notifyDisconnect(): void {
+    if (this.disconnectNotified) return;
+    this.disconnectNotified = true;
+    try {
+      this.onDisconnect?.();
+    } catch {
+      // Owner notification must not escape the socket reader or teardown path.
+    }
   }
 
   private verifyAuthReply(reply: RespValue): void {
@@ -582,7 +820,7 @@ export class PhotonConnector {
       this.markDead(new PhotonConnectionLost("AUTH rejected"));
       throw new PhotonConnectionError(`IAM AUTH rejected: ${reply.code}`);
     }
-    if (!Buffer.isBuffer(reply) || !reply.equals(Buffer.from("OK"))) {
+    if (reply !== "OK") {
       const error = new PhotonConnectionLost("unexpected AUTH reply");
       this.markDead(error);
       throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
