@@ -73,7 +73,11 @@ interface ReconnectPolicy {
 
 export type ConnectionState = "init" | "alive" | "reconnecting" | "closed";
 type SessionState = "created" | "open" | "closed";
-export type PhotonConnectorFactory = () => PhotonConnector;
+export interface PhotonConnectorFactory {
+  (): PhotonConnector;
+  /** Release resources shared by every connector produced by this factory. */
+  close?: () => void;
+}
 
 function timerDelay(value: number, name: string): number {
   if (!Number.isFinite(value) || value <= 0 || value > MAX_TIMER_DELAY_MS) {
@@ -186,6 +190,7 @@ export class PhotonSession {
   private fallbackDeadline = 0;
   private readonly disconnected = new WeakSet<PhotonConnector>();
   private readonly recoveryAbort = new AbortController();
+  private factoryClosed = false;
 
   constructor(
     connectorOrFactory: PhotonConnector | PhotonConnectorFactory,
@@ -297,11 +302,15 @@ export class PhotonSession {
 
   /** Stop refresh and close active and recovering connectors. Idempotent. */
   async close(): Promise<void> {
-    if (this.state === "closed") return;
+    if (this.state === "closed") {
+      this.closeFactory();
+      return;
+    }
     this.state = "closed";
     this.connection = "closed";
     this.refresher?.stop();
     this.recoveryAbort.abort();
+    this.closeFactory();
     const active = this.connector;
     const candidate = this.candidate;
     const reconnectTask = this.reconnectTask;
@@ -311,13 +320,23 @@ export class PhotonSession {
 
   /** Synchronous Node.js teardown used by AWS SDK client destroy(). */
   destroy(): void {
-    if (this.state === "closed") return;
+    if (this.state === "closed") {
+      this.closeFactory();
+      return;
+    }
     this.state = "closed";
     this.connection = "closed";
     this.refresher?.stop();
     this.recoveryAbort.abort();
+    this.closeFactory();
     this.candidate?.destroy();
     this.connector?.destroy();
+  }
+
+  private closeFactory(): void {
+    if (this.factoryClosed) return;
+    this.factoryClosed = true;
+    this.connectorFactory.close?.();
   }
 
   private createCandidate(): PhotonConnector {

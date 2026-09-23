@@ -53,19 +53,24 @@ async function initialize<TClient extends PhotonCompatibleClient>(
 ): Promise<PhotonHandle> {
   const [host, port] = parseEndpoint(endpoint);
   // A caller-supplied provider replaces token generation rather than competing with it.
-  const authProvider =
-    options.connectorOptions?.authProvider ??
-    (await buildCacheAuthProvider({
-      cacheName: options.cacheName,
-      ...(options.userId === undefined ? {} : { userId: options.userId }),
-      ...(options.region === undefined ? {} : { region: options.region }),
-      credentials: sdkClient.config.credentials,
-    }));
-  const connectorFactory = () =>
-    new PhotonConnector(host, port, {
-      ...options.connectorOptions,
-      authProvider,
-    });
+  const managedAuthProvider =
+    options.connectorOptions?.authProvider === undefined
+      ? await buildCacheAuthProvider({
+          cacheName: options.cacheName,
+          ...(options.userId === undefined ? {} : { userId: options.userId }),
+          ...(options.region === undefined ? {} : { region: options.region }),
+          credentials: sdkClient.config.credentials,
+        })
+      : undefined;
+  const authProvider = options.connectorOptions?.authProvider ?? managedAuthProvider;
+  const connectorFactory = Object.assign(
+    () =>
+      new PhotonConnector(host, port, {
+        ...options.connectorOptions,
+        ...(authProvider === undefined ? {} : { authProvider }),
+      }),
+    managedAuthProvider === undefined ? {} : { close: () => managedAuthProvider.close() },
+  );
   const reconnectPolicy = {
     ...options.reconnectPolicy,
     ...(options.fallbackDuration === undefined

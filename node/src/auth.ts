@@ -8,7 +8,7 @@
  */
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type {
-  ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
+  ElastiCacheIAMAuthTokenManager as ToolkitAuthTokenManager,
   TokenGeneratorDependencies,
 } from "@aws/developer-toolkit-elasticache";
 import type { AwsCredentialIdentityProvider } from "@smithy/types";
@@ -45,6 +45,13 @@ export interface GenerateIamAuthTokenOptions extends ResolvedAuthParams {
 
 export interface IamAuthTokenProviderOptions extends ResolvedAuthParams {
   credentials: CredentialsProvider;
+}
+
+/** Connector-compatible IAM provider backed by the toolkit token manager. */
+export interface CacheAuthProvider {
+  (): Promise<[string, string]>;
+  refreshAuth(): Promise<[string, string]>;
+  close(): void;
 }
 
 /**
@@ -119,24 +126,24 @@ export async function generateIamAuthToken({
   }
 }
 
-/** Credential provider that returns a fresh `(userId, token)` pair per call. */
+/** Credential provider that caches and automatically refreshes IAM tokens. */
 export class IamAuthTokenProvider {
   private readonly options: IamAuthTokenProviderOptions;
-  private providerPromise: Promise<ToolkitAuthTokenProvider> | undefined;
+  private managerPromise: Promise<ToolkitAuthTokenManager> | undefined;
 
   constructor(options: IamAuthTokenProviderOptions) {
     this.options = options;
   }
 
-  private initialize(): Promise<ToolkitAuthTokenProvider> {
-    this.providerPromise ??= this.createProvider();
-    return this.providerPromise;
+  private initialize(): Promise<ToolkitAuthTokenManager> {
+    this.managerPromise ??= this.createManager();
+    return this.managerPromise;
   }
 
-  private async createProvider(): Promise<ToolkitAuthTokenProvider> {
+  private async createManager(): Promise<ToolkitAuthTokenManager> {
     const toolkit = await loadToolkit();
     try {
-      return await toolkit.ElastiCacheIAMAuthTokenProvider.create(
+      return await toolkit.ElastiCacheIAMAuthTokenManager.create(
         {
           serverlessCacheName: this.options.cacheName,
           userId: this.options.userId,
@@ -154,14 +161,29 @@ export class IamAuthTokenProvider {
     await this.initialize();
   }
 
-  /** Generate a fresh `(userId, token)` pair. */
+  /** Return the normalized user id and a valid cached token. */
   async getAuth(): Promise<[string, string]> {
-    const provider = await this.initialize();
+    const manager = await this.initialize();
     try {
-      return [provider.userId, await provider.getToken()];
+      return await manager.getCredentials();
     } catch (error) {
       throw toPhotonError(error, await loadToolkit());
     }
+  }
+
+  /** Invalidate the cached token after an authentication rejection. */
+  async refreshAuth(): Promise<[string, string]> {
+    const manager = await this.initialize();
+    try {
+      return [manager.userId, await manager.refreshToken()];
+    } catch (error) {
+      throw toPhotonError(error, await loadToolkit());
+    }
+  }
+
+  /** Stop background token refresh. */
+  close(): void {
+    void this.managerPromise?.then((manager) => manager.close());
   }
 
   toString(): string {
@@ -173,12 +195,12 @@ export class IamAuthTokenProvider {
 /** Assemble a ready-to-use authentication provider for a cache connector. */
 export async function buildCacheAuthProvider(
   input: AuthParamsInput & { credentials?: CredentialsProvider },
-): Promise<() => Promise<[string, string]>> {
+): Promise<CacheAuthProvider> {
   const toolkit = await loadToolkit();
   const credentials = input.credentials ?? fromNodeProviderChain();
 
   try {
-    const provider = await toolkit.ElastiCacheIAMAuthTokenProvider.create(
+    const manager = await toolkit.ElastiCacheIAMAuthTokenManager.create(
       {
         ...(input.cacheName === undefined ? {} : { serverlessCacheName: input.cacheName }),
         userId: input.userId || DEFAULT_USER_ID,
@@ -186,13 +208,23 @@ export async function buildCacheAuthProvider(
       },
       toolkitDependencies(credentials),
     );
-    return async () => {
+    const getAuth = async (): Promise<[string, string]> => {
       try {
-        return [provider.userId, await provider.getToken()];
+        return await manager.getCredentials();
       } catch (error) {
         throw toPhotonError(error, toolkit);
       }
     };
+    return Object.assign(getAuth, {
+      refreshAuth: async (): Promise<[string, string]> => {
+        try {
+          return [manager.userId, await manager.refreshToken()];
+        } catch (error) {
+          throw toPhotonError(error, toolkit);
+        }
+      },
+      close: () => manager.close(),
+    });
   } catch (error) {
     throw toPhotonError(error, toolkit);
   }

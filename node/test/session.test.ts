@@ -284,6 +284,27 @@ describe("PhotonSession", () => {
     expect(destroyConnector.destroy).toHaveBeenCalledOnce();
   });
 
+  it.each(["close", "destroy"] as const)(
+    "releases connector-factory resources exactly once on %s",
+    async (teardown) => {
+      const connector = fakeConnector();
+      const closeFactory = vi.fn();
+      const factory = Object.assign(() => connector, { close: closeFactory });
+      const session = new PhotonSession(factory);
+      await session.open();
+
+      if (teardown === "close") {
+        await session.close();
+        await session.close();
+      } else {
+        session.destroy();
+        session.destroy();
+      }
+
+      expect(closeFactory).toHaveBeenCalledOnce();
+    },
+  );
+
   it("delegates requests after close to the connector", async () => {
     const connector = fakeConnector();
     const session = new PhotonSession(connector);

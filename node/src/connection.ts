@@ -258,8 +258,15 @@ export interface PhotonConnectorOptions {
  * The object form is the Node equivalent of Python's callable provider class.
  */
 export type AuthProvider =
-  | (() => [string, string] | Promise<[string, string]>)
-  | { getAuth: () => [string, string] | Promise<[string, string]> };
+  | ((() => [string, string] | Promise<[string, string]>) & {
+      refreshAuth?: () => [string, string] | Promise<[string, string]>;
+    })
+  | {
+      getAuth: () => [string, string] | Promise<[string, string]>;
+      refreshAuth?: () => [string, string] | Promise<[string, string]>;
+    };
+
+class PhotonAuthenticationRejected extends PhotonConnectionError {}
 
 type ConnectedSocket = Socket | TLSSocket;
 
@@ -412,8 +419,20 @@ export class PhotonConnector {
         await this.close();
         throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
       }
+      if (error instanceof PhotonAuthenticationRejected) {
+        await this.refreshAuthentication().catch(() => undefined);
+      }
       throw error;
     }
+  }
+
+  private async refreshAuthentication(): Promise<void> {
+    if (this.authProvider === undefined) return;
+    const refresh =
+      typeof this.authProvider === "function"
+        ? this.authProvider.refreshAuth
+        : this.authProvider.refreshAuth;
+    await refresh?.();
   }
 
   /** Immediately stop reading, fail pending requests, and destroy the socket. */
@@ -818,12 +837,12 @@ export class PhotonConnector {
   private verifyAuthReply(reply: RespValue): void {
     if (reply instanceof RespError) {
       this.markDead(new PhotonConnectionLost("AUTH rejected"));
-      throw new PhotonConnectionError(`IAM AUTH rejected: ${reply.code}`);
+      throw new PhotonAuthenticationRejected(`IAM AUTH rejected: ${reply.code}`);
     }
     if (reply !== "OK") {
       const error = new PhotonConnectionLost("unexpected AUTH reply");
       this.markDead(error);
-      throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
+      throw new PhotonAuthenticationRejected(`IAM AUTH failed: unexpected reply ${String(reply)}`);
     }
   }
 

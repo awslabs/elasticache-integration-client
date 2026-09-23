@@ -724,6 +724,26 @@ describe("PhotonConnector", () => {
     );
   });
 
+  it("invalidates managed credentials after AUTH rejection", async () => {
+    const cache = await startCache({
+      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    const authProvider = Object.assign(() => ["test-user", "cached-token"] as [string, string], {
+      refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.authenticate()).rejects.toThrow(
+      "IAM AUTH rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
+    await connector.close();
+  });
+
   it("times out a request and makes the connection unusable", async () => {
     const cache = await startCache({ failure: "hang" });
     const connector = new PhotonConnector(cache.host, cache.port!, {

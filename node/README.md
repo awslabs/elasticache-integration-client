@@ -124,12 +124,16 @@ Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
 attempt including the capped tail. Closing or destroying the SDK client
 interrupts reconnect backoff and prevents further attempts.
 
-AUTH normally uses `@aws/developer-toolkit-elasticache` to presign a short-lived
-IAM token from the SDK credential chain. The toolkit validates cache names and
-user IDs and normalizes them to lowercase before signing. A caller that already
-holds a token, or that authenticates against a local or test endpoint, supplies
-`connectorOptions.authProvider` instead: it returns `[userId, token]` and
-replaces token generation entirely, so no AWS credentials are required.
+AUTH normally uses `@aws/developer-toolkit-elasticache` to cache and
+automatically refresh short-lived IAM tokens from the SDK credential chain.
+The toolkit validates cache names and user IDs, normalizes them to lowercase
+before signing, and refreshes the cached token in the background. If Photon
+receives an AUTH rejection, it invalidates that token so the next connection
+attempt uses a newly signed one. Destroying the SDK client stops background
+token refresh. A caller that already holds a token, or that authenticates
+against a local or test endpoint, supplies `connectorOptions.authProvider`
+instead: it returns `[userId, token]` and replaces toolkit token management
+entirely, so no AWS credentials are required.
 
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when
