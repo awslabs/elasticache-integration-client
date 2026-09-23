@@ -39,8 +39,8 @@ class RespPush:
 
 
 # A decoded RESP value: integer, simple string (str), bulk string (bytes), array (list),
-# error, or push.
-RespValue = int | str | bytes | list["RespValue"] | RespError | RespPush | None
+# map (dict), error, push, or null (None).
+RespValue = int | str | bytes | list["RespValue"] | dict["RespValue", "RespValue"] | RespError | RespPush | None
 
 
 class IncompleteFrame(Exception):
@@ -90,6 +90,11 @@ def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespVa
     return RespError(code=code, message=message), after_header
 
 
+def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``_`` null, the RESP3 form. The line carries no payload, so it is ignored."""
+    return None, after_header
+
+
 def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``$`` bulk string, or ``None`` for the ``$-1`` null bulk."""
     length = _parse_int(header, "bulk length")
@@ -127,14 +132,33 @@ def _decode_push(data: bytes, header: bytes, after_header: int) -> tuple[RespVal
     return RespPush(kind=kind, items=items), pos
 
 
+def _decode_map(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+    """Decode a ``%`` map into a ``dict``. Keys and values are each any RESP value."""
+    count = _parse_int(header, "map length")
+    if count < 0:
+        raise PhotonProtocolError(f"Malformed RESP map length: {header!r}")
+    items: dict[RespValue, RespValue] = {}
+    pos = after_header
+    for _ in range(count):
+        key, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
+        value, pos = decode_resp(data, pos)
+        try:
+            items[key] = value
+        except TypeError as exc:  # aggregate key: legal RESP3, unusable as a dict key
+            raise PhotonProtocolError(f"Unhashable RESP map key: {key!r}") from exc
+    return items, pos
+
+
 # Prefix → decoder dispatch.
 _DECODERS = {
     b"+": _decode_simple_string,
     b":": _decode_integer,
     b"-": _decode_error,
+    b"_": _decode_null,
     b"$": _decode_bulk_string,
     b"*": _decode_array,
     b">": _decode_push,
+    b"%": _decode_map,
 }
 
 

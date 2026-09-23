@@ -43,12 +43,47 @@ describe("Photon protocol", () => {
     });
   });
 
-  it("defaults missing config fields while preserving raw data", () => {
-    const config = parseConfigResponse(Buffer.from('{"predicates":[]}'));
+  it("defaults a missing version while preserving raw data", () => {
+    const config = parseConfigResponse(Buffer.from('{"refresh_interval":60,"predicates":[]}'));
 
     expect(config.version).toBeUndefined();
-    expect(config.refreshInterval).toBeUndefined();
-    expect(config.raw).toEqual({ predicates: [] });
+    expect(config.refreshInterval).toBe(60);
+    expect(config.raw).toEqual({ refresh_interval: 60, predicates: [] });
+  });
+
+  it("accepts integer-valued JSON numbers such as 56.0", () => {
+    const config = parseConfigResponse(Buffer.from('{"refresh_interval":56.0,"predicates":[]}'));
+
+    expect(config.refreshInterval).toBe(56);
+  });
+
+  it.each([1, 5, 3600, 3601])("accepts the positive refresh_interval %s", (refreshInterval) => {
+    const config = parseConfigResponse(
+      Buffer.from(`{"refresh_interval":${refreshInterval},"predicates":[]}`),
+    );
+
+    expect(config.refreshInterval).toBe(refreshInterval);
+  });
+
+  it.each([
+    // Missing entirely; the refresher has no interval to schedule from.
+    '{"predicates":[]}',
+    // Explicit null.
+    '{"refresh_interval":null,"predicates":[]}',
+    // Wrong type: string.
+    '{"refresh_interval":"60","predicates":[]}',
+    // Wrong type: boolean.
+    '{"refresh_interval":true,"predicates":[]}',
+    // Wrong type: object.
+    '{"refresh_interval":{},"predicates":[]}',
+    // Fractional.
+    '{"refresh_interval":60.5,"predicates":[]}',
+    // Not positive.
+    '{"refresh_interval":0,"predicates":[]}',
+    '{"refresh_interval":-1,"predicates":[]}',
+  ])("rejects the invalid refresh_interval in %s", (body) => {
+    // Invalid intervals must fail at parse time, not crash a background refresher later.
+    expect(() => parseConfigResponse(Buffer.from(body))).toThrow(PhotonError);
   });
 
   it("requires request metadata at the model boundary", () => {

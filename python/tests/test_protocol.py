@@ -49,12 +49,31 @@ def test_parse_config_response_json_bulk_string():
     assert cfg.raw == {"version": "v3", "refresh_interval": 60, "ttl": 300, "predicates": []}
 
 
-def test_parse_config_response_missing_fields_default_to_none():
-    """A config reply that omits the named fields yields None for them while still capturing the full document on .raw."""
-    cfg = parse_config_response(b'{"predicates":[]}')
+def test_parse_config_response_missing_version_defaults_to_none():
+    """A config reply omitting 'version' yields None for it while still capturing the full
+    document on .raw. 'refresh_interval' is required, so it must still be present."""
+    cfg = parse_config_response(b'{"refresh_interval":60,"predicates":[]}')
     assert cfg.version is None
-    assert cfg.refresh_interval is None
-    assert cfg.raw == {"predicates": []}
+    assert cfg.refresh_interval == 60
+    assert cfg.raw == {"refresh_interval": 60, "predicates": []}
+
+
+@pytest.mark.parametrize(
+    "body, expected_message",
+    [
+        (b'{"predicates":[]}', "missing required field 'refresh_interval'"),  # missing entirely
+        (b'{"refresh_interval":null,"predicates":[]}', "missing required field 'refresh_interval'"),  # explicit null
+        (b'{"refresh_interval":"60","predicates":[]}', "expected int, got str"),  # wrong type: str
+        (b'{"refresh_interval":60.0,"predicates":[]}', "expected int, got float"),  # wrong type: float
+        (b'{"refresh_interval":true,"predicates":[]}', "expected int, got bool"),  # wrong type: bool
+        (b'{"refresh_interval":0,"predicates":[]}', "must be positive"),  # not positive
+        (b'{"refresh_interval":-1,"predicates":[]}', "must be positive"),  # not positive
+    ],
+)
+def test_parse_config_response_rejects_invalid_refresh_interval(body, expected_message):
+    """Invalid refresh_interval must fail parsing here, not crash a background refresher later."""
+    with pytest.raises(PhotonError, match=expected_message):
+        parse_config_response(body)
 
 
 def test_parse_config_response_rejects_error_frame():

@@ -264,9 +264,31 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   const object = raw as Record<string, unknown>;
   return new ResolvedConfig({
     version: object.version,
-    refreshInterval: object.refresh_interval,
+    refreshInterval: parseRefreshInterval(object.refresh_interval),
     raw: object,
   });
+}
+
+/**
+ * Validate the `refresh_interval` field: required, an integer number of seconds, and positive.
+ *
+ * The value feeds the config refresher's jittered delay arithmetic, so a
+ * missing, wrongly typed, or non-positive value is treated as a malformed config rather than
+ * deferred to a background timer.
+ */
+function parseRefreshInterval(value: unknown): number {
+  if (value === undefined || value === null) {
+    throw new PhotonError("Config JSON missing required field 'refresh_interval'");
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new PhotonError(
+      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${JSON.stringify(value) ?? String(value)}`,
+    );
+  }
+  if (value <= 0) {
+    throw new PhotonError(`Invalid 'refresh_interval': must be positive, got ${value}`);
+  }
+  return value;
 }
 
 /**

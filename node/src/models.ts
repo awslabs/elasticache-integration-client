@@ -80,16 +80,15 @@ export class PhotonResponse {
 /** Resolved configuration returned by the `photon.config` handshake. */
 export class ResolvedConfig {
   readonly version: unknown;
-  readonly refreshInterval: unknown;
+  /** Seconds between config refreshes. Validated as a positive integer at parse time. */
+  readonly refreshInterval: number;
   readonly raw: Record<string, unknown> | undefined;
 
-  constructor(
-    options: {
-      version?: unknown;
-      refreshInterval?: unknown;
-      raw?: Record<string, unknown> | undefined;
-    } = {},
-  ) {
+  constructor(options: {
+    version?: unknown;
+    refreshInterval: number;
+    raw?: Record<string, unknown> | undefined;
+  }) {
     this.version = options.version;
     this.refreshInterval = options.refreshInterval;
     this.raw = options.raw;

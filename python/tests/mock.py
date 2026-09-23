@@ -113,6 +113,10 @@ def _array(items: list[bytes]) -> bytes:
     return b"*" + str(len(items)).encode() + _CRLF + b"".join(items)
 
 
+def _map(pairs: list[tuple[bytes, bytes]]) -> bytes:
+    return b"%" + str(len(pairs)).encode() + _CRLF + b"".join(k + v for k, v in pairs)
+
+
 def _error(code: str, message: str) -> bytes:
     text = f"{code} {message}".strip()
     # An error line is CRLF-framed; a newline inside it would silently truncate the
@@ -262,7 +266,7 @@ def _read_command(rfile) -> list[bytes] | None:
 class MockCache:
     """A fake Photon cache server.
 
-    Accepts any AUTH, serves a canned config, and answers each ``photon.request`` with
+    Accepts any AUTH, answers ``HELLO 3`` with a RESP3 map, serves a canned config, and answers each ``photon.request`` with
     ``response_fn(request)``, a fixed ``response``, or the default built from
     ``response_status``/``response_headers``/``response_body``
     Records everything received (``received_commands``, ``photon_command_log``, ``requests``).
@@ -271,7 +275,7 @@ class MockCache:
     replying. ``failure_after_reply=True`` sends the normal reply first and *then* misbehaves —
     e.g. with ``failure="drop"`` the reply and the connection close arrive back-to-back.
     ``failure_command`` picks the command that triggers it (default
-    ``photon.request``; use ``"auth"`` to break the handshake).
+    ``photon.request``; use ``"auth"`` or ``"hello"`` to break the handshake).
 
     Plaintext by default; ``tls=True`` serves verifying TLS — trust it via ``ca_certs=cache.cert_path``.
 
@@ -368,6 +372,29 @@ class MockCache:
             self.photon_command_log.append(name)
             # Accept any credentials — this is a test mock.
             return b"+OK\r\n"
+
+        if name == "hello":
+            self.photon_command_log.append(name)
+            # HELLO <protover> [AUTH <user> <token>]: any credentials are accepted, as with AUTH.
+            # The reply echoes the version asked for, encoded in it: a map for RESP3, array for RESP2.
+            if not args or args[0] not in (b"2", b"3"):
+                return _error("NOPROTO", "unsupported protocol version")
+            rest = args[1:]
+            if rest and (len(rest) != 3 or rest[0].upper() != b"AUTH"):
+                return _error("ERR", "syntax error")
+            proto = int(args[0])
+            fields = [
+                (_bulk(b"server"), _bulk(b"valkey")),
+                (_bulk(b"version"), _bulk(b"8.0.0")),
+                (_bulk(b"proto"), _int(proto)),
+                (_bulk(b"id"), _int(1)),
+                (_bulk(b"mode"), _bulk(b"cluster")),
+                (_bulk(b"role"), _bulk(b"primary")),
+                (_bulk(b"modules"), _array([])),
+            ]
+            if proto == 2:
+                return _array([item for pair in fields for item in pair])
+            return _map(fields)
 
         if name == "photon.config":
             self.photon_command_log.append(name)

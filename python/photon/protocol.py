@@ -85,11 +85,28 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
         raise PhotonError(f"Malformed config JSON: {value!r}") from exc
     if not isinstance(raw, dict):
         raise PhotonError(f"Config JSON must be an object, got {type(raw).__name__}")
+    refresh_interval = _parse_refresh_interval(raw.get("refresh_interval"))
     return ResolvedConfig(
         version=raw.get("version"),
-        refresh_interval=raw.get("refresh_interval"),
+        refresh_interval=refresh_interval,
         raw=raw,
     )
+
+
+def _parse_refresh_interval(value: object) -> int:
+    """Validate the ``refresh_interval`` field: required, ``int``, and positive.
+    ``refresh_interval`` feeds directly into :class:`~photon.refresh.ConfigRefresher`'s jittered
+    delay arithmetic, so a missing, wrongly-typed, or non-positive value is considered malformed.
+    """
+    if value is None:
+        raise PhotonError("Config JSON missing required field 'refresh_interval'")
+    if type(value) is not int:
+        raise PhotonError(
+            f"Invalid 'refresh_interval': expected int, got {type(value).__name__}: {value!r}"
+        )
+    if value <= 0:
+        raise PhotonError(f"Invalid 'refresh_interval': must be positive, got {value}")
+    return value
 
 
 def serialize_request(request: PhotonRequest) -> tuple[str, list[bytes]]:
