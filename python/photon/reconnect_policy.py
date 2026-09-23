@@ -30,6 +30,8 @@ class ReconnectPolicy:
     # attempt, so creating a session takes at most connect_attempts of these plus the backoff
     # between them, and each later reconnect attempt is capped by one.
     connection_timeout: float = 5.0
+    # How often to re-run AUTH in the background to refresh the connection's FAS.
+    auth_refresh_interval: float = 900.0
     base_delay: float = 0.1
     max_delay: float = 3.2
     jitter: float = 0.2
@@ -44,6 +46,8 @@ class ReconnectPolicy:
             raise PhotonConfigError("connect_attempts must be >= 1")
         if self.connection_timeout <= 0:
             raise PhotonConfigError("connection_timeout must be > 0")
+        if self.auth_refresh_interval <= 0:
+            raise PhotonConfigError("auth_refresh_interval must be > 0")
         if self.base_delay <= 0:
             raise PhotonConfigError("base_delay must be > 0")
         if self.max_delay < self.base_delay:

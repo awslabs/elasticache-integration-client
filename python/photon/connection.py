@@ -439,6 +439,37 @@ class PhotonConnector:
             raise PhotonConnectionError(
                 f"HELLO 3 failed: reply did not report proto {_RESP3_PROTO}")
 
+    def authenticate(self) -> None:
+        """Re-authenticate the live connection with a fresh token, using a plain ``AUTH``.
+
+        Raises:
+            PhotonConnectionError: If AUTH is rejected or times out.
+            PhotonError: If the provider fails to generate a token.
+        """
+        if not self._auth_provider:
+            return
+        user_id, token = self._auth_provider()
+        try:
+            reply = self.execute("AUTH", user_id.encode(), token.encode(),
+                                 timeout=self.config_timeout)
+        except PhotonTimeoutError as exc:
+            self.close()
+            raise PhotonConnectionError("IAM AUTH timed out — connection closed") from exc
+        self._verify_auth_reply(reply)
+
+    def _verify_auth_reply(self, reply: RespValue) -> None:
+        """Validate an AUTH reply. Raises PhotonConnectionError on rejection or unexpected shape.
+
+        A success reply is the RESP simple string "+OK" (decoded to "OK"); anything else is
+        rejected rather than treated as success. The token is never included in error messages.
+        """
+        if isinstance(reply, RespError):
+            self.close()
+            raise PhotonConnectionError(f"IAM AUTH rejected: {reply.code}")
+        if reply != OK:
+            self.close()
+            raise PhotonConnectionError(f"IAM AUTH failed: unexpected reply {reply!r}")
+
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """TLS policy for the connection: TLS 1.2+, hostname check, required verification."""
         if not self._tls:

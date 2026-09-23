@@ -8,7 +8,7 @@ cacheable, and the request path.
 While no connection is available, requests are declined so the caller sends them to the origin
 service itself — for as long as the fallback window allows.
 
-A :class:`~photon.refresh.ConfigRefresher` runs for as long as the session is open, so the config
+A :class:`~photon.refresh.Refresher` runs for as long as the session is open, so the config
 can be re-resolved on the live connection rather than only when a new one is built. A refresh that
 fails leaves the current config in place; recording failures and raising a staleness flag are not
 yet implemented.
@@ -28,6 +28,7 @@ from photon.exceptions import (
     PhotonRejectedError,
 )
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
+from photon.refresh import Refresher
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
@@ -36,7 +37,6 @@ from photon.protocol import (
     serialize_config,
     serialize_request,
 )
-from photon.refresh import ConfigRefresher
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ class PhotonSession:
         connector_factory: Callable[[], PhotonConnector],
         overrides: dict | None = None,
         *,
-        policy: ReconnectPolicy | None = None,
+        policy: ReconnectPolicy = ReconnectPolicy(),
     ) -> None:
         """Create a session and open its connection, so it is ready to serve requests.
 
@@ -95,14 +95,30 @@ class PhotonSession:
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
-        self._refresher: ConfigRefresher | None = None
+        self._config_refresher: Refresher | None = None
+        self._reauth_runner: Refresher | None = None
         self._connection_manager = ConnectionManager(
-            connector_factory, self._configure, policy or ReconnectPolicy()
+            connector_factory, self._configure, policy
         )
         self._connection_manager.init_connection()
         try:
-            self._refresher = ConfigRefresher(self._config.refresh_interval, self._refresh_once)
-            self._refresher.start()
+            self._config_refresher = Refresher(
+                self._config.refresh_interval,
+                self._refresh_once,
+                name="photon-refresher",
+                jitter=policy.jitter,
+            )
+            self._config_refresher.start()
+            # Keep the connection's FAS fresh in the background. Started only after bring-up
+            # succeeds, so a failed bring-up still throws without leaving a thread behind.
+            self._reauth_runner = Refresher(
+                policy.auth_refresh_interval,
+                self._reauth_once,
+                name="photon-reauth",
+                jitter=policy.jitter,
+                failure_delay=policy.delay_for,
+            )
+            self._reauth_runner.start()
         except BaseException:
             self.close()
             raise
@@ -142,8 +158,8 @@ class PhotonSession:
         """
         predicates = compile_predicates(config.raw)
         self._config, self._predicates = config, predicates
-        if self._refresher:
-            self._refresher.set_interval(config.refresh_interval)
+        if self._config_refresher:
+            self._config_refresher.set_interval(config.refresh_interval)
 
     def _refresh_once(self) -> None:
         """Send one ``photon.config`` refresh and apply the result.
@@ -170,6 +186,16 @@ class PhotonSession:
             self._replace_config(parse_config_response(reply))
         except PhotonError:
             logger.warning("Config refresh failed; keeping the current config", exc_info=True)
+
+    def _reauth_once(self) -> None:
+        """Re-run AUTH on the live connector to refresh its FAS. Runs in the background.
+
+        Sends plain ``AUTH`` (not the ``HELLO 3`` bring-up handshake): the connection has already
+        negotiated RESP3, so a refresh only needs to re-authenticate with a fresh token.
+        """
+        connector = self._connection_manager.connector
+        if connector is not None:
+            connector.authenticate()
 
     def request(self, request: PhotonRequest) -> PhotonResponse | None:
         """Route a request to Photon, or return None to let the caller handle it.
@@ -209,12 +235,11 @@ class PhotonSession:
             return None
 
     def close(self) -> None:
-        """Stop the refresher, then close the session's connection and all reconnect activity.
-
-        Idempotent.
-        """
-        if self._refresher:
-            self._refresher.stop()
+        """Stop background work, then close the connection and all reconnect activity. Idempotent."""
+        if self._reauth_runner:
+            self._reauth_runner.stop()
+        if self._config_refresher:
+            self._config_refresher.stop()
         self._connection_manager.close()
 
     @property

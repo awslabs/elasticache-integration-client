@@ -113,7 +113,7 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
 
 def _parse_refresh_interval(value: object) -> int:
     """Validate the ``refresh_interval`` field: required, ``int``, and positive.
-    ``refresh_interval`` feeds directly into :class:`~photon.refresh.ConfigRefresher`'s jittered
+    ``refresh_interval`` feeds directly into :class:`~photon.refresh.Refresher`'s jittered
     delay arithmetic, so a missing, wrongly-typed, or non-positive value is considered malformed.
     """
     if value is None:
