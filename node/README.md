@@ -20,6 +20,7 @@ This package currently ports the Python implementation's:
   differentiated connect/request/initialization timeouts, idempotent close,
   and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake,
+  periodically refreshes and atomically replaces its resolved config,
   reconnects failed transports in the background, and controls safe origin
   fallback with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
@@ -27,12 +28,12 @@ This package currently ports the Python implementation's:
   the origin;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
-Automatic Photon failover to another endpoint and periodic config refresh
-remain out of scope. Deferred cache responses are correlated by request
-ID and later `photon.response` pushes, while callers still receive ordinary
-promises. A timeout for a deferred request removes only that request and
-preserves the connection; a FIFO or write timeout remains connection-fatal. The
-middleware sends requests with no matching predicate directly to origin.
+Automatic Photon failover to another endpoint remains out of scope. Deferred
+cache responses are correlated by request ID and later `photon.response`
+pushes, while callers still receive ordinary promises. A timeout for a deferred
+request removes only that request and preserves the connection; a FIFO or write
+timeout remains connection-fatal. The middleware sends requests with no
+matching predicate directly to origin.
 
 ## Request routing
 
