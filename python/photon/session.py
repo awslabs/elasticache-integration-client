@@ -17,7 +17,6 @@ yet implemented.
 from __future__ import annotations
 
 import logging
-import threading
 from collections.abc import Callable
 
 from photon.connection import PhotonConnector
@@ -89,7 +88,6 @@ class PhotonSession:
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
-        self._predicates_lock = threading.Lock()
         self._refresher: ConfigRefresher | None = None
         self._connection_manager = ConnectionManager(
             connector_factory, self._configure, policy or ReconnectPolicy()
@@ -130,15 +128,13 @@ class PhotonSession:
         Called when a connection is configured and after each successful refresh, so both paths
         install a new config the same way, and this is the only place either store is written.
 
-        ``_predicates`` is the one store with a concurrent reader — ``request()``, on the caller
-        thread — so only its write takes ``_predicates_lock``, and compiling happens outside it.
-        The two stores are therefore not atomic together: a request can briefly see the new config
-        beside the old predicates. Nothing reads both.
+        Both stores are replaced outright rather than mutated, so a request reading ``_predicates``
+        from another thread sees either the previous list or the new one. The two stores are not
+        atomic together: a request can briefly see the new config beside the old predicates.
+        Nothing reads both.
         """
         predicates = compile_predicates(config.raw)
-        self._config = config
-        with self._predicates_lock:
-            self._predicates = predicates
+        self._config, self._predicates = config, predicates
         if self._refresher:
             self._refresher.set_interval(config.refresh_interval)
 
@@ -184,9 +180,7 @@ class PhotonSession:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
                 window has closed.
         """
-        with self._predicates_lock:
-            predicates = self._predicates
-        if not should_route_to_photon(predicates, request):
+        if not should_route_to_photon(self._predicates, request):
             return None
 
         # Read the connector once; the reconnect thread may replace it concurrently.

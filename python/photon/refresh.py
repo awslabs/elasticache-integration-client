@@ -6,13 +6,19 @@ no-arg callback on a jittered interval, in a daemon thread, until told to stop.
 
 from __future__ import annotations
 
+import logging
 import random
 import threading
 from typing import Callable, Optional
 
+logger = logging.getLogger(__name__)
+
 
 class ConfigRefresher:
     """Runs ``refresh_once`` every ``interval`` seconds (± jitter) in a daemon thread until stopped.
+
+    An exception from ``refresh_once`` is logged and the loop continues, so the thread runs until
+    ``stop()`` whatever the callback does.
 
     ``jitter`` and ``wait`` are injectable so tests can disable randomness and substitute a fake
     clock; production code uses the defaults (real jitter, real ``Event.wait``).
@@ -45,17 +51,25 @@ class ConfigRefresher:
             self._thread.join(timeout=timeout)
 
     def set_interval(self, interval: float) -> None:
-        """Change the interval used for all subsequent delays.
+        """Change the interval used for every delay computed after this call.
 
-        Applies starting with the next computed delay. Only called from the refresher's own
-        thread, so no lock is needed.
+        A wait already in progress keeps its original length, so a change takes effect one delay
+        late at most. Callable from any thread: the loop reads the interval when it computes a
+        delay, so a concurrent change is picked up then or on the delay after, never half-applied.
         """
         self._interval = interval
 
     def _refresh_loop(self) -> None:
         # wait() -> True means stop() fired (quit); False means the interval elapsed (refresh)
         while not self._wait(self._stop, self._next_refresh_delay()):
-            self._refresh_once()
+            try:
+                self._refresh_once()
+            except Exception:
+                # The callback handles its own expected failures, so anything reaching here is a
+                # bug. Letting it end the thread would stop every later refresh with no log of it.
+                logger.warning(
+                    "Unexpected error while refreshing; the refresher keeps running", exc_info=True
+                )
 
     def _next_refresh_delay(self) -> float:
         return self._interval * random.uniform(1 - self._jitter, 1 + self._jitter)

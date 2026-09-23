@@ -6,6 +6,7 @@ plain counting callback. Some tests disable jitter and/or inject a fake ``wait``
 timing; others exercise the real defaults (real jitter, real ``threading.Event.wait``) end-to-end.
 """
 
+import logging
 import time
 
 from photon.refresh import ConfigRefresher
@@ -148,3 +149,24 @@ def test_thread_is_daemon():
     refresher.start()
     assert refresher._thread.daemon is True
     refresher.stop()
+
+
+def test_refresh_once_raising_is_logged_and_the_loop_continues(caplog):
+    """A callback that raises something other than the errors it handles itself must not end the
+    thread: that would stop every later refresh. The failure is logged with its traceback."""
+    calls = 0
+
+    def refresh_once():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+
+    wait, _ = _fake_wait(stop_after=3)
+    refresher = ConfigRefresher(60, refresh_once, wait=wait)
+    with caplog.at_level(logging.WARNING, logger="photon.refresh"):
+        refresher.start()
+        refresher._thread.join(timeout=5)
+    assert calls == 3
+    assert refresher._thread.is_alive() is False
+    assert "RuntimeError: boom" in caplog.text

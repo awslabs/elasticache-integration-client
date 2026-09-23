@@ -64,9 +64,18 @@ def _parse_headers(raw_headers: bytes) -> dict[str, str]:
 
 
 def serialize_config(overrides: dict | None) -> tuple[str, list[bytes]]:
-    """Build the ``photon.config`` command. ``overrides=None`` means "unchanged since
-    last send"; a dict (including ``{}``) is sent explicitly, and the server resets to
-    its defaults on an explicit ``{}``.
+    """Build the ``photon.config`` command. Three arguments, three distinct meanings::
+
+        None           photon.config              my overrides are unchanged
+        {}             photon.config {}           reset me to your defaults
+        {"k": "v"}     photon.config {"k":"v"}    these are my overrides
+
+    ``None`` and ``{}`` are opposite intents, so they are told apart with ``is None`` rather
+    than falsiness: collapsing them would discard the session's overrides on every refresh
+    tick. The refresher sends ``None``; connection bring-up sends the dict.
+
+    Reading an explicit ``{}`` as "discard the stored overrides" is the server's behavior, not
+    this function's — here it is serialized and sent like any other dict.
     """
     if overrides is None:
         return CONFIG_COMMAND, []
