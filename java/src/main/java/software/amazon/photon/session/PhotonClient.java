@@ -207,14 +207,18 @@ public final class PhotonClient {
         /**
          * Set the auth provider (required).
          *
-         * <p>For IAM authentication, use {@code IamAuthTokenProvider} directly:
+         * <p>For IAM authentication with background refresh, use
+         * {@code IamAuthTokenManager} directly:
          * <pre>{@code
-         * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
+         * IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
          *     .cacheName("my-cache")
          *     .region(Region.US_EAST_1)
          *     .build();
          * .authProvider(iamAuth)
          * }</pre>
+         *
+         * <p>The caller owns the provider lifecycle. Close an
+         * {@code IamAuthTokenManager} when the Photon result is closed.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;

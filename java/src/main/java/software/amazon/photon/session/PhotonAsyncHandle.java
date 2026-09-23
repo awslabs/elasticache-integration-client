@@ -158,6 +158,12 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
+        /**
+         * Set the auth provider.
+         *
+         * <p>The caller owns the provider lifecycle. Close an
+         * {@code IamAuthTokenManager} when this handle is closed.
+         */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;
             return this;

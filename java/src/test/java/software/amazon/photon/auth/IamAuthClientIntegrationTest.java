@@ -11,13 +11,19 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
+import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.resp.RespError;
 import software.amazon.photon.session.PhotonClient;
+import software.amazon.photon.session.PhotonSession;
+import software.amazon.photon.session.ReconnectPolicy;
 
 import javax.net.ssl.SSLContext;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -99,6 +105,54 @@ class IamAuthClientIntegrationTest {
     }
 
     @Test
+    void reconnectUsesTokenInstalledByBackgroundRefresh() throws Exception {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        CountDownLatch refreshStarted = new CountDownLatch(1);
+        IamAuthTokenManager authManager = IamAuthTokenManager.builder()
+                .cacheName("My-Cache")
+                .userId("IAM-User")
+                .region(Region.US_EAST_1)
+                .credentialsProvider(() -> {
+                    int call = credentialCalls.incrementAndGet();
+                    if (call > 1) {
+                        refreshStarted.countDown();
+                    }
+                    return AwsBasicCredentials.create(
+                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
+                            call == 1 ? "first-secret" : "rotated-secret");
+                })
+                .refreshAfter(Duration.ofMillis(10))
+                .build();
+
+        try (IamAuthTokenManager ignored = authManager;
+             MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+             PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                     .endpoint("localhost:" + proxy.getPort())
+                     .sslContext(clientSslContext)
+                     .authProvider(authManager)
+                     .reconnectPolicy(ReconnectPolicy.builder()
+                             .baseDelayMs(1)
+                             .maxDelayMs(10)
+                             .jitterFactor(0)
+                             .build())
+                     .origin(DynamoDbClient.builder(), builder -> builder
+                             .region(Region.US_EAST_1)
+                             .credentialsProvider(SDK_CREDENTIALS))
+                     .build()) {
+            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS));
+            awaitRotatedToken(authManager);
+
+            proxy.disconnectClients();
+            awaitAuthAttempts(2);
+
+            assertEquals(PhotonSession.State.OPEN, result.handle().getSession().getState());
+            List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
+            assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
+            assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
+        }
+    }
+
+    @Test
     void invalidToolkitCredentialsFailBeforeConfiguration() {
         cache.setAuthReplyFunction((userId, token) -> token.contains("AKIAINVALIDCREDENTIAL")
                 ? new RespError("invalid-iam-credentials", "credentials rejected")
@@ -155,5 +209,24 @@ class IamAuthClientIntegrationTest {
     private static void assertAuthOnly(List<String> commands) {
         assertFalse(commands.isEmpty());
         assertTrue(commands.stream().allMatch("AUTH"::equals));
+    }
+
+    private static void awaitRotatedToken(IamAuthTokenManager authManager)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (!authManager.get().getToken().contains(ROTATED_ACCESS_KEY)
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(authManager.get().getToken().contains(ROTATED_ACCESS_KEY));
+    }
+
+    private void awaitAuthAttempts(int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (cache.getAuthAttempts().size() < expected
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertEquals(expected, cache.getAuthAttempts().size());
     }
 }

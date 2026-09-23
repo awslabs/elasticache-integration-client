@@ -10,11 +10,12 @@ expired reconnect fallback window are returned to the SDK as retryable
 transport failures. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 
-IAM token generation is provided by the Amazon ElastiCache developer toolkit.
-The toolkit validates and lowercases cache names and user IDs, resolves fresh
-AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
-contract. Photon sends the resulting bearer token only in the TLS-protected
-`AUTH` exchange; origin request signing remains owned by the AWS SDK.
+IAM token generation and refresh are provided by the Amazon ElastiCache
+developer toolkit. The toolkit validates and lowercases cache names and user
+IDs, resolves fresh AWS credentials for every newly signed token, and owns the
+fixed 15-minute SigV4 signing contract. Photon sends the resulting bearer token
+only in the TLS-protected `AUTH` exchange; origin request signing remains owned
+by the AWS SDK.
 
 ## Request routing
 
@@ -37,13 +38,14 @@ successful reconnect.
 ## Synchronous client
 
 ```java
-try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(IamAuthTokenProvider.builder()
+try (IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
                 .cacheName("my-cache")
                 .userId("my-iam-user")
                 .region(Region.US_EAST_1)
-                .build())
+                .build();
+     PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
+        .authProvider(iamAuth)
         .origin(DynamoDbClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))
         .build()) {
@@ -57,13 +59,14 @@ a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 ## Asynchronous client
 
 ```java
-try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
-        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(IamAuthTokenProvider.builder()
+try (IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
                 .cacheName("my-cache")
                 .userId("my-iam-user")
                 .region(Region.US_EAST_1)
-                .build())
+                .build();
+     PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
+        .authProvider(iamAuth)
         .buildAsync(DynamoDbAsyncClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))) {
     CompletableFuture<ListTablesResponse> response =
@@ -90,6 +93,21 @@ a bounded daemon executor. Applications can supply a caller-managed executor
 with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
+
+## IAM token refresh
+
+`IamAuthTokenManager` caches the current IAM token and refreshes it in the
+background after five minutes by default. A refresh resolves AWS credentials
+again, retries transient signing failures while the current token remains
+valid, and reserves the final 20 seconds of the 15-minute token lifetime for
+clock skew and reconnect transit time. Configure an earlier refresh with
+`refreshAfter(Duration)` when needed.
+
+Photon asks the manager for credentials on every connection and reconnect, so a
+reconnect uses the latest valid token without synchronously signing a new one.
+Close the manager with the Photon client or handle to stop its daemon refresh
+thread. `IamAuthTokenProvider` remains available when every call should sign a
+new token and no background lifecycle is desired.
 
 ## Reconnection and fallback
 

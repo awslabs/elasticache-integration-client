@@ -23,8 +23,8 @@ import java.util.function.Supplier;
  * configured at client build time, so this handle is used during construction:
  *
  * <pre>{@code
- * // Create the handle with an IamAuthTokenProvider
- * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
+ * // Create the handle with an auto-refreshing IAM token manager
+ * IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
  *     .cacheName("my-cache")
  *     .region(Region.US_EAST_1)
  *     .build();
@@ -189,6 +189,9 @@ public class PhotonHandle implements Closeable {
 
         /**
          * Set the auth provider (required).
+         *
+         * <p>The caller owns the provider lifecycle. Close an
+         * {@code IamAuthTokenManager} when this handle is closed.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;
