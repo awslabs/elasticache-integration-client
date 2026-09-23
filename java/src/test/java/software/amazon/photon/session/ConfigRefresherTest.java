@@ -247,6 +247,22 @@ class ConfigRefresherTest {
         assertEquals(Arrays.asList(99.0, 99.0, 99.0), waiter.timeouts());
     }
 
+    @Test
+    void setInterval_calledFromCallback_appliesStartingNextCycleOnly() throws Exception {
+        // The first delay is already computed and handed to the waiter before the callback (and
+        // its setInterval call) runs, so only the delays computed afterward pick up the change.
+        FakeWaiter waiter = new FakeWaiter(2);
+        ConfigRefresher[] holder = new ConfigRefresher[1];
+        ConfigRefresher refresher = new ConfigRefresher(
+                10, () -> holder[0].setInterval(99), false, new Random(), waiter);
+        holder[0] = refresher;
+        track(refresher);
+        refresher.start();
+        refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
+
+        assertEquals(Arrays.asList(10.0, 99.0, 99.0), waiter.timeouts());
+    }
+
     // === Self-join guard ===
 
     @Test
