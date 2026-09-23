@@ -249,7 +249,14 @@ describe("Photon protocol", () => {
 
   it("rejects request response error frames", () => {
     // A RespError request reply raises rather than being returned as a response.
-    expect(() => parseRequestResponse(new RespError("ERR", "boom"))).toThrow(PhotonRejectedError);
+    let failure: unknown;
+    try {
+      parseRequestResponse(new RespError("ORIGIN_ERROR", "boom"));
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(PhotonRejectedError);
+    expect((failure as PhotonRejectedError).code).toBe("ORIGIN_ERROR");
   });
 
   it("rejects non-array request responses", () => {

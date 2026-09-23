@@ -7,7 +7,7 @@
  *
  * The resolved config is fetched once and its CEL predicates determine which
  * requests are sent to Photon. The middleware may pass predicate declines and
- * idempotent Photon failures through to the origin.
+ * dropped-connection failures for idempotent operations through to the origin.
  */
 import type { PhotonConnector } from "./connection.js";
 import { PhotonError } from "./errors.js";
@@ -71,6 +71,10 @@ export class PhotonSession {
 
   get isOpen(): boolean {
     return this.state === "open";
+  }
+
+  get isConnectionHealthy(): boolean {
+    return this.state === "open" && this.connector.isReady;
   }
 
   /** Bring the session up: transport connect, AUTH, then the config handshake. */

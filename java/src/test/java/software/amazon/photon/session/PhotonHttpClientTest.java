@@ -14,7 +14,6 @@ import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.exception.PhotonTimeoutError;
@@ -55,8 +54,9 @@ class PhotonHttpClientTest {
     }
 
     @Test
-    void idempotentTransportFailureDelegatesToOrigin() throws Exception {
+    void droppedIdempotentTransportFailureDelegatesToOrigin() throws Exception {
         StubSession session = new StubSession();
+        session.healthy = false;
         session.failure = new PhotonTimeoutError("cache timed out");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
@@ -74,19 +74,49 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
 
-        IOException failure = assertThrows(IOException.class,
+        PhotonTimeoutError failure = assertThrows(PhotonTimeoutError.class,
                 () -> client.prepareRequest(signedRequest()).call());
 
-        assertSame(session.failure, failure.getCause());
+        assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
-    void nonIdempotentMalformedResponseDoesNotContactOrigin() {
+    void malformedResponseDoesNotRetryOrContactOrigin() {
         StubSession session = new StubSession();
+        session.healthy = false;
         session.failure = new PhotonProtocolError("malformed response");
         RecordingHttpClient origin = new RecordingHttpClient();
-        PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
+        PhotonHttpClient client = newClient(session, origin, false, "GetItem");
+
+        PhotonProtocolError failure = assertThrows(PhotonProtocolError.class,
+                () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void nonOriginRejectionDoesNotContactOrigin() {
+        StubSession session = new StubSession();
+        session.healthy = false;
+        session.failure = new PhotonRejectedError("UNSUPPORTED", "request rejected");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "GetItem");
+
+        PhotonRejectedError failure = assertThrows(PhotonRejectedError.class,
+                () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void idempotentOriginErrorIsRetryableWithoutContactingOrigin() {
+        StubSession session = new StubSession();
+        session.failure = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "GetItem");
 
         IOException failure = assertThrows(IOException.class,
                 () -> client.prepareRequest(signedRequest()).call());
@@ -96,21 +126,23 @@ class PhotonHttpClientTest {
     }
 
     @Test
-    void nonIdempotentExplicitRejectionDelegatesToOrigin() throws Exception {
+    void nonIdempotentOriginErrorIsNonRetryableWithoutContactingOrigin() {
         StubSession session = new StubSession();
-        session.failure = new PhotonRejectedError("request rejected");
+        session.failure = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
 
-        HttpExecuteResponse response = client.prepareRequest(signedRequest()).call();
+        PhotonRejectedError failure = assertThrows(PhotonRejectedError.class,
+                () -> client.prepareRequest(signedRequest()).call());
 
-        assertEquals(201, response.httpResponse().statusCode());
-        assertEquals(1, origin.prepareCount.get());
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
     void expiredFallbackWindowDoesNotContactOrigin() {
         StubSession session = new StubSession();
+        session.healthy = false;
         session.failure = new PhotonCacheUnavailable("fallback window expired");
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
@@ -206,7 +238,8 @@ class PhotonHttpClientTest {
     @Test
     void abortReachesActiveOriginRequest() throws Exception {
         StubSession session = new StubSession();
-        session.failure = new PhotonError("cache declined request");
+        session.healthy = false;
+        session.failure = new PhotonConnectionLost("cache connection dropped");
         RecordingHttpClient origin = new RecordingHttpClient();
         origin.blockCall = true;
         PhotonRequestContext context = new PhotonRequestContext();
@@ -299,6 +332,7 @@ class PhotonHttpClientTest {
         private PhotonResponse response;
         private RuntimeException failure;
         private boolean open = true;
+        private boolean healthy = true;
         private final AtomicInteger requestCount = new AtomicInteger();
         private final CountDownLatch requestStarted = new CountDownLatch(1);
         private volatile boolean blockUntilCancelled;
@@ -310,6 +344,11 @@ class PhotonHttpClientTest {
         @Override
         public boolean isOpen() {
             return open;
+        }
+
+        @Override
+        boolean isConnectionHealthy() {
+            return healthy;
         }
 
         @Override

@@ -5,7 +5,14 @@ package software.amazon.photon.exception;
  */
 public class PhotonRejectedError extends PhotonError {
 
-    public PhotonRejectedError(String message) {
+    private final String code;
+
+    public PhotonRejectedError(String code, String message) {
         super(message);
+        this.code = code;
+    }
+
+    public String getCode() {
+        return code;
     }
 }

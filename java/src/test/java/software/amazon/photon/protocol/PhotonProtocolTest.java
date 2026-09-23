@@ -209,7 +209,10 @@ class PhotonProtocolTest {
     @Test
     void parseRequestResponse_errorFrame() {
         RespError error = new RespError("CACHE", "miss");
-        assertThrows(PhotonRejectedError.class, () -> PhotonProtocol.parseRequestResponse(error));
+        PhotonRejectedError failure = assertThrows(
+                PhotonRejectedError.class,
+                () -> PhotonProtocol.parseRequestResponse(error));
+        assertEquals("CACHE", failure.getCode());
     }
 
     // === deserializeResponse tests ===

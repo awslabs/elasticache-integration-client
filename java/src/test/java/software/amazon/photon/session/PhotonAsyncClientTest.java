@@ -57,6 +57,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -233,7 +234,7 @@ class PhotonAsyncClientTest {
     }
 
     @Test
-    void deferredAsyncTimeoutFallsBackAndKeepsPhotonConnectionUsable() throws Exception {
+    void deferredAsyncTimeoutRetriesThroughSdkAndKeepsPhotonConnectionUsable() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
         CountDownLatch firstReceived = new CountDownLatch(1);
         cache.setReplyFunction(request -> {
@@ -265,9 +266,11 @@ class PhotonAsyncClientTest {
                     result.client().listTables();
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
 
-            // ListTables is replay-safe, so the timed-out Photon request falls back to origin.
-            assertTrue(timedOut.get(5, TimeUnit.SECONDS).tableNames().isEmpty());
-            assertNotNull(origin.request.get());
+            // The deferred timeout preserves a healthy connection, so ListTables is returned
+            // to the SDK as retryable and the SDK's next attempt succeeds through Photon.
+            assertEquals(Collections.singletonList("still-from-photon"),
+                    timedOut.get(5, TimeUnit.SECONDS).tableNames());
+            assertNull(origin.request.get());
 
             // The request ID was already removed after timeout, so this push is treated as unknown and dropped.
             server.sendPush(responsePush(

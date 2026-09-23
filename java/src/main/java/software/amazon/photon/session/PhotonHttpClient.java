@@ -20,9 +20,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
  * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
- * Photon. Predicate declines and explicit Photon rejections delegate to the
- * origin. Indeterminate failures do so only for replay-safe operations while
- * the session remains open.
+ * Photon. Predicate declines delegate to the origin before Photon sees the
+ * request. After sending, direct fallback is limited to replay-safe operations
+ * whose Photon connection has dropped; retryable healthy-connection failures
+ * are returned to the SDK.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
@@ -77,7 +78,11 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     }
                     if (!PhotonFallbackPolicy.shouldFallback(
                             session, capturedRequest, photonFailure)) {
-                        throw PhotonFallbackPolicy.noFallback(photonFailure);
+                        if (PhotonFallbackPolicy.shouldRetry(
+                                session, capturedRequest, photonFailure)) {
+                            throw new IOException("Photon request failed", photonFailure);
+                        }
+                        throw photonFailure;
                     }
                     return callOrigin();
                 } finally {

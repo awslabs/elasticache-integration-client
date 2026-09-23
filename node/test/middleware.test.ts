@@ -38,6 +38,7 @@ const request = (body?: unknown) =>
 function fakeSession(overrides: Partial<PhotonSession> & { isOpen?: boolean } = {}): PhotonSession {
   return {
     isOpen: true,
+    isConnectionHealthy: true,
     request: vi.fn(async () => new PhotonResponse({ statusCode: 200 })),
     destroy: vi.fn(),
     ...overrides,
@@ -253,7 +254,7 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes idempotent Photon failures through to the origin", async () => {
+  it("passes a dropped idempotent Photon request through to the origin", async () => {
     const signedRequest = new HttpRequest({
       protocol: "https:",
       hostname: "dynamodb.us-east-1.amazonaws.com",
@@ -267,6 +268,7 @@ describe("photon middleware", () => {
       body: Buffer.from("signed-body"),
     });
     const session = fakeSession({
+      isConnectionHealthy: false,
       request: vi.fn(async () => {
         throw new PhotonTimeoutError("cache unavailable");
       }),
@@ -324,24 +326,64 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes an explicitly rejected non-idempotent request through to the origin", async () => {
-    const photonError = new PhotonRejectedError("cache rejected request");
+  it("returns non-origin RESP rejections without contacting origin", async () => {
+    const photonError = new PhotonRejectedError("UNSUPPORTED", "cache rejected request");
+    const session = fakeSession({
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("marks an idempotent ORIGIN_ERROR retryable without contacting origin", async () => {
+    const photonError = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
     const session = fakeSession({
       request: vi.fn(async () => {
         throw photonError;
       }),
     });
-    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
-      response: new HttpResponse({ statusCode: 200 }),
-    }));
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    const failure = await handler({ input: {}, request: request() }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBe(photonError);
+    expect((failure as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-idempotent ORIGIN_ERROR without retry or fallback", async () => {
+    const photonError = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
     const handler = photonMiddleware("dynamodb", session)(next, {
       commandName: "UpdateItemCommand",
     });
 
-    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
-      response: expect.any(HttpResponse),
-    });
-    expect(next).toHaveBeenCalledOnce();
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("does not replay a non-idempotent malformed Photon response", async () => {
@@ -359,6 +401,26 @@ describe("photon middleware", () => {
     });
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an idempotent malformed Photon response", async () => {
+    const photonError = new PhotonProtocolError("malformed response");
+    const session = fakeSession({
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
     expect(next).not.toHaveBeenCalled();
   });
 

@@ -295,6 +295,11 @@ export class PhotonConnector {
     this.authProvider = options.authProvider;
   }
 
+  /** Whether this connector currently has a usable live socket. */
+  get isReady(): boolean {
+    return !this.closed && !this.dead && this.socket !== undefined;
+  }
+
   /** Open the socket, perform TLS when enabled, and start the background reader. */
   async connect(): Promise<void> {
     if (this.closed) {

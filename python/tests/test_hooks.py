@@ -111,35 +111,15 @@ def test_missing_or_malformed_event_name_raises(event_name):
     with pytest.raises(PhotonError):
         hooks._aws_to_photon_request(request, event_name)
 
-@pytest.mark.parametrize("error", [
-    PhotonRejectedError("rejected"),
-    PhotonProtocolError("malformed reply"),
-])
-def test_idempotent_photon_failure_passes_through(error):
+def test_dropped_idempotent_photon_failure_passes_through():
     sdk = MockClient()
     session = mock_session()
-    session.request.side_effect = error
+    session.is_connection_healthy = False
+    session.request.side_effect = PhotonConnectionLost("socket died")
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
     responses = sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
     assert first_non_none_response(responses) is None
-
-
-@pytest.mark.parametrize("photon_error,botocore_error", [
-    (PhotonTimeoutError("timed out"), ReadTimeoutError),
-    (PhotonConnectionLost("socket died"), ConnectionClosedError),
-    (PhotonConnectionError("connect failed"), EndpointConnectionError),
-])
-def test_non_idempotent_transport_failure_raises_botocore_error(photon_error, botocore_error):
-    """A non-idempotent transport failure raises botocore's own error."""
-    sdk = MockClient()
-    session = mock_session()
-    session.request.side_effect = photon_error
-    hooks.PhotonHandle(sdk, session)
-    with pytest.raises(botocore_error) as exc_info:
-        request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
-    assert exc_info.value.__cause__ is photon_error
 
 
 @pytest.mark.parametrize("photon_error", [
@@ -147,39 +127,82 @@ def test_non_idempotent_transport_failure_raises_botocore_error(photon_error, bo
     PhotonConnectionLost("socket died"),
     PhotonConnectionError("connect failed"),
 ])
-def test_idempotent_transport_failure_passes_through(photon_error):
+def test_non_idempotent_transport_failure_is_non_retryable(photon_error):
+    """A non-idempotent transport failure is not marked retryable."""
+    sdk = MockClient()
+    session = mock_session()
+    session.request.side_effect = photon_error
+    hooks.PhotonHandle(sdk, session)
+    with pytest.raises(type(photon_error)) as exc_info:
+        request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+    assert exc_info.value is photon_error
+
+
+@pytest.mark.parametrize("photon_error", [
+    PhotonTimeoutError("timed out"),
+    PhotonConnectionLost("socket died"),
+    PhotonConnectionError("connect failed"),
+])
+def test_healthy_idempotent_transport_failure_is_sdk_retryable(photon_error):
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = photon_error
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    responses = sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
-    assert first_non_none_response(responses) is None
+    with pytest.raises((ReadTimeoutError, ConnectionClosedError, EndpointConnectionError)):
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
 
 
-def test_non_idempotent_rejection_passes_through():
+def test_non_origin_rejection_is_non_retryable_and_does_not_fallback():
     sdk = MockClient()
     session = mock_session()
-    rejection = PhotonRejectedError("rejected")
+    session.is_connection_healthy = False
+    rejection = PhotonRejectedError("UNSUPPORTED", "rejected")
     session.request.side_effect = rejection
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    responses = sdk.meta.events.emit(
-        "before-send.dynamodb.UpdateItem", request=request
-    )
-    assert first_non_none_response(responses) is None
+    with pytest.raises(PhotonRejectedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is rejection
 
 
-def test_non_idempotent_malformed_response_raises_connection_closed():
+def test_idempotent_origin_error_is_sdk_retryable_without_fallback():
     sdk = MockClient()
     session = mock_session()
+    rejection = PhotonRejectedError("ORIGIN_ERROR", "origin unavailable")
+    session.request.side_effect = rejection
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ConnectionClosedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value.__cause__ is rejection
+
+
+def test_non_idempotent_origin_error_is_non_retryable_without_fallback():
+    sdk = MockClient()
+    session = mock_session()
+    rejection = PhotonRejectedError("ORIGIN_ERROR", "origin unavailable")
+    session.request.side_effect = rejection
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(PhotonRejectedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+    assert exc_info.value is rejection
+
+
+@pytest.mark.parametrize("operation", ["GetItem", "UpdateItem"])
+def test_malformed_response_is_non_retryable(operation):
+    sdk = MockClient()
+    session = mock_session()
+    session.is_connection_healthy = False
     protocol_error = PhotonProtocolError("malformed reply")
     session.request.side_effect = protocol_error
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises(ConnectionClosedError) as exc_info:
-        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
-    assert exc_info.value.__cause__ is protocol_error
+    with pytest.raises(PhotonProtocolError) as exc_info:
+        sdk.meta.events.emit(f"before-send.dynamodb.{operation}", request=request)
+    assert exc_info.value is protocol_error
 
 
 def test_shutdown_failure_does_not_start_idempotent_fallback():
@@ -190,9 +213,9 @@ def test_shutdown_failure_does_not_start_idempotent_fallback():
     session.request.side_effect = timeout
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises(ReadTimeoutError) as exc_info:
+    with pytest.raises(PhotonTimeoutError) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
-    assert exc_info.value.__cause__ is timeout
+    assert exc_info.value is timeout
 
 
 def test_non_photon_error_propagates():

@@ -7,12 +7,13 @@ sent to Photon when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, requests that have
 not been sent to Photon use origin fallback until the configured fallback
 window expires. After a request is sent, indeterminate failures fall back only
-when the operation is in the shared replay-safe catalog; explicit Photon
-rejections fall through for every operation because Photon did not accept the
-request. Other failures for non-idempotent operations, malformed responses,
-an expired fallback window, and shutdown are surfaced instead of starting an
-origin request. SDK retries, response deserialization, and caller-provided
-override configuration remain in the normal SDK pipeline.
+when the connection drops and the operation is in the shared replay-safe
+catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
+SDK-retryable only for a cataloged operation. Other RESP errors, failures for
+non-idempotent operations, malformed responses, an expired fallback window,
+and shutdown are surfaced without starting an origin request. SDK retries,
+response deserialization, and caller-provided override configuration remain in
+the normal SDK pipeline.
 
 ## Request routing
 
@@ -98,10 +99,10 @@ While reconnecting, cache-eligible requests may use the signed origin fallback.
 fallback indefinitely, zero disables fallback, and a positive value allows
 fallback for that many seconds. Once the window ends, Photon raises a retryable
 transport failure for the AWS SDK to handle. If a request already admitted to
-Photon fails with an indeterminate outcome, it falls back directly only when
-its operation is in the shared replay-safe catalog. Other operations are
-returned to the SDK as transport failures because Photon may have processed
-them.
+Photon fails as the connection drops, it falls back directly only when its
+operation is in the shared replay-safe catalog. On a healthy connection, an
+`ORIGIN_ERROR` is SDK-retryable only for a cataloged operation; other RESP
+errors and non-idempotent failures are terminal for that attempt.
 
 Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
 

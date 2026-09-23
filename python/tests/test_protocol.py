@@ -97,8 +97,9 @@ def test_serialize_request_arg_count():
 
 def test_parse_request_response_error_frame_raises():
     """A RespError request reply raises rather than being returned as a response."""
-    with pytest.raises(PhotonRejectedError):
-        parse_request_response(RespError("ERR", "boom"))
+    with pytest.raises(PhotonRejectedError) as exc_info:
+        parse_request_response(RespError("ORIGIN_ERROR", "boom"))
+    assert exc_info.value.code == "ORIGIN_ERROR"
 
 
 def test_parse_request_response_non_array_raises():

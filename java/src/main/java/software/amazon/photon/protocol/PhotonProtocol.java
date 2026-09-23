@@ -178,6 +178,7 @@ public final class PhotonProtocol {
         if (value instanceof RespError) {
             RespError error = (RespError) value;
             throw new PhotonRejectedError(
+                    error.getCode(),
                     "Server error: " + error.getCode() + " " + error.getMessage());
         }
         if (!(value instanceof RespArray)) {

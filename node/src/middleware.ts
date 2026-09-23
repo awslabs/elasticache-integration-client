@@ -20,13 +20,35 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import { PhotonError, PhotonRejectedError } from "./errors.js";
+import {
+  PhotonConnectionError,
+  PhotonConnectionLost,
+  PhotonError,
+  PhotonRejectedError,
+  PhotonTimeoutError,
+} from "./errors.js";
 import { isIdempotentOperation } from "./idempotency.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
 import type { PhotonResponse } from "./models.js";
 import type { PhotonSession } from "./session.js";
 
 const PHOTON_MIDDLEWARE = "photon";
+const ORIGIN_ERROR = "ORIGIN_ERROR";
+
+type RetryableError = Error & { $retryable: Record<string, never> };
+
+function markRetryable(error: Error): RetryableError {
+  return Object.assign(error, { $retryable: {} });
+}
+
+function isTransportFailure(error: PhotonError): boolean {
+  return (
+    error instanceof PhotonTimeoutError ||
+    error instanceof PhotonConnectionLost ||
+    error instanceof PhotonConnectionError
+  );
+}
+
 /** The part of an AWS SDK v3 client used by PhotonHandle. */
 export interface PhotonCompatibleClient {
   config: { credentials: AwsCredentialIdentityProvider };
@@ -109,13 +131,26 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (response === undefined) return next(args);
       return { response: photonToHttpResponse(response) };
     } catch (error) {
-      if (
-        error instanceof PhotonError &&
-        session.isOpen &&
-        (error instanceof PhotonRejectedError ||
-          isIdempotentOperation(request.metadata.service, request.metadata.operation))
-      ) {
+      if (!(error instanceof PhotonError) || !session.isOpen) {
+        throw error;
+      }
+
+      const idempotent = isIdempotentOperation(
+        request.metadata.service,
+        request.metadata.operation,
+      );
+      if (error instanceof PhotonRejectedError) {
+        if (error.code === ORIGIN_ERROR && session.isConnectionHealthy && idempotent) {
+          throw markRetryable(error);
+        }
+        throw error;
+      }
+
+      if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
         return next(args);
+      }
+      if (session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
+        throw markRetryable(error);
       }
       throw error;
     }

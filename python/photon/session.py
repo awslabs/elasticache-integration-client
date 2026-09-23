@@ -115,10 +115,10 @@ class PhotonSession:
         or when the cache is disconnected and the fallback window is still open.
         In both cases, the request has not been sent, so falling back is safe.
 
-        Once a request is sent to Photon, failures propagate to the hook. The
-        hook may pass through an explicit rejection or an indeterminate failure
-        for a replay-safe operation; other failures become botocore transport
-        errors so the SDK or application decides whether to retry them.
+        Once a request is sent to Photon, failures propagate to the hook. Direct
+        origin fallback is limited to a dropped connection and a replay-safe
+        operation. Retryable healthy-connection failures are returned through
+        botocore so the SDK or application decides whether to retry them.
 
         Raises:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
@@ -147,3 +147,8 @@ class PhotonSession:
     def is_open(self) -> bool:
         """Whether the session can safely initiate fallback work."""
         return self.state is not ConnectionState.CLOSED
+
+    @property
+    def is_connection_healthy(self) -> bool:
+        """Whether requests can currently use a live configured connection."""
+        return self._connection_manager.connection_healthy

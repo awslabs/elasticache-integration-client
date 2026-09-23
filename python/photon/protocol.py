@@ -115,7 +115,7 @@ def parse_request_response(value: RespValue) -> PhotonResponse:
     Expects a 3-element array ``[status, headers, body]``.
     """
     if isinstance(value, RespError):
-        raise PhotonRejectedError(f"photon.request failed: {value}")
+        raise PhotonRejectedError(value.code, f"photon.request failed: {value}")
     if not isinstance(value, list) or len(value) != 3:
         raise PhotonProtocolError(
             f"Malformed request response: expected 3-element array, got {type(value).__name__}"

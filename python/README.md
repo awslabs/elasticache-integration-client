@@ -45,11 +45,11 @@ retry after backoff can land once the connection is back — but with `fallback_
 one fast failure into several.
 
 When there is no live cache connection, the request has not been sent and can safely pass through
-for any operation while the fallback window remains open. After a request is sent, explicit Photon
-rejections also pass through because Photon did not accept the operation. Timeouts, connection
-loss, and malformed replies have an indeterminate outcome: they pass through only for operations
-in the shared replay-safe catalog. For other operations, Photon raises botocore's corresponding
-transport error and the SDK or application decides whether to retry.
+for any operation while the fallback window remains open. After a request is sent, origin fallback
+is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
+While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
+cataloged operation. Other RESP errors, malformed replies, and failures for non-idempotent
+operations propagate without origin fallback.
 
 ## Next steps:
 

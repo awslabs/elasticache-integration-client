@@ -35,8 +35,8 @@ import java.util.function.Supplier;
  *
  * <p>While no connector is available, matching requests use origin fallback
  * until the configured fallback duration expires. After a request is admitted
- * to Photon, the HTTP adapters allow direct origin fallback only for operations
- * in the shared replay-safe catalog or for explicit Photon rejections.
+ * to Photon, the HTTP adapters allow direct origin fallback only when the
+ * connection drops and the operation is in the shared replay-safe catalog.
  */
 public class PhotonSession implements Closeable {
 
@@ -258,6 +258,12 @@ public class PhotonSession implements Closeable {
     public boolean isOpen() {
         State current = state;
         return current == State.OPEN || current == State.RECONNECTING;
+    }
+
+    /** Return whether a configured connector is currently available for requests. */
+    boolean isConnectionHealthy() {
+        PhotonConnector active = connector;
+        return state == State.OPEN && active != null && active.isReady();
     }
 
     private ConnectionSnapshot initializeWithTimeout(PhotonConnector next) {

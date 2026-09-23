@@ -11,10 +11,6 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonCacheUnavailable;
-import software.amazon.photon.exception.PhotonConnectionError;
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 
@@ -193,12 +189,12 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 if (PhotonFallbackPolicy.shouldFallback(
                         session, capturedRequest, photonError)) {
                     fallbackToOrigin(copyWithBody(request, body));
-                } else if (isRetryableTransportFailure(photonError)) {
+                } else if (PhotonFallbackPolicy.shouldRetry(
+                        session, capturedRequest, photonError)) {
                     fail(result, request.responseHandler(),
-                            RetryableException.create("Photon transport failed", cause));
+                            RetryableException.create("Photon request failed", cause));
                 } else {
-                    fail(result, request.responseHandler(),
-                            PhotonFallbackPolicy.noFallback(photonError));
+                    fail(result, request.responseHandler(), photonError);
                 }
             } else {
                 fail(result, request.responseHandler(), cause);
@@ -245,13 +241,6 @@ public final class PhotonAsyncHttpClient implements SdkAsyncHttpClient {
                 }
             });
         }
-    }
-
-    private static boolean isRetryableTransportFailure(PhotonError failure) {
-        return failure instanceof PhotonCacheUnavailable
-                || failure instanceof PhotonConnectionLost
-                || failure instanceof PhotonTimeoutError
-                || failure instanceof PhotonConnectionError;
     }
 
     @Override

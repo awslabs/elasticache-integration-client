@@ -35,6 +35,10 @@ class PhotonProtocolError(PhotonError):
 class PhotonRejectedError(PhotonError):
     """Photon explicitly rejected a request with a RESP error reply."""
 
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class PhotonConnectionLost(PhotonError):
     """The socket died mid-flight; pending requests are failed."""

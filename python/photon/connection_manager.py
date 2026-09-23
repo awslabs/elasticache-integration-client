@@ -108,6 +108,16 @@ class ConnectionManager:
         """Whether a request may still be passed through while there is no connector."""
         return time.monotonic() < self._fallback_deadline
 
+    @property
+    def connection_healthy(self) -> bool:
+        """Whether a live configured connector is currently available."""
+        connector = self._connector
+        return (
+            self._state is ConnectionState.ALIVE
+            and connector is not None
+            and connector.is_alive
+        )
+
     def init_connection(self) -> None:
         """Open the first connection, then watch it on a background thread.
 

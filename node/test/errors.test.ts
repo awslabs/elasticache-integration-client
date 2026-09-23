@@ -14,7 +14,6 @@ const ERROR_TYPES = [
   PhotonError,
   PhotonConnectionError,
   PhotonProtocolError,
-  PhotonRejectedError,
   PhotonConnectionLost,
   PhotonTimeoutError,
 ] as const;
@@ -46,5 +45,13 @@ describe("Photon errors", () => {
 
   it("does not expose internal error types from the package entry point", () => {
     expect("PhotonError" in photon).toBe(false);
+  });
+
+  it("preserves the RESP error code on a rejection", () => {
+    const error = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+
+    expect(error.code).toBe("ORIGIN_ERROR");
+    expect(error.message).toBe("origin unavailable");
+    expect(error).toBeInstanceOf(PhotonError);
   });
 });

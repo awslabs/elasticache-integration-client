@@ -58,6 +58,8 @@ _UNIQUE_ID = "photon"
 
 logger = logging.getLogger(__name__)
 
+_ORIGIN_ERROR = "ORIGIN_ERROR"
+
 
 def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest:
     """Build an internal PhotonRequest from a botocore prepared request and event name.
@@ -143,9 +145,9 @@ class PhotonHandle:
         Returning None tells botocore no handler served the request, so it sends the original
         request down the pipeline. The session declines before sending when no predicate matched or
         no cache connection is available within the fallback window, which is safe for every
-        operation. After sending, explicit Photon rejections also pass through; indeterminate
-        failures do so only for operations in the replay-safe catalog. Other transport and
-        malformed-response failures become botocore transport errors. Non-Photon exceptions
+        operation. After sending, direct fallback is limited to replay-safe operations whose
+        Photon connection has dropped. A healthy-connection ORIGIN_ERROR becomes SDK-retryable
+        only for a replay-safe operation; other RESP errors remain terminal. Non-Photon exceptions
         propagate.
         """
         try:
@@ -167,10 +169,24 @@ class PhotonHandle:
                 return None
             return _photon_to_aws_response(request.url, response)
         except PhotonError as exc:
-            if self._session.is_open and (
-                isinstance(exc, PhotonRejectedError)
-                or is_idempotent_operation(
-                    http_request.metadata.service, http_request.metadata.operation
+            idempotent = is_idempotent_operation(
+                http_request.metadata.service, http_request.metadata.operation
+            )
+            if isinstance(exc, PhotonRejectedError):
+                if (
+                    exc.code == _ORIGIN_ERROR
+                    and self._session.is_connection_healthy
+                    and idempotent
+                ):
+                    raise ConnectionClosedError(endpoint_url=request.url) from exc
+                raise
+            if (
+                self._session.is_open
+                and not self._session.is_connection_healthy
+                and idempotent
+                and isinstance(
+                    exc,
+                    (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
                 )
             ):
                 logger.warning(
@@ -181,10 +197,11 @@ class PhotonHandle:
                 return None
             if isinstance(
                 exc,
-                (PhotonTimeoutError, PhotonConnectionLost,
-                 PhotonConnectionError, PhotonProtocolError),
+                (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
             ):
-                _raise_as_botocore_error(exc, request.url)
+                if self._session.is_open and self._session.is_connection_healthy and idempotent:
+                    _raise_as_botocore_error(exc, request.url)
+                raise
             raise
 
 
@@ -200,8 +217,6 @@ def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
     if isinstance(exc, PhotonTimeoutError):
         raise ReadTimeoutError(endpoint_url=endpoint_url) from exc
     if isinstance(exc, PhotonConnectionLost):
-        raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
-    if isinstance(exc, PhotonProtocolError):
         raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
     if isinstance(exc, PhotonConnectionError):
         raise EndpointConnectionError(endpoint_url=endpoint_url) from exc

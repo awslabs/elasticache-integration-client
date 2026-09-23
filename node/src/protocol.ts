@@ -298,7 +298,7 @@ export function serializeRequest(
  */
 export function parseRequestResponse(value: RespValue): PhotonResponse {
   if (value instanceof RespError) {
-    throw new PhotonRejectedError(`photon.request failed: ${value.toString()}`);
+    throw new PhotonRejectedError(value.code, `photon.request failed: ${value.toString()}`);
   }
   if (!Array.isArray(value)) {
     throw new PhotonProtocolError(
