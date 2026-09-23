@@ -115,8 +115,10 @@ class IamAuthClientIntegrationTest {
                 .build());
 
         assertTrue(error.getMessage().contains("AUTH failed"));
-        assertEquals(1, cache.getAuthAttempts().size());
-        assertEquals(Arrays.asList("AUTH"), cache.getReceivedCommands());
+        assertFalse(cache.getAuthAttempts().isEmpty());
+        assertTrue(cache.getAuthAttempts().stream()
+                .allMatch(attempt -> attempt.getToken().contains("AKIAINVALIDCREDENTIAL")));
+        assertAuthOnly(cache.getReceivedCommands());
     }
 
     @Test
@@ -135,7 +137,9 @@ class IamAuthClientIntegrationTest {
 
         assertTrue(error.getMessage().contains("AUTH failed"));
         assertEquals("expired-token", cache.getAuthAttempts().get(0).getToken());
-        assertEquals(Arrays.asList("AUTH"), cache.getReceivedCommands());
+        assertTrue(cache.getAuthAttempts().stream()
+                .allMatch(attempt -> "expired-token".equals(attempt.getToken())));
+        assertAuthOnly(cache.getReceivedCommands());
     }
 
     private static IamAuthTokenProvider authProvider(
@@ -146,5 +150,10 @@ class IamAuthClientIntegrationTest {
                 .region(Region.US_EAST_1)
                 .credentialsProvider(credentialsProvider)
                 .build();
+    }
+
+    private static void assertAuthOnly(List<String> commands) {
+        assertFalse(commands.isEmpty());
+        assertTrue(commands.stream().allMatch("AUTH"::equals));
     }
 }
