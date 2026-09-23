@@ -202,10 +202,15 @@ class PhotonSessionTest {
     }
 
     @Test
-    void failedOpen_leavesNoRefresherRunning() {
-        // Refresher construction sits inside open()'s failure-cleanup path, so when it throws the
-        // session still closes and no refresher thread survives.
-        RefresherCapturingSession session = new RefresherCapturingSession(createConnection(), null) {
+    void refresherConstructionFailure_isTerminalAndCleansUpConnector() {
+        List<PhotonConnector> created = new ArrayList<>();
+        Supplier<PhotonConnector> connectorFactory = () -> {
+            PhotonConnector connector = createConnection();
+            created.add(connector);
+            return connector;
+        };
+        PhotonSession session = new PhotonSession(connectorFactory,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy()) {
             @Override
             ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
                 throw new IllegalStateException("refresher construction failed");
@@ -214,6 +219,38 @@ class PhotonSessionTest {
 
         assertThrows(IllegalStateException.class, session::open);
         assertEquals(PhotonSession.State.CLOSED, session.getState());
+        assertEquals(1, created.size(),
+                "refresher construction failure must not retry the connect handshake");
+        assertFalse(created.get(0).isReady(), "connector remained open after refresher failure");
+        assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a failed open()");
+    }
+
+    @Test
+    void refresherStartFailure_isTerminalAndCleansUpConnector() {
+        List<PhotonConnector> created = new ArrayList<>();
+        Supplier<PhotonConnector> connectorFactory = () -> {
+            PhotonConnector connector = createConnection();
+            created.add(connector);
+            return connector;
+        };
+        PhotonSession session = new PhotonSession(connectorFactory,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy()) {
+            @Override
+            ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
+                return new ConfigRefresher(intervalSeconds, refreshOnce) {
+                    @Override
+                    void start() {
+                        throw new RuntimeException("refresher start failed");
+                    }
+                };
+            }
+        };
+
+        assertThrows(RuntimeException.class, session::open);
+        assertEquals(PhotonSession.State.CLOSED, session.getState());
+        assertEquals(1, created.size(),
+                "refresher start failure must not retry the connect handshake");
+        assertFalse(created.get(0).isReady(), "connector remained open after refresher failure");
         assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a failed open()");
     }
 

@@ -137,14 +137,11 @@ public class PhotonSession implements Closeable {
      * Open the session: connect, authenticate, perform the config handshake,
      * compile the resolved predicates, then start the config refresher.
      *
-     * <p>The refresher is started only after the config and predicates succeed, and its
-     * construction is inside the failure-cleanup path, so a failed open leaks neither the
-     * connector nor a refresher thread. The session becomes {@code OPEN} only once the
-     * refresher has started.
-     *
-     * <p>Each attempt uses a new connector and fresh credentials. Startup fails
-     * after the configured number of attempts rather than returning an
-     * indefinitely uncached client.
+     * <p>Connect/authenticate/config failures are retried with a new connector and fresh
+     * credentials. Once a connector is live, refresher construction and startup are local session
+     * setup rather than connectivity, so a failure there closes the connector and fails
+     * immediately instead of repeating a successful handshake. The session becomes {@code OPEN}
+     * only once the refresher has started.
      *
      * <p>Lifecycle transitions are synchronized against {@link #close()}, but blocking connection
      * and credential work runs outside the state lock. A concurrent close can therefore tear down
@@ -164,9 +161,10 @@ public class PhotonSession implements Closeable {
 
         try {
             RuntimeException lastFailure = null;
+            PhotonConnector established = null;
+            ConnectionSnapshot establishedSnapshot = null;
             for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
                 PhotonConnector next = null;
-                ConfigRefresher nextRefresher = null;
                 try {
                     next = connectorFactory.get();
                     synchronized (stateLock) {
@@ -177,10 +175,7 @@ public class PhotonSession implements Closeable {
                         candidate = next;
                     }
                     ConnectionSnapshot snapshot = initializeWithTimeout(next);
-                    nextRefresher = createRefresher(
-                            snapshot.config.getRefreshInterval(), this::refreshOnce);
                     synchronized (stateLock) {
-                        candidate = null;
                         if (state != State.CREATED || !next.isReady()) {
                             next.close();
                             throw new PhotonConnectionError(
@@ -188,21 +183,16 @@ public class PhotonSession implements Closeable {
                                             ? "Photon connection closed while opening"
                                             : "Session closed while opening");
                         }
-                        nextRefresher.start();
-                        publish(next, snapshot);
-                        refresher = nextRefresher;
-                        state = State.OPEN;
                     }
-                    return;
+                    established = next;
+                    establishedSnapshot = snapshot;
+                    break;
                 } catch (RuntimeException failure) {
                     lastFailure = failure;
                     synchronized (stateLock) {
                         if (candidate == next) {
                             candidate = null;
                         }
-                    }
-                    if (nextRefresher != null) {
-                        nextRefresher.stop();
                     }
                     if (next != null) {
                         next.close();
@@ -213,13 +203,49 @@ public class PhotonSession implements Closeable {
                 }
             }
 
-            synchronized (stateLock) {
-                state = State.CLOSED;
+            if (established == null || establishedSnapshot == null) {
+                synchronized (stateLock) {
+                    state = State.CLOSED;
+                }
+                reconnectExecutor.shutdownNow();
+                throw lastFailure != null
+                        ? lastFailure
+                        : new PhotonConnectionError("Photon initial connection failed");
             }
-            reconnectExecutor.shutdownNow();
-            throw lastFailure != null
-                    ? lastFailure
-                    : new PhotonConnectionError("Photon initial connection failed");
+
+            ConfigRefresher nextRefresher = null;
+            try {
+                nextRefresher = createRefresher(
+                        establishedSnapshot.config.getRefreshInterval(), this::refreshOnce);
+                synchronized (stateLock) {
+                    if (state != State.CREATED || !established.isReady()) {
+                        throw new PhotonConnectionError(
+                                state == State.CREATED
+                                        ? "Photon connection closed while opening"
+                                        : "Session closed while opening");
+                    }
+                    nextRefresher.start();
+                    candidate = null;
+                    publish(established, establishedSnapshot);
+                    refresher = nextRefresher;
+                    state = State.OPEN;
+                }
+            } catch (RuntimeException failure) {
+                synchronized (stateLock) {
+                    if (candidate == established) {
+                        candidate = null;
+                    }
+                }
+                if (nextRefresher != null) {
+                    nextRefresher.stop();
+                }
+                established.close();
+                synchronized (stateLock) {
+                    state = State.CLOSED;
+                }
+                reconnectExecutor.shutdownNow();
+                throw failure;
+            }
         } finally {
             synchronized (stateLock) {
                 opening = false;
