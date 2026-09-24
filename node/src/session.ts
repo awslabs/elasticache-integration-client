@@ -10,7 +10,7 @@
  * dropped-connection failures for idempotent operations through to the origin.
  */
 import type { PhotonConnector } from "./connection.js";
-import { PhotonError } from "./errors.js";
+import { PhotonError, PhotonRejectedError } from "./errors.js";
 import type { PhotonRequest, ResolvedConfig, PhotonResponse } from "./models.js";
 import {
   parseConfigResponse,
@@ -19,6 +19,8 @@ import {
   serializeRequest,
 } from "./protocol.js";
 import { PredicateEvaluator } from "./predicates.js";
+
+const PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
 
 /**
  * Parse a host:port endpoint.
@@ -117,8 +119,19 @@ export class PhotonSession {
     if (this.state === "open" && !this.predicateEvaluator.shouldRouteToPhoton(request)) {
       return undefined;
     }
+    if (this.state === "open" && !this.connector.isReady) {
+      return undefined;
+    }
     const [command, args] = serializeRequest(request);
-    return parseRequestResponse(await this.connector.execute(command, ...args));
+    try {
+      return parseRequestResponse(await this.connector.execute(command, ...args));
+    } catch (error) {
+      if (error instanceof PhotonRejectedError && error.code === PHOTON_AUTH_ERROR) {
+        await this.connector.close();
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   /** Close the connector and mark the session CLOSED. Idempotent. */

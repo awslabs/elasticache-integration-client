@@ -40,7 +40,7 @@ final class PhotonFallbackPolicy {
         if (failure instanceof PhotonRejectedError) {
             return ORIGIN_ERROR.equals(((PhotonRejectedError) failure).getCode());
         }
-        return isTransportFailure(failure);
+        return failure instanceof PhotonTimeoutError;
     }
 
     private static boolean isTransportFailure(PhotonError failure) {

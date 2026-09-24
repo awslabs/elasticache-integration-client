@@ -149,7 +149,7 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
         return next(args);
       }
-      if (session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
+      if (session.isConnectionHealthy && idempotent && error instanceof PhotonTimeoutError) {
         throw markRetryable(error);
       }
       throw error;

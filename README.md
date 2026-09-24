@@ -16,7 +16,9 @@ same source with a CI freshness check. Indeterminate Photon failures fall back
 to the origin only for cataloged operations after the Photon connection drops;
 mixed or unknown operations are treated as non-idempotent. On a healthy
 connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
-Other RESP errors are non-retryable and do not trigger origin fallback.
+`PHOTON_AUTH_ERROR` closes the stale connection and safely passes the rejected
+request through while reconnecting. Other RESP errors are non-retryable and do
+not trigger origin fallback.
 
 ## Repository layout
 

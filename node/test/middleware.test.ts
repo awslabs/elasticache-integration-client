@@ -326,6 +326,25 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
+  it("does not mark a nominally healthy connection-loss error retryable", async () => {
+    const photonError = new PhotonConnectionLost("socket died");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("returns non-origin RESP rejections without contacting origin", async () => {
     const photonError = new PhotonRejectedError("UNSUPPORTED", "cache rejected request");
     const session = fakeSession({

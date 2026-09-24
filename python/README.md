@@ -48,8 +48,9 @@ When there is no live cache connection, the request has not been sent and can sa
 for any operation while the fallback window remains open. After a request is sent, origin fallback
 is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
 While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
-cataloged operation. Other RESP errors, malformed replies, and failures for non-idempotent
-operations propagate without origin fallback.
+cataloged operation. `PHOTON_AUTH_ERROR` closes the stale connection and passes the rejected
+request through while reconnection obtains fresh authentication. Other RESP errors, malformed
+replies, and failures for non-idempotent operations propagate without origin fallback.
 
 ## Next steps:
 

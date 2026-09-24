@@ -2,11 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 
 import { PhotonError } from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
+import { RespError } from "../src/resp.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
 import type { PhotonConnector } from "../src/connection.js";
 
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
   return {
+    isReady: true,
     connect: vi.fn(async () => undefined),
     authenticate: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string) =>
@@ -92,6 +94,49 @@ describe("PhotonSession", () => {
       Buffer.from('{"value":"body"}'),
       Buffer.from("service=svc&op=Test"),
     );
+  });
+
+  it("closes a stale-auth connection and passes the rejected request through", async () => {
+    let ready = true;
+    const close = vi.fn(async () => {
+      ready = false;
+    });
+    const connector = fakeConnector({
+      execute: vi.fn(async (command: string) =>
+        command === "photon.config"
+          ? Buffer.from('{"predicates":[{"expr":"true","vars":{}}]}')
+          : new RespError("PHOTON_AUTH_ERROR", "missing FAS"),
+      ),
+      close,
+    });
+    Object.defineProperty(connector, "isReady", { get: () => ready });
+    const session = new PhotonSession(connector);
+    await session.open();
+
+    const response = await session.request(
+      new PhotonRequest({
+        method: "POST",
+        url: "https://x/",
+        body: "{}",
+        metadata: new RequestMetadata({ service: "svc", operation: "UpdateItem" }),
+      }),
+    );
+
+    expect(response).toBeUndefined();
+    expect(close).toHaveBeenCalledOnce();
+    expect(session.isConnectionHealthy).toBe(false);
+
+    vi.mocked(connector.execute).mockClear();
+    await expect(
+      session.request(
+        new PhotonRequest({
+          method: "POST",
+          url: "https://x/",
+          metadata: new RequestMetadata({ service: "svc", operation: "UpdateItem" }),
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(connector.execute).not.toHaveBeenCalled();
   });
 
   it("declines unmatched requests without a cache round trip", async () => {

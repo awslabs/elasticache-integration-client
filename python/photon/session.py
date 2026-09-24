@@ -15,7 +15,12 @@ from collections.abc import Callable
 
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
-from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
+from photon.exceptions import (
+    PhotonCacheUnavailable,
+    PhotonConfigError,
+    PhotonError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
@@ -25,6 +30,8 @@ from photon.protocol import (
     serialize_config,
     serialize_request,
 )
+
+_PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -137,7 +144,13 @@ class PhotonSession:
             return     # pass through
 
         command, args = serialize_request(request)
-        return parse_request_response(connector.execute(command, *args))
+        try:
+            return parse_request_response(connector.execute(command, *args))
+        except PhotonRejectedError as exc:
+            if exc.code != _PHOTON_AUTH_ERROR:
+                raise
+            self._connection_manager.invalidate_connection(connector)
+            return None
 
     def close(self) -> None:
         """Close the session's connection and stop all reconnect activity. Idempotent."""

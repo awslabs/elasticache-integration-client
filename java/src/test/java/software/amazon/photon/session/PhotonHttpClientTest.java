@@ -82,6 +82,20 @@ class PhotonHttpClientTest {
     }
 
     @Test
+    void healthyConnectionLostIsNotMarkedRetryable() {
+        StubSession session = new StubSession();
+        session.failure = new PhotonConnectionLost("socket died");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        PhotonHttpClient client = newClient(session, origin, false, "GetItem");
+
+        PhotonConnectionLost failure = assertThrows(PhotonConnectionLost.class,
+                () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
     void malformedResponseDoesNotRetryOrContactOrigin() {
         StubSession session = new StubSession();
         session.healthy = false;
@@ -159,7 +173,10 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
 
-        assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
+        PhotonConnectionLost failure = assertThrows(
+                PhotonConnectionLost.class,
+                () -> client.prepareRequest(signedRequest()).call());
+        assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
     }
 

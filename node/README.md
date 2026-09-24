@@ -34,8 +34,11 @@ preserves the connection; a FIFO or write timeout remains connection-fatal. The
 middleware sends requests with no matching predicate directly to origin and has
 a narrow origin fallback for cataloged idempotent requests when the connection
 drops. On a healthy connection, `ORIGIN_ERROR` is returned to the SDK as
-retryable for a cataloged operation; other RESP errors, malformed responses,
-and failures for non-idempotent operations propagate without origin fallback.
+retryable for a cataloged operation. `PHOTON_AUTH_ERROR` closes the stale
+connection and passes the rejected request through; because this client does
+not yet reconnect, later requests continue directly to origin. Other RESP
+errors, malformed responses, and failures for non-idempotent operations
+propagate without origin fallback.
 
 ## Request routing
 

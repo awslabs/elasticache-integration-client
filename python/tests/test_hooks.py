@@ -11,6 +11,7 @@ from photon.exceptions import (
     PhotonConnectionError,
     PhotonConnectionLost,
     PhotonError,
+    PhotonOriginError,
     PhotonProtocolError,
     PhotonRejectedError,
     PhotonTimeoutError,
@@ -19,7 +20,6 @@ from tests.mock import MockClient, mock_session
 
 from botocore.exceptions import (
     ConnectionClosedError,
-    EndpointConnectionError,
     ReadTimeoutError,
 )
 
@@ -139,19 +139,29 @@ def test_non_idempotent_transport_failure_is_non_retryable(photon_error):
     assert exc_info.value is photon_error
 
 
+def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
+    sdk = MockClient()
+    session = mock_session()
+    session.request.side_effect = PhotonTimeoutError("timed out")
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ReadTimeoutError):
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+
+
 @pytest.mark.parametrize("photon_error", [
-    PhotonTimeoutError("timed out"),
     PhotonConnectionLost("socket died"),
     PhotonConnectionError("connect failed"),
 ])
-def test_healthy_idempotent_transport_failure_is_sdk_retryable(photon_error):
+def test_connection_errors_are_not_mislabeled_as_healthy_retries(photon_error):
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = photon_error
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises((ReadTimeoutError, ConnectionClosedError, EndpointConnectionError)):
+    with pytest.raises(type(photon_error)) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is photon_error
 
 
 def test_non_origin_rejection_is_non_retryable_and_does_not_fallback():
@@ -174,7 +184,7 @@ def test_idempotent_origin_error_is_sdk_retryable_without_fallback():
     session.request.side_effect = rejection
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises(ConnectionClosedError) as exc_info:
+    with pytest.raises(PhotonOriginError) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
     assert exc_info.value.__cause__ is rejection
 

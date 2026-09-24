@@ -9,11 +9,14 @@ Command building/normalization details are protocol.py's contract and are covere
 test_protocol.py; these tests assert only session behavior (lifecycle + delegation).
 """
 
+from unittest import mock
+
 import pytest
 
 from photon.exceptions import PhotonConfigError, PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.reconnect_policy import ReconnectPolicy
+from photon.resp import RespError
 from photon.session import PhotonSession, parse_endpoint
 from tests.mock import mock_connector
 
@@ -75,6 +78,23 @@ def test_request_delegates_to_connector():
     assert args[0] == "photon.request"
     assert len(args[1:]) == 5  # [method, url, headers, body, metadata]
     assert kwargs == {}
+
+
+def test_auth_error_invalidates_connection_and_passes_request_through():
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = RespError("PHOTON_AUTH_ERROR", "missing FAS")
+    session._connection_manager.invalidate_connection = mock.Mock()
+
+    response = session.request(PhotonRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        metadata=RequestMetadata(service="dynamodb", operation="UpdateItem"),
+    ))
+
+    assert response is None
+    session._connection_manager.invalidate_connection.assert_called_once_with(connector)
 
 
 def test_request_after_close_is_rejected_before_connector_use():

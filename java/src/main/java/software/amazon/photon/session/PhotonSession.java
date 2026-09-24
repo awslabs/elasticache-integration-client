@@ -6,6 +6,7 @@ import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
@@ -40,6 +41,7 @@ import java.util.function.Supplier;
  */
 public class PhotonSession implements Closeable {
 
+    private static final String PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
     private static final AtomicInteger THREAD_IDS = new AtomicInteger();
 
     public enum State {
@@ -223,6 +225,12 @@ public class PhotonSession implements Closeable {
 
         try {
             return active.request(request, cancellation);
+        } catch (PhotonRejectedError failure) {
+            if (PHOTON_AUTH_ERROR.equals(failure.getCode())) {
+                beginReconnect(active);
+                return null;
+            }
+            throw failure;
         } catch (PhotonError failure) {
             if (active.isDead()) {
                 beginReconnect(active);

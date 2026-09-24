@@ -35,6 +35,7 @@ from photon.exceptions import (
     PhotonConnectionError,
     PhotonConnectionLost,
     PhotonError,
+    PhotonOriginError,
     PhotonProtocolError,
     PhotonRejectedError,
     PhotonTimeoutError,
@@ -45,11 +46,7 @@ from photon.session import PhotonSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.client import BaseClient
-from botocore.exceptions import (
-    ConnectionClosedError,
-    EndpointConnectionError,
-    ReadTimeoutError,
-)
+from botocore.exceptions import ReadTimeoutError
 from urllib3.response import HTTPResponse as Urllib3Response
 
 _BEFORE_SEND = "before-send"
@@ -178,7 +175,7 @@ class PhotonHandle:
                     and self._session.is_connection_healthy
                     and idempotent
                 ):
-                    raise ConnectionClosedError(endpoint_url=request.url) from exc
+                    raise PhotonOriginError(endpoint_url=request.url) from exc
                 raise
             if (
                 self._session.is_open
@@ -199,25 +196,14 @@ class PhotonHandle:
                 exc,
                 (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
             ):
-                if self._session.is_open and self._session.is_connection_healthy and idempotent:
-                    _raise_as_botocore_error(exc, request.url)
+                # A deferred timeout has no FIFO slot and leaves the connector healthy. FIFO
+                # timeouts and connection loss close it and enter the fallback branch above.
+                if (
+                    isinstance(exc, PhotonTimeoutError)
+                    and self._session.is_open
+                    and self._session.is_connection_healthy
+                    and idempotent
+                ):
+                    raise ReadTimeoutError(endpoint_url=request.url) from exc
                 raise
             raise
-
-
-def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
-    """Re-raise a Photon transport failure as botocore's own transport error.
-
-    botocore's ``Endpoint._do_get_response`` catches exceptions from ``before-send`` handlers the
-    same way it catches them from ``self._send(request)``, so raising here behaves exactly like a
-    transport failure on the real connection. Using botocore's classes — not Photon's — keeps the
-    application's existing ``except`` blocks working, and all three are retryable under the
-    ``standard`` retry mode, so the application's retry configuration applies unchanged.
-    """
-    if isinstance(exc, PhotonTimeoutError):
-        raise ReadTimeoutError(endpoint_url=endpoint_url) from exc
-    if isinstance(exc, PhotonConnectionLost):
-        raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
-    if isinstance(exc, PhotonConnectionError):
-        raise EndpointConnectionError(endpoint_url=endpoint_url) from exc
-    raise exc  # unmapped Photon error: propagate loudly rather than mislabel it

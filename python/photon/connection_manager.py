@@ -108,6 +108,23 @@ class ConnectionManager:
         """Whether a request may still be passed through while there is no connector."""
         return time.monotonic() < self._fallback_deadline
 
+    def invalidate_connection(self, connector: PhotonConnector) -> None:
+        """Remove a serving connector and begin reconnecting.
+
+        Used when a valid protocol reply says the connection's authentication is no longer usable.
+        The state changes before the connector is closed, so the request that observed the error
+        can pass through immediately and later requests cannot race back onto the stale connector.
+        """
+        with self._state_lock:
+            if self._state is ConnectionState.CLOSED:
+                return
+            if self._connector is connector:
+                self._fallback_deadline = time.monotonic() + self._policy.fallback_window
+                self._connector = None
+                self._state = ConnectionState.RECONNECTING
+        self._reconnect_needed.set()
+        connector.close()
+
     @property
     def connection_healthy(self) -> bool:
         """Whether a live configured connector is currently available."""

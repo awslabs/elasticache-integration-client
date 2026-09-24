@@ -149,6 +149,28 @@ class PhotonSessionTest {
     }
 
     @Test
+    void authErrorPassesThroughAndStartsReconnect() {
+        cache.setReply(Reply.error("PHOTON_AUTH_ERROR", "missing FAS"));
+        PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
+        try {
+            session.open();
+
+            PhotonResponse response = session.request(new PhotonRequest(
+                    "POST",
+                    "https://dynamodb.us-east-1.amazonaws.com/",
+                    Collections.emptyMap(),
+                    new byte[0],
+                    new RequestMetadata("dynamodb", "UpdateItem")));
+
+            assertNull(response);
+            assertEquals(PhotonSession.State.RECONNECTING, session.getState());
+            assertFalse(session.isConnectionHealthy());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
     void unmatchedRequest_isDeclinedWithoutCacheRoundTrip() {
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {

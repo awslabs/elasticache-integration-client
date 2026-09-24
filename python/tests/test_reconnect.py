@@ -42,6 +42,20 @@ _STATE_TIMEOUT = 5.0  # generous: these waits only run long when something is ac
 _POLL_INTERVAL = 0.002  # how often a wait re-checks
 
 
+def test_invalidate_connection_enters_reconnecting_before_close():
+    connector = mock_connector()
+    manager = connection_manager.ConnectionManager(lambda: connector, lambda value: None, FAST)
+    manager._connector = connector
+    manager._state = ConnectionState.ALIVE
+
+    manager.invalidate_connection(connector)
+
+    assert manager.state is ConnectionState.RECONNECTING
+    assert manager.connector is None
+    assert manager._reconnect_needed.is_set()
+    connector.close.assert_called_once_with()
+
+
 def get_item_request(body: bytes = b'{"TableName": "widgets"}') -> PhotonRequest:
     """A DynamoDB GetItem — the canonical request every config in this file routes to the cache."""
     return PhotonRequest(
