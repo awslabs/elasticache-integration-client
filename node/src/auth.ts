@@ -8,7 +8,6 @@
  */
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type {
-  ElastiCacheIAMAuthTokenManager as ToolkitAuthTokenManager,
   ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
   TokenGeneratorDependencies,
 } from "@aws/developer-toolkit-elasticache";
@@ -46,10 +45,6 @@ export interface GenerateIamAuthTokenOptions extends ResolvedAuthParams {
 
 export interface IamAuthTokenProviderOptions extends ResolvedAuthParams {
   credentials: CredentialsProvider;
-}
-
-export interface IamAuthTokenManagerOptions extends IamAuthTokenProviderOptions {
-  refreshAfterSeconds?: number;
 }
 
 /** Connector-compatible IAM provider backed by the toolkit token manager. */
@@ -179,75 +174,6 @@ export class IamAuthTokenProvider {
   toString(): string {
     const { cacheName, userId, region } = this.options;
     return `IamAuthTokenProvider(cacheName=${cacheName}, userId=${userId}, region=${region})`;
-  }
-}
-
-/** Credential manager that caches and automatically refreshes IAM tokens. */
-export class IamAuthTokenManager {
-  private readonly options: IamAuthTokenManagerOptions;
-  private managerPromise: Promise<ToolkitAuthTokenManager> | undefined;
-
-  constructor(options: IamAuthTokenManagerOptions) {
-    this.options = options;
-  }
-
-  private initialize(): Promise<ToolkitAuthTokenManager> {
-    this.managerPromise ??= this.createManager();
-    return this.managerPromise;
-  }
-
-  private async createManager(): Promise<ToolkitAuthTokenManager> {
-    const toolkit = await loadToolkit();
-    try {
-      return await toolkit.ElastiCacheIAMAuthTokenManager.create(
-        {
-          serverlessCacheName: this.options.cacheName,
-          userId: this.options.userId,
-          region: this.options.region,
-          ...(this.options.refreshAfterSeconds === undefined
-            ? {}
-            : { refreshAfterSeconds: this.options.refreshAfterSeconds }),
-        },
-        toolkitDependencies(this.options.credentials),
-      );
-    } catch (error) {
-      throw toPhotonError(error, toolkit);
-    }
-  }
-
-  /** Resolve configuration before the connector attempts to open. */
-  async ready(): Promise<void> {
-    await this.initialize();
-  }
-
-  /** Return the normalized user id and a valid cached token. */
-  async getAuth(): Promise<[string, string]> {
-    const manager = await this.initialize();
-    try {
-      return await manager.getCredentials();
-    } catch (error) {
-      throw toPhotonError(error, await loadToolkit());
-    }
-  }
-
-  /** Invalidate the cached token after an authentication rejection. */
-  async refreshAuth(): Promise<[string, string]> {
-    const manager = await this.initialize();
-    try {
-      return [manager.userId, await manager.refreshToken()];
-    } catch (error) {
-      throw toPhotonError(error, await loadToolkit());
-    }
-  }
-
-  /** Stop background token refresh. */
-  close(): void {
-    void this.managerPromise?.then((manager) => manager.close()).catch(() => undefined);
-  }
-
-  toString(): string {
-    const { cacheName, userId, region } = this.options;
-    return `IamAuthTokenManager(cacheName=${cacheName}, userId=${userId}, region=${region})`;
   }
 }
 

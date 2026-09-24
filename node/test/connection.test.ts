@@ -696,13 +696,17 @@ describe("PhotonConnector", () => {
     const cache = await startCache({
       authResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
     });
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(),
+    });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
-      authProvider: () => ["test-user", "test-token"],
+      authProvider,
     });
 
     await connector.connect();
     await expect(connector.authenticate()).rejects.toThrow("IAM AUTH failed");
+    expect(authProvider.refreshAuth).not.toHaveBeenCalled();
     await connector.close();
   });
 

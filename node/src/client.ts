@@ -15,8 +15,9 @@ export interface PhotonClientOptions<TConfig extends object> {
   userId?: string;
   /**
    * Seconds after token issuance when IAM refresh begins in the background.
-   * Defaults to 300 and must be greater than 0 and less than 880.
    * Applies only to the managed provider; a connector authProvider owns its configuration.
+   *
+   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
    */
   iamRefreshAfterSeconds?: number;
   /** AWS SDK v3 client configuration. */

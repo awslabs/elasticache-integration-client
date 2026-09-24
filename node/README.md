@@ -135,10 +135,10 @@ against a local or test endpoint, supplies `connectorOptions.authProvider`
 instead: it returns `[userId, token]` and replaces toolkit token management
 entirely, so no AWS credentials are required.
 
-The first token is minted lazily and refreshes after five minutes by default.
-Set `iamRefreshAfterSeconds` to refresh earlier; values must be greater than
-zero and less than 880 seconds, preserving the toolkit's final 20-second safety
-margin below the fixed 15-minute token lifetime.
+The first token is minted lazily. Set `iamRefreshAfterSeconds` to customize its
+background refresh point; the accepted range, defaults, retry behavior, and
+safety margin are defined by the
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
 
 The `client()` factory creates this default manager, so destroying the returned
 SDK client also closes the manager and stops its timers. When

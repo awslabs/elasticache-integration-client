@@ -420,15 +420,14 @@ export class PhotonConnector {
         throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
       }
       if (error instanceof PhotonAuthenticationRejected) {
-        await this.refreshAuthentication().catch(() => undefined);
+        try {
+          await this.authProvider.refreshAuth?.();
+        } catch {
+          // Preserve the cache's AUTH rejection; the next attempt retries token refresh.
+        }
       }
       throw error;
     }
-  }
-
-  private async refreshAuthentication(): Promise<void> {
-    if (this.authProvider === undefined) return;
-    await this.authProvider.refreshAuth?.();
   }
 
   /** Immediately stop reading, fail pending requests, and destroy the socket. */
@@ -838,7 +837,7 @@ export class PhotonConnector {
     if (reply !== "OK") {
       const error = new PhotonConnectionLost("unexpected AUTH reply");
       this.markDead(error);
-      throw new PhotonAuthenticationRejected(`IAM AUTH failed: unexpected reply ${String(reply)}`);
+      throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
     }
   }
 
