@@ -159,6 +159,8 @@ public class PhotonHandle implements Closeable {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+        private long configStalenessThresholdSeconds =
+                PhotonSession.DEFAULT_CONFIG_STALENESS_THRESHOLD_SECONDS;
         private SdkHttpClient originHttpClient;
 
         private Builder() {}
@@ -247,6 +249,16 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
+         * Set how long soft config refresh failures may continue, in seconds since the last
+         * successful refresh, before the session closes the connector and enters reconnect and
+         * origin-fallback recovery (default: 3600).
+         */
+        public Builder configStalenessThresholdSeconds(long configStalenessThresholdSeconds) {
+            this.configStalenessThresholdSeconds = configStalenessThresholdSeconds;
+            return this;
+        }
+
+        /**
          * Set a caller-managed HTTP client for origin fallback.
          *
          * <p>Photon does not close a caller-provided client.
@@ -285,7 +297,8 @@ public class PhotonHandle implements Closeable {
                             requestTimeoutMs, PhotonConnector.DEFAULT_MAX_PENDING),
                     authProvider,
                     overrides,
-                    reconnectPolicy);
+                    reconnectPolicy,
+                    configStalenessThresholdSeconds);
             SdkHttpClient origin = originHttpClient;
             boolean ownsOrigin = false;
             if (origin == null) {

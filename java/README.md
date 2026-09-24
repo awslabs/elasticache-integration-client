@@ -56,6 +56,15 @@ active connector unusable, the normal background reconnect loop replaces it
 and fetches a fresh config. Periodic refresh pauses while reconnecting, and a
 late reply from a closed or replaced connector is ignored.
 
+Soft refresh failures, such as an error reply or a malformed config, leave the
+connector open. Each successful refresh resets the staleness clock, including
+a null "unchanged" reply, as do opening and reconnecting. If soft failures
+continue until `configStalenessThresholdSeconds` (default 3600) has passed
+since the last success, the session closes the connector and enters the same
+reconnect path. Requests then follow the configured origin-fallback window. Set
+the threshold with `PhotonClient.Builder.configStalenessThresholdSeconds(long)`;
+the value must be positive.
+
 ## Synchronous client
 
 ```java

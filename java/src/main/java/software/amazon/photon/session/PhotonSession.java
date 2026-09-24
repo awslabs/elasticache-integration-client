@@ -27,6 +27,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -49,13 +50,19 @@ import java.util.logging.Logger;
  * Requests with no matching predicate are declined for origin pass-through.
  * The refresher started by {@link #open()} fetches and applies resolved config
  * updates while a connector is open. Refresh failures keep the last-known-good
- * config; failures that kill the connector use the normal reconnect path.
+ * config; failures that kill the connector use the normal reconnect path. Once
+ * soft refresh failures have lasted for the config staleness threshold since
+ * the last successful refresh, the session closes the connector and enters the
+ * same reconnect and fallback path.
  */
 public class PhotonSession implements Closeable {
 
     private static final Logger LOGGER = Logger.getLogger(PhotonSession.class.getName());
     private static final String PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
     private static final AtomicInteger THREAD_IDS = new AtomicInteger();
+
+    /** Default config staleness threshold: one hour without a successful refresh. */
+    public static final long DEFAULT_CONFIG_STALENESS_THRESHOLD_SECONDS = 3600;
 
     public enum State {
         /** Created but not opened. */
@@ -72,6 +79,8 @@ public class PhotonSession implements Closeable {
     private final Supplier<AuthCredentials> authProvider;
     private final Map<String, Object> overrides;
     private final ReconnectPolicy reconnectPolicy;
+    private final long configStalenessThresholdNanos;
+    private final LongSupplier nanoClock;
     private final ExecutorService reconnectExecutor = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable,
                 "photon-reconnect-" + THREAD_IDS.incrementAndGet());
@@ -89,6 +98,8 @@ public class PhotonSession implements Closeable {
     private boolean opening;
     private boolean reconnectRunning;
     private boolean overridesSent;
+    /** Set on each publish and each successful refresh, including unchanged (null) replies. */
+    private long lastRefreshSuccessNanos;
 
     /**
      * Create a session around one concrete connector.
@@ -105,6 +116,26 @@ public class PhotonSession implements Closeable {
                   Supplier<AuthCredentials> authProvider,
                   Map<String, Object> overrides,
                   ReconnectPolicy reconnectPolicy) {
+        this(connectorFactory, authProvider, overrides, reconnectPolicy,
+                DEFAULT_CONFIG_STALENESS_THRESHOLD_SECONDS);
+    }
+
+    PhotonSession(Supplier<PhotonConnector> connectorFactory,
+                  Supplier<AuthCredentials> authProvider,
+                  Map<String, Object> overrides,
+                  ReconnectPolicy reconnectPolicy,
+                  long configStalenessThresholdSeconds) {
+        this(connectorFactory, authProvider, overrides, reconnectPolicy,
+                configStalenessThresholdSeconds, System::nanoTime);
+    }
+
+    /** Test constructor: {@code nanoClock} replaces {@link System#nanoTime()} for staleness. */
+    PhotonSession(Supplier<PhotonConnector> connectorFactory,
+                  Supplier<AuthCredentials> authProvider,
+                  Map<String, Object> overrides,
+                  ReconnectPolicy reconnectPolicy,
+                  long configStalenessThresholdSeconds,
+                  LongSupplier nanoClock) {
         if (connectorFactory == null) {
             throw new NullPointerException("connectorFactory");
         }
@@ -115,6 +146,14 @@ public class PhotonSession implements Closeable {
         this.authProvider = authProvider;
         this.overrides = overrides != null ? overrides : Collections.emptyMap();
         this.reconnectPolicy = reconnectPolicy != null ? reconnectPolicy : ReconnectPolicy.defaults();
+        if (configStalenessThresholdSeconds <= 0
+                || configStalenessThresholdSeconds > TimeUnit.NANOSECONDS.toSeconds(Long.MAX_VALUE)) {
+            throw new IllegalArgumentException(
+                    "configStalenessThresholdSeconds must be a positive number of seconds: "
+                            + configStalenessThresholdSeconds);
+        }
+        this.configStalenessThresholdNanos = TimeUnit.SECONDS.toNanos(configStalenessThresholdSeconds);
+        this.nanoClock = nanoClock != null ? nanoClock : System::nanoTime;
     }
 
     /** Create a concrete-connector session with static credentials. */
@@ -300,15 +339,17 @@ public class PhotonSession implements Closeable {
      *
      * <p>Sends the overrides if they have not yet been acknowledged by the server, otherwise
      * sends the no-argument form ("my overrides are unchanged"). A RESP3 null reply means the
-     * server's config has not changed, so nothing is applied or rescheduled. Any other reply is
+     * server's config has not changed, so nothing is applied or rescheduled, but it still counts
+     * as a successful refresh for the staleness clock. Any other reply is
      * parsed, its predicates compiled, and installed as a single immutable snapshot; the
      * refresher is then rescheduled on the interval the new config carries.
      *
      * <p>A {@link PhotonError} from either step is caught here so it cannot escape the refresher
      * thread and silently stop every future refresh: the current config and schedule are left in
      * place and the next tick retries. If the failure leaves the connector dead, the existing
-     * background reconnect path replaces it. Replies from a connector that has since been closed
-     * or replaced are discarded.
+     * background reconnect path replaces it. If the connector is still alive but no refresh has
+     * succeeded within the staleness threshold, the connector is closed and replaced through the
+     * same path. Replies from a connector that has since been closed or replaced are discarded.
      */
     void refreshOnce() {
         PhotonConnector active;
@@ -334,6 +375,11 @@ public class PhotonSession implements Closeable {
         }
 
         if (reply instanceof RespNull) {
+            synchronized (stateLock) {
+                if (state == State.OPEN && connector == active && refresher == activeRefresher) {
+                    lastRefreshSuccessNanos = nanoClock.getAsLong();
+                }
+            }
             return;
         }
 
@@ -355,18 +401,32 @@ public class PhotonSession implements Closeable {
             activeRefresher.setInterval(newConfig.getRefreshInterval());
             overridesSent = true;
             snapshot = new ConnectionSnapshot(newConfig, newPredicates);
+            lastRefreshSuccessNanos = nanoClock.getAsLong();
         }
     }
 
     /**
      * Log a refresh failure unless the connector is already being replaced, and start recovery
-     * if the failure made the active connector unusable.
+     * if the failure made the active connector unusable or the config has been stale for at least
+     * the staleness threshold.
      */
     private void handleRefreshFailure(PhotonConnector active, PhotonError e) {
         if (state == State.OPEN && connector == active) {
             LOGGER.log(Level.WARNING, "Config refresh failed; keeping the current config", e);
         }
         if (active.isDead()) {
+            beginReconnect(active);
+            return;
+        }
+        boolean stale;
+        synchronized (stateLock) {
+            stale = state == State.OPEN && connector == active
+                    && nanoClock.getAsLong() - lastRefreshSuccessNanos >= configStalenessThresholdNanos;
+        }
+        if (stale) {
+            LOGGER.warning("photon.config has been stale for at least "
+                    + TimeUnit.NANOSECONDS.toSeconds(configStalenessThresholdNanos)
+                    + "s; replacing the connector and using outage fallback");
             beginReconnect(active);
         }
     }
@@ -605,6 +665,7 @@ public class PhotonSession implements Closeable {
         }
         overridesSent = true;
         this.snapshot = snapshot;
+        lastRefreshSuccessNanos = nanoClock.getAsLong();
         connector = next;
     }
 

@@ -142,7 +142,11 @@ match. A refresh failure (`PhotonError`) is logged and leaves the current
 config, predicates, and interval as last-known-good. If it kills the connector,
 the normal reconnect loop obtains a fresh connection and config; periodic ticks
 do nothing while reconnecting, and stale replies from replaced connectors are
-discarded.
+discarded. Every successful refresh, including a null reply, and every open or
+reconnect resets a staleness clock. Once soft failures (the connector is still
+alive) have continued for `configStalenessThresholdSeconds` (default 3600), the
+session closes the connector and enters the normal reconnect and
+origin-fallback path, matching the Node client.
 
 ## Security and test boundaries
 
