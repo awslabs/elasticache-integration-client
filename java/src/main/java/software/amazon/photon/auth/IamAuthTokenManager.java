@@ -10,6 +10,7 @@ import software.amazon.photon.exception.PhotonError;
 import java.time.Duration;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -48,6 +49,9 @@ public final class IamAuthTokenManager
                             .credentialsProvider(credentialsProvider);
             if (builder.refreshAfter != null) {
                 managerBuilder.refreshAfter(builder.refreshAfter);
+            }
+            if (builder.onTokenChanged != null) {
+                managerBuilder.onTokenChanged(builder.onTokenChanged);
             }
             this.toolkitTokenManager = managerBuilder.build();
         } catch (ToolkitInputException e) {
@@ -128,6 +132,7 @@ public final class IamAuthTokenManager
         private Region region;
         private AwsCredentialsProvider credentialsProvider;
         private Duration refreshAfter;
+        private Consumer<String> onTokenChanged;
 
         private Builder() {}
 
@@ -171,6 +176,14 @@ public final class IamAuthTokenManager
          */
         public Builder refreshAfter(Duration refreshAfter) {
             this.refreshAfter = refreshAfter;
+            return this;
+        }
+
+        /**
+         * Set a callback invoked after a newly generated token is installed.
+         */
+        public Builder onTokenChanged(Consumer<String> onTokenChanged) {
+            this.onTokenChanged = onTokenChanged;
             return this;
         }
 

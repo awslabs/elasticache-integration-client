@@ -7,6 +7,7 @@ import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -18,6 +19,9 @@ import java.util.function.Supplier;
  *
  * <p>This provider implements {@code Supplier<AuthCredentials>} and can be
  * used directly with {@link software.amazon.photon.connection.PhotonConnector}.
+ * When passed as a concrete provider to {@code PhotonClient},
+ * {@code PhotonHandle}, or {@code PhotonAsyncHandle}, Photon creates and owns
+ * an auto-refreshing manager from this configuration.
  *
  * <p>Usage:
  * <pre>{@code
@@ -38,9 +42,18 @@ import java.util.function.Supplier;
 public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
 
     private final IamAuthTokenGenerator generator;
+    private final AwsCredentialsProvider credentialsProvider;
+    private final Duration refreshAfter;
+    private final Consumer<String> onTokenChanged;
 
-    private IamAuthTokenProvider(IamAuthTokenGenerator generator) {
+    private IamAuthTokenProvider(IamAuthTokenGenerator generator,
+                                 AwsCredentialsProvider credentialsProvider,
+                                 Duration refreshAfter,
+                                 Consumer<String> onTokenChanged) {
         this.generator = generator;
+        this.credentialsProvider = credentialsProvider;
+        this.refreshAfter = refreshAfter;
+        this.onTokenChanged = onTokenChanged;
     }
 
     /**
@@ -76,6 +89,28 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      */
     public Region getRegion() {
         return generator.getRegion();
+    }
+
+    /**
+     * Create an independent auto-refreshing manager from this provider's
+     * configuration.
+     *
+     * <p>Photon clients and handles call this automatically when this concrete
+     * provider is passed to {@code authProvider(...)}.
+     */
+    public IamAuthTokenManager newTokenManager() {
+        IamAuthTokenManager.Builder managerBuilder = IamAuthTokenManager.builder()
+                .cacheName(getCacheName())
+                .userId(getUserId())
+                .region(getRegion())
+                .credentialsProvider(credentialsProvider);
+        if (refreshAfter != null) {
+            managerBuilder.refreshAfter(refreshAfter);
+        }
+        if (onTokenChanged != null) {
+            managerBuilder.onTokenChanged(onTokenChanged);
+        }
+        return managerBuilder.build();
     }
 
     /**
@@ -144,6 +179,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         private Region region;
         private AwsCredentialsProvider credentialsProvider;
         private Duration expiresIn;
+        private Duration refreshAfter;
+        private Consumer<String> onTokenChanged;
 
         private Builder() {}
 
@@ -201,6 +238,24 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         }
 
         /**
+         * Set how long after issuance Photon-managed tokens refresh.
+         *
+         * <p>The toolkit default is five minutes.
+         */
+        public Builder refreshAfter(Duration refreshAfter) {
+            this.refreshAfter = refreshAfter;
+            return this;
+        }
+
+        /**
+         * Set a callback invoked after a Photon-managed token is installed.
+         */
+        public Builder onTokenChanged(Consumer<String> onTokenChanged) {
+            this.onTokenChanged = onTokenChanged;
+            return this;
+        }
+
+        /**
          * Build the provider.
          *
          * @return a new IamAuthTokenProvider
@@ -227,7 +282,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
                 generatorBuilder.expiresIn(expiresIn);
             }
 
-            return new IamAuthTokenProvider(generatorBuilder.build());
+            return new IamAuthTokenProvider(
+                    generatorBuilder.build(), creds, refreshAfter, onTokenChanged);
         }
     }
 }

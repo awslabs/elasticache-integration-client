@@ -107,29 +107,30 @@ class IamAuthClientIntegrationTest {
     @Test
     void reconnectUsesTokenInstalledByBackgroundRefresh() throws Exception {
         AtomicInteger credentialCalls = new AtomicInteger();
-        CountDownLatch refreshStarted = new CountDownLatch(1);
-        IamAuthTokenManager authManager = IamAuthTokenManager.builder()
+        CountDownLatch refreshInstalled = new CountDownLatch(1);
+        IamAuthTokenProvider authProvider = IamAuthTokenProvider.builder()
                 .cacheName("My-Cache")
                 .userId("IAM-User")
                 .region(Region.US_EAST_1)
                 .credentialsProvider(() -> {
                     int call = credentialCalls.incrementAndGet();
-                    if (call > 1) {
-                        refreshStarted.countDown();
-                    }
                     return AwsBasicCredentials.create(
                             call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
                             call == 1 ? "first-secret" : "rotated-secret");
                 })
                 .refreshAfter(Duration.ofMillis(10))
+                .onTokenChanged(token -> {
+                    if (token.contains(ROTATED_ACCESS_KEY)) {
+                        refreshInstalled.countDown();
+                    }
+                })
                 .build();
 
-        try (IamAuthTokenManager ignored = authManager;
-             MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
              PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
                      .endpoint("localhost:" + proxy.getPort())
                      .sslContext(clientSslContext)
-                     .authProvider(authManager)
+                     .authProvider(authProvider)
                      .reconnectPolicy(ReconnectPolicy.builder()
                              .baseDelayMs(1)
                              .maxDelayMs(10)
@@ -139,8 +140,7 @@ class IamAuthClientIntegrationTest {
                              .region(Region.US_EAST_1)
                              .credentialsProvider(SDK_CREDENTIALS))
                      .build()) {
-            assertTrue(refreshStarted.await(5, TimeUnit.SECONDS));
-            awaitRotatedToken(authManager);
+            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
 
             proxy.disconnectClients();
             awaitReconnect(result.handle().getSession(), 2);
@@ -149,6 +149,89 @@ class IamAuthClientIntegrationTest {
             assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
             assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
         }
+    }
+
+    @Test
+    void clientCloseStopsInternallyManagedRefresh() throws Exception {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        CountDownLatch refreshInstalled = new CountDownLatch(1);
+        IamAuthTokenProvider authProvider = IamAuthTokenProvider.builder()
+                .cacheName("My-Cache")
+                .userId("IAM-User")
+                .region(Region.US_EAST_1)
+                .credentialsProvider(() -> {
+                    int call = credentialCalls.incrementAndGet();
+                    return AwsBasicCredentials.create(
+                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
+                            call == 1 ? "first-secret" : "rotated-secret");
+                })
+                .refreshAfter(Duration.ofMillis(10))
+                .onTokenChanged(token -> {
+                    if (token.contains(ROTATED_ACCESS_KEY)) {
+                        refreshInstalled.countDown();
+                    }
+                })
+                .build();
+
+        PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .sslContext(clientSslContext)
+                .authProvider(authProvider)
+                .origin(DynamoDbClient.builder(), builder -> builder
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(SDK_CREDENTIALS))
+                .build();
+        try {
+            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
+        } finally {
+            result.close();
+        }
+        Thread.sleep(50);
+        int callsAfterClose = credentialCalls.get();
+        Thread.sleep(100);
+
+        assertEquals(callsAfterClose, credentialCalls.get());
+    }
+
+    @Test
+    void asyncClientCloseStopsInternallyManagedRefresh() throws Exception {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        CountDownLatch refreshInstalled = new CountDownLatch(1);
+        IamAuthTokenProvider authProvider = IamAuthTokenProvider.builder()
+                .cacheName("My-Cache")
+                .userId("IAM-User")
+                .region(Region.US_EAST_1)
+                .credentialsProvider(() -> {
+                    int call = credentialCalls.incrementAndGet();
+                    return AwsBasicCredentials.create(
+                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
+                            call == 1 ? "first-secret" : "rotated-secret");
+                })
+                .refreshAfter(Duration.ofMillis(10))
+                .onTokenChanged(token -> {
+                    if (token.contains(ROTATED_ACCESS_KEY)) {
+                        refreshInstalled.countDown();
+                    }
+                })
+                .build();
+
+        PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .sslContext(clientSslContext)
+                .authProvider(authProvider)
+                .buildAsync(DynamoDbAsyncClient.builder(), builder -> builder
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(SDK_CREDENTIALS));
+        try {
+            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
+        } finally {
+            result.close();
+        }
+        Thread.sleep(50);
+        int callsAfterClose = credentialCalls.get();
+        Thread.sleep(100);
+
+        assertEquals(callsAfterClose, credentialCalls.get());
     }
 
     @Test
@@ -208,16 +291,6 @@ class IamAuthClientIntegrationTest {
     private static void assertAuthOnly(List<String> commands) {
         assertFalse(commands.isEmpty());
         assertTrue(commands.stream().allMatch("AUTH"::equals));
-    }
-
-    private static void awaitRotatedToken(IamAuthTokenManager authManager)
-            throws InterruptedException {
-        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (!authManager.get().getToken().contains(ROTATED_ACCESS_KEY)
-                && System.nanoTime() < deadline) {
-            Thread.sleep(10);
-        }
-        assertTrue(authManager.get().getToken().contains(ROTATED_ACCESS_KEY));
     }
 
     private void awaitReconnect(PhotonSession session, int expectedAuthAttempts)

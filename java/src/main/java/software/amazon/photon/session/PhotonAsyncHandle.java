@@ -3,6 +3,8 @@ package software.amazon.photon.session;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenManager;
+import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
 
@@ -33,6 +35,7 @@ public final class PhotonAsyncHandle implements Closeable {
     private final PhotonSession session;
     private final PhotonAsyncInterceptor interceptor;
     private final PhotonAsyncHttpClient httpClient;
+    private final IamAuthTokenManager ownedAuthManager;
     private State state = State.CREATED;
 
     private PhotonAsyncHandle(PhotonSession session,
@@ -41,7 +44,8 @@ public final class PhotonAsyncHandle implements Closeable {
                               Executor executor,
                               ExecutorService ownedExecutor,
                               int maxBufferedRequestBytes,
-                              int maxConcurrentBodyCollectors) {
+                              int maxConcurrentBodyCollectors,
+                              IamAuthTokenManager ownedAuthManager) {
         this.session = session;
         this.interceptor = new PhotonAsyncInterceptor(
                 session,
@@ -52,6 +56,7 @@ public final class PhotonAsyncHandle implements Closeable {
                 maxBufferedRequestBytes,
                 maxConcurrentBodyCollectors);
         this.httpClient = interceptor.getHttpClient();
+        this.ownedAuthManager = ownedAuthManager;
     }
 
     /**
@@ -103,7 +108,13 @@ public final class PhotonAsyncHandle implements Closeable {
             try {
                 httpClient.close();
             } finally {
-                state = State.CLOSED;
+                try {
+                    if (ownedAuthManager != null) {
+                        ownedAuthManager.close();
+                    }
+                } finally {
+                    state = State.CLOSED;
+                }
             }
         }
     }
@@ -130,6 +141,7 @@ public final class PhotonAsyncHandle implements Closeable {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
+        private IamAuthTokenProvider iamAuthProvider;
         private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
@@ -161,16 +173,26 @@ public final class PhotonAsyncHandle implements Closeable {
         /**
          * Set the auth provider.
          *
-         * <p>The caller owns the provider lifecycle. Close an
-         * {@code IamAuthTokenManager} when this handle is closed.
+         * <p>Caller-supplied generic providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;
+            this.iamAuthProvider = null;
+            return this;
+        }
+
+        /**
+         * Set an IAM provider whose auto-refresh manager is owned by this handle.
+         */
+        public Builder authProvider(IamAuthTokenProvider authProvider) {
+            this.iamAuthProvider = authProvider;
+            this.authProvider = null;
             return this;
         }
 
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
+            this.iamAuthProvider = null;
             return this;
         }
 
@@ -243,28 +265,49 @@ public final class PhotonAsyncHandle implements Closeable {
         public PhotonAsyncHandle build() {
             validateConfiguration();
 
-            PhotonSession session = createSession(resolveSslContext());
+            IamAuthTokenManager ownedAuthManager =
+                    iamAuthProvider != null ? iamAuthProvider.newTokenManager() : null;
+            Supplier<AuthCredentials> resolvedAuthProvider =
+                    ownedAuthManager != null ? ownedAuthManager : authProvider;
             boolean ownsOriginClient = originHttpClient == null;
-            SdkAsyncHttpClient resolvedOriginClient =
-                    ownsOriginClient ? NettyNioAsyncHttpClient.create() : originHttpClient;
-            ExecutorService ownedExecutor = executor == null ? createDefaultExecutor() : null;
-            Executor resolvedExecutor = executor == null ? ownedExecutor : executor;
+            SdkAsyncHttpClient resolvedOriginClient = null;
+            ExecutorService ownedExecutor = null;
+            try {
+                PhotonSession session = createSession(
+                        resolveSslContext(), resolvedAuthProvider);
+                resolvedOriginClient = ownsOriginClient
+                        ? NettyNioAsyncHttpClient.create() : originHttpClient;
+                ownedExecutor = executor == null ? createDefaultExecutor() : null;
+                Executor resolvedExecutor = executor == null ? ownedExecutor : executor;
 
-            return new PhotonAsyncHandle(
-                    session,
-                    resolvedOriginClient,
-                    ownsOriginClient,
-                    resolvedExecutor,
-                    ownedExecutor,
-                    maxBufferedRequestBytes,
-                    maxConcurrentBodyCollectors);
+                return new PhotonAsyncHandle(
+                        session,
+                        resolvedOriginClient,
+                        ownsOriginClient,
+                        resolvedExecutor,
+                        ownedExecutor,
+                        maxBufferedRequestBytes,
+                        maxConcurrentBodyCollectors,
+                        ownedAuthManager);
+            } catch (RuntimeException failure) {
+                if (ownedExecutor != null) {
+                    ownedExecutor.shutdownNow();
+                }
+                if (ownsOriginClient && resolvedOriginClient != null) {
+                    resolvedOriginClient.close();
+                }
+                if (ownedAuthManager != null) {
+                    ownedAuthManager.close();
+                }
+                throw failure;
+            }
         }
 
         private void validateConfiguration() {
             if (host == null || host.isEmpty()) {
                 throw new PhotonError("host is required");
             }
-            if (authProvider == null) {
+            if (authProvider == null && iamAuthProvider == null) {
                 throw new PhotonError("authProvider is required");
             }
             if (maxBufferedRequestBytes <= 0) {
@@ -286,13 +329,15 @@ public final class PhotonAsyncHandle implements Closeable {
             }
         }
 
-        private PhotonSession createSession(SSLContext resolvedSslContext) {
+        private PhotonSession createSession(
+                SSLContext resolvedSslContext,
+                Supplier<AuthCredentials> resolvedAuthProvider) {
             return new PhotonSession(
                     () -> new PhotonConnector(
                             host, port, resolvedSslContext, connectTimeoutMs,
                             initializationTimeoutMs, requestTimeoutMs,
                             PhotonConnector.DEFAULT_MAX_PENDING),
-                    authProvider,
+                    resolvedAuthProvider,
                     overrides,
                     reconnectPolicy);
         }

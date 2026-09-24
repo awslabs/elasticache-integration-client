@@ -38,14 +38,13 @@ successful reconnect.
 ## Synchronous client
 
 ```java
-try (IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
+try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
+        .authProvider(IamAuthTokenProvider.builder()
                 .cacheName("my-cache")
                 .userId("my-iam-user")
                 .region(Region.US_EAST_1)
-                .build();
-     PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuth)
+                .build())
         .origin(DynamoDbClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))
         .build()) {
@@ -59,14 +58,13 @@ a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 ## Asynchronous client
 
 ```java
-try (IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
+try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
+        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
+        .authProvider(IamAuthTokenProvider.builder()
                 .cacheName("my-cache")
                 .userId("my-iam-user")
                 .region(Region.US_EAST_1)
-                .build();
-     PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
-        .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuth)
+                .build())
         .buildAsync(DynamoDbAsyncClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))) {
     CompletableFuture<ListTablesResponse> response =
@@ -96,18 +94,21 @@ Photon closes only transports and executors it creates itself.
 
 ## IAM token refresh
 
-`IamAuthTokenManager` caches the current IAM token and refreshes it in the
+When a concrete `IamAuthTokenProvider` is supplied to `PhotonClient`,
+`PhotonHandle`, or `PhotonAsyncHandle`, Photon creates an internal
+`IamAuthTokenManager`. It caches the current IAM token and refreshes it in the
 background after five minutes by default. A refresh resolves AWS credentials
 again, retries transient signing failures while the current token remains
 valid, and reserves the final 20 seconds of the 15-minute token lifetime for
 clock skew and reconnect transit time. Configure an earlier refresh with
-`refreshAfter(Duration)` when needed.
+`IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
 
-Photon asks the manager for credentials on every connection and reconnect, so a
+Photon asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.
-Close the manager with the Photon client or handle to stop its daemon refresh
-thread. `IamAuthTokenProvider` remains available when every call should sign a
-new token and no background lifecycle is desired.
+Closing the Photon result or handle also closes the internally created manager;
+no additional lifecycle step is required. Generic caller-supplied auth
+providers remain caller-owned. `IamAuthTokenManager` is available for advanced
+manual lifecycle integration.
 
 ## Reconnection and fallback
 

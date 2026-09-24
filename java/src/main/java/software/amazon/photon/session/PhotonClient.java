@@ -9,6 +9,7 @@ import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.exception.PhotonError;
 
 import javax.net.ssl.SSLContext;
@@ -149,6 +150,7 @@ public final class PhotonClient {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
+        private IamAuthTokenProvider iamAuthProvider;
         private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
@@ -207,21 +209,31 @@ public final class PhotonClient {
         /**
          * Set the auth provider (required).
          *
-         * <p>For IAM authentication with background refresh, use
-         * {@code IamAuthTokenManager} directly:
+         * <p>For IAM authentication with automatic background refresh, use
+         * {@code IamAuthTokenProvider} directly:
          * <pre>{@code
-         * IamAuthTokenManager iamAuth = IamAuthTokenManager.builder()
+         * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
          *     .cacheName("my-cache")
          *     .region(Region.US_EAST_1)
          *     .build();
          * .authProvider(iamAuth)
          * }</pre>
          *
-         * <p>The caller owns the provider lifecycle. Close an
-         * {@code IamAuthTokenManager} when the Photon result is closed.
+         * <p>Photon creates and closes an auto-refresh manager for a concrete
+         * {@code IamAuthTokenProvider}. Generic providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             this.authProvider = authProvider;
+            this.iamAuthProvider = null;
+            return this;
+        }
+
+        /**
+         * Set an IAM provider whose auto-refresh lifecycle Photon owns.
+         */
+        public Builder authProvider(IamAuthTokenProvider authProvider) {
+            this.iamAuthProvider = authProvider;
+            this.authProvider = null;
             return this;
         }
 
@@ -230,6 +242,7 @@ public final class PhotonClient {
          */
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
+            this.iamAuthProvider = null;
             return this;
         }
 
@@ -466,28 +479,31 @@ public final class PhotonClient {
         private PhotonHandle buildHandle() {
             EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
-            return PhotonHandle.builder()
+            PhotonHandle.Builder handleBuilder = PhotonHandle.builder()
                     .host(resolvedEndpoint.getHost())
                     .port(resolvedEndpoint.getPort())
                     .sslContext(sslContext)
-                    .authProvider(authProvider)
                     .overrides(overrides)
                     .connectTimeoutMs(connectTimeoutMs)
                     .initializationTimeoutMs(initializationTimeoutMs)
                     .requestTimeoutMs(requestTimeoutMs)
                     .reconnectPolicy(reconnectPolicy)
-                    .originHttpClient(originHttpClient)
-                    .build();
+                    .originHttpClient(originHttpClient);
+            if (iamAuthProvider != null) {
+                handleBuilder.authProvider(iamAuthProvider);
+            } else {
+                handleBuilder.authProvider(authProvider);
+            }
+            return handleBuilder.build();
         }
 
         private PhotonAsyncHandle buildAsyncHandle() {
             EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
-            return PhotonAsyncHandle.builder()
+            PhotonAsyncHandle.Builder handleBuilder = PhotonAsyncHandle.builder()
                     .host(resolvedEndpoint.getHost())
                     .port(resolvedEndpoint.getPort())
                     .sslContext(sslContext)
-                    .authProvider(authProvider)
                     .overrides(overrides)
                     .connectTimeoutMs(connectTimeoutMs)
                     .initializationTimeoutMs(initializationTimeoutMs)
@@ -496,8 +512,13 @@ public final class PhotonClient {
                     .originHttpClient(originAsyncHttpClient)
                     .executor(asyncExecutor)
                     .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)
-                    .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors)
-                    .build();
+                    .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors);
+            if (iamAuthProvider != null) {
+                handleBuilder.authProvider(iamAuthProvider);
+            } else {
+                handleBuilder.authProvider(authProvider);
+            }
+            return handleBuilder.build();
         }
 
         private EndpointParser.ParsedEndpoint resolvePhotonEndpoint() {
