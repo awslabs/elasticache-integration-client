@@ -112,7 +112,8 @@ class ConnectionManager:
     def invalidate_connection(self, connector: PhotonConnector) -> None:
         """Remove a serving connector and begin reconnecting.
 
-        Used when a valid protocol reply says the connection's authentication is no longer usable.
+        Used when a valid protocol reply says the connection's authentication is no longer usable,
+        and when the session stops trusting the connection's config.
         The state changes before the connector is closed, so the request that observed the error
         can pass through immediately and later requests cannot race back onto the stale connector.
         """

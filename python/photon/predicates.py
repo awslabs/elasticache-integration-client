@@ -13,8 +13,9 @@ Each predicate is evaluated against a fixed request context — ``service``, ``o
 request routes to the cache when any predicate is ``true``; first-match-wins.
 
 Anything this module cannot evaluate resolves to *don't route*, because an unrouted request is merely
-uncached while a mis-routed one is a correctness bug: an expression that fails to compile is dropped
-at config time, and one that errors at evaluation counts as no-match.
+uncached while a mis-routed one is a correctness bug. An expression that errors at evaluation counts
+as no-match. An entry that cannot be compiled at config time is different: it taints the whole config,
+which is treated as untrustworthy rather than caching by the entries that did compile.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import logging
 import celpy
 from celpy import celtypes
 
+from photon.exceptions import PhotonConfigUnevaluable
 from photon.models import PhotonRequest
 
 logger = logging.getLogger(__name__)
@@ -85,25 +87,27 @@ class CompiledPredicate:
 def compile_predicates(raw_config: dict | None) -> list[CompiledPredicate]:
     """Compile the ``predicates`` of a resolved config into evaluatable programs, in wire order.
 
-    A predicate whose expression fails to compile is dropped (and logged), leaving the rest — a proxy
-    using one construct this client's CEL version lacks costs only the caching that predicate would
-    have enabled. Returns ``[]`` when there are no predicates, so every request passes through.
+    Returns ``[]`` when there are no predicates, so every request passes through.
+
+    Raises:
+        PhotonConfigUnevaluable: An entry cannot be turned into a working predicate — a non-object
+            entry, a missing or non-string ``expr``, or an expression this client's CEL version
+            cannot compile. One such entry taints the whole config, which is rejected rather than
+            partly applied: caching by the entries that happened to compile would route a different
+            set of requests than the proxy resolved.
     """
     env = celpy.Environment()
     compiled: list[CompiledPredicate] = []
     for entry in _predicate_entries(raw_config):
         if not isinstance(entry, dict):
-            logger.debug("Ignoring non-object predicate entry")
-            continue
+            raise PhotonConfigUnevaluable("Predicate entry is not an object")
         expr = entry.get("expr")
         if not isinstance(expr, str):
-            logger.debug("Ignoring predicate without a string 'expr'")
-            continue
+            raise PhotonConfigUnevaluable("Predicate entry has no string 'expr'")
         try:
             program = env.program(env.compile(expr))
-        except celpy.CELParseError:
-            logger.warning("Ignoring predicate with an uncompilable expression", exc_info=True)
-            continue
+        except celpy.CELParseError as exc:
+            raise PhotonConfigUnevaluable(f"Predicate expression cannot be compiled: {expr!r}") from exc
         variables = entry.get("vars")
         compiled.append(
             CompiledPredicate(program, variables if isinstance(variables, dict) else {})
@@ -123,11 +127,19 @@ def should_route_to_photon(predicates: list[CompiledPredicate], request: PhotonR
 
 
 def _predicate_entries(raw_config: dict | None) -> list:
-    """The ``predicates`` array of a resolved config, or ``[]`` if absent/malformed."""
-    if not isinstance(raw_config, dict):
+    """The ``predicates`` array of a resolved config, or ``[]`` when the key is absent.
+
+    Raises:
+        PhotonConfigUnevaluable: The key is present but its value is not a list.
+    """
+    if not isinstance(raw_config, dict) or "predicates" not in raw_config:
         return []
-    entries = raw_config.get("predicates")
-    return entries if isinstance(entries, list) else []
+    entries = raw_config["predicates"]
+    if not isinstance(entries, list):
+        raise PhotonConfigUnevaluable(
+            f"Config 'predicates' must be a list, got {type(entries).__name__}"
+        )
+    return entries
 
 
 def _build_context(request: PhotonRequest) -> dict:

@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from photon.exceptions import PhotonError, PhotonProtocolError, PhotonRejectedError
+from photon.exceptions import (
+    PhotonError,
+    PhotonOverridesRejected,
+    PhotonProtocolError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig
 from photon.protocol import (
     CONFIG_COMMAND,
@@ -88,6 +93,12 @@ def test_parse_config_response_rejects_error_frame():
     """A RespError config reply must be rejected, not parsed."""
     with pytest.raises(PhotonError):
         parse_config_response(RespError("ERR", "nope"))
+
+
+def test_parse_config_response_config_invalid_raises_typed_error():
+    """A CONFIG_INVALID reply maps to PhotonOverridesRejected so init/refresh can hard-fail it."""
+    with pytest.raises(PhotonOverridesRejected):
+        parse_config_response(RespError("CONFIG_INVALID", "table does not exist"))
 
 
 def test_parse_config_response_rejects_array():
