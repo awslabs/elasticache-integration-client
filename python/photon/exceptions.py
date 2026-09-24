@@ -48,6 +48,10 @@ class PhotonTimeoutError(PhotonError):
     """A request exceeded its per-request timeout (named to avoid shadowing the builtin)."""
 
 
+class PhotonAuthError(PhotonError):
+    """A background re-AUTH was rejected by the proxy."""
+
+
 class PhotonCacheUnavailable(ConnectionClosedError):
     """Photon has no connection to the cache and the fallback window has closed."""
 

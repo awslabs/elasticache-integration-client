@@ -23,6 +23,7 @@ import pytest
 
 from photon.connection import PhotonConnector, _PendingRequests, _SocketReader
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
@@ -265,6 +266,20 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionError):
             conn._verify_hello_reply(reply)
         assert conn._closed
+
+    @pytest.mark.parametrize("reply", [
+        RespError("WRONGPASS", "bad token"),   # a refused re-AUTH
+        "WHAT",                                 # a well-framed but unexpected reply
+    ], ids=["rejected", "unexpected"])
+    def test_reauth_rejection_keeps_the_connection_open(self, reply):
+        """A background re-AUTH reply arrives in order, so a rejection is not a FIFO desync: the
+        connection stays open and the proxy keeps serving on its last valid token. This is the
+        opposite of the HELLO bring-up, where a rejection closes. Internals: _verify_auth_reply
+        tested directly."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonAuthError):
+            conn._verify_auth_reply(reply)
+        assert not conn._closed
 
     def test_handshake_carries_the_credentials_inline(self):
         """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's FAS from the
