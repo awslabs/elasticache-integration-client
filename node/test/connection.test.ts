@@ -278,6 +278,12 @@ describe("PhotonConnector initialization timeout", () => {
 });
 
 describe("PhotonConnector", () => {
+  it("defaults the request timeout to five seconds", () => {
+    const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
+
+    expect((connector as unknown as { requestTimeout: number }).requestTimeout).toBe(5_000);
+  });
+
   it("rejects use before connect", async () => {
     const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
 

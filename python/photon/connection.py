@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
-_DEFAULT_REQUEST_TIMEOUT = 0.1  # covers the slowest legitimate cache miss (proxy -> DDB -> proxy)
+_DEFAULT_REQUEST_TIMEOUT = 5.0
 _DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: AUTH and photon.config
 _CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded

@@ -96,6 +96,11 @@ class TestPhotonConnector:
     # 1. Establishment — getting a usable connection (TCP, TLS, misuse)
     # ======================================================================== #
 
+    def test_request_timeout_defaults_to_five_seconds(self):
+        self.conn = PhotonConnector("127.0.0.1", 1, tls=False)
+
+        assert self.conn._request_timeout == 5.0
+
     def test_connect_and_handshake(self):
         """connect() yields a working connection: the photon.config handshake round-trips
         the mock's resolved config (as a raw JSON bulk string — parsing it is

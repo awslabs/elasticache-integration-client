@@ -29,16 +29,17 @@ This package currently ports the Python implementation's:
 Automatic Photon failover/reconnection, circuit breaking, periodic config
 refresh remain out of scope. Deferred cache responses are correlated by request
 ID and later `photon.response` pushes, while callers still receive ordinary
-promises. A timeout for a deferred request removes only that request and
-preserves the connection; a FIFO or write timeout remains connection-fatal. The
-middleware sends requests with no matching predicate directly to origin and has
-a narrow origin fallback for cataloged idempotent requests when the connection
-drops. On a healthy connection, `ORIGIN_ERROR` is returned to the SDK as
-retryable for a cataloged operation. `PHOTON_AUTH_ERROR` closes the stale
-connection and passes the rejected request through; because this client does
-not yet reconnect, later requests continue directly to origin. Other RESP
-errors, malformed responses, and failures for non-idempotent operations
-propagate without origin fallback.
+promises. The per-request timeout defaults to 5 seconds and can be overridden
+with `connectorOptions.requestTimeout`. A timeout for a deferred request removes
+only that request and preserves the connection; a FIFO or write timeout remains
+connection-fatal. The middleware sends requests with no matching predicate
+directly to origin and has a narrow origin fallback for cataloged idempotent
+requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
+returned to the SDK as retryable for a cataloged operation.
+`PHOTON_AUTH_ERROR` closes the stale connection and passes the rejected request
+through; because this client does not yet reconnect, later requests continue
+directly to origin. Other RESP errors, malformed responses, and failures for
+non-idempotent operations propagate without origin fallback.
 
 ## Request routing
 
