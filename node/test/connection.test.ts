@@ -72,6 +72,13 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("three");
   });
 
+  it("decodes a RESP3 null frame", async () => {
+    const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
+
+    await expect(reader.readFrame()).resolves.toBeNull();
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
+
   it("turns clean EOF into PhotonConnectionLost", async () => {
     const reader = new SocketReader(sourceFrom([]));
 
@@ -337,6 +344,17 @@ describe("PhotonConnector", () => {
       Buffer.from("content-type:application/json"),
       Buffer.from('{"ok":1}'),
     ]);
+
+    await connector.close();
+  });
+
+  it("round-trips a RESP3 null reply over the socket", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+
+    await connector.connect();
+    // A bare photon.config makes the mock send the literal `_\r\n` frame.
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
 
     await connector.close();
   });
@@ -847,6 +865,20 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("notifies its owner exactly once when closed", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    const onDisconnect = vi.fn();
+    connector.onDisconnect = onDisconnect;
+    await connector.connect();
+
+    connector.destroy();
+    await connector.close();
+    connector.destroy();
+
+    expect(onDisconnect).toHaveBeenCalledOnce();
+  });
+
   it("keeps close awaitable after destroy until the reader settles", async () => {
     const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
     let settleReader!: () => void;
@@ -925,6 +957,63 @@ describe("PhotonConnector", () => {
   it("rejects an untrusted TLS certificate", async () => {
     const cache = await startCache({ tls: true });
     const connector = new PhotonConnector(cache.host, cache.port!);
+
+    await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
+    await connector.close();
+  });
+
+  // These two run in this order deliberately, and together they pin the bug: the warning
+  // latches once per process, so a connector that never performs an unverified handshake must
+  // leave the latch alone. If the first test consumed it, the second would be silent.
+  it("does not warn when TLS is off and verification is moot", async () => {
+    const cache = await startCache();
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      insecureSkipVerify: true,
+    });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).not.toHaveBeenCalled();
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("warns on the first handshake that waives verification", async () => {
+    const cache = await startCache({ tls: true });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).toHaveBeenCalledWith(
+        expect.stringContaining("insecureSkipVerify"),
+        "PhotonInsecureTlsWarning",
+      );
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("accepts an untrusted TLS certificate when verification is skipped", async () => {
+    const cache = await startCache({ tls: true });
+    // Same server and same absent CA as the test above, so the flag is the only difference.
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    await connector.connect();
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await connector.close();
+  });
+
+  it("still rejects an untrusted TLS certificate when verification is not skipped", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: false });
 
     await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
     await connector.close();

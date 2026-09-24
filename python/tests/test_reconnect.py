@@ -268,7 +268,7 @@ def test_reconnect_resolves_fresh_credentials_and_repeats_the_handshake(rig):
     wait_for_reconnect(r, connection_id=2)
 
     assert r.auth_count == 2
-    assert r.cache.photon_command_log.count("auth") == 2
+    assert r.cache.photon_command_log.count("hello") == 2
     assert r.cache.photon_command_log.count("photon.config") == 2
 
 
@@ -614,10 +614,10 @@ def test_close_interrupts_a_connection_being_opened():
     try:
         session = PhotonSession(_RealConnectors(proxy.host, proxy.port, config_timeout=30.0),
                                 policy=_fast())
-        cache.failure, cache.failure_command = "hang", "auth"
+        cache.failure, cache.failure_command = "hang", "hello"
         proxy.disconnect_clients()
         # The reconnect is now inside the handshake the cache will never answer.
-        wait_for(lambda: cache.photon_command_log.count("auth") >= 2)
+        wait_for(lambda: cache.photon_command_log.count("hello") >= 2)
 
         started = time.monotonic()
         session.close()
@@ -636,9 +636,9 @@ def test_init_still_fails_loudly():
 
     Unlike reconnects, construction does not enter an indefinite recovery loop.
     """
-    # A double, so the failure is a rejected AUTH specifically, and so `close` can be counted.
+    # A double, so the failure is a rejected handshake specifically, and so `close` can be counted.
     connector = mock_connector()
-    connector.authenticate.side_effect = PhotonConnectionError("IAM AUTH rejected: WRONGPASS")
+    connector.handshake.side_effect = PhotonConnectionError("HELLO 3 rejected: WRONGPASS")
 
     with pytest.raises(PhotonConnectionError):
         PhotonSession(lambda: connector, policy=ReconnectPolicy(connect_attempts=1))
@@ -660,7 +660,7 @@ def test_creating_a_session_retries_before_giving_up():
         conn = mock_connector()
         built.append(conn)
         if len(built) < 3:
-            conn.authenticate.side_effect = PhotonConnectionError("cache unreachable")
+            conn.handshake.side_effect = PhotonConnectionError("cache unreachable")
         return conn
 
     session = PhotonSession(factory, policy=_fast(connect_attempts=3))
@@ -699,11 +699,11 @@ def _unused_port() -> tuple[str, int]:
 def test_connection_timeout_bounds_connect_and_configure():
     """``connection_timeout`` bounds connect plus configure, not just the decision to retry again.
 
-    The cache accepts the connection and then never answers AUTH, so the timeout has to cover the
-    configure step and not only the connect. Bounding attempts alone would wait the connector's own
-    ``config_timeout`` (2.0s) instead.
+    The cache accepts the connection and then never answers the HELLO, so the timeout has to cover
+    the configure step and not only the connect. Bounding attempts alone would wait the connector's
+    own ``config_timeout`` (2.0s) instead.
     """
-    cache = MockCache(failure="hang", failure_command="auth")
+    cache = MockCache(failure="hang", failure_command="hello")
     cache.start()
     connectors = _RealConnectors(cache.host, cache.port)
     try:

@@ -108,13 +108,30 @@ class MockCacheTest {
     }
 
     @Test
-    void handleConfig_wrongArgCount() {
-        // No args
+    void handleConfig_noArgs_repliesRespNullByDefault() {
+        // The zero-argument form ("overrides unchanged") is valid and replies with RESP3 null
+        // unless a no-arg reply has been configured.
         List<RespValue> command = Arrays.asList(bs("photon.config"));
         RespValue response = cache.handle(command);
-        assertTrue(response instanceof RespError);
-        RespError error = (RespError) response;
-        assertTrue(error.getMessage().contains("exactly 1 argument"));
+        assertEquals(RespNull.INSTANCE, response);
+        assertFalse(cache.wasOverridesSupplied());
+    }
+
+    @Test
+    void handleConfig_noArgs_canReplyAResolvedConfig() {
+        cache.setNoArgConfigReply("{\"version\":\"1.0\",\"refresh_interval\":30,\"predicates\":[]}");
+        List<RespValue> command = Arrays.asList(bs("photon.config"));
+        RespValue response = cache.handle(command);
+        assertTrue(response instanceof RespBulkString);
+        assertEquals("{\"version\":\"1.0\",\"refresh_interval\":30,\"predicates\":[]}",
+                new String(((RespBulkString) response).getValue(), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void handleConfig_oneArg_recordsOverridesSupplied() {
+        List<RespValue> command = Arrays.asList(bs("photon.config"), bs("{}"));
+        cache.handle(command);
+        assertTrue(cache.wasOverridesSupplied());
     }
 
     @Test
@@ -132,10 +149,20 @@ class MockCacheTest {
 
     @Test
     void handleAuth() {
-        List<RespValue> command = Arrays.asList(bs("AUTH"), bs("password123"));
+        List<RespValue> command =
+                Arrays.asList(bs("AUTH"), bs("iam-user"), bs("password123"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespSimpleString);
         assertArrayEquals("OK".getBytes(), ((RespSimpleString) response).getValue());
+        assertEquals("iam-user", cache.getAuthAttempts().get(0).getUserId());
+        assertEquals("password123", cache.getAuthAttempts().get(0).getToken());
+    }
+
+    @Test
+    void handleAuth_wrongArgCount() {
+        RespValue response = cache.handle(Arrays.asList(bs("AUTH"), bs("password123")));
+        assertTrue(response instanceof RespError);
+        assertTrue(((RespError) response).getMessage().contains("exactly 2 arguments"));
     }
 
     // === Reply configuration ===

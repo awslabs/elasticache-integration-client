@@ -109,7 +109,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
     public static IamAuthTokenProvider create(String cacheName) {
         Region region;
         try {
-            region = new DefaultAwsRegionProviderChain().getRegion();
+            region = DefaultAwsRegionProviderChain.builder().build().getRegion();
         } catch (Exception e) {
             throw new IllegalStateException("Could not resolve AWS region from default provider chain", e);
         }
@@ -188,7 +188,10 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         }
 
         /**
-         * Set the token expiration duration (optional, defaults to 15 minutes).
+         * Set the token expiration duration.
+         *
+         * <p>Retained for source compatibility. The ElastiCache toolkit fixes
+         * token lifetime at 15 minutes, so any other value is rejected.
          *
          * @param expiresIn the expiration duration
          */
@@ -210,7 +213,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
 
             AwsCredentialsProvider creds = credentialsProvider != null
                     ? credentialsProvider
-                    : DefaultCredentialsProvider.create();
+                    : DefaultCredentialsProvider.builder().build();
 
             IamAuthTokenGenerator.Builder generatorBuilder = IamAuthTokenGenerator.builder()
                     .cacheName(cacheName)

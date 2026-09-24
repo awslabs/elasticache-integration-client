@@ -7,10 +7,16 @@ cacheable, and the request path.
 
 While no connection is available, requests are declined so the caller sends them to the origin
 service itself — for as long as the fallback window allows.
+
+A :class:`~photon.refresh.ConfigRefresher` runs for as long as the session is open, so the config
+can be re-resolved on the live connection rather than only when a new one is built. A refresh that
+fails leaves the current config in place; recording failures and raising a staleness flag are not
+yet implemented.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from photon.connection import PhotonConnector
@@ -21,7 +27,7 @@ from photon.exceptions import (
     PhotonError,
     PhotonRejectedError,
 )
-from photon.models import PhotonRequest, PhotonResponse
+from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
@@ -30,6 +36,9 @@ from photon.protocol import (
     serialize_config,
     serialize_request,
 )
+from photon.refresh import ConfigRefresher
+
+logger = logging.getLogger(__name__)
 
 _PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
 
@@ -80,40 +89,87 @@ class PhotonSession:
             PhotonError: The connection could not be opened; see
                 :meth:`ConnectionManager.init_connection`.
                 Creating a session fails loudly rather than handing back one that never caches.
+            RuntimeError: The refresher thread could not be started. The connection is closed
+                first, so a session that cannot refresh never leaves one open behind it.
         """
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
+        self._refresher: ConfigRefresher | None = None
         self._connection_manager = ConnectionManager(
             connector_factory, self._configure, policy or ReconnectPolicy()
         )
         self._connection_manager.init_connection()
+        try:
+            self._refresher = ConfigRefresher(self._config.refresh_interval, self._refresh_once)
+            self._refresher.start()
+        except BaseException:
+            self.close()
+            raise
 
     @property
     def state(self) -> ConnectionState:
         return self._connection_manager.state
 
     def _configure(self, connector: PhotonConnector) -> None:
-        """Authenticate a freshly connected connector and resolve its config, making it usable.
+        """Handshake with a freshly connected connector and resolve its config, making it usable.
 
-        Called for the initial connection and for every reconnect, so each connection
-        authenticates with fresh credentials and routes by the latest resolved config.
+        Called for the initial connection and for every reconnect, so each connection negotiates
+        RESP3, authenticates with fresh credentials, and routes by the latest resolved config.
 
-        Neither result is published unless both succeed, so a configure that fails half-way leaves
-        the session routing by the config it was already using rather than pairing a new config with
-        the predicates of an older one. The two stores are not atomic together, so a request can
-        briefly see the new config beside the old predicates; nothing reads both today.
+        Nothing is installed unless the whole exchange succeeds, so a configure that fails
+        half-way leaves the session routing by the config it was already using.
 
         The connection manager owns the connector and closes it if this raises.
         """
-        connector.authenticate()
+        connector.handshake()
         command, args = serialize_config(self._overrides)
         config = parse_config_response(
             connector.execute(command, *args, timeout=connector.config_timeout)
         )
-        # Compile the resolved predicates once; the request path evaluates them per request.
+        self._replace_config(config)
+
+    def _replace_config(self, config: ResolvedConfig) -> None:
+        """Install a resolved config, the predicates compiled from it, and its refresh interval.
+
+        Called when a connection is configured and after each successful refresh, so both paths
+        install a new config the same way, and this is the only place either store is written.
+
+        Both stores are replaced outright rather than mutated, so a request reading ``_predicates``
+        from another thread sees either the previous list or the new one. The two stores are not
+        atomic together: a request can briefly see the new config beside the old predicates.
+        Nothing reads both.
+        """
         predicates = compile_predicates(config.raw)
         self._config, self._predicates = config, predicates
+        if self._refresher:
+            self._refresher.set_interval(config.refresh_interval)
+
+    def _refresh_once(self) -> None:
+        """Send one ``photon.config`` refresh and apply the result.
+
+        Always the no-argument form: a connection is configured with the overrides before it is
+        published, so the server already has them. A RESP3 null reply means the config has not
+        changed and nothing happens; any other reply is installed by ``_replace_config``, which
+        also reschedules the refresher on the interval the new config carries.
+
+        Nothing is sent while no connection is available, since the next connection resolves its
+        own config as it comes up.
+
+        A :class:`PhotonError` from any step is caught so it cannot escape the refresher thread
+        and kill it: the current config and schedule stay in place and the next tick retries.
+        """
+        connector = self._connection_manager.connector
+        if not connector:
+            return
+        command, args = serialize_config(None)
+        try:
+            reply = connector.execute(command, *args, timeout=connector.config_timeout)
+            if reply is None:
+                return
+            self._replace_config(parse_config_response(reply))
+        except PhotonError:
+            logger.warning("Config refresh failed; keeping the current config", exc_info=True)
 
     def request(self, request: PhotonRequest) -> PhotonResponse | None:
         """Route a request to Photon, or return None to let the caller handle it.
@@ -153,7 +209,12 @@ class PhotonSession:
             return None
 
     def close(self) -> None:
-        """Close the session's connection and stop all reconnect activity. Idempotent."""
+        """Stop the refresher, then close the session's connection and all reconnect activity.
+
+        Idempotent.
+        """
+        if self._refresher:
+            self._refresher.stop()
         self._connection_manager.close()
 
     @property

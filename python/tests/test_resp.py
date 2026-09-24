@@ -72,6 +72,12 @@ def test_decode_null_bulk_string():
     assert decode_resp(b"$-1\r\n") == (None, 5)
 
 
+def test_decode_resp3_null():
+    """Decodes the RESP3 null `_` to None. Once the connection is RESP3 the server encodes
+    nulls this way instead of as $-1, so both forms must reach the caller as None."""
+    assert decode_resp(b"_\r\n") == (None, 3)
+
+
 def test_decode_array():
     """Decodes a *3 array containing an int and two bulk strings."""
     frame = b"*3\r\n:200\r\n$4\r\nhdrs\r\n$4\r\nbody\r\n"
@@ -124,6 +130,33 @@ def test_decode_null_array():
     assert decode_resp(b"*-1\r\n") == (None, 5)
 
 
+def test_decode_map():
+    """A % map decodes to a dict. Keys arrive as bulk strings (bytes), values keep their own
+    types — this is the shape of a HELLO reply, which the client reads to confirm RESP3."""
+    frame = b"%2\r\n$5\r\nproto\r\n:3\r\n$6\r\nserver\r\n$6\r\nvalkey\r\n"
+    value, nxt = decode_resp(frame)
+    assert value == {b"proto": 3, b"server": b"valkey"}
+    assert nxt == len(frame)
+
+
+def test_decode_empty_map():
+    """A zero-length map decodes to an empty dict."""
+    assert decode_resp(b"%0\r\n") == ({}, 4)
+
+
+def test_decode_map_with_aggregate_key_raises_protocol_error():
+    """An array key is legal RESP3 but cannot key a dict. Rejected as a protocol error rather
+    than raising an unhandled TypeError out of the codec."""
+    with pytest.raises(PhotonProtocolError, match="Unhashable RESP map key"):
+        decode_resp(b"%1\r\n*1\r\n:1\r\n:2\r\n")
+
+
+def test_decode_negative_map_length_raises_protocol_error():
+    """There is no null map in RESP3, so a negative length is garbage, not a null."""
+    with pytest.raises(PhotonProtocolError, match="Malformed RESP map length"):
+        decode_resp(b"%-1\r\n")
+
+
 # --- AC4: truncation raises IncompleteFrame -----------------------------------
 
 @pytest.mark.parametrize(
@@ -134,8 +167,10 @@ def test_decode_null_array():
         (b"$5\r\nhell", "bulk string body incomplete"),
         (b"$5\r\nhello", "bulk string body incomplete"),
         (b"*2\r\n:1\r\n", "incomplete frame"),
+        (b"%1\r\n$5\r\nproto\r\n", "incomplete frame"),
         (b">2\r\n:1\r\n", "incomplete frame"),
         (b":", "incomplete frame"),
+        (b"_", "incomplete frame"),
     ],
 )
 def test_truncation_raises_incomplete_frame(partial, message):
@@ -154,6 +189,7 @@ def test_truncation_raises_incomplete_frame(partial, message):
         (b"$notanint\r\n", "Malformed RESP bulk length"),
         (b"*notanint\r\n", "Malformed RESP array length"),
         (b">2\r\n:1\r\n:2\r\n", "Invalid RESP push kind"),
+        (b"_bogus\r\n", "Malformed RESP null"),
     ],
 )
 def test_decode_garbage_raises_protocol_error(garbage, message):

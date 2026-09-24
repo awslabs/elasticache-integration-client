@@ -7,6 +7,7 @@ import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smi
 import { Readable } from "node:stream";
 
 import {
+  PhotonCacheUnavailable,
   PhotonConnectionLost,
   PhotonError,
   PhotonProtocolError,
@@ -305,6 +306,24 @@ describe("photon middleware", () => {
     });
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(connectionClosed);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("propagates fallback-window exhaustion without calling origin", async () => {
+    const unavailable = new PhotonCacheUnavailable("https://x/");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw unavailable;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("svc", session)(next, {
+      commandName: "RunCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(unavailable);
     expect(next).not.toHaveBeenCalled();
   });
 

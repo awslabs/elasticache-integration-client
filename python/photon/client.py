@@ -42,22 +42,32 @@ def client(service: str, *, endpoint: str, cache_name: str,
     """
     sdk_client = boto3.Session(region_name=region_name).client(service)
 
-    host, port = parse_endpoint(endpoint)
-    auth_provider = build_cache_auth_provider(
-        cache_name=cache_name, user_id=user_id, region=region_name
-    )
+    try:
+        host, port = parse_endpoint(endpoint)
+        auth_provider = build_cache_auth_provider(
+            cache_name=cache_name, user_id=user_id, region=region_name
+        )
 
-    def connector_factory() -> PhotonConnector:
-        return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
-                               auth_provider=auth_provider)
+        def connector_factory() -> PhotonConnector:
+            return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
+                                   auth_provider=auth_provider)
 
-    # The session connects (IAM auth + photon.config handshake) before the hook is installed,
-    # so the first intercepted request already has a ready session.
-    session = PhotonSession(
-        connector_factory,
-        overrides=overrides or None,
-        policy=ReconnectPolicy(fallback_duration=fallback_duration),
-    )
-    PhotonHandle(sdk_client, session)
+        # The session connects (HELLO 3 handshake + photon.config exchange) before the hook is installed,
+        # so the first intercepted request already has a ready session.
+        session = PhotonSession(
+            connector_factory,
+            overrides=overrides or None,
+            policy=ReconnectPolicy(fallback_duration=fallback_duration),
+        )
+        PhotonHandle(sdk_client, session)
+    except BaseException:
+        # Bring-up failed (auth, the config handshake, or wiring). Close the boto3 client
+        # we already created so its connection pool does not leak, then re-raise the original
+        # error.
+        try:
+            sdk_client.close()
+        except Exception:
+            pass  # preserve the original bring-up error
+        raise
 
     return sdk_client

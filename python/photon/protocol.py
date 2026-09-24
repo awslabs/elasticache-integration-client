@@ -67,8 +67,22 @@ def _parse_headers(raw_headers: bytes) -> dict[str, str]:
     }
 
 
-def serialize_config(overrides: dict) -> tuple[str, list[bytes]]:
-    """Build the ``photon.config`` command from an overrides dict."""
+def serialize_config(overrides: dict | None) -> tuple[str, list[bytes]]:
+    """Build the ``photon.config`` command. Three arguments, three distinct meanings::
+
+        None           photon.config              my overrides are unchanged
+        {}             photon.config {}           reset me to your defaults
+        {"k": "v"}     photon.config {"k":"v"}    these are my overrides
+
+    ``None`` and ``{}`` are opposite intents, so they are told apart with ``is None`` rather
+    than falsiness: collapsing them would discard the session's overrides on every refresh
+    tick. The refresher sends ``None``; connection bring-up sends the dict.
+
+    Reading an explicit ``{}`` as "discard the stored overrides" is the server's behavior, not
+    this function's — here it is serialized and sent like any other dict.
+    """
+    if overrides is None:
+        return CONFIG_COMMAND, []
     return CONFIG_COMMAND, [json.dumps(overrides, separators=(",", ":")).encode()]
 
 
@@ -89,11 +103,28 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
         raise PhotonError(f"Malformed config JSON: {value!r}") from exc
     if not isinstance(raw, dict):
         raise PhotonError(f"Config JSON must be an object, got {type(raw).__name__}")
+    refresh_interval = _parse_refresh_interval(raw.get("refresh_interval"))
     return ResolvedConfig(
         version=raw.get("version"),
-        refresh_interval=raw.get("refresh_interval"),
+        refresh_interval=refresh_interval,
         raw=raw,
     )
+
+
+def _parse_refresh_interval(value: object) -> int:
+    """Validate the ``refresh_interval`` field: required, ``int``, and positive.
+    ``refresh_interval`` feeds directly into :class:`~photon.refresh.ConfigRefresher`'s jittered
+    delay arithmetic, so a missing, wrongly-typed, or non-positive value is considered malformed.
+    """
+    if value is None:
+        raise PhotonError("Config JSON missing required field 'refresh_interval'")
+    if type(value) is not int:
+        raise PhotonError(
+            f"Invalid 'refresh_interval': expected int, got {type(value).__name__}: {value!r}"
+        )
+    if value <= 0:
+        raise PhotonError(f"Invalid 'refresh_interval': must be positive, got {value}")
+    return value
 
 
 def serialize_request(request: PhotonRequest) -> tuple[str, list[bytes]]:

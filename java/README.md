@@ -16,6 +16,12 @@ an expired fallback window, and shutdown are surfaced without starting an
 origin request. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 
+IAM token generation is provided by the Amazon ElastiCache developer toolkit.
+The toolkit validates and lowercases cache names and user IDs, resolves fresh
+AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
+contract. Photon sends the resulting bearer token only in the TLS-protected
+`AUTH` exchange; origin request signing remains owned by the AWS SDK.
+
 ## Request routing
 
 Opening a Photon session compiles the CEL predicates returned by
@@ -31,15 +37,35 @@ operations.
 
 Expressions that cannot be compiled are ignored. Evaluation errors and
 malformed or non-object JSON bodies count as no match. The resolved config is
-compiled when the session opens and refreshed and recompiled after every
-successful reconnect.
+compiled when the session opens, after every successful reconnect, and whenever
+a periodic refresh returns an updated config. Config and compiled predicates
+are published together, so requests never observe values from different
+refreshes.
+
+The `photon.config` response must include `refresh_interval` as a positive JSON
+integer within the Java `Integer` range. Missing, null, fractional, non-positive,
+and overflowing values are protocol errors. The session starts a daemon
+refresher using this interval. After the initial explicit override map is
+acknowledged, refreshes use the zero-argument `photon.config` form to indicate
+that the overrides are unchanged. A RESP3 null reply leaves the current config
+and interval unchanged; a valid config reply atomically replaces the config and
+predicates and sets the next refresh interval.
+
+Refresh failures retain the last-known-good config. If a failure makes the
+active connector unusable, the normal background reconnect loop replaces it
+and fetches a fresh config. Periodic refresh pauses while reconnecting, and a
+late reply from a closed or replaced connector is ignored.
 
 ## Synchronous client
 
 ```java
 try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
         .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuthProvider)
+        .authProvider(IamAuthTokenProvider.builder()
+                .cacheName("my-cache")
+                .userId("my-iam-user")
+                .region(Region.US_EAST_1)
+                .build())
         .origin(DynamoDbClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))
         .build()) {
@@ -55,7 +81,11 @@ a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 ```java
 try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder()
         .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
-        .authProvider(iamAuthProvider)
+        .authProvider(IamAuthTokenProvider.builder()
+                .cacheName("my-cache")
+                .userId("my-iam-user")
+                .region(Region.US_EAST_1)
+                .build())
         .buildAsync(DynamoDbAsyncClient.builder(), builder -> builder
                 .region(Region.US_EAST_1))) {
     CompletableFuture<ListTablesResponse> response =
@@ -136,3 +166,10 @@ through Photon.
 
 Close the handle and SDK client when they are no longer needed. The factory
 result types close both resources and are intended for try-with-resources.
+
+## Development
+
+Until the Java toolkit is published to a Maven repository, it is pinned as a
+Git submodule and built as part of `./gradlew build`. Initialize it after
+cloning with `git submodule update --init --recursive`. Maven must be available
+on `PATH` for the sourced toolkit build.

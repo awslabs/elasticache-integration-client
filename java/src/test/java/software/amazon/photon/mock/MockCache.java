@@ -5,6 +5,7 @@ import software.amazon.photon.resp.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
+import java.util.function.BiFunction;
 import java.util.function.Function;
 
 /**
@@ -26,12 +27,22 @@ public class MockCache {
             + "\"vars\":{\"ops\":[\"GetItem\",\"BatchGetItem\",\"Query\",\"Scan\","
             + "\"PutItem\",\"UpdateItem\",\"DeleteItem\",\"BatchWriteItem\","
             + "\"TransactGetItems\",\"TransactWriteItems\"]}}]}";
+    /**
+     * Reply for a zero-argument ({@code photon.config} with no overrides) request. {@code null}
+     * means "unchanged", replied as a RESP3 null; set this to simulate the server changing its
+     * own config independently of the client. Mutable between ticks.
+     */
+    private String noArgConfigReply = null;
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;
+    private BiFunction<String, String, RespValue> authReplyFunction =
+            (userId, token) -> new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8));
 
     private final List<String> receivedCommands = new ArrayList<>();
     private final List<ReceivedRequest> requests = new ArrayList<>();
+    private final List<AuthAttempt> authAttempts = new ArrayList<>();
+    private boolean overridesSupplied;
 
     public void setReply(Reply reply) {
         this.reply = reply;
@@ -50,6 +61,22 @@ public class MockCache {
         this.configJson = configJson;
     }
 
+    /**
+     * Set the reply for a zero-argument {@code photon.config} (mutable between ticks). Pass
+     * {@code null} to go back to replying with a RESP3 null ("unchanged").
+     */
+    public void setNoArgConfigReply(String noArgConfigReply) {
+        this.noArgConfigReply = noArgConfigReply;
+    }
+
+    /**
+     * Whether the most recently handled {@code photon.config} request supplied an overrides
+     * argument (the 1-argument form), as opposed to the 0-argument "unchanged" form.
+     */
+    public boolean wasOverridesSupplied() {
+        return overridesSupplied;
+    }
+
     public void setFailureMode(FailureMode mode) {
         this.failureMode = mode;
     }
@@ -64,6 +91,14 @@ public class MockCache {
 
     public FailureMode getFailureMode() {
         return failureMode;
+    }
+
+    public void setAuthReplyFunction(BiFunction<String, String, RespValue> authReplyFunction) {
+        this.authReplyFunction = Objects.requireNonNull(authReplyFunction, "authReplyFunction");
+    }
+
+    public List<AuthAttempt> getAuthAttempts() {
+        return Collections.unmodifiableList(authAttempts);
     }
 
     public List<String> getReceivedCommands() {
@@ -105,7 +140,7 @@ public class MockCache {
         RespValue response;
         switch (cmdName) {
             case "AUTH":
-                response = new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8));
+                response = handleAuth(command);
                 break;
             case "PHOTON.CONFIG":
                 response = handleConfig(command);
@@ -129,10 +164,49 @@ public class MockCache {
         return response;
     }
 
+    private RespValue handleAuth(List<RespValue> command) {
+        if (command.size() != 3) {
+            return new RespError(
+                    "ERR", "AUTH requires exactly 2 arguments, got " + (command.size() - 1));
+        }
+        String userId = extractString(command.get(1));
+        String token = extractString(command.get(2));
+        authAttempts.add(new AuthAttempt(userId, token));
+        return authReplyFunction.apply(userId, token);
+    }
+
+    public static final class AuthAttempt {
+        private final String userId;
+        private final String token;
+
+        private AuthAttempt(String userId, String token) {
+            this.userId = userId;
+            this.token = token;
+        }
+
+        public String getUserId() {
+            return userId;
+        }
+
+        public String getToken() {
+            return token;
+        }
+    }
+
     private RespValue handleConfig(List<RespValue> command) {
-        // Expects: photon.config [json_overrides]
-        if (command.size() != 2) {
-            return new RespError("ERR", "photon.config requires exactly 1 argument, got " + (command.size() - 1));
+        // Expects: photon.config [json_overrides]. Zero args means "overrides unchanged since
+        // last send"; one arg is the explicit-overrides form. Two or more args is invalid.
+        int argCount = command.size() - 1;
+        if (argCount > 1) {
+            return new RespError("ERR", "photon.config takes at most 1 argument, got " + argCount);
+        }
+
+        overridesSupplied = argCount == 1;
+        if (argCount == 0) {
+            if (noArgConfigReply == null) {
+                return RespNull.INSTANCE;
+            }
+            return new RespBulkString(noArgConfigReply.getBytes(StandardCharsets.UTF_8));
         }
         return new RespBulkString(configJson.getBytes(StandardCharsets.UTF_8));
     }

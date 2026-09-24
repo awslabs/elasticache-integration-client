@@ -191,12 +191,17 @@ function describeType(value: unknown): string {
 /**
  * Build the `photon.config` command from an overrides object.
  *
- * Returns `["photon.config", [overridesJsonBytes]]`.
+ * Returns `["photon.config", [overridesJsonBytes]]`. `null`/`undefined` means "no overrides
+ * argument at all" and returns `["photon.config", []]`, which is how a refresh asks the cache
+ * for the current config; an empty object still sends an explicit `{}` argument.
  */
 export function serializeConfig(
   overrides: Record<string, unknown> | null | undefined,
-): [string, [Buffer]] {
-  const payload = escapeNonAscii(stringifyConfig(overrides ?? {}));
+): [string, Buffer[]] {
+  if (overrides === null || overrides === undefined) {
+    return [CONFIG_COMMAND, []];
+  }
+  const payload = escapeNonAscii(stringifyConfig(overrides));
   return [CONFIG_COMMAND, [Buffer.from(payload, "utf8")]];
 }
 
@@ -266,9 +271,31 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   const object = raw as Record<string, unknown>;
   return new ResolvedConfig({
     version: object.version,
-    refreshInterval: object.refresh_interval,
+    refreshInterval: parseRefreshInterval(object.refresh_interval),
     raw: object,
   });
+}
+
+/**
+ * Validate the `refresh_interval` field: required, an integer number of seconds, and positive.
+ *
+ * The value feeds the config refresher's jittered delay arithmetic, so a
+ * missing, wrongly typed, or non-positive value is treated as a malformed config rather than
+ * deferred to a background timer.
+ */
+function parseRefreshInterval(value: unknown): number {
+  if (value === undefined || value === null) {
+    throw new PhotonError("Config JSON missing required field 'refresh_interval'");
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new PhotonError(
+      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${JSON.stringify(value) ?? String(value)}`,
+    );
+  }
+  if (value <= 0) {
+    throw new PhotonError(`Invalid 'refresh_interval': must be positive, got ${value}`);
+  }
+  return value;
 }
 
 /**

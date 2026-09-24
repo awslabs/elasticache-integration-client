@@ -64,7 +64,8 @@ class ConnectionManager:
             connector_factory: Returns a new, unconnected connector each time it is called. It has
                 to be a new one every time — a connector cannot be reconnected, and reusing one
                 would make it retry forever.
-            configure: Called with each freshly connected connector to make it usable — AUTH and
+            configure: Called with each freshly connected connector to make it usable — the
+                ``HELLO 3`` handshake and
                 the ``photon.config`` exchange. Anything it raises fails that attempt, and the
                 connector is closed.
             policy: Reconnect and fallback behavior; see

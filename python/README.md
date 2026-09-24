@@ -64,10 +64,8 @@ replies, and failures for non-idempotent operations propagate without origin fal
   (SigV4-presigned `elasticache:connect` token — POC). Follow-ups: validation against a real
   cache, periodic re-`AUTH` (which also prevents the 12-hour IAM disconnect), and the origin-call
   (FAS) token. Re-`AUTH` recovers by recycling the connection, which now exists.
-- **Periodic config refresh.** The resolved config is fetched once at `connect()`, and again on every
-  reconnect. A follow-up re-fetches on the configured refresh interval and atomically swaps predicates
-  when the config version changes. A refresh that carries *overrides* and fails must not keep using the
-  connection, because overrides can narrow what is reachable — it recycles the connection instead.
+- **Config refresh failures.** A failed refresh is only logged. A follow-up records failures and
+  raises a staleness flag once the config has gone unrefreshed for too long.
 - **Asynchronous / out-of-band responses.** Only the synchronous reply is handled. A follow-up
   handles the out-of-band response (request-id followed by a later push) so a slow cache miss does
   not block pipelined hits.

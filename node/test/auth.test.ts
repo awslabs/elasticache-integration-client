@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CredentialsProviderError } from "@smithy/core/config";
 
+const defaultCredentials = vi.hoisted(() => {
+  const provider = vi.fn();
+  return {
+    provider,
+    fromNodeProviderChain: vi.fn(() => provider),
+  };
+});
+
+vi.mock("@aws-sdk/credential-providers", () => ({
+  fromNodeProviderChain: defaultCredentials.fromNodeProviderChain,
+}));
+
 import {
   DEFAULT_USER_ID,
   IamAuthTokenProvider,
@@ -15,6 +27,12 @@ const credentials = {
   accessKeyId: "AKIAIOSFODNN7EXAMPLE",
   secretAccessKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
   sessionToken: "FwoGZXIvYXdzEBYaDHqa0AP",
+};
+
+const rotatedCredentials = {
+  accessKeyId: "ASIAROTATEDCREDENTIAL",
+  secretAccessKey: "rotated-secret-access-key",
+  sessionToken: "rotated-session-token",
 };
 
 // --- resolveAuthParams tests -------------------------------------------------
@@ -79,7 +97,7 @@ describe("generateIamAuthToken", () => {
     ).rejects.toThrow("No AWS credentials");
   });
 
-  it("wraps unexpected credential and signing failures", async () => {
+  it("normalizes credential provider failures without exposing details", async () => {
     const failingCredentials = async () => {
       throw new Error("secret=credential-material");
     };
@@ -91,8 +109,32 @@ describe("generateIamAuthToken", () => {
       credentials: failingCredentials,
     }).catch((reason: unknown) => reason);
 
-    expect(error).toHaveProperty("message", "Failed to generate IAM auth token");
+    expect(error).toHaveProperty(
+      "message",
+      "No AWS credentials available for IAM auth token generation",
+    );
     expect(String(error)).not.toContain("credential-material");
+  });
+
+  it("uses the toolkit validation and lowercase normalization", async () => {
+    const token = await generateIamAuthToken({
+      cacheName: "My-Cache",
+      userId: "IAM-User",
+      region: "us-east-1",
+      credentials: async () => credentials,
+    });
+
+    expect(token).toMatch(/^my-cache\//);
+    expect(token).toContain("User=iam-user");
+
+    await expect(
+      generateIamAuthToken({
+        cacheName: "bad/cache",
+        userId: "iam-user",
+        region: "us-east-1",
+        credentials: async () => credentials,
+      }),
+    ).rejects.toThrow("serverlessCacheName");
   });
 
   it("requests fresh credentials for every token", async () => {
@@ -188,5 +230,29 @@ describe("buildCacheAuthProvider", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  it("force-refreshes credentials from the default provider chain", async () => {
+    defaultCredentials.provider
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValueOnce(rotatedCredentials);
+    defaultCredentials.fromNodeProviderChain.mockClear();
+
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+    });
+
+    const [, firstToken] = await provider();
+    const [, secondToken] = await provider();
+
+    expect(defaultCredentials.fromNodeProviderChain).toHaveBeenCalledOnce();
+    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
+    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(firstToken).toContain(credentials.accessKeyId);
+    expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
+    expect(secondToken).toContain(rotatedCredentials.accessKeyId);
+    expect(secondToken).not.toContain(credentials.accessKeyId);
+    expect(secondToken).not.toBe(firstToken);
   });
 });

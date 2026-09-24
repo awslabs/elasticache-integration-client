@@ -125,6 +125,19 @@ describe("RESP codec", () => {
     expect(() => decodeResp(partial)).toThrow(IncompleteFrame);
   });
 
+  it("decodes a RESP3 null", () => {
+    // Decodes the _ null frame to null.
+    expect(decodeResp(Buffer.from(`_${CRLF}`))).toEqual([null, 3]);
+  });
+
+  it("decodes a RESP3 null inside an array", () => {
+    expect(decodeResp(Buffer.from(`*2${CRLF}_${CRLF}:1${CRLF}`))).toEqual([[null, 1], 11]);
+  });
+
+  it("rejects a RESP3 null with a non-empty header", () => {
+    expect(() => decodeResp(Buffer.from(`_unexpected${CRLF}`))).toThrow(PhotonProtocolError);
+  });
+
   it.each([
     Buffer.from(`$5${CRLF}helloXX`), // body is followed by a non-CRLF terminator
     Buffer.from(`$-2${CRLF}`), // only -1 is a valid null bulk length
