@@ -428,11 +428,7 @@ export class PhotonConnector {
 
   private async refreshAuthentication(): Promise<void> {
     if (this.authProvider === undefined) return;
-    const refresh =
-      typeof this.authProvider === "function"
-        ? this.authProvider.refreshAuth
-        : this.authProvider.refreshAuth;
-    await refresh?.();
+    await this.authProvider.refreshAuth?.();
   }
 
   /** Immediately stop reading, fail pending requests, and destroy the socket. */

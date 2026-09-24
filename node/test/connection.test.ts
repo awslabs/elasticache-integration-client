@@ -744,6 +744,36 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("preserves an object auth provider receiver while invalidating credentials", async () => {
+    const cache = await startCache({
+      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    class StatefulAuthProvider {
+      refreshed = false;
+
+      getAuth(): [string, string] {
+        return ["test-user", "cached-token"];
+      }
+
+      refreshAuth(): [string, string] {
+        this.refreshed = true;
+        return ["test-user", "replacement-token"];
+      }
+    }
+    const authProvider = new StatefulAuthProvider();
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.authenticate()).rejects.toThrow(
+      "IAM AUTH rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshed).toBe(true);
+    await connector.close();
+  });
+
   it("times out a request and makes the connection unusable", async () => {
     const cache = await startCache({ failure: "hang" });
     const connector = new PhotonConnector(cache.host, cache.port!, {

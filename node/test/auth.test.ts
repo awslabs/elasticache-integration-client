@@ -220,6 +220,19 @@ describe("IamAuthTokenProvider", () => {
     expect(execute).toHaveBeenCalledWith("AUTH", Buffer.from("my-user"), expect.any(Buffer));
     provider.close();
   });
+
+  it("can close cleanly after manager initialization fails", async () => {
+    const provider = new IamAuthTokenProvider({
+      cacheName: "bad/cache",
+      userId: "my-user",
+      region: "us-east-1",
+      credentials: async () => credentials,
+    });
+
+    await expect(provider.ready()).rejects.toThrow("serverlessCacheName");
+    provider.close();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
 });
 
 // --- buildCacheAuthProvider tests --------------------------------------------

@@ -183,7 +183,7 @@ export class IamAuthTokenProvider {
 
   /** Stop background token refresh. */
   close(): void {
-    void this.managerPromise?.then((manager) => manager.close());
+    void this.managerPromise?.then((manager) => manager.close()).catch(() => undefined);
   }
 
   toString(): string {
