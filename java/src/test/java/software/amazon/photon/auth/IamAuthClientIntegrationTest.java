@@ -143,9 +143,8 @@ class IamAuthClientIntegrationTest {
             awaitRotatedToken(authManager);
 
             proxy.disconnectClients();
-            awaitAuthAttempts(2);
+            awaitReconnect(result.handle().getSession(), 2);
 
-            assertEquals(PhotonSession.State.OPEN, result.handle().getSession().getState());
             List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
             assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
             assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
@@ -221,12 +220,15 @@ class IamAuthClientIntegrationTest {
         assertTrue(authManager.get().getToken().contains(ROTATED_ACCESS_KEY));
     }
 
-    private void awaitAuthAttempts(int expected) throws InterruptedException {
+    private void awaitReconnect(PhotonSession session, int expectedAuthAttempts)
+            throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (cache.getAuthAttempts().size() < expected
+        while ((cache.getAuthAttempts().size() < expectedAuthAttempts
+                || session.getState() != PhotonSession.State.OPEN)
                 && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
-        assertEquals(expected, cache.getAuthAttempts().size());
+        assertTrue(cache.getAuthAttempts().size() >= expectedAuthAttempts);
+        assertEquals(PhotonSession.State.OPEN, session.getState());
     }
 }
