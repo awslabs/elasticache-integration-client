@@ -83,6 +83,11 @@ class ConnectionManager:
         self._candidate: PhotonConnector | None = None  # being brought up, not serving yet
         # monotonic deadline until which requests may pass through; only meaningful while RECONNECTING.
         self._fallback_deadline = 0.0
+        # Set while a live connector is available; cleared on a drop. A request with no connector
+        # waits on this so a quick reconnect can be ridden out before falling back.
+        self._connected = threading.Event()
+        # Wait for a reconnect only right after a drop, not for the whole outage.
+        self._hold_deadline = 0.0
 
         self._closing = threading.Event()  # set by close(); also interrupts a backoff sleep
         self._reconnect_needed = threading.Event()  # "the connection needs rebuilding"
@@ -122,6 +127,8 @@ class ConnectionManager:
                 return
             if self._connector is connector:
                 self._fallback_deadline = time.monotonic() + self._policy.fallback_window
+                self._hold_deadline = time.monotonic() + self._policy.request_wait
+                self._connected.clear()
                 self._connector = None
                 self._state = ConnectionState.RECONNECTING
         self._reconnect_needed.set()
@@ -132,6 +139,16 @@ class ConnectionManager:
         """Whether a live configured connector is currently available."""
         connector = self._connector
         return self._state is ConnectionState.ALIVE and connector is not None and connector.is_alive
+
+    def wait_for_connector(self) -> PhotonConnector | None:
+        """Return the live connector, waiting for a reconnect only right after a drop; else ``None``."""
+        connector = self._connector
+        if connector is not None:
+            return connector
+        remaining = self._hold_deadline - time.monotonic()
+        if remaining > 0:
+            self._connected.wait(remaining)
+        return self._connector
 
     def init_connection(self) -> None:
         """Open the first connection, then watch it on a background thread.
@@ -156,6 +173,7 @@ class ConnectionManager:
                 logger.debug("photon connect attempt %d failed (%s); retrying", attempt, exc)
                 time.sleep(self._policy.delay_for(attempt))
         self._state = ConnectionState.ALIVE
+        self._connected.set()
         self._reconnect_thread = threading.Thread(
             target=self._reconnect_loop, name="photon-reconnect", daemon=True
         )
@@ -264,14 +282,16 @@ class ConnectionManager:
                 # A previous connector may report its close after it was replaced.
                 # The current connector is still healthy, so this signal can be ignored.
                 return False
-            # Open the window before clearing the connector. A request reads both without
-            # the lock, so a request that sees no connector must already see a fresh deadline.
+            # Open the window before clearing the connector. A request reads both without the
+            # lock, so one that sees no connector must already see a fresh deadline.
             self._fallback_deadline = time.monotonic() + self._policy.fallback_window
+            self._hold_deadline = time.monotonic() + self._policy.request_wait
+            self._connected.clear()
             self._connector = None
             self._state = ConnectionState.RECONNECTING
         logger.warning(
-            "photon connection lost; reconnecting in the background, requests fall back to the "
-            "origin service meanwhile"
+            "photon connection lost; reconnecting in the background, retry connection; "
+            "upon failure requests fall back to the origin service"
         )
         if current_connector:
             current_connector.close()
@@ -318,6 +338,7 @@ class ConnectionManager:
                 return False
             self._connector = candidate
             self._state = ConnectionState.ALIVE
+            self._connected.set()
         logger.info("photon connection re-established after %d attempt(s)", attempt)
         return True
 
@@ -328,6 +349,7 @@ class ConnectionManager:
             connector, candidate = self._connector, self._candidate
         self._closing.set()
         self._reconnect_needed.set()  # wake the reconnect thread so it can exit
+        self._connected.set()  # wake any request waiting for a connector so it can fall back
         if candidate:
             # A candidate still being opened blocks on the network and never looks at _closing, so
             # closing it is what frees the reconnect thread. Without this, the join below waits out

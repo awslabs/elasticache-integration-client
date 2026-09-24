@@ -32,6 +32,8 @@ class ReconnectPolicy:
     connection_timeout: float = 5.0
     # How often to re-run AUTH in the background to refresh the connection's FAS.
     auth_refresh_interval: float = 900.0
+    # How long a request with no live connector waits for a reconnect before it falls back to the origin.
+    request_wait: float = 0.25
     base_delay: float = 0.1
     max_delay: float = 3.2
     jitter: float = 0.2
@@ -47,6 +49,8 @@ class ReconnectPolicy:
             raise PhotonConfigError("connection_timeout must be > 0")
         if self.auth_refresh_interval <= 0:
             raise PhotonConfigError("auth_refresh_interval must be > 0")
+        if self.request_wait < 0:
+            raise PhotonConfigError("request_wait must be >= 0")
         if self.base_delay <= 0:
             raise PhotonConfigError("base_delay must be > 0")
         if self.max_delay < self.base_delay:

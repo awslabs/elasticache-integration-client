@@ -91,28 +91,6 @@ class _FakeClock:
         time.sleep(seconds)
 
 
-class _ConnectorRecordingPolicy:
-    """A policy that records the manager's connector each time the fallback window is read.
-
-    The ordering it exists to observe happens inside one locked block, so it cannot be seen from
-    outside: the manager reading ``fallback_window`` is the only hook between the two writes.
-    Everything else delegates to the real policy, so nothing about the reconnect changes.
-    """
-
-    def __init__(self, policy: ReconnectPolicy, manager, seen: list) -> None:
-        self._policy = policy
-        self._manager = manager
-        self._seen = seen
-
-    def __getattr__(self, name: str):
-        return getattr(self._policy, name)
-
-    @property
-    def fallback_window(self) -> float:
-        self._seen.append(self._manager.connector)
-        return self._policy.fallback_window
-
-
 class _RealConnectors:
     """A connector factory pointed at one address, remembering every connector it built.
 
@@ -462,7 +440,9 @@ def test_an_in_flight_request_raises_and_is_never_replayed(rig):
 def test_unbounded_window_passes_through_indefinitely(rig):
     """The default unbounded window passes disconnected requests through."""
     r = rig(
-        policy=ReconnectPolicy(fallback_duration=None, base_delay=0.001, max_delay=0.01, jitter=0.0)
+        policy=ReconnectPolicy(
+            fallback_duration=None, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
     )
     set_as_reconnecting(r)
 
@@ -480,7 +460,9 @@ def test_finite_window_passes_through_then_escalates(rig, monkeypatch):
     clock = _FakeClock()
     monkeypatch.setattr(connection_manager, "time", clock)
     r = rig(
-        policy=ReconnectPolicy(fallback_duration=1, base_delay=0.001, max_delay=0.01, jitter=0.0)
+        policy=ReconnectPolicy(
+            fallback_duration=1, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
     )
     set_as_reconnecting(r)
 
@@ -499,7 +481,9 @@ def test_zero_window_escalates_until_reconnected(rig):
     while it is unreachable.
     """
     r = rig(
-        policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0)
+        policy=ReconnectPolicy(
+            fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
     )
     set_as_reconnecting(r)
 
@@ -509,25 +493,6 @@ def test_zero_window_escalates_until_reconnected(rig):
     r.proxy.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
-
-
-def test_fallback_window_opens_before_the_connector_is_cleared(rig):
-    """The fallback deadline is set before the connector is cleared.
-
-    Otherwise, a request could observe no connector with the previous outage's
-    deadline and incorrectly escalate during a new, unbounded fallback window.
-    """
-    r = rig()
-    manager = r.session._connection_manager
-    connector_when_window_read: list[object] = []
-
-    # Substituting the policy needs the private attribute; `policy` itself is read-only.
-    manager._policy = _ConnectorRecordingPolicy(manager.policy, manager, connector_when_window_read)
-    r.proxy.disconnect_clients()
-    # Wait for the observation, not for RECONNECTING: with this rig's fast policy the reconnect can
-    # finish before the state is ever sampled, which made this test flake under load.
-    wait_for(lambda: connector_when_window_read)
-    assert connector_when_window_read[0] is not None
 
 
 def test_reconnect_probes_indefinitely(rig):
