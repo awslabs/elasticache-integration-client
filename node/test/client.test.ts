@@ -195,6 +195,23 @@ describe("client", () => {
     );
   });
 
+  it("passes a custom IAM refresh interval to the managed auth provider", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, {
+      ...options,
+      iamRefreshAfterSeconds: 120,
+    });
+
+    expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
+      cacheName: "my-cache",
+      credentials: expect.any(Function),
+      refreshAfterSeconds: 120,
+      region: "us-east-1",
+      userId: "iam-user",
+    });
+  });
+
   it("converts the public fallback duration from seconds to milliseconds", async () => {
     setup();
 

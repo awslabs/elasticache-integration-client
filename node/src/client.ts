@@ -13,6 +13,12 @@ export interface PhotonClientOptions<TConfig extends object> {
   region?: string;
   /** ElastiCache IAM user id; defaults to default.iam-user. */
   userId?: string;
+  /**
+   * Seconds after token issuance when IAM refresh begins in the background.
+   * Defaults to 300 and must be greater than 0 and less than 880.
+   * Applies only to the managed provider; a connector authProvider owns its configuration.
+   */
+  iamRefreshAfterSeconds?: number;
   /** AWS SDK v3 client configuration. */
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
@@ -32,6 +38,7 @@ interface InitializeOptions {
   cacheName: string;
   region?: string;
   userId?: string;
+  iamRefreshAfterSeconds?: number;
   connectorOptions?: PhotonConnectorOptions;
   fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
@@ -59,6 +66,9 @@ async function initialize<TClient extends PhotonCompatibleClient>(
           cacheName: options.cacheName,
           ...(options.userId === undefined ? {} : { userId: options.userId }),
           ...(options.region === undefined ? {} : { region: options.region }),
+          ...(options.iamRefreshAfterSeconds === undefined
+            ? {}
+            : { refreshAfterSeconds: options.iamRefreshAfterSeconds }),
           credentials: sdkClient.config.credentials,
         })
       : undefined;
@@ -123,6 +133,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     cacheName,
     region,
     userId,
+    iamRefreshAfterSeconds,
     clientConfig,
     connectorOptions,
     fallbackDuration,
@@ -139,6 +150,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       cacheName,
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
+      ...(iamRefreshAfterSeconds === undefined ? {} : { iamRefreshAfterSeconds }),
       ...(connectorOptions === undefined ? {} : { connectorOptions }),
       ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
       ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),

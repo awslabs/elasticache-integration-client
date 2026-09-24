@@ -16,6 +16,7 @@ vi.mock("@aws-sdk/credential-providers", () => ({
 
 import {
   DEFAULT_USER_ID,
+  IamAuthTokenManager,
   IamAuthTokenProvider,
   buildCacheAuthProvider,
   generateIamAuthToken,
@@ -161,7 +162,7 @@ describe("generateIamAuthToken", () => {
 // --- IamAuthTokenProvider tests ----------------------------------------------
 
 describe("IamAuthTokenProvider", () => {
-  it("caches a token across authentication calls", async () => {
+  it("mints a fresh token for every authentication call", async () => {
     const credentialProvider = vi.fn(async () => credentials);
     const provider = new IamAuthTokenProvider({
       cacheName: "my-cache",
@@ -176,30 +177,7 @@ describe("IamAuthTokenProvider", () => {
     expect(first[0]).toBe("my-user");
     expect(first[1]).toContain("X-Amz-Signature=");
     expect(second[0]).toBe("my-user");
-    expect(second[1]).toBe(first[1]);
-    expect(credentialProvider).toHaveBeenCalledOnce();
-    provider.close();
-  });
-
-  it("forces a replacement token after authentication rejection", async () => {
-    const credentialProvider = vi
-      .fn()
-      .mockResolvedValueOnce(credentials)
-      .mockResolvedValueOnce(rotatedCredentials);
-    const provider = new IamAuthTokenProvider({
-      cacheName: "my-cache",
-      userId: "my-user",
-      region: "us-east-1",
-      credentials: credentialProvider,
-    });
-
-    const first = await provider.getAuth();
-    const refreshed = await provider.refreshAuth();
-
-    expect(first[1]).toContain(credentials.accessKeyId);
-    expect(refreshed[1]).toContain(rotatedCredentials.accessKeyId);
     expect(credentialProvider).toHaveBeenCalledTimes(2);
-    provider.close();
   });
 
   it("can be passed directly to the connector", async () => {
@@ -218,20 +196,90 @@ describe("IamAuthTokenProvider", () => {
     await connector.authenticate();
 
     expect(execute).toHaveBeenCalledWith("AUTH", Buffer.from("my-user"), expect.any(Buffer));
-    provider.close();
+  });
+});
+
+// --- IamAuthTokenManager tests -----------------------------------------------
+
+describe("IamAuthTokenManager", () => {
+  it("caches a token across authentication calls", async () => {
+    const credentialProvider = vi.fn(async () => credentials);
+    const manager = new IamAuthTokenManager({
+      cacheName: "my-cache",
+      userId: "my-user",
+      region: "us-east-1",
+      credentials: credentialProvider,
+    });
+
+    const first = await manager.getAuth();
+    const second = await manager.getAuth();
+
+    expect(first[0]).toBe("my-user");
+    expect(first[1]).toContain("X-Amz-Signature=");
+    expect(second).toEqual(first);
+    expect(credentialProvider).toHaveBeenCalledOnce();
+    manager.close();
+  });
+
+  it("forces a replacement token after authentication rejection", async () => {
+    const credentialProvider = vi
+      .fn()
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValueOnce(rotatedCredentials);
+    const manager = new IamAuthTokenManager({
+      cacheName: "my-cache",
+      userId: "my-user",
+      region: "us-east-1",
+      credentials: credentialProvider,
+    });
+
+    const first = await manager.getAuth();
+    const refreshed = await manager.refreshAuth();
+
+    expect(first[1]).toContain(credentials.accessKeyId);
+    expect(refreshed[1]).toContain(rotatedCredentials.accessKeyId);
+    expect(credentialProvider).toHaveBeenCalledTimes(2);
+    manager.close();
   });
 
   it("can close cleanly after manager initialization fails", async () => {
-    const provider = new IamAuthTokenProvider({
+    const manager = new IamAuthTokenManager({
       cacheName: "bad/cache",
       userId: "my-user",
       region: "us-east-1",
       credentials: async () => credentials,
     });
 
-    await expect(provider.ready()).rejects.toThrow("serverlessCacheName");
-    provider.close();
+    await expect(manager.ready()).rejects.toThrow("serverlessCacheName");
+    manager.close();
     await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+
+  it("passes a custom refresh interval to the toolkit manager", async () => {
+    vi.useFakeTimers();
+    const credentialProvider = vi
+      .fn()
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValue(rotatedCredentials);
+    const manager = new IamAuthTokenManager({
+      cacheName: "my-cache",
+      userId: "my-user",
+      region: "us-east-1",
+      credentials: credentialProvider,
+      refreshAfterSeconds: 10,
+    });
+
+    try {
+      const [, firstToken] = await manager.getAuth();
+      await vi.advanceTimersByTimeAsync(10_000);
+      const [, refreshedToken] = await manager.getAuth();
+
+      expect(firstToken).toContain(credentials.accessKeyId);
+      expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
+    } finally {
+      manager.close();
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -323,5 +371,16 @@ describe("buildCacheAuthProvider", () => {
       provider.close();
       vi.useRealTimers();
     }
+  });
+
+  it("rejects a refresh interval outside the toolkit safety margin", async () => {
+    await expect(
+      buildCacheAuthProvider({
+        cacheName: "my-cache",
+        region: "us-east-1",
+        credentials: async () => credentials,
+        refreshAfterSeconds: 880,
+      }),
+    ).rejects.toThrow("refreshAfterSeconds");
   });
 });

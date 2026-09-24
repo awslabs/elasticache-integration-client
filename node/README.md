@@ -135,6 +135,17 @@ against a local or test endpoint, supplies `connectorOptions.authProvider`
 instead: it returns `[userId, token]` and replaces toolkit token management
 entirely, so no AWS credentials are required.
 
+The first token is minted lazily and refreshes after five minutes by default.
+Set `iamRefreshAfterSeconds` to refresh earlier; values must be greater than
+zero and less than 880 seconds, preserving the toolkit's final 20-second safety
+margin below the fixed 15-minute token lifetime.
+
+The `client()` factory creates this default manager, so destroying the returned
+SDK client also closes the manager and stops its timers. When
+`connectorOptions.authProvider` is supplied, Photon does not create or close
+that provider; the caller owns its lifecycle, matching Java's explicitly
+constructed `IamAuthTokenManager`.
+
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when
 Node is run with system-CA support enabled — or against

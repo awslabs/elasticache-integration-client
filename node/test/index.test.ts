@@ -17,6 +17,7 @@ const stsOptions: PhotonClientOptions<STSClientConfig> = {
   endpoint: "cache.example.com:6379",
   cacheName: "test-cache",
   region: "us-east-1",
+  iamRefreshAfterSeconds: 120,
 };
 
 describe("Photon package entry point", () => {
@@ -31,6 +32,7 @@ describe("Photon package entry point", () => {
     expect(PhotonError).toBeTypeOf("function");
     expect(stsConstructor).toBe(STSClient);
     expect(stsOptions.region).toBe("us-east-1");
+    expect(stsOptions.iamRefreshAfterSeconds).toBe(120);
   });
 
   it("does not export internal implementation APIs", async () => {

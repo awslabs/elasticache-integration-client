@@ -9,6 +9,7 @@
 import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type {
   ElastiCacheIAMAuthTokenManager as ToolkitAuthTokenManager,
+  ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
   TokenGeneratorDependencies,
 } from "@aws/developer-toolkit-elasticache";
 import type { AwsCredentialIdentityProvider } from "@smithy/types";
@@ -45,6 +46,10 @@ export interface GenerateIamAuthTokenOptions extends ResolvedAuthParams {
 
 export interface IamAuthTokenProviderOptions extends ResolvedAuthParams {
   credentials: CredentialsProvider;
+}
+
+export interface IamAuthTokenManagerOptions extends IamAuthTokenProviderOptions {
+  refreshAfterSeconds?: number;
 }
 
 /** Connector-compatible IAM provider backed by the toolkit token manager. */
@@ -126,12 +131,63 @@ export async function generateIamAuthToken({
   }
 }
 
-/** Credential provider that caches and automatically refreshes IAM tokens. */
+/** Credential provider that signs a fresh IAM token for every call. */
 export class IamAuthTokenProvider {
   private readonly options: IamAuthTokenProviderOptions;
-  private managerPromise: Promise<ToolkitAuthTokenManager> | undefined;
+  private providerPromise: Promise<ToolkitAuthTokenProvider> | undefined;
 
   constructor(options: IamAuthTokenProviderOptions) {
+    this.options = options;
+  }
+
+  private initialize(): Promise<ToolkitAuthTokenProvider> {
+    this.providerPromise ??= this.createProvider();
+    return this.providerPromise;
+  }
+
+  private async createProvider(): Promise<ToolkitAuthTokenProvider> {
+    const toolkit = await loadToolkit();
+    try {
+      return await toolkit.ElastiCacheIAMAuthTokenProvider.create(
+        {
+          serverlessCacheName: this.options.cacheName,
+          userId: this.options.userId,
+          region: this.options.region,
+        },
+        toolkitDependencies(this.options.credentials),
+      );
+    } catch (error) {
+      throw toPhotonError(error, toolkit);
+    }
+  }
+
+  /** Resolve configuration before the connector attempts to open. */
+  async ready(): Promise<void> {
+    await this.initialize();
+  }
+
+  /** Return the normalized user id and a newly signed token. */
+  async getAuth(): Promise<[string, string]> {
+    const provider = await this.initialize();
+    try {
+      return [provider.userId, await provider.getToken()];
+    } catch (error) {
+      throw toPhotonError(error, await loadToolkit());
+    }
+  }
+
+  toString(): string {
+    const { cacheName, userId, region } = this.options;
+    return `IamAuthTokenProvider(cacheName=${cacheName}, userId=${userId}, region=${region})`;
+  }
+}
+
+/** Credential manager that caches and automatically refreshes IAM tokens. */
+export class IamAuthTokenManager {
+  private readonly options: IamAuthTokenManagerOptions;
+  private managerPromise: Promise<ToolkitAuthTokenManager> | undefined;
+
+  constructor(options: IamAuthTokenManagerOptions) {
     this.options = options;
   }
 
@@ -148,6 +204,9 @@ export class IamAuthTokenProvider {
           serverlessCacheName: this.options.cacheName,
           userId: this.options.userId,
           region: this.options.region,
+          ...(this.options.refreshAfterSeconds === undefined
+            ? {}
+            : { refreshAfterSeconds: this.options.refreshAfterSeconds }),
         },
         toolkitDependencies(this.options.credentials),
       );
@@ -188,13 +247,16 @@ export class IamAuthTokenProvider {
 
   toString(): string {
     const { cacheName, userId, region } = this.options;
-    return `IamAuthTokenProvider(cacheName=${cacheName}, userId=${userId}, region=${region})`;
+    return `IamAuthTokenManager(cacheName=${cacheName}, userId=${userId}, region=${region})`;
   }
 }
 
 /** Assemble a ready-to-use authentication provider for a cache connector. */
 export async function buildCacheAuthProvider(
-  input: AuthParamsInput & { credentials?: CredentialsProvider },
+  input: AuthParamsInput & {
+    credentials?: CredentialsProvider;
+    refreshAfterSeconds?: number;
+  },
 ): Promise<CacheAuthProvider> {
   const toolkit = await loadToolkit();
   const credentials = input.credentials ?? fromNodeProviderChain();
@@ -205,6 +267,9 @@ export async function buildCacheAuthProvider(
         ...(input.cacheName === undefined ? {} : { serverlessCacheName: input.cacheName }),
         userId: input.userId || DEFAULT_USER_ID,
         ...(input.region === undefined ? {} : { region: input.region }),
+        ...(input.refreshAfterSeconds === undefined
+          ? {}
+          : { refreshAfterSeconds: input.refreshAfterSeconds }),
       },
       toolkitDependencies(credentials),
     );
