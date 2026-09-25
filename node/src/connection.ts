@@ -1,4 +1,4 @@
-import { connect as connectTcp, type Socket } from "node:net";
+import { connect as connectTcp, isIP, type Socket } from "node:net";
 import {
   connect as connectTls,
   type ConnectionOptions as TlsConnectionOptions,
@@ -693,10 +693,13 @@ export class PhotonConnector {
     return new Promise<TLSSocket>((resolve, reject) => {
       const options: TlsConnectionOptions = {
         socket,
-        servername: this.host,
+        // The certificate is checked against host. SNI must not carry an IP
+        // address (RFC 6066), and Node 26 rejects one.
+        host: this.host,
         minVersion: "TLSv1.2",
         rejectUnauthorized: !this.insecureSkipVerify,
       };
+      if (isIP(this.host) === 0) options.servername = this.host;
       if (this.caCerts !== undefined) options.ca = this.caCerts;
       if (this.insecureSkipVerify) warnInsecureSkipVerify();
 
