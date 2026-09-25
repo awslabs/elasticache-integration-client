@@ -18,8 +18,8 @@ The library delivers the happy path: intercept → serialize → `photon.config`
 `photon.request` → return the cached response over a real TLS RESP3 connection, with
 session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connector**
 (`PhotonConnector`) — no Glide or other native dependency.
-Its per-request timeout defaults to 5 seconds and can be overridden with
-`request_timeout`.
+Its per-request timeout defaults to 5 seconds and can be overridden with the
+public factory's `request_timeout` argument.
 
 ## Reconnection and fallback
 
