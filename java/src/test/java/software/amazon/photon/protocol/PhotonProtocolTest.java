@@ -1,8 +1,11 @@
 package software.amazon.photon.protocol;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
@@ -146,6 +149,53 @@ class PhotonProtocolTest {
     }
 
     @Test
+    void parseConfigResponse_missingVersion_defaultsToNull() {
+        // 'version' is optional; 'refresh_interval' is required, so it must still be present.
+        String json = "{\"refresh_interval\":60,\"predicates\":[]}";
+        ResolvedConfig config = PhotonProtocol.parseConfigResponse(
+                new RespBulkString(json.getBytes(StandardCharsets.UTF_8)));
+        assertNull(config.getVersion());
+        assertEquals(Integer.valueOf(60), config.getRefreshInterval());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 5, 60, 3600, Integer.MAX_VALUE})
+    void parseConfigResponse_acceptsAnyPositiveInteger(int seconds) {
+        // Any positive integer is accepted
+        String json = "{\"refresh_interval\":" + seconds + "}";
+        ResolvedConfig config = PhotonProtocol.parseConfigResponse(
+                new RespBulkString(json.getBytes(StandardCharsets.UTF_8)));
+        assertEquals(Integer.valueOf(seconds), config.getRefreshInterval());
+    }
+
+    /**
+     * An invalid refresh_interval must fail parsing here rather than crash a background refresher
+     * later, and an integral-looking real such as 60.0 must be rejected, not truncated to 60.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "{\"predicates\":[]}",                       // missing entirely
+            "{\"refresh_interval\":null}",               // explicit null
+            "{\"refresh_interval\":\"60\"}",             // wrong type: string
+            "{\"refresh_interval\":true}",               // wrong type: boolean
+            "{\"refresh_interval\":false}",              // wrong type: boolean
+            "{\"refresh_interval\":60.0}",               // wrong type: real
+            "{\"refresh_interval\":60.9}",               // wrong type: real, would truncate to 60
+            "{\"refresh_interval\":0.5}",                // wrong type: real, would truncate to 0
+            "{\"refresh_interval\":[60]}",               // wrong type: array
+            "{\"refresh_interval\":{\"seconds\":60}}",   // wrong type: object
+            "{\"refresh_interval\":0}",                  // not positive
+            "{\"refresh_interval\":-1}",                 // not positive
+            "{\"refresh_interval\":-60}",                // not positive
+            "{\"refresh_interval\":2147483648}",         // Integer.MAX_VALUE + 1
+            "{\"refresh_interval\":9223372036854775808}" // beyond long: BigInteger
+    })
+    void parseConfigResponse_rejectsInvalidRefreshInterval(String json) {
+        RespBulkString value = new RespBulkString(json.getBytes(StandardCharsets.UTF_8));
+        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
+    }
+
+    @Test
     void parseConfigResponse_malformedJson() {
         RespBulkString value = new RespBulkString("not json".getBytes(StandardCharsets.UTF_8));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
@@ -208,8 +258,10 @@ class PhotonProtocolTest {
     @Test
     void parseRequestResponse_errorFrame() {
         RespError error = new RespError("CACHE", "miss");
-        PhotonError thrown = assertThrows(PhotonError.class, () -> PhotonProtocol.parseRequestResponse(error));
-        assertFalse(thrown instanceof PhotonProtocolError);
+        PhotonRejectedError failure = assertThrows(
+                PhotonRejectedError.class,
+                () -> PhotonProtocol.parseRequestResponse(error));
+        assertEquals("CACHE", failure.getCode());
     }
 
     // === deserializeResponse tests ===
@@ -378,8 +430,17 @@ class PhotonProtocolTest {
     }
 
     @Test
-    void serializeConfig_null() {
+    void serializeConfig_null_sendsNoArgumentForm() {
+        // null means "unchanged since last send"; distinct from an explicit {}, which the
+        // server treats as a reset to its defaults.
         SerializedCommand cmd = PhotonProtocol.serializeConfig(null);
+        assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
+        assertEquals(0, cmd.getArgs().size());
+    }
+
+    @Test
+    void serializeConfig_emptyMap_sendsExplicitEmptyObject() {
+        SerializedCommand cmd = PhotonProtocol.serializeConfig(Collections.emptyMap());
         assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
         assertEquals(1, cmd.getArgs().size());
         assertEquals("{}", new String(cmd.getArgs().get(0), StandardCharsets.UTF_8));

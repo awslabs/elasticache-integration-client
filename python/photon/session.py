@@ -21,7 +21,12 @@ from collections.abc import Callable
 
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
-from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
+from photon.exceptions import (
+    PhotonCacheUnavailable,
+    PhotonConfigError,
+    PhotonError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
@@ -34,6 +39,8 @@ from photon.protocol import (
 from photon.refresh import ConfigRefresher
 
 logger = logging.getLogger(__name__)
+
+_PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -171,15 +178,17 @@ class PhotonSession:
         or when the cache is disconnected and the fallback window is still open.
         In both cases, the request has not been sent, so falling back is safe.
 
-        Once a request is sent to Photon, failures are propagated rather than
-        retried or passed through, since the request may have reached the cache.
-        These failures are converted to botocore transport errors, and the SDK
-        decides whether to retry them.
+        Once a request is sent to Photon, failures propagate to the hook. Direct
+        origin fallback is limited to a dropped connection and a replay-safe
+        operation. Retryable healthy-connection failures are returned through
+        botocore so the SDK or application decides whether to retry them.
 
         Raises:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
                 window has closed.
         """
+        if not self.is_open:
+            raise PhotonError("request() called on a closed session")
         if not should_route_to_photon(self._predicates, request):
             return None
 
@@ -191,7 +200,13 @@ class PhotonSession:
             return     # pass through
 
         command, args = serialize_request(request)
-        return parse_request_response(connector.execute(command, *args))
+        try:
+            return parse_request_response(connector.execute(command, *args))
+        except PhotonRejectedError as exc:
+            if exc.code != _PHOTON_AUTH_ERROR:
+                raise
+            self._connection_manager.invalidate_connection(connector)
+            return None
 
     def close(self) -> None:
         """Stop the refresher, then close the session's connection and all reconnect activity.
@@ -201,3 +216,13 @@ class PhotonSession:
         if self._refresher:
             self._refresher.stop()
         self._connection_manager.close()
+
+    @property
+    def is_open(self) -> bool:
+        """Whether the session can safely initiate fallback work."""
+        return self.state is not ConnectionState.CLOSED
+
+    @property
+    def is_connection_healthy(self) -> bool:
+        """Whether requests can currently use a live configured connection."""
+        return self._connection_manager.connection_healthy

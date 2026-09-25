@@ -26,16 +26,20 @@
     "@aws/developer-toolkit-elasticache"
   ],
   "scripts": {
+    "generate:idempotency": "node scripts/generate-idempotency.mjs",
+    "check:idempotency": "node scripts/generate-idempotency.mjs --check",
     "clean": "node scripts/clean.mjs",
     "build:iam": "node scripts/build-iam.mjs",
+    "prebuild": "npm run check:idempotency",
     "build": "npm run clean && npm run build:iam && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "npm run build:iam && tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
-    "test": "npm run build:iam && vitest run --coverage",
+    "test:idempotency-catalog": "node --test scripts/idempotency-catalog.test.mjs",
+    "test": "npm run build:iam && npm run test:idempotency-catalog && vitest run --coverage",
     "pack:smoke": "npm run build && node scripts/package-smoke.mjs",
-    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
+    "verify": "npm run check:idempotency && npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
   },
   "devDependencies": {
     "@aws-sdk/client-dynamodb": "^3.1101.0",

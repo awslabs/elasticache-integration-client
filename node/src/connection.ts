@@ -25,7 +25,7 @@ import {
 
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
-const DEFAULT_REQUEST_TIMEOUT = 100; // Covers the slowest legitimate cache miss (proxy -> DDB -> proxy).
+const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: AUTH and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
@@ -222,7 +222,7 @@ export interface PhotonConnectorOptions {
   tls?: boolean;
   /** TCP/TLS establishment timeout in milliseconds. */
   connectTimeout?: number;
-  /** Per-request response timeout in milliseconds. */
+  /** Per-request response timeout in milliseconds. Defaults to 5000. */
   requestTimeout?: number;
   /** Timeout for AUTH and photon.config initialization commands in milliseconds. */
   configTimeout?: number;

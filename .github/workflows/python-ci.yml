@@ -5,11 +5,13 @@ on:
     branches: [main]
     paths:
       - "python/**"
+      - "shared/idempotent-operations.json"
       - ".github/workflows/python-ci.yml"
   pull_request:
     branches: [main]
     paths:
       - "python/**"
+      - "shared/idempotent-operations.json"
       - ".github/workflows/python-ci.yml"
 
 # Cancel superseded runs on the same ref.

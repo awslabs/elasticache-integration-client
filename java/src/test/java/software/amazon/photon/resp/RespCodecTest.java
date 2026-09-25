@@ -140,6 +140,46 @@ class RespCodecTest {
         assertTrue(result.getValue() instanceof RespNull);
     }
 
+    // === Decode tests - RESP3 null ===
+
+    @Test
+    void decode_resp3Null() throws IncompleteFrame {
+        byte[] data = "_\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+        assertSame(RespNull.INSTANCE, result.getValue());
+        assertEquals(3, result.getPosition());
+    }
+
+    @Test
+    void decode_resp3Null_incompleteWithoutCrlf() {
+        byte[] data = "_".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_resp3Null_malformedNonEmptyHeaderRejected() {
+        byte[] data = "_garbage\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_resp3Null_insideArray() throws IncompleteFrame {
+        byte[] data = "*2\r\n_\r\n$3\r\nfoo\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+        RespArray array = (RespArray) result.getValue();
+        assertSame(RespNull.INSTANCE, array.getElements().get(0));
+        assertArrayEquals("foo".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+    }
+
+    @Test
+    void decode_resp3Null_beforeAnotherFrame() throws IncompleteFrame {
+        byte[] data = "_\r\n$3\r\nfoo\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult first = RespCodec.decode(data, 0);
+        assertSame(RespNull.INSTANCE, first.getValue());
+        DecodeResult second = RespCodec.decode(data, first.getPosition());
+        assertArrayEquals("foo".getBytes(), ((RespBulkString) second.getValue()).getValue());
+    }
+
     // === Decode tests - Array ===
 
     @Test

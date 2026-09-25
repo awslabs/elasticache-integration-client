@@ -72,6 +72,13 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("three");
   });
 
+  it("decodes a RESP3 null frame", async () => {
+    const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
+
+    await expect(reader.readFrame()).resolves.toBeNull();
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
+
   it("turns clean EOF into PhotonConnectionLost", async () => {
     const reader = new SocketReader(sourceFrom([]));
 
@@ -278,6 +285,12 @@ describe("PhotonConnector initialization timeout", () => {
 });
 
 describe("PhotonConnector", () => {
+  it("defaults the request timeout to five seconds", () => {
+    const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
+
+    expect((connector as unknown as { requestTimeout: number }).requestTimeout).toBe(5_000);
+  });
+
   it("rejects use before connect", async () => {
     const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
 
@@ -331,6 +344,17 @@ describe("PhotonConnector", () => {
       Buffer.from("content-type:application/json"),
       Buffer.from('{"ok":1}'),
     ]);
+
+    await connector.close();
+  });
+
+  it("round-trips a RESP3 null reply over the socket", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+
+    await connector.connect();
+    // A bare photon.config makes the mock send the literal `_\r\n` frame.
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
 
     await connector.close();
   });

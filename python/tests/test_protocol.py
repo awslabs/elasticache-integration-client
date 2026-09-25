@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from photon.exceptions import PhotonError, PhotonProtocolError
+from photon.exceptions import PhotonError, PhotonProtocolError, PhotonRejectedError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig
 from photon.protocol import (
     CONFIG_COMMAND,
@@ -124,13 +124,14 @@ def test_serialize_request_arg_count():
 
 def test_parse_request_response_error_frame_raises():
     """A RespError request reply raises rather than being returned as a response."""
-    with pytest.raises(PhotonError):
-        parse_request_response(RespError("ERR", "boom"))
+    with pytest.raises(PhotonRejectedError) as exc_info:
+        parse_request_response(RespError("ORIGIN_ERROR", "boom"))
+    assert exc_info.value.code == "ORIGIN_ERROR"
 
 
 def test_parse_request_response_non_array_raises():
     """A non-array request reply (e.g. a bare bulk string) is malformed."""
-    with pytest.raises(PhotonError):
+    with pytest.raises(PhotonProtocolError):
         parse_request_response(b"not-an-array")
 
 
@@ -225,6 +226,11 @@ def test_parse_request_response_skips_malformed_header_line():
     assert resp.headers == {"content-type": "application/json"}
 
 
+def test_parse_request_response_rejects_invalid_utf8_headers():
+    with pytest.raises(PhotonProtocolError):
+        parse_request_response([200, b"\xff", b""])
+
+
 # --- status validation --------------------------------------------------------
 
 @pytest.mark.parametrize("bad_status", [99, 600, 0, -1, 1000])
@@ -273,7 +279,7 @@ def test_parse_response_push_splits_id_and_reply():
 
 def test_parse_response_push_keeps_an_error_reply():
     """A failed request answers with a RespError inside the push, passed through as the value."""
-    error = RespError("PHOTON_AUTH_ERROR", "nope")
+    error = RespError("AUTH_ERROR", "nope")
     assert parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", error])) == (
         "7",
         error,

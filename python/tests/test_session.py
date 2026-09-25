@@ -11,12 +11,14 @@ test_protocol.py; these tests assert only session behavior (lifecycle + delegati
 """
 
 import json
+from unittest import mock
 
 import pytest
 
 from photon.exceptions import PhotonConfigError, PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.reconnect_policy import ReconnectPolicy
+from photon.resp import RespError
 from photon.refresh import ConfigRefresher
 from photon.session import PhotonSession, parse_endpoint
 from tests.mock import mock_connector
@@ -244,17 +246,33 @@ def test_request_delegates_to_connector():
     session.close()
 
 
-def test_request_after_close_propagates_connector_error():
-    """After close(), request() propagates the connector's error (no session-level state check)."""
+def test_auth_error_invalidates_connection_and_passes_request_through():
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = RespError("PHOTON_AUTH_ERROR", "missing FAS")
+    session._connection_manager.invalidate_connection = mock.Mock()
+
+    response = session.request(PhotonRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        metadata=RequestMetadata(service="dynamodb", operation="UpdateItem"),
+    ))
+
+    assert response is None
+    session._connection_manager.invalidate_connection.assert_called_once_with(connector)
+    session.close()
+
+
+def test_request_after_close_is_rejected_before_connector_use():
     connector = mock_connector()
     session = PhotonSession(lambda: connector)
     session.close()
     connector.execute.reset_mock()  # discard the constructor's config call
-    connector.execute.side_effect = PhotonError("connection is closed")
     with pytest.raises(PhotonError):
         session.request(PhotonRequest(method="POST", url="https://x/",
                                       metadata=RequestMetadata(service="dynamodb", operation="GetItem")))
-    connector.execute.assert_called_once()  # the call reached the connector: no session-level gate
+    connector.execute.assert_not_called()
 
 
 # --- lifecycle: close -----------------------------------------------------------
@@ -266,6 +284,14 @@ def test_close_delegates_to_connector():
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
+
+
+def test_is_open_tracks_lifecycle():
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    assert session.is_open
+    session.close()
+    assert not session.is_open
 
 
 # --- endpoint parsing -----------------------------------------------------------

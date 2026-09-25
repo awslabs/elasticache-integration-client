@@ -14,6 +14,7 @@ from photon.session import PhotonSession, parse_endpoint
 def client(service: str, *, endpoint: str, cache_name: str,
            region_name: str | None = None, user_id: str | None = None,
            verify: bool = True, ca_certs: str | None = None,
+           request_timeout: float = 5.0,
            fallback_duration: int | None = None, **overrides):
     """Create a boto3 client for ``service`` wired up with Photon.
 
@@ -28,6 +29,8 @@ def client(service: str, *, endpoint: str, cache_name: str,
         user_id: Optional ElastiCache IAM user id (defaults to ``default.iam-user``).
         verify: Verify the cache's TLS certificate. False is for self-signed test rigs only.
         ca_certs: CA bundle to verify against instead of the system trust store.
+        request_timeout: Maximum time, in seconds, to wait for each Photon request response.
+            Defaults to 5 seconds.
         fallback_duration: How long, in seconds, requests may be served directly by the origin
             service while Photon has no connection to the cache. ``None`` (the default) or any
             negative value means indefinitely, so a cache outage never becomes an application
@@ -50,7 +53,8 @@ def client(service: str, *, endpoint: str, cache_name: str,
 
         def connector_factory() -> PhotonConnector:
             return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
-                                   auth_provider=auth_provider)
+                                   auth_provider=auth_provider,
+                                   request_timeout=request_timeout)
 
         # The session connects (HELLO 3 handshake + photon.config exchange) before the hook is installed,
         # so the first intercepted request already has a ready session.

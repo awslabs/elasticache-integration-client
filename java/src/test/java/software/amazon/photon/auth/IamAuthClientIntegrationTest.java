@@ -39,7 +39,8 @@ class IamAuthClientIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         cache = new MockCache();
-        cache.setConfigJson("{\"version\":\"1.0\",\"predicates\":[]}");
+        cache.setConfigJson(
+                "{\"version\":\"1.0\",\"refresh_interval\":60,\"predicates\":[]}");
         server = new MockTlsServer(cache);
         clientSslContext = server.getSslContext();
     }

@@ -53,3 +53,23 @@ def test_client_returns_sdk_client_on_success(monkeypatch):
 
     assert result is sdk_client
     sdk_client.close.assert_not_called()
+
+
+@pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])
+def test_client_passes_request_timeout_to_connector_factory(monkeypatch, requested, expected):
+    sdk_client = MagicMock()
+    _patch_common(monkeypatch, sdk_client)
+    connector_constructor = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonConnector", connector_constructor)
+
+    def build_session(connector_factory, *args, **kwargs):
+        connector_factory()
+        return MagicMock()
+
+    monkeypatch.setattr(client_mod, "PhotonSession", build_session)
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    kwargs = {} if requested is None else {"request_timeout": requested}
+    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", **kwargs)
+
+    assert connector_constructor.call_args.kwargs["request_timeout"] == expected

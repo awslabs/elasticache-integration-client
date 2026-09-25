@@ -17,6 +17,15 @@ repositories {
     mavenCentral()
 }
 
+sourceSets {
+    main {
+        resources {
+            srcDir("../shared")
+            include("idempotent-operations.json")
+        }
+    }
+}
+
 val iamToolkitRoot = layout.projectDirectory.dir("vendor/developer-toolkit-elasticache/java")
 val iamToolkitJar = iamToolkitRoot.file(
     "target/developer-toolkit-elasticache-0.1.0-SNAPSHOT.jar"

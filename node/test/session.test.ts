@@ -6,24 +6,30 @@ import {
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
+  PhotonTimeoutError,
 } from "../src/errors.js";
 import { PhotonConnector } from "../src/connection.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
+import { RespError } from "../src/resp.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
 import type { ConfigRefresher } from "../src/refresh.js";
 import { MockCache, MockTcpProxy } from "./mock-cache.js";
 
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
   return {
+    isReady: true,
     connect: vi.fn(async () => undefined),
     authenticate: vi.fn(async () => undefined),
-    execute: vi.fn(async (command: string) =>
-      command === "photon.config"
-        ? Buffer.from(
-            '{"version":"v1","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
-          )
-        : [200, Buffer.from("content-type:application/json"), Buffer.from("ok")],
-    ),
+    execute: vi.fn(async (command: string, ...args: Buffer[]) => {
+      if (command !== "photon.config") {
+        return [200, Buffer.from("content-type:application/json"), Buffer.from("ok")];
+      }
+      // A no-argument photon.config means "nothing changed", as the cache does.
+      if (args.length === 0) return null;
+      return Buffer.from(
+        '{"version":"v1","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+      );
+    }),
     close: vi.fn(async () => undefined),
     destroy: vi.fn(() => undefined),
     ...overrides,
@@ -188,6 +194,52 @@ describe("PhotonSession", () => {
       Buffer.from('{"value":"body"}'),
       Buffer.from("service=svc&op=Test"),
     );
+    await session.close();
+  });
+
+  it("closes a stale-auth connection and passes the rejected request through", async () => {
+    let ready = true;
+    const close = vi.fn(async () => {
+      ready = false;
+    });
+    const connector = fakeConnector({
+      execute: vi.fn(async (command: string) =>
+        command === "photon.config"
+          ? Buffer.from(
+              '{"version":"v1","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+            )
+          : new RespError("PHOTON_AUTH_ERROR", "missing FAS"),
+      ),
+      close,
+    });
+    Object.defineProperty(connector, "isReady", { get: () => ready });
+    const session = new PhotonSession(connector);
+    await session.open();
+
+    const response = await session.request(
+      new PhotonRequest({
+        method: "POST",
+        url: "https://x/",
+        body: "{}",
+        metadata: new RequestMetadata({ service: "svc", operation: "UpdateItem" }),
+      }),
+    );
+
+    expect(response).toBeUndefined();
+    expect(close).toHaveBeenCalledOnce();
+    expect(session.isConnectionHealthy).toBe(false);
+
+    vi.mocked(connector.execute).mockClear();
+    await expect(
+      session.request(
+        new PhotonRequest({
+          method: "POST",
+          url: "https://x/",
+          metadata: new RequestMetadata({ service: "svc", operation: "UpdateItem" }),
+        }),
+      ),
+    ).resolves.toBeUndefined();
+    expect(connector.execute).not.toHaveBeenCalled();
     await session.close();
   });
 
@@ -362,6 +414,81 @@ describe("PhotonSession", () => {
     await expect(session.open()).rejects.toThrow("config failed");
     expect(refresherOf(session)).toBeUndefined();
     expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it("reconnects when a refresh timeout makes the connector unusable", async () => {
+    const initial = controlledConnector();
+    const replacement = controlledConnector();
+    const factory = vi
+      .fn<() => PhotonConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new PhotonSession(factory, {}, { baseDelayMs: 1, maxDelayMs: 1, jitter: 0 });
+    await session.open();
+    const refresher = refresherOf(session);
+    if (refresher === undefined) throw new Error("expected a refresher");
+    const stop = vi.spyOn(refresher, "stop");
+    vi.mocked(initial.connector.execute).mockRejectedValue(
+      new PhotonTimeoutError("request timed out during refresh"),
+    );
+
+    await refreshOnce(session);
+    await waitForState(session, "alive");
+
+    expect(session.isOpen).toBe(true);
+    expect(stop).toHaveBeenCalledOnce();
+    expect(initial.connector.close).toHaveBeenCalledOnce();
+    expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledTimes(2);
+    await session.close();
+  });
+
+  it("reconnects when a refresh receives a malformed RESP frame", async () => {
+    const cache = new MockCache();
+    await cache.start();
+    const factory = vi.fn(
+      () =>
+        new PhotonConnector(cache.host, cache.port!, {
+          tls: false,
+          authProvider: () => ["test-user", "test-token"],
+        }),
+    );
+    const session = new PhotonSession(factory, {}, { baseDelayMs: 1, maxDelayMs: 1, jitter: 0 });
+    try {
+      await session.open();
+      cache.noArgConfigFrame = Buffer.from("_unexpected\r\n");
+
+      await refreshOnce(session);
+      await waitForState(session, "alive");
+
+      expect(session.isOpen).toBe(true);
+      expect(factory).toHaveBeenCalledTimes(2);
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
+  });
+
+  it("does not log an in-flight refresh failure during shutdown", async () => {
+    let rejectRefresh!: (error: unknown) => void;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    vi.mocked(connector.execute).mockImplementation(
+      () =>
+        new Promise<never>((_, reject) => {
+          rejectRefresh = reject;
+        }),
+    );
+
+    const refreshing = refreshOnce(session);
+    await session.close();
+    rejectRefresh(new PhotonConnectionLost("connection closed"));
+    await refreshing;
+
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it.each(["close", "destroy"] as const)(
@@ -985,6 +1112,215 @@ describe("PhotonSession", () => {
     } finally {
       random.mockRestore();
     }
+  });
+});
+
+/** Invoke the session's private refresh cycle directly, as the refresher's timer would. */
+function refreshOnce(session: PhotonSession): Promise<void> {
+  return (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+}
+
+const REFRESHED_CONFIG = Buffer.from(
+  '{"version":"v2","refresh_interval":30,"predicates":[{"expr":"operation == \'GetItem\'","vars":{}}]}',
+);
+
+function putItem(): PhotonRequest {
+  return new PhotonRequest({
+    method: "POST",
+    url: "https://x/",
+    body: "{}",
+    metadata: new RequestMetadata({ service: "svc", operation: "PutItem" }),
+  });
+}
+
+describe("PhotonSession config refresh", () => {
+  it("re-issues photon.config with no argument after the handshake", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector, { ttl: 300 });
+    await session.open();
+    vi.mocked(connector.execute).mockClear();
+
+    await refreshOnce(session);
+
+    expect(connector.execute).toHaveBeenCalledOnce();
+    expect(connector.execute).toHaveBeenCalledWith("photon.config");
+    await session.close();
+  });
+
+  it("resends the overrides until a parseable config acknowledges them", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector, { ttl: 300 });
+    await session.open();
+    // Simulate a session whose overrides the cache has not confirmed yet.
+    (session as unknown as { overridesSent: boolean }).overridesSent = false;
+    vi.mocked(connector.execute).mockClear();
+
+    await refreshOnce(session);
+
+    // The reply parsed, so the next refresh drops the overrides.
+    await refreshOnce(session);
+
+    expect(connector.execute).toHaveBeenCalledTimes(2);
+    expect(connector.execute).toHaveBeenNthCalledWith(
+      1,
+      "photon.config",
+      Buffer.from('{"ttl":300}'),
+    );
+    expect(connector.execute).toHaveBeenNthCalledWith(2, "photon.config");
+    await session.close();
+  });
+
+  it.each([
+    ["a failed send", () => Promise.reject(new PhotonError("send failed"))],
+    ["a malformed reply", () => Promise.resolve(Buffer.from('{"version":"v2"}'))],
+  ])("sends unacknowledged overrides again after %s", async (_name, reply) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector, { ttl: 300 });
+    await session.open();
+    // Simulate a session whose overrides the cache has not confirmed yet.
+    (session as unknown as { overridesSent: boolean }).overridesSent = false;
+    vi.mocked(connector.execute).mockImplementation(reply);
+
+    // A failed send and a malformed reply both leave the overrides unapplied, so resending is
+    // idempotent while never resending would leave the connection wrongly configured for good.
+    await refreshOnce(session);
+    expect((session as unknown as { overridesSent: boolean }).overridesSent).toBe(false);
+
+    vi.mocked(connector.execute).mockClear();
+    vi.mocked(connector.execute).mockResolvedValue(REFRESHED_CONFIG);
+    await refreshOnce(session);
+
+    expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
+    expect((session as unknown as { overridesSent: boolean }).overridesSent).toBe(true);
+    warn.mockRestore();
+    await session.close();
+  });
+
+  it("treats a null reply as unchanged", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    vi.mocked(connector.execute).mockResolvedValue(null);
+
+    await refreshOnce(session);
+
+    expect(session.config).toBe(config);
+    await session.close();
+  });
+
+  it("installs a server-side config change and its predicates", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    // The opening config matches everything; the refreshed one only matches GetItem.
+    await expect(session.request(putItem())).resolves.toBeDefined();
+    vi.mocked(connector.execute).mockResolvedValue(REFRESHED_CONFIG);
+
+    await refreshOnce(session);
+
+    expect(session.config?.version).toBe("v2");
+    expect(session.config?.refreshInterval).toBe(30);
+    await expect(session.request(putItem())).resolves.toBeUndefined();
+    await session.close();
+  });
+
+  it("reschedules the refresher on the refreshed interval", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const refresher = refresherOf(session);
+    if (refresher === undefined) throw new Error("expected a refresher");
+    const setInterval = vi.spyOn(refresher, "setInterval");
+    vi.mocked(connector.execute).mockResolvedValue(REFRESHED_CONFIG);
+
+    await refreshOnce(session);
+
+    expect(setInterval).toHaveBeenCalledWith(30);
+    await session.close();
+  });
+
+  it.each([
+    ["a failed command", () => Promise.reject(new PhotonError("photon.config failed"))],
+    ["a malformed reply", () => Promise.resolve(Buffer.from("not json"))],
+    ["a config missing refresh_interval", () => Promise.resolve(Buffer.from('{"version":"v2"}'))],
+  ])("keeps the last known-good config after %s", async (_name, reply) => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    const refresher = refresherOf(session);
+    if (refresher === undefined) throw new Error("expected a refresher");
+    const setInterval = vi.spyOn(refresher, "setInterval");
+    vi.mocked(connector.execute).mockImplementation(reply);
+
+    await expect(refreshOnce(session)).resolves.toBeUndefined();
+
+    expect(session.config).toBe(config);
+    expect(session.isOpen).toBe(true);
+    // The predicates from the opening config still route requests to Photon.
+    vi.mocked(connector.execute).mockResolvedValue([200, Buffer.alloc(0), Buffer.alloc(0)]);
+    await expect(session.request(putItem())).resolves.toBeDefined();
+    expect(setInterval).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+    await session.close();
+  });
+
+  it("keeps the whole previous config when the new interval cannot be scheduled", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    // An interval whose jittered delay exceeds Node's maximum schedulable timeout.
+    vi.mocked(connector.execute).mockResolvedValue(
+      Buffer.from('{"version":"v2","refresh_interval":2147484,"predicates":[]}'),
+    );
+
+    await expect(refreshOnce(session)).resolves.toBeUndefined();
+
+    expect(session.config).toBe(config);
+    // The opening config's predicates still route requests to Photon.
+    vi.mocked(connector.execute).mockResolvedValue([200, Buffer.alloc(0), Buffer.alloc(0)]);
+    await expect(session.request(putItem())).resolves.toBeDefined();
+    expect(warn).toHaveBeenCalledOnce();
+    warn.mockRestore();
+    await session.close();
+  });
+
+  it("propagates a non-Photon error so the refresher can swallow it", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const failure = new Error("not a PhotonError");
+    vi.mocked(connector.execute).mockRejectedValue(failure);
+
+    await expect(refreshOnce(session)).rejects.toBe(failure);
+    await session.close();
+  });
+
+  it("does not install a config that arrives after teardown", async () => {
+    let resolveConfig!: (value: Buffer) => void;
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    vi.mocked(connector.execute).mockImplementation(
+      () =>
+        new Promise<Buffer>((resolve) => {
+          resolveConfig = resolve;
+        }),
+    );
+
+    const refreshing = refreshOnce(session);
+    await session.close();
+    resolveConfig(REFRESHED_CONFIG);
+    await refreshing;
+
+    expect(session.config).toBe(config);
   });
 });
 

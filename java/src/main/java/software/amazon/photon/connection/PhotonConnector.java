@@ -345,7 +345,12 @@ public class PhotonConnector implements Closeable {
 
         // Send config (still synchronous - reader not running yet)
         try {
-            SerializedCommand configCmd = PhotonProtocol.serializeConfig(overrides);
+            // The zero-argument form means "unchanged since the last send" and is only valid
+            // after a connection has already acknowledged explicit overrides. Bring-up always
+            // sends an object, including {} when the caller supplies null.
+            Map<String, Object> initialOverrides =
+                    overrides != null ? overrides : Collections.emptyMap();
+            SerializedCommand configCmd = PhotonProtocol.serializeConfig(initialOverrides);
             byte[] encoded = RespCodec.encodeCommand(configCmd.getCommandName(),
                     configCmd.getArgs().toArray(new byte[0][]));
             sendRawDirect(encoded);
@@ -459,7 +464,7 @@ public class PhotonConnector implements Closeable {
         byte[] encoded = RespCodec.encodeCommand(cmd.getCommandName(),
                 cmd.getArgs().toArray(new byte[0][]));
 
-        RespValue reply = sendAndAwait(encoded, cancellation, true);
+        RespValue reply = sendAndAwait(encoded, cancellation, true, requestTimeoutMs);
         return PhotonProtocol.parseRequestResponse(reply);
     }
 
@@ -475,7 +480,10 @@ public class PhotonConnector implements Closeable {
     public RespValue execute(String command, byte[]... args) {
         ensureReady();
         byte[] encoded = RespCodec.encodeCommand(command, args);
-        return sendAndAwait(encoded);
+        int timeoutMs = PhotonProtocol.CONFIG_COMMAND.equals(command)
+                ? initializationTimeoutMs
+                : requestTimeoutMs;
+        return sendAndAwait(encoded, new PhotonRequestCancellation(), false, timeoutMs);
     }
 
     // =========================================================================
@@ -629,32 +637,30 @@ public class PhotonConnector implements Closeable {
     /**
      * Register, send, and await response using FIFO correlation.
      * Uses the send lock to ensure atomic register+send.
+     *
+     * @param timeoutMs the budget for this attempt: {@code initializationTimeoutMs} for
+     *                  {@code photon.config}, {@code requestTimeoutMs} for everything else
      */
-    private RespValue sendAndAwait(byte[] encoded) {
-        return sendAndAwait(encoded, new PhotonRequestCancellation(), false);
-    }
-
     private RespValue sendAndAwait(byte[] encoded, PhotonRequestCancellation cancellation,
-                                   boolean deferredResponseAllowed) {
+                                   boolean deferredResponseAllowed, int timeoutMs) {
         if (cancellation.isCancelled()) {
             throw new PhotonRequestCancellation.CancelledException();
         }
 
         CompletableFuture<RespValue> future;
-        long deadlineNanos = deadlineAfter(requestTimeoutMs);
+        long deadlineNanos = deadlineAfter(timeoutMs);
 
         boolean locked;
         try {
-            locked = sendLock.tryLock(requestTimeoutMs, TimeUnit.MILLISECONDS);
+            locked = sendLock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new PhotonConnectionLost("Interrupted while waiting to send request", e);
         }
         if (!locked) {
-            PhotonTimeoutError timeout = new PhotonTimeoutError(
-                    "Timed out acquiring send lock after " + requestTimeoutMs + "ms");
             markDead();
-            throw timeout;
+            throw new PhotonTimeoutError(
+                    "Timed out acquiring send lock after " + timeoutMs + "ms");
         }
         try {
             if (cancellation.isCancelled()) {
@@ -703,7 +709,7 @@ public class PhotonConnector implements Closeable {
             return future.get(remainingNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             PhotonTimeoutError timeout = new PhotonTimeoutError(
-                    "Photon request timed out after " + requestTimeoutMs + "ms", e);
+                    "Photon request timed out after " + timeoutMs + "ms", e);
             PendingRequests.TimeoutDisposition disposition =
                     pending.onTimeout(future, timeout);
             switch (disposition) {

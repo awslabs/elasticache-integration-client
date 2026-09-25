@@ -7,10 +7,6 @@ import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonCacheUnavailable;
-import software.amazon.photon.exception.PhotonConnectionError;
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
@@ -24,8 +20,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
  * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
- * Photon. Predicate declines and expected Photon failures transparently
- * delegate the original signed SDK request to the configured origin transport.
+ * Photon. Predicate declines delegate to the origin before Photon sees the
+ * request. After sending, direct fallback is limited to replay-safe operations
+ * whose Photon connection has dropped; retryable healthy-connection failures
+ * are returned to the SDK.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
@@ -78,8 +76,13 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     if (aborted.get()) {
                         throw new IOException("Request was aborted", photonFailure);
                     }
-                    if (isRetryableTransportFailure(photonFailure)) {
-                        throw new IOException("Photon transport failed", photonFailure);
+                    if (!PhotonFallbackPolicy.shouldFallback(
+                            session, capturedRequest, photonFailure)) {
+                        if (PhotonFallbackPolicy.shouldRetry(
+                                session, capturedRequest, photonFailure)) {
+                            throw new IOException("Photon request failed", photonFailure);
+                        }
+                        throw photonFailure;
                     }
                     return callOrigin();
                 } finally {
@@ -125,13 +128,6 @@ public final class PhotonHttpClient implements SdkHttpClient {
                 }
             }
         };
-    }
-
-    private static boolean isRetryableTransportFailure(PhotonError failure) {
-        return failure instanceof PhotonCacheUnavailable
-                || failure instanceof PhotonConnectionLost
-                || failure instanceof PhotonTimeoutError
-                || failure instanceof PhotonConnectionError;
     }
 
     @Override
