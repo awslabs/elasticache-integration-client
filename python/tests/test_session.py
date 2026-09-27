@@ -62,6 +62,14 @@ def test_a_failed_configure_closes_everything(failing_step):
     connector.close.assert_called_once_with()
 
 
+def test_policy_none_uses_the_default_policy():
+    """Passing ``policy=None`` explicitly behaves like omitting it."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector, policy=None)
+    assert session.is_open
+    session.close()
+
+
 # --- lifecycle: refresher --------------------------------------------------------
 
 def test_construction_starts_refresher():

@@ -162,11 +162,12 @@ def test_a_failing_callback_does_not_stop_the_loop(caplog):
 
     wait, _ = _fake_wait(stop_after=3)
     refresher = Refresher(60, refresh_once, wait=wait)
-    with caplog.at_level(logging.DEBUG, logger="photon.refresh"):
+    with caplog.at_level(logging.WARNING, logger="photon.refresh"):
         refresher.start()
         refresher._thread.join(timeout=5)
     assert len(calls) == 3  # kept going despite raising every tick
     assert "RuntimeError: boom" in caplog.text  # the traceback was logged
+    assert "photon-refresher" in caplog.text  # the task that failed is named
 
 
 def test_a_failed_tick_uses_backoff_then_resets_to_interval_on_success():

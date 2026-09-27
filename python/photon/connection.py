@@ -444,7 +444,7 @@ class PhotonConnector:
         """Re-authenticate the live connection with a fresh token, using a plain ``AUTH``.
 
         Raises:
-            PhotonAuthError: AUTH command returned error from proxy (rejected).
+            PhotonAuthError: AUTH command returned error from proxy (rejected) or unexpected reply
             PhotonConnectionError: If AUTH times out — the connection is closed for FIFO safety.
             PhotonError: If the provider fails to generate a token.
         """
@@ -465,7 +465,9 @@ class PhotonConnector:
         if isinstance(reply, RespError):
             raise PhotonAuthError(f"IAM AUTH rejected: {reply.code}")
         if reply != OK:
-            raise PhotonAuthError(f"IAM AUTH failed: unexpected reply {reply!r}")
+            self.close()
+            raise PhotonAuthError(
+                f"IAM AUTH failed: unexpected reply of type {type(reply).__name__}")
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """TLS policy for the connection: TLS 1.2+, hostname check, required verification."""

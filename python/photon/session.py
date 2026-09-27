@@ -74,7 +74,7 @@ class PhotonSession:
         connector_factory: Callable[[], PhotonConnector],
         overrides: dict | None = None,
         *,
-        policy: ReconnectPolicy = ReconnectPolicy(),
+        policy: ReconnectPolicy | None = None,
     ) -> None:
         """Create a session and open its connection, so it is ready to serve requests.
 
@@ -83,7 +83,7 @@ class PhotonSession:
             overrides: ``photon.config`` overrides to send when configuring. The proxy resolves
                 them and answers with the config the session then routes by.
             policy: Reconnect and fallback behavior; see
-                :class:`~photon.reconnect_policy.ReconnectPolicy`.
+                :class:`~photon.reconnect_policy.ReconnectPolicy`. ``None`` uses the defaults.
 
         Raises:
             PhotonError: The connection could not be opened; see
@@ -92,6 +92,7 @@ class PhotonSession:
             RuntimeError: The refresher thread could not be started. The connection is closed
                 first, so a session that cannot refresh never leaves one open behind it.
         """
+        policy = policy or ReconnectPolicy()
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None

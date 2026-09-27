@@ -74,7 +74,11 @@ class Refresher:
             except Exception:
                 # A background maintenance tick: one failure must not stop the schedule.
                 failures += 1
-                logger.debug("photon refresher callback failed; retrying with backoff", exc_info=True)
+                logger.warning(
+                    "Photon background task %s failed; retrying. The cache keeps serving meanwhile.",
+                    self._name,
+                    exc_info=True,
+                )
                 delay = self._failure_delay(failures) if self._failure_delay else self._next_refresh_delay()
             else:
                 failures = 0

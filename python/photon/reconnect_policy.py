@@ -68,7 +68,9 @@ class ReconnectPolicy:
         The delay is capped at ``max_delay`` before jitter is applied. Jitter is
         applied to every attempt, including attempts after reaching the cap.
         """
-        delay = min(self.max_delay, self.base_delay * 2 ** (attempt - 1))
+        # Bound the exponent so a long run of failures cannot overflow the float
+        exponent = min(attempt - 1, 1023)
+        delay = min(self.max_delay, self.base_delay * 2 ** exponent)
         if not self.jitter:
             return delay
         return delay * random.uniform(1 - self.jitter, 1 + self.jitter)

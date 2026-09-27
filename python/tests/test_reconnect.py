@@ -529,6 +529,13 @@ def test_backoff_doubles_to_the_ceiling_and_stays_there():
     assert delays == pytest.approx([0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 3.2, 3.2, 3.2])
 
 
+def test_backoff_stays_at_the_ceiling_after_many_failures():
+    """A very long run of failures keeps the ceiling instead of overflowing the float."""
+    policy = ReconnectPolicy(base_delay=0.1, max_delay=3.2, jitter=0.0)
+    assert policy.delay_for(1025) == pytest.approx(3.2)
+    assert policy.delay_for(1_000_000) == pytest.approx(3.2)
+
+
 def test_every_delay_is_jittered_including_the_repeated_tail():
     """Jitter is applied to every delay, including attempts after the cap."""
     policy = ReconnectPolicy(base_delay=0.1, max_delay=3.2, jitter=0.2)
