@@ -1,4 +1,4 @@
-"""Tests for the tag and artifact checks used by Python CD."""
+"""Tests for the release-mode, tag, and artifact checks used by Python Release."""
 
 from __future__ import annotations
 
@@ -37,6 +37,21 @@ def test_derive_version(tag, version):
 def test_derive_version_rejects_unsupported_tags(tag):
     with pytest.raises(ValueError, match="invalid release tag"):
         release.derive_version(tag)
+
+
+def test_current_version_requires_matching_package_and_runtime_metadata(monkeypatch):
+    monkeypatch.setattr(release, "project_metadata", lambda: ("photon", "1.2.3"))
+    monkeypatch.setattr(release, "module_version", lambda: "1.2.4")
+
+    with pytest.raises(ValueError, match="photon.__version__"):
+        release.current_version()
+
+
+def test_validated_version_checks_tag_against_current_version(monkeypatch):
+    monkeypatch.setattr(release, "current_version", lambda: "1.2.3")
+
+    with pytest.raises(ValueError, match="package metadata"):
+        release.validated_version("v1.2.4")
 
 
 def _metadata(name="photon", version="0.0.1"):

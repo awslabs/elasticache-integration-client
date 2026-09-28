@@ -1,9 +1,10 @@
-name: Python CD
+name: Python Release
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*.*.*"
+  workflow_dispatch:
 
 concurrency:
   group: python-release-${{ github.ref }}
@@ -12,24 +13,23 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  PYTHON_RELEASE_ARTIFACT: python-release-distributions
-
 jobs:
   build:
     name: Build release distributions
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
+      artifact-name: ${{ steps.version.outputs.artifact-name }}
       version: ${{ steps.version.outputs.version }}
       project-name: ${{ steps.version.outputs.project-name }}
+      should-publish: ${{ steps.version.outputs.should-publish }}
     defaults:
       run:
         working-directory: python
 
     steps:
-      - name: Checkout the tagged revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Checkout release revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 
@@ -40,19 +40,39 @@ jobs:
           cache: pip
           cache-dependency-path: python/pyproject.toml
 
-      - name: Validate annotated release tag and package version
+      - name: Resolve release mode and package version
         id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ "$(git cat-file -t "refs/tags/${GITHUB_REF_NAME}")" != "tag" ]]; then
-            echo "::error::Release tags must be annotated."
-            exit 1
-          fi
+          set -euo pipefail
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "$(git cat-file -t "${RELEASE_TAG}")" != "tag" ]]; then
+                echo "::error::Release tag must be annotated: ${RELEASE_TAG}"
+                exit 1
+              fi
+              version="$(python scripts/release.py version --tag "${RELEASE_TAG}")"
+              should_publish="true"
+              ;;
+            workflow_dispatch)
+              version="$(python scripts/release.py current-version)"
+              should_publish="false"
+              echo "Manual dry run: validating ${version} without publishing"
+              ;;
+            *)
+              echo "::error::Unsupported workflow event: ${EVENT_NAME}"
+              exit 1
+              ;;
+          esac
 
-          version="$(python scripts/release.py version --tag "${GITHUB_REF_NAME}")"
           project_name="$(python scripts/release.py project-name)"
+          echo "artifact-name=photon-python-${version}" >>"${GITHUB_OUTPUT}"
           echo "version=${version}" >>"${GITHUB_OUTPUT}"
           echo "project-name=${project_name}" >>"${GITHUB_OUTPUT}"
+          echo "should-publish=${should_publish}" >>"${GITHUB_OUTPUT}"
 
       - name: Install release build tools
         run: python -m pip install --upgrade build twine
@@ -65,6 +85,7 @@ jobs:
 
       - name: Inspect contents and record checksums
         run: |
+          set -euo pipefail
           python scripts/release.py inspect \
             --dist-dir release/dist \
             --expected-version "${{ steps.version.outputs.version }}" \
@@ -73,7 +94,7 @@ jobs:
       - name: Upload immutable release distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ${{ env.PYTHON_RELEASE_ARTIFACT }}
+          name: ${{ steps.version.outputs.artifact-name }}
           path: python/release/
           if-no-files-found: error
           retention-days: 30
@@ -89,8 +110,8 @@ jobs:
         python-version: ["3.10", "3.12", "3.14"]
 
     steps:
-      - name: Checkout the tagged revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Checkout release revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -102,6 +123,7 @@ jobs:
       - name: Run the complete test suite
         working-directory: python
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install -e '.[test]'
           python -m pytest
@@ -109,12 +131,13 @@ jobs:
       - name: Download the distributions built by the release job
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: ${{ env.PYTHON_RELEASE_ARTIFACT }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: python/release
 
       - name: Install and smoke test the exact wheel
         shell: bash
         run: |
+          set -euo pipefail
           smoke_env="${RUNNER_TEMP}/photon-wheel-smoke"
           python -m venv "${smoke_env}"
           "${smoke_env}/bin/python" -m pip install --upgrade pip
@@ -125,6 +148,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [build, validate]
+    if: needs.build.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:
@@ -138,8 +162,15 @@ jobs:
       - name: Download the validated distributions
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: ${{ env.PYTHON_RELEASE_ARTIFACT }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: release
+
+      - name: Verify validated distribution checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release/dist
+          sha256sum --check ../python-SHA256SUMS
 
       - name: Publish the exact validated distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -155,7 +186,7 @@ jobs:
 
     steps:
       - name: Checkout release smoke test
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -165,6 +196,7 @@ jobs:
       - name: Wait for PyPI and smoke test the published version
         shell: bash
         run: |
+          set -euo pipefail
           smoke_env="${RUNNER_TEMP}/photon-pypi-smoke"
           python -m venv "${smoke_env}"
           "${smoke_env}/bin/python" -m pip install --upgrade pip
@@ -196,7 +228,7 @@ jobs:
       - name: Download the published distributions
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
-          name: ${{ env.PYTHON_RELEASE_ARTIFACT }}
+          name: ${{ needs.build.outputs.artifact-name }}
           path: release
 
       - name: Create or update the GitHub Release
@@ -204,6 +236,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
+          set -euo pipefail
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             if ! gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes; then
               gh release view "${GITHUB_REF_NAME}" >/dev/null

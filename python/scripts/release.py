@@ -63,14 +63,25 @@ def module_version(init_file: Path = PYTHON_ROOT / "photon" / "__init__.py") -> 
 
 def validated_version(tag: str) -> str:
     version = derive_version(tag)
-    _, metadata_version = project_metadata()
-    runtime_version = module_version()
-    if metadata_version != version or runtime_version != version:
+    metadata_version = current_version()
+    if metadata_version != version:
         raise ValueError(
-            f"tag {tag!r} maps to {version!r}, but pyproject.toml has "
-            f"{metadata_version!r} and photon.__version__ has {runtime_version!r}"
+            f"tag {tag!r} maps to {version!r}, but package metadata has "
+            f"{metadata_version!r}"
         )
     return version
+
+
+def current_version() -> str:
+    """Validate and return the version shared by package and runtime metadata."""
+    _, metadata_version = project_metadata()
+    runtime_version = module_version()
+    if metadata_version != runtime_version:
+        raise ValueError(
+            f"pyproject.toml has version {metadata_version!r}, but "
+            f"photon.__version__ has {runtime_version!r}"
+        )
+    return metadata_version
 
 
 def canonical_name(name: str) -> str:
@@ -206,6 +217,7 @@ def parse_args() -> argparse.Namespace:
     version = commands.add_parser("version")
     version.add_argument("--tag", required=True)
 
+    commands.add_parser("current-version")
     commands.add_parser("project-name")
 
     inspect = commands.add_parser("inspect")
@@ -222,6 +234,8 @@ def main() -> None:
     args = parse_args()
     if args.command == "version":
         print(validated_version(args.tag))
+    elif args.command == "current-version":
+        print(current_version())
     elif args.command == "project-name":
         print(project_metadata()[0])
     elif args.command == "inspect":

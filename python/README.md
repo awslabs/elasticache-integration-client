@@ -19,14 +19,16 @@ Python publication is driven by annotated Git tags. Stable releases use
 PEP 440 version `MAJOR.MINOR.PATCHrcN`.
 
 Before tagging, update both the version in `pyproject.toml` and `photon.__version__`. The
-`Python CD` workflow rejects any tag that does not match both values. It builds one wheel and
+`Python Release` workflow rejects any tag that does not match both values. It builds one wheel and
 one source distribution, validates and smoke tests those exact artifacts on Python 3.10, 3.12,
 and 3.14, then waits for approval from the protected `release` environment before publishing
 with PyPI trusted publishing and attestations. The workflow verifies the published version and
 attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
 
 The PyPI project must configure `.github/workflows/python-release.yml` as its trusted publisher
-for the `release` environment. No PyPI token is used by the workflow.
+for the `release` environment. No PyPI token is used by the workflow. A manual workflow run
+performs the same test, packaging, artifact validation, and wheel smoke stages without entering
+the release environment or publishing to PyPI.
 
 ## Current state
 
