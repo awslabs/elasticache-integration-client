@@ -1,8 +1,9 @@
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 
 plugins {
-    java
+    `java-library`
 }
 
 group = "software.amazon.photon"
@@ -47,12 +48,12 @@ dependencies {
     implementation(files(iamToolkitJar))
 
     // AWS SDK v2 for the sourced IAM toolkit and ExecutionInterceptor integration
-    implementation(platform("software.amazon.awssdk:bom:2.54.10"))
-    implementation("software.amazon.awssdk:auth")
-    implementation("software.amazon.awssdk:regions")
-    implementation("software.amazon.awssdk:sdk-core")
-    implementation("software.amazon.awssdk:aws-core")
-    implementation("software.amazon.awssdk:http-client-spi")
+    api(platform("software.amazon.awssdk:bom:2.54.10"))
+    api("software.amazon.awssdk:auth")
+    api("software.amazon.awssdk:regions")
+    api("software.amazon.awssdk:sdk-core")
+    api("software.amazon.awssdk:aws-core")
+    api("software.amazon.awssdk:http-client-spi")
     implementation("software.amazon.awssdk:http-auth-spi")
     implementation("software.amazon.awssdk:identity-spi")
     implementation("software.amazon.awssdk:http-auth-aws")
@@ -73,6 +74,38 @@ tasks.withType<JavaCompile>().configureEach {
     }
 }
 
+tasks.jar {
+    dependsOn(buildIamToolkit)
+
+    // The IAM toolkit is sourced rather than published, so include its classes
+    // in the distributable JAR. Its AWS SDK dependencies remain normal POM
+    // dependencies declared above.
+    from({ zipTree(iamToolkitJar.asFile) }) {
+        exclude(
+            "META-INF/*.SF",
+            "META-INF/*.DSA",
+            "META-INF/*.RSA",
+            "META-INF/MANIFEST.MF",
+            "META-INF/LICENSE",
+            "META-INF/NOTICE"
+        )
+    }
+
+    from("../LICENSE") {
+        into("META-INF")
+        rename { "LICENSE" }
+    }
+    from("../NOTICE") {
+        into("META-INF")
+        rename { "NOTICE" }
+    }
+}
+
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
 tasks.test {
     useJUnitPlatform()
 
@@ -83,4 +116,18 @@ tasks.test {
             "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
         )
     }
+}
+
+tasks.register("printVersion") {
+    description = "Print the Maven publication version"
+    doLast {
+        println(project.version)
+    }
+}
+
+if (providers.gradleProperty("releasePublishing").isPresent) {
+    if (!JavaVersion.current().isJava11Compatible) {
+        throw GradleException("Release publishing requires JDK 11 or newer")
+    }
+    apply(from = "release.gradle.kts")
 }

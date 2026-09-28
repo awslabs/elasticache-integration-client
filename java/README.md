@@ -2,6 +2,9 @@
 
 Photon integration for AWS SDK for Java v2 DynamoDB clients.
 
+Published releases use the Maven coordinates
+`software.amazon.photon:photon-java:<version>`.
+
 Photon connects and authenticates before returning the SDK client. Requests are
 sent to Photon when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, requests that have
@@ -173,3 +176,30 @@ Until the Java toolkit is published to a Maven repository, it is pinned as a
 Git submodule and built as part of `./gradlew build`. Initialize it after
 cloning with `git submodule update --init --recursive`. Maven must be available
 on `PATH` for the sourced toolkit build.
+
+The release JAR bundles the sourced toolkit classes because that toolkit is not
+yet independently available from Maven Central. Its AWS SDK dependencies remain
+ordinary transitive dependencies in the generated Photon POM.
+
+## Releasing
+
+Java releases are built from annotated tags named `vMAJOR.MINOR.PATCH`, with an
+optional prerelease suffix such as `v1.2.0-rc.1`. The tag version must match
+`version` in `build.gradle.kts`.
+
+The `Java Release` workflow tests Java 8, 11, and 17, builds the main, sources,
+and Javadocs JARs once, validates their POM and contents, and runs clean Gradle
+and Maven consumer smoke tests. It records SHA-256 checksums before the
+approval-protected `release` environment signs and publishes byte-for-byte
+matching artifacts to Maven Central.
+
+Configure these secrets on the `release` GitHub environment:
+
+- `MAVEN_CENTRAL_USERNAME`
+- `MAVEN_CENTRAL_PASSWORD`
+- `MAVEN_SIGNING_KEY` (ASCII-armored or base64-encoded private PGP key)
+- `MAVEN_SIGNING_PASSWORD`
+
+After Maven Central propagation, the workflow resolves the published version
+from clean consumers and attaches the validated unsigned artifacts and
+checksums to the GitHub release.

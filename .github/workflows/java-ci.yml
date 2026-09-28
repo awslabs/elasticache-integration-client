@@ -7,12 +7,14 @@ on:
       - "java/**"
       - "shared/idempotent-operations.json"
       - ".github/workflows/java-ci.yml"
+      - ".github/workflows/java-release.yml"
   pull_request:
     branches: [main]
     paths:
       - "java/**"
       - "shared/idempotent-operations.json"
       - ".github/workflows/java-ci.yml"
+      - ".github/workflows/java-release.yml"
 
 permissions:
   contents: read

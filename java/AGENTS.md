@@ -160,7 +160,10 @@ discarded.
 ## Generated and build files
 
 - Do not commit generated `build/`, `.gradle/` contents, or IDE project files.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- Release publishing is configured by `release.gradle.kts` and enabled only
+  with `-PreleasePublishing`, so normal Java 8 builds do not load the
+  JDK-11+ publishing plugin. The tag-triggered workflow validates unsigned
+  artifacts before its protected `release` environment signs and publishes
+  them.
 
 Keep changes small and reviewable.
