@@ -171,6 +171,7 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   entrypoints and excludes source, tests, cache artifacts, and private keys.
 - `.github/workflows/node-release.yml` validates annotated release tags, builds
   one npm tarball, and publishes that exact artifact through the protected
-  `release` environment. Keep npm publication tokenless and provenance-enabled.
+  `release` environment. Manual dispatches are non-publishing dry runs. Keep npm
+  publication tokenless and provenance-enabled.
 
 Keep changes small and reviewable.

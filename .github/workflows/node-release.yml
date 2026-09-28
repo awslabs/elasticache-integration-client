@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -60,6 +61,7 @@ jobs:
       artifact-name: ${{ steps.metadata.outputs.artifact-name }}
       dist-tag: ${{ steps.metadata.outputs.dist-tag }}
       package-name: ${{ steps.metadata.outputs.package-name }}
+      should-publish: ${{ steps.release.outputs.should-publish }}
       tarball: ${{ steps.metadata.outputs.tarball }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
@@ -76,26 +78,42 @@ jobs:
           cache: npm
           cache-dependency-path: node/package-lock.json
 
-      - name: Validate release tag
+      - name: Resolve release mode and version
         id: release
         env:
+          EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
-            echo "Unsupported release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
-          if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
-            echo "Release tag must be annotated: $RELEASE_TAG" >&2
-            exit 1
-          fi
-          version="${RELEASE_TAG#v}"
           package_version="$(node --input-type=commonjs -p "require('./package.json').version")"
-          if [[ "$version" != "$package_version" ]]; then
-            echo "Tag version $version does not match package.json version $package_version" >&2
-            exit 1
-          fi
+          case "$EVENT_NAME" in
+            push)
+              if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+                echo "Unsupported release tag: $RELEASE_TAG" >&2
+                exit 1
+              fi
+              if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+                echo "Release tag must be annotated: $RELEASE_TAG" >&2
+                exit 1
+              fi
+              version="${RELEASE_TAG#v}"
+              if [[ "$version" != "$package_version" ]]; then
+                echo "Tag version $version does not match package.json version $package_version" >&2
+                exit 1
+              fi
+              should_publish="true"
+              ;;
+            workflow_dispatch)
+              version="$package_version"
+              should_publish="false"
+              echo "Manual dry run: validating $version without publishing"
+              ;;
+            *)
+              echo "Unsupported workflow event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         run: npm ci
@@ -146,6 +164,7 @@ jobs:
   publish:
     name: Publish to npm
     needs: package
+    if: needs.package.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:

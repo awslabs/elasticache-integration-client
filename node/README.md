@@ -195,4 +195,6 @@ Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
 release workflow. It validates the tag against `package.json`, tests and
 inspects one tarball, then publishes that exact artifact through the protected
 `release` environment using npm trusted publishing. Release candidates use the
-`next` npm distribution tag; stable releases use `latest`.
+`next` npm distribution tag; stable releases use `latest`. A manual workflow
+run performs the same validation and uploads the tarball and checksum without
+entering the release environment or publishing to npm.
