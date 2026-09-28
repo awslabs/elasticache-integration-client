@@ -12,6 +12,22 @@ python -m pytest           # see tests/README.md for details
 Runtime requires Python ≥ 3.10. See [`tests/README.md`](tests/README.md) for the test layout and
 how to run the unit vs. end-to-end tests.
 
+## Releases
+
+Python publication is driven by annotated Git tags. Stable releases use
+`vMAJOR.MINOR.PATCH`; release candidates use `vMAJOR.MINOR.PATCH-rc.N`, which maps to the
+PEP 440 version `MAJOR.MINOR.PATCHrcN`.
+
+Before tagging, update both the version in `pyproject.toml` and `photon.__version__`. The
+`Python CD` workflow rejects any tag that does not match both values. It builds one wheel and
+one source distribution, validates and smoke tests those exact artifacts on Python 3.10, 3.12,
+and 3.14, then waits for approval from the protected `release` environment before publishing
+with PyPI trusted publishing and attestations. The workflow verifies the published version and
+attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
+
+The PyPI project must configure `.github/workflows/python-release.yml` as its trusted publisher
+for the `release` environment. No PyPI token is used by the workflow.
+
 ## Current state
 
 The library delivers the happy path: intercept → serialize → `photon.config` handshake →

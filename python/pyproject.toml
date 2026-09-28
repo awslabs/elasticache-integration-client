@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "photon"
 version = "0.0.1"
 description = "Photon client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
