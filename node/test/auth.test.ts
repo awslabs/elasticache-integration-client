@@ -161,7 +161,7 @@ describe("generateIamAuthToken", () => {
 // --- IamAuthTokenProvider tests ----------------------------------------------
 
 describe("IamAuthTokenProvider", () => {
-  it("mints a fresh token on every call", async () => {
+  it("mints a fresh token for every authentication call", async () => {
     const credentialProvider = vi.fn(async () => credentials);
     const provider = new IamAuthTokenProvider({
       cacheName: "my-cache",
@@ -214,6 +214,7 @@ describe("buildCacheAuthProvider", () => {
     expect(userId).toBe(DEFAULT_USER_ID);
     expect(token).toContain("Action=connect");
     expect(token).toContain("X-Amz-Credential=");
+    provider.close();
   });
 
   it("resolves the region from the Node AWS configuration chain", async () => {
@@ -227,12 +228,13 @@ describe("buildCacheAuthProvider", () => {
       const [, token] = await provider();
 
       expect(token).toContain("ap-southeast-2");
+      provider.close();
     } finally {
       vi.unstubAllEnvs();
     }
   });
 
-  it("force-refreshes credentials from the default provider chain", async () => {
+  it("caches tokens and can force-refresh credentials from the default provider chain", async () => {
     defaultCredentials.provider
       .mockResolvedValueOnce(credentials)
       .mockResolvedValueOnce(rotatedCredentials);
@@ -244,15 +246,57 @@ describe("buildCacheAuthProvider", () => {
     });
 
     const [, firstToken] = await provider();
-    const [, secondToken] = await provider();
+    const [, cachedToken] = await provider();
+    const [, refreshedToken] = await provider.refreshAuth();
 
     expect(defaultCredentials.fromNodeProviderChain).toHaveBeenCalledOnce();
     expect(defaultCredentials.provider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
     expect(defaultCredentials.provider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
     expect(firstToken).toContain(credentials.accessKeyId);
     expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
-    expect(secondToken).toContain(rotatedCredentials.accessKeyId);
-    expect(secondToken).not.toContain(credentials.accessKeyId);
-    expect(secondToken).not.toBe(firstToken);
+    expect(cachedToken).toBe(firstToken);
+    expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
+    expect(refreshedToken).not.toContain(credentials.accessKeyId);
+    expect(refreshedToken).not.toBe(firstToken);
+    provider.close();
+  });
+
+  it("installs a background-refreshed token for later authentication calls", async () => {
+    vi.useFakeTimers();
+    const credentialProvider = vi
+      .fn()
+      .mockResolvedValueOnce(credentials)
+      .mockResolvedValue(rotatedCredentials);
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+      credentials: credentialProvider,
+    });
+
+    try {
+      const [, firstToken] = await provider();
+
+      await vi.advanceTimersByTimeAsync(300_000);
+      const [, refreshedToken] = await provider();
+
+      expect(firstToken).toContain(credentials.accessKeyId);
+      expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
+      expect(refreshedToken).not.toBe(firstToken);
+      expect(credentialProvider).toHaveBeenCalledTimes(2);
+    } finally {
+      provider.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects a refresh interval outside the toolkit safety margin", async () => {
+    await expect(
+      buildCacheAuthProvider({
+        cacheName: "my-cache",
+        region: "us-east-1",
+        credentials: async () => credentials,
+        refreshAfterSeconds: 880,
+      }),
+    ).rejects.toThrow("refreshAfterSeconds");
   });
 });

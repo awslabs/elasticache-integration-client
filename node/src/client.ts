@@ -13,6 +13,13 @@ export interface PhotonClientOptions<TConfig extends object> {
   region?: string;
   /** ElastiCache IAM user id; defaults to default.iam-user. */
   userId?: string;
+  /**
+   * Seconds after token issuance when IAM refresh begins in the background.
+   * Applies only to the managed provider; a connector authProvider owns its configuration.
+   *
+   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
+   */
+  iamRefreshAfterSeconds?: number;
   /** AWS SDK v3 client configuration. */
   clientConfig?: Omit<TConfig, "region">;
   /** Node-specific Photon transport configuration. */
@@ -32,6 +39,7 @@ interface InitializeOptions {
   cacheName: string;
   region?: string;
   userId?: string;
+  iamRefreshAfterSeconds?: number;
   connectorOptions?: PhotonConnectorOptions;
   fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
@@ -53,19 +61,27 @@ async function initialize<TClient extends PhotonCompatibleClient>(
 ): Promise<PhotonHandle> {
   const [host, port] = parseEndpoint(endpoint);
   // A caller-supplied provider replaces token generation rather than competing with it.
-  const authProvider =
-    options.connectorOptions?.authProvider ??
-    (await buildCacheAuthProvider({
-      cacheName: options.cacheName,
-      ...(options.userId === undefined ? {} : { userId: options.userId }),
-      ...(options.region === undefined ? {} : { region: options.region }),
-      credentials: sdkClient.config.credentials,
-    }));
-  const connectorFactory = () =>
-    new PhotonConnector(host, port, {
-      ...options.connectorOptions,
-      authProvider,
-    });
+  const managedAuthProvider =
+    options.connectorOptions?.authProvider === undefined
+      ? await buildCacheAuthProvider({
+          cacheName: options.cacheName,
+          ...(options.userId === undefined ? {} : { userId: options.userId }),
+          ...(options.region === undefined ? {} : { region: options.region }),
+          ...(options.iamRefreshAfterSeconds === undefined
+            ? {}
+            : { refreshAfterSeconds: options.iamRefreshAfterSeconds }),
+          credentials: sdkClient.config.credentials,
+        })
+      : undefined;
+  const authProvider = options.connectorOptions?.authProvider ?? managedAuthProvider;
+  const connectorFactory = Object.assign(
+    () =>
+      new PhotonConnector(host, port, {
+        ...options.connectorOptions,
+        ...(authProvider === undefined ? {} : { authProvider }),
+      }),
+    managedAuthProvider === undefined ? {} : { close: () => managedAuthProvider.close() },
+  );
   const reconnectPolicy = {
     ...options.reconnectPolicy,
     ...(options.fallbackDuration === undefined
@@ -118,6 +134,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     cacheName,
     region,
     userId,
+    iamRefreshAfterSeconds,
     clientConfig,
     connectorOptions,
     fallbackDuration,
@@ -134,6 +151,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       cacheName,
       ...(region === undefined ? {} : { region }),
       ...(userId === undefined ? {} : { userId }),
+      ...(iamRefreshAfterSeconds === undefined ? {} : { iamRefreshAfterSeconds }),
       ...(connectorOptions === undefined ? {} : { connectorOptions }),
       ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
       ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),

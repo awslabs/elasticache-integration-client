@@ -35,18 +35,18 @@ from photon.exceptions import (
     PhotonConnectionError,
     PhotonConnectionLost,
     PhotonError,
+    PhotonOriginError,
+    PhotonProtocolError,
+    PhotonRejectedError,
     PhotonTimeoutError,
 )
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
+from photon.idempotency import is_idempotent_operation
 from photon.session import PhotonSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.client import BaseClient
-from botocore.exceptions import (
-    ConnectionClosedError,
-    EndpointConnectionError,
-    ReadTimeoutError,
-)
+from botocore.exceptions import ReadTimeoutError
 from urllib3.response import HTTPResponse as Urllib3Response
 
 _BEFORE_SEND = "before-send"
@@ -54,6 +54,8 @@ _BEFORE_SEND = "before-send"
 _UNIQUE_ID = "photon"
 
 logger = logging.getLogger(__name__)
+
+_ORIGIN_ERROR = "ORIGIN_ERROR"
 
 
 def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest:
@@ -138,18 +140,23 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline and keeps the original behavior. The session declines a request
-        either because no resolved predicate matched it — the normal per-request steady state — or
-        because there is no connection to the cache and its fallback window is still open; both are
-        logged at debug. Photon replying with something unusable also passes through (it degrades to
-        a cache miss) and is logged as a warning. Non-Photon exceptions propagate.
-
-        Transport failures do NOT pass through: if the cache never answered, the request's fate is
-        unknown — so re-sending it on the application's behalf could apply it twice. 
-        Those raise botocore's own transport errors, and the application decides whether to retry.
+        request down the pipeline. The session declines before sending when no predicate matched or
+        no cache connection is available within the fallback window, which is safe for every
+        operation. After sending, direct fallback is limited to replay-safe operations whose
+        Photon connection has dropped. A healthy-connection ORIGIN_ERROR becomes SDK-retryable
+        only for a replay-safe operation; other RESP errors remain terminal. Non-Photon exceptions
+        propagate.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
+        except PhotonError:
+            logger.warning(
+                "Photon could not adapt the request; passing through to the service",
+                exc_info=True,
+            )
+            return None
+
+        try:
             response = self._session.request(http_request)
             if response is None:
                 logger.debug(
@@ -158,26 +165,45 @@ class PhotonHandle:
                 )
                 return None
             return _photon_to_aws_response(request.url, response)
-        except (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError) as exc:
-            _raise_as_botocore_error(exc, request.url)
-        except PhotonError:
-            logger.warning("Photon request failed; passing through to the service", exc_info=True)
-            return None
-
-
-def _raise_as_botocore_error(exc: PhotonError, endpoint_url: str) -> None:
-    """Re-raise a Photon transport failure as botocore's own transport error.
-
-    botocore's ``Endpoint._do_get_response`` catches exceptions from ``before-send`` handlers the
-    same way it catches them from ``self._send(request)``, so raising here behaves exactly like a
-    transport failure on the real connection. Using botocore's classes — not Photon's — keeps the
-    application's existing ``except`` blocks working, and all three are retryable under the
-    ``standard`` retry mode, so the application's retry configuration applies unchanged.
-    """
-    if isinstance(exc, PhotonTimeoutError):
-        raise ReadTimeoutError(endpoint_url=endpoint_url) from exc
-    if isinstance(exc, PhotonConnectionLost):
-        raise ConnectionClosedError(endpoint_url=endpoint_url) from exc
-    if isinstance(exc, PhotonConnectionError):
-        raise EndpointConnectionError(endpoint_url=endpoint_url) from exc
-    raise exc  # unmapped Photon error: propagate loudly rather than mislabel it
+        except PhotonError as exc:
+            idempotent = is_idempotent_operation(
+                http_request.metadata.service, http_request.metadata.operation
+            )
+            if isinstance(exc, PhotonRejectedError):
+                if (
+                    exc.code == _ORIGIN_ERROR
+                    and self._session.is_connection_healthy
+                    and idempotent
+                ):
+                    raise PhotonOriginError(endpoint_url=request.url) from exc
+                raise
+            if (
+                self._session.is_open
+                and not self._session.is_connection_healthy
+                and idempotent
+                and isinstance(
+                    exc,
+                    (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
+                )
+            ):
+                logger.warning(
+                    "Photon fallback is safe for %s; passing through to the service",
+                    http_request.metadata.operation,
+                    exc_info=True,
+                )
+                return None
+            if isinstance(
+                exc,
+                (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
+            ):
+                # A deferred timeout has no FIFO slot and leaves the connector healthy. FIFO
+                # timeouts and connection loss close it and enter the fallback branch above.
+                if (
+                    isinstance(exc, PhotonTimeoutError)
+                    and self._session.is_open
+                    and self._session.is_connection_healthy
+                    and idempotent
+                ):
+                    raise ReadTimeoutError(endpoint_url=request.url) from exc
+                raise
+            raise

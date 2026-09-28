@@ -61,6 +61,14 @@ const credentials = {
   secretAccessKey: "secret-example",
 };
 
+const generatedAuthProvider = Object.assign(
+  vi.fn(async () => ["iam-user", "iam-token"] as [string, string]),
+  {
+    refreshAuth: vi.fn(async () => ["iam-user", "refreshed-token"] as [string, string]),
+    close: vi.fn(),
+  },
+);
+
 const createdClients: FakeClient[] = [];
 
 class FakeClient {
@@ -87,10 +95,15 @@ function setup() {
     mocks.sessionConstructor,
     mocks.handle.install,
     mocks.handleConstructor,
+    generatedAuthProvider,
+    generatedAuthProvider.refreshAuth,
+    generatedAuthProvider.close,
   ]) {
     mock.mockReset();
   }
-  mocks.buildCacheAuthProvider.mockResolvedValue("auth-provider");
+  generatedAuthProvider.mockResolvedValue(["iam-user", "iam-token"]);
+  generatedAuthProvider.refreshAuth.mockResolvedValue(["iam-user", "refreshed-token"]);
+  mocks.buildCacheAuthProvider.mockResolvedValue(generatedAuthProvider);
   mocks.session.open.mockResolvedValue(undefined);
 }
 
@@ -123,13 +136,17 @@ describe("client", () => {
     });
     const authOptions = mocks.buildCacheAuthProvider.mock.calls[0]![0];
     await expect(authOptions.credentials()).resolves.toBe(credentials);
-    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as (() => unknown) & {
+      close?: () => void;
+    };
     connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       tls: false,
       requestTimeout: 1234,
-      authProvider: "auth-provider",
+      authProvider: generatedAuthProvider,
     });
+    connectorFactory.close?.();
+    expect(generatedAuthProvider.close).toHaveBeenCalledOnce();
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(
       expect.any(Function),
       { timeout: 42 },
@@ -176,6 +193,23 @@ describe("client", () => {
       { timeout: 42 },
       reconnectPolicy,
     );
+  });
+
+  it("passes a custom IAM refresh interval to the managed auth provider", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, {
+      ...options,
+      iamRefreshAfterSeconds: 120,
+    });
+
+    expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
+      cacheName: "my-cache",
+      credentials: expect.any(Function),
+      refreshAfterSeconds: 120,
+      region: "us-east-1",
+      userId: "iam-user",
+    });
   });
 
   it("converts the public fallback duration from seconds to milliseconds", async () => {

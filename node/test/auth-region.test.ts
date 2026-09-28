@@ -24,6 +24,7 @@ describe("default region resolution", () => {
     const [, token] = await provider();
     expect(token).toContain("us-east-1");
     expect(token).not.toContain("us-west-2");
+    provider.close();
   });
 
   it("supports AWS_DEFAULT_REGION through the toolkit", async () => {
@@ -37,5 +38,6 @@ describe("default region resolution", () => {
 
     const [, token] = await provider();
     expect(token).toContain("ap-southeast-2");
+    provider.close();
   });
 });

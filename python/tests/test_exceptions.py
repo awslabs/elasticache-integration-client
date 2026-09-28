@@ -10,7 +10,9 @@ from photon.exceptions import (
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
+    PhotonOriginError,
     PhotonProtocolError,
+    PhotonRejectedError,
     PhotonTimeoutError,
 )
 
@@ -18,6 +20,7 @@ _SUBCLASSES = [
     PhotonConfigError,
     PhotonConnectionError,
     PhotonProtocolError,
+    PhotonRejectedError,
     PhotonConnectionLost,
     PhotonTimeoutError,
 ]
@@ -46,6 +49,13 @@ def test_cache_unavailable_message_says_the_cache_is_unavailable():
     message = str(PhotonCacheUnavailable(endpoint_url="https://dynamodb.us-east-1.amazonaws.com/"))
     assert "no connection to the cache" in message
     assert "dynamodb.us-east-1.amazonaws.com" in message
+
+
+def test_origin_error_is_retryable_without_claiming_the_sdk_connection_closed():
+    assert issubclass(PhotonOriginError, ConnectionClosedError)
+    message = str(PhotonOriginError(endpoint_url="https://dynamodb.us-east-1.amazonaws.com/"))
+    assert "could not complete the origin request" in message
+    assert "connection was closed" not in message.lower()
 
 
 # --- Public API surface -------------------------------------------------------

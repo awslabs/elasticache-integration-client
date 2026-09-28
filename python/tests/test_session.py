@@ -2,7 +2,7 @@
 
 The connector double comes from :func:`tests.mock.mock_connector` — a ``create_autospec`` bound to
 the real :class:`PhotonConnector`, so the session is verified against the real connector signatures
-without a network. Construction starts a real :class:`~photon.refresh.ConfigRefresher` daemon
+without a network. Construction starts real :class:`~photon.refresh.Refresher` daemon
 thread (the connector is a mock, but the refresher is not), so any test that constructs a real
 ``PhotonSession`` and reaches the refresher must call ``session.close()`` to avoid leaking it.
 
@@ -11,13 +11,15 @@ test_protocol.py; these tests assert only session behavior (lifecycle + delegati
 """
 
 import json
+from unittest import mock
 
 import pytest
 
 from photon.exceptions import PhotonConfigError, PhotonError
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.reconnect_policy import ReconnectPolicy
-from photon.refresh import ConfigRefresher
+from photon.resp import RespError
+from photon.refresh import Refresher
 from photon.session import PhotonSession, parse_endpoint
 from tests.mock import mock_connector
 
@@ -60,46 +62,56 @@ def test_a_failed_configure_closes_everything(failing_step):
     connector.close.assert_called_once_with()
 
 
+def test_policy_none_uses_the_default_policy():
+    """Passing ``policy=None`` explicitly behaves like omitting it."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector, policy=None)
+    assert session.is_open
+    session.close()
+
+
 # --- lifecycle: refresher --------------------------------------------------------
 
 def test_construction_starts_refresher():
     """Construction starts a live refresher thread; close() stops it."""
     connector = mock_connector()
     session = PhotonSession(lambda: connector)
-    assert session._refresher
-    assert session._refresher._thread.is_alive()
+    assert session._config_refresher
+    assert session._config_refresher._thread.is_alive()
     session.close()
-    assert session._refresher._thread.is_alive() is False
+    assert session._config_refresher._thread.is_alive() is False
 
 
 def test_close_stops_refresher_before_closing_connector(monkeypatch):
-    """close() stops the refresher strictly before closing the connector, so a refresh can never
-    fire into a half-closed connection during an orderly shutdown."""
+    """close() stops every background runner (re-auth + config refresh) strictly before closing the
+    connector, so a background tick can never fire into a half-closed connection during shutdown."""
     calls = []
 
-    class _SpyRefresher(ConfigRefresher):
+    class _SpyRunner(Refresher):
         def stop(self, timeout=5):
-            calls.append("refresher.stop")
+            calls.append("runner.stop")
             super().stop(timeout=timeout)
 
-    monkeypatch.setattr("photon.session.ConfigRefresher", _SpyRefresher)
+    monkeypatch.setattr("photon.session.Refresher", _SpyRunner)
 
     connector = mock_connector()
     connector.close.side_effect = lambda: calls.append("connector.close")
     session = PhotonSession(lambda: connector)
     session.close()
-    assert calls == ["refresher.stop", "connector.close"]
+    # Both runners stop before the connector closes, and the connector closes last.
+    assert calls[-1] == "connector.close"
+    assert calls[:-1] == ["runner.stop", "runner.stop"]
 
 
 @pytest.mark.parametrize("failing_step", ["__init__", "start"])
 def test_a_failed_refresher_closes_everything(failing_step, monkeypatch):
-    """The connection is already open and configured by the time the refresher is started, so a
-    refresher that cannot be constructed or started closes it rather than leaking it, and the
+    """The connection is already open and configured by the time the runners are started, so a
+    runner that cannot be constructed or started closes it rather than leaking it, and the
     original error propagates."""
     def fail(*args, **kwargs):
         raise RuntimeError("can't start new thread")
 
-    monkeypatch.setattr(ConfigRefresher, failing_step, fail)
+    monkeypatch.setattr(Refresher, failing_step, fail)
     connector = mock_connector()
     with pytest.raises(RuntimeError):
         PhotonSession(lambda: connector)
@@ -125,7 +137,7 @@ def test_refresh_once_null_reply_leaves_config_and_predicates_unchanged():
     connector = mock_connector()
     session = PhotonSession(lambda: connector)
     original_config = session._config
-    session._refresher.set_interval = lambda interval: pytest.fail(
+    session._config_refresher.set_interval = lambda interval: pytest.fail(
         "must not reschedule on a null reply"
     )
     session._refresh_once()  # mock_connector answers the no-argument form with a null
@@ -144,7 +156,7 @@ def test_refresh_once_applies_a_server_initiated_change():
     ).encode()
     session._refresh_once()
     assert session._config.refresh_interval == 45
-    assert session._refresher._interval == 45
+    assert session._config_refresher._interval == 45
     session.close()
 
 
@@ -173,7 +185,7 @@ def test_configuring_a_connection_reschedules_the_refresher():
         {"version": "1.0", "refresh_interval": 45, "predicates": []}
     ).encode()
     session._configure(reconnected)
-    assert session._refresher._interval == 45
+    assert session._config_refresher._interval == 45
     session.close()
 
 
@@ -244,17 +256,33 @@ def test_request_delegates_to_connector():
     session.close()
 
 
-def test_request_after_close_propagates_connector_error():
-    """After close(), request() propagates the connector's error (no session-level state check)."""
+def test_auth_error_invalidates_connection_and_passes_request_through():
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = RespError("PHOTON_AUTH_ERROR", "missing FAS")
+    session._connection_manager.invalidate_connection = mock.Mock()
+
+    response = session.request(PhotonRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        metadata=RequestMetadata(service="dynamodb", operation="UpdateItem"),
+    ))
+
+    assert response is None
+    session._connection_manager.invalidate_connection.assert_called_once_with(connector)
+    session.close()
+
+
+def test_request_after_close_is_rejected_before_connector_use():
     connector = mock_connector()
     session = PhotonSession(lambda: connector)
     session.close()
     connector.execute.reset_mock()  # discard the constructor's config call
-    connector.execute.side_effect = PhotonError("connection is closed")
     with pytest.raises(PhotonError):
         session.request(PhotonRequest(method="POST", url="https://x/",
                                       metadata=RequestMetadata(service="dynamodb", operation="GetItem")))
-    connector.execute.assert_called_once()  # the call reached the connector: no session-level gate
+    connector.execute.assert_not_called()
 
 
 # --- lifecycle: close -----------------------------------------------------------
@@ -266,6 +294,14 @@ def test_close_delegates_to_connector():
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
+
+
+def test_is_open_tracks_lifecycle():
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    assert session.is_open
+    session.close()
+    assert not session.is_open
 
 
 # --- endpoint parsing -----------------------------------------------------------

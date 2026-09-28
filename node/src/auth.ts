@@ -47,6 +47,13 @@ export interface IamAuthTokenProviderOptions extends ResolvedAuthParams {
   credentials: CredentialsProvider;
 }
 
+/** Connector-compatible IAM provider backed by the toolkit token manager. */
+export interface CacheAuthProvider {
+  (): Promise<[string, string]>;
+  refreshAuth(): Promise<[string, string]>;
+  close(): void;
+}
+
 /**
  * Check required auth parameters and apply the default IAM user.
  *
@@ -119,7 +126,7 @@ export async function generateIamAuthToken({
   }
 }
 
-/** Credential provider that returns a fresh `(userId, token)` pair per call. */
+/** Credential provider that signs a fresh IAM token for every call. */
 export class IamAuthTokenProvider {
   private readonly options: IamAuthTokenProviderOptions;
   private providerPromise: Promise<ToolkitAuthTokenProvider> | undefined;
@@ -154,7 +161,7 @@ export class IamAuthTokenProvider {
     await this.initialize();
   }
 
-  /** Generate a fresh `(userId, token)` pair. */
+  /** Return the normalized user id and a newly signed token. */
   async getAuth(): Promise<[string, string]> {
     const provider = await this.initialize();
     try {
@@ -172,27 +179,43 @@ export class IamAuthTokenProvider {
 
 /** Assemble a ready-to-use authentication provider for a cache connector. */
 export async function buildCacheAuthProvider(
-  input: AuthParamsInput & { credentials?: CredentialsProvider },
-): Promise<() => Promise<[string, string]>> {
+  input: AuthParamsInput & {
+    credentials?: CredentialsProvider;
+    refreshAfterSeconds?: number;
+  },
+): Promise<CacheAuthProvider> {
   const toolkit = await loadToolkit();
   const credentials = input.credentials ?? fromNodeProviderChain();
 
   try {
-    const provider = await toolkit.ElastiCacheIAMAuthTokenProvider.create(
+    const manager = await toolkit.ElastiCacheIAMAuthTokenManager.create(
       {
         ...(input.cacheName === undefined ? {} : { serverlessCacheName: input.cacheName }),
         userId: input.userId || DEFAULT_USER_ID,
         ...(input.region === undefined ? {} : { region: input.region }),
+        ...(input.refreshAfterSeconds === undefined
+          ? {}
+          : { refreshAfterSeconds: input.refreshAfterSeconds }),
       },
       toolkitDependencies(credentials),
     );
-    return async () => {
+    const getAuth = async (): Promise<[string, string]> => {
       try {
-        return [provider.userId, await provider.getToken()];
+        return await manager.getCredentials();
       } catch (error) {
         throw toPhotonError(error, toolkit);
       }
     };
+    return Object.assign(getAuth, {
+      refreshAuth: async (): Promise<[string, string]> => {
+        try {
+          return [manager.userId, await manager.refreshToken()];
+        } catch (error) {
+          throw toPhotonError(error, toolkit);
+        }
+      },
+      close: () => manager.close(),
+    });
   } catch (error) {
     throw toPhotonError(error, toolkit);
   }

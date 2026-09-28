@@ -8,7 +8,7 @@ cacheable, and the request path.
 While no connection is available, requests are declined so the caller sends them to the origin
 service itself — for as long as the fallback window allows.
 
-A :class:`~photon.refresh.ConfigRefresher` runs for as long as the session is open, so the config
+A :class:`~photon.refresh.Refresher` runs for as long as the session is open, so the config
 can be re-resolved on the live connection rather than only when a new one is built. A refresh that
 fails leaves the current config in place; recording failures and raising a staleness flag are not
 yet implemented.
@@ -21,8 +21,14 @@ from collections.abc import Callable
 
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
-from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
+from photon.exceptions import (
+    PhotonCacheUnavailable,
+    PhotonConfigError,
+    PhotonError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
+from photon.refresh import Refresher
 from photon.reconnect_policy import ReconnectPolicy
 from photon.predicates import compile_predicates, should_route_to_photon
 from photon.protocol import (
@@ -31,9 +37,10 @@ from photon.protocol import (
     serialize_config,
     serialize_request,
 )
-from photon.refresh import ConfigRefresher
 
 logger = logging.getLogger(__name__)
+
+_PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -76,7 +83,7 @@ class PhotonSession:
             overrides: ``photon.config`` overrides to send when configuring. The proxy resolves
                 them and answers with the config the session then routes by.
             policy: Reconnect and fallback behavior; see
-                :class:`~photon.reconnect_policy.ReconnectPolicy`.
+                :class:`~photon.reconnect_policy.ReconnectPolicy`. ``None`` uses the defaults.
 
         Raises:
             PhotonError: The connection could not be opened; see
@@ -85,17 +92,34 @@ class PhotonSession:
             RuntimeError: The refresher thread could not be started. The connection is closed
                 first, so a session that cannot refresh never leaves one open behind it.
         """
+        policy = policy or ReconnectPolicy()
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
-        self._refresher: ConfigRefresher | None = None
+        self._config_refresher: Refresher | None = None
+        self._reauth_runner: Refresher | None = None
         self._connection_manager = ConnectionManager(
-            connector_factory, self._configure, policy or ReconnectPolicy()
+            connector_factory, self._configure, policy
         )
         self._connection_manager.init_connection()
         try:
-            self._refresher = ConfigRefresher(self._config.refresh_interval, self._refresh_once)
-            self._refresher.start()
+            self._config_refresher = Refresher(
+                self._config.refresh_interval,
+                self._refresh_once,
+                name="photon-refresher",
+                jitter=policy.jitter,
+            )
+            self._config_refresher.start()
+            # Keep the connection's FAS fresh in the background. Started only after bring-up
+            # succeeds, so a failed bring-up still throws without leaving a thread behind.
+            self._reauth_runner = Refresher(
+                policy.auth_refresh_interval,
+                self._reauth_once,
+                name="photon-reauth",
+                jitter=policy.jitter,
+                failure_delay=policy.delay_for,
+            )
+            self._reauth_runner.start()
         except BaseException:
             self.close()
             raise
@@ -135,8 +159,8 @@ class PhotonSession:
         """
         predicates = compile_predicates(config.raw)
         self._config, self._predicates = config, predicates
-        if self._refresher:
-            self._refresher.set_interval(config.refresh_interval)
+        if self._config_refresher:
+            self._config_refresher.set_interval(config.refresh_interval)
 
     def _refresh_once(self) -> None:
         """Send one ``photon.config`` refresh and apply the result.
@@ -164,6 +188,16 @@ class PhotonSession:
         except PhotonError:
             logger.warning("Config refresh failed; keeping the current config", exc_info=True)
 
+    def _reauth_once(self) -> None:
+        """Re-run AUTH on the live connector to refresh its FAS. Runs in the background.
+
+        Sends plain ``AUTH`` (not the ``HELLO 3`` bring-up handshake): the connection has already
+        negotiated RESP3, so a refresh only needs to re-authenticate with a fresh token.
+        """
+        connector = self._connection_manager.connector
+        if connector is not None:
+            connector.authenticate()
+
     def request(self, request: PhotonRequest) -> PhotonResponse | None:
         """Route a request to Photon, or return None to let the caller handle it.
 
@@ -171,15 +205,17 @@ class PhotonSession:
         or when the cache is disconnected and the fallback window is still open.
         In both cases, the request has not been sent, so falling back is safe.
 
-        Once a request is sent to Photon, failures are propagated rather than
-        retried or passed through, since the request may have reached the cache.
-        These failures are converted to botocore transport errors, and the SDK
-        decides whether to retry them.
+        Once a request is sent to Photon, failures propagate to the hook. Direct
+        origin fallback is limited to a dropped connection and a replay-safe
+        operation. Retryable healthy-connection failures are returned through
+        botocore so the SDK or application decides whether to retry them.
 
         Raises:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
                 window has closed.
         """
+        if not self.is_open:
+            raise PhotonError("request() called on a closed session")
         if not should_route_to_photon(self._predicates, request):
             return None
 
@@ -191,13 +227,28 @@ class PhotonSession:
             return     # pass through
 
         command, args = serialize_request(request)
-        return parse_request_response(connector.execute(command, *args))
+        try:
+            return parse_request_response(connector.execute(command, *args))
+        except PhotonRejectedError as exc:
+            if exc.code != _PHOTON_AUTH_ERROR:
+                raise
+            self._connection_manager.invalidate_connection(connector)
+            return None
 
     def close(self) -> None:
-        """Stop the refresher, then close the session's connection and all reconnect activity.
-
-        Idempotent.
-        """
-        if self._refresher:
-            self._refresher.stop()
+        """Stop background work, then close the connection and all reconnect activity. Idempotent."""
+        if self._reauth_runner:
+            self._reauth_runner.stop()
+        if self._config_refresher:
+            self._config_refresher.stop()
         self._connection_manager.close()
+
+    @property
+    def is_open(self) -> bool:
+        """Whether the session can safely initiate fallback work."""
+        return self.state is not ConnectionState.CLOSED
+
+    @property
+    def is_connection_healthy(self) -> bool:
+        """Whether requests can currently use a live configured connection."""
+        return self._connection_manager.connection_healthy

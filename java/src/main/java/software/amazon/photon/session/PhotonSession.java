@@ -8,10 +8,15 @@ import software.amazon.photon.exception.PhotonAuthenticationError;
 import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
 import software.amazon.photon.predicate.PredicateEvaluator;
+import software.amazon.photon.protocol.PhotonProtocol;
+import software.amazon.photon.protocol.SerializedCommand;
+import software.amazon.photon.resp.RespNull;
+import software.amazon.photon.resp.RespValue;
 
 import java.io.Closeable;
 import java.util.Collections;
@@ -25,6 +30,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Owns the active Photon connector and replaces it after transport failure.
@@ -35,12 +42,21 @@ import java.util.function.Supplier;
  * fresh credentials, repeats {@code AUTH} and {@code photon.config}, and keeps
  * trying until it succeeds or the session closes.
  *
- * <p>Requests are never replayed after being admitted to Photon. While no
- * connector is available, matching requests use origin fallback until the
- * configured fallback duration expires.
+ * <p>While no connector is available, matching requests use origin fallback
+ * until the configured fallback duration expires. After a request is admitted
+ * to Photon, the HTTP adapters allow direct origin fallback only when the
+ * connection drops and the operation is in the shared replay-safe catalog.
+ *
+ * <p>Resolved CEL predicates determine which requests are sent to Photon.
+ * Requests with no matching predicate are declined for origin pass-through.
+ * The refresher started by {@link #open()} fetches and applies resolved config
+ * updates while a connector is open. Refresh failures keep the last-known-good
+ * config; failures that kill the connector use the normal reconnect path.
  */
 public class PhotonSession implements Closeable {
 
+    private static final Logger LOGGER = Logger.getLogger(PhotonSession.class.getName());
+    private static final String PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
     private static final AtomicInteger THREAD_IDS = new AtomicInteger();
 
     public enum State {
@@ -69,10 +85,12 @@ public class PhotonSession implements Closeable {
     private volatile State state = State.CREATED;
     private volatile PhotonConnector connector;
     private volatile PhotonConnector candidate;
-    private volatile ResolvedConfig config;
-    private volatile PredicateEvaluator predicateEvaluator;
+    private volatile ConnectionSnapshot snapshot;
+    private volatile ConfigRefresher refresher;
     private volatile long fallbackDeadlineNanos;
+    private boolean opening;
     private boolean reconnectRunning;
+    private boolean overridesSent;
 
     /**
      * Create a session around one concrete connector.
@@ -124,72 +142,235 @@ public class PhotonSession implements Closeable {
 
     /** Return the latest successfully resolved Photon configuration. */
     public ResolvedConfig getConfig() {
-        return config;
+        return snapshot != null ? snapshot.config : null;
     }
 
     /**
-     * Open and configure the first connection.
+     * For testing: force the "overrides not yet acknowledged" state that production code cannot
+     * currently reach after a successful open (there is no code path that changes the overrides
+     * after construction).
+     */
+    void setOverridesSent(boolean overridesSent) {
+        synchronized (stateLock) {
+            this.overridesSent = overridesSent;
+        }
+    }
+
+    /** For testing: whether the overrides have been acknowledged by the server. */
+    boolean isOverridesSent() {
+        synchronized (stateLock) {
+            return overridesSent;
+        }
+    }
+
+    /** For testing: the refresher started by {@link #open()}, or null before it starts. */
+    ConfigRefresher refresher() {
+        return refresher;
+    }
+
+    /**
+     * Open the session: connect, authenticate, perform the config handshake,
+     * compile the resolved predicates, then start the config refresher.
      *
-     * <p>Each attempt uses a new connector and fresh credentials. Startup fails
-     * after the configured number of attempts rather than returning an
-     * indefinitely uncached client.
+     * <p>Connect/authenticate/config failures are retried with a new connector and fresh
+     * credentials. Once a connector is live, refresher construction and startup are local session
+     * setup rather than connectivity, so a failure there closes the connector and fails
+     * immediately instead of repeating a successful handshake. The session becomes {@code OPEN}
+     * only once the refresher has started.
+     *
+     * <p>Lifecycle transitions are synchronized against {@link #close()}, but blocking connection
+     * and credential work runs outside the state lock. A concurrent close can therefore tear down
+     * an in-flight open; the opener checks that it still owns the lifecycle before publishing the
+     * config or starting the refresher.
      */
     public void open() {
         synchronized (stateLock) {
             if (state != State.CREATED) {
                 throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
             }
+            if (opening) {
+                throw new PhotonError("open() called while session is opening");
+            }
+            opening = true;
         }
 
-        RuntimeException lastFailure = null;
-        for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
-            PhotonConnector next = null;
-            try {
-                next = connectorFactory.get();
-                synchronized (stateLock) {
-                    if (state != State.CREATED) {
-                        next.close();
-                        throw new PhotonConnectionError("Session closed while opening");
+        try {
+            RuntimeException lastFailure = null;
+            PhotonConnector established = null;
+            ConnectionSnapshot establishedSnapshot = null;
+            for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
+                PhotonConnector next = null;
+                try {
+                    next = connectorFactory.get();
+                    synchronized (stateLock) {
+                        if (state != State.CREATED) {
+                            next.close();
+                            throw new PhotonConnectionError("Session closed while opening");
+                        }
+                        candidate = next;
                     }
-                    candidate = next;
-                }
-                ConnectionSnapshot snapshot = initializeWithTimeout(next);
-                synchronized (stateLock) {
-                    candidate = null;
-                    if (state != State.CREATED || !next.isReady()) {
+                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    synchronized (stateLock) {
+                        if (state != State.CREATED || !next.isReady()) {
+                            next.close();
+                            throw new PhotonConnectionError(
+                                    state == State.CREATED
+                                            ? "Photon connection closed while opening"
+                                            : "Session closed while opening");
+                        }
+                    }
+                    established = next;
+                    establishedSnapshot = snapshot;
+                    break;
+                } catch (RuntimeException failure) {
+                    lastFailure = failure;
+                    synchronized (stateLock) {
+                        if (candidate == next) {
+                            candidate = null;
+                        }
+                    }
+                    if (next != null) {
                         next.close();
+                    }
+                    if (attempt < reconnectPolicy.getConnectAttempts()) {
+                        sleep(reconnectPolicy.delayFor(attempt));
+                    }
+                }
+            }
+
+            if (established == null || establishedSnapshot == null) {
+                synchronized (stateLock) {
+                    state = State.CLOSED;
+                }
+                reconnectExecutor.shutdownNow();
+                throw lastFailure != null
+                        ? lastFailure
+                        : new PhotonConnectionError("Photon initial connection failed");
+            }
+
+            ConfigRefresher nextRefresher = null;
+            try {
+                nextRefresher = createRefresher(
+                        establishedSnapshot.config.getRefreshInterval(), this::refreshOnce);
+                synchronized (stateLock) {
+                    if (state != State.CREATED || !established.isReady()) {
                         throw new PhotonConnectionError(
                                 state == State.CREATED
                                         ? "Photon connection closed while opening"
                                         : "Session closed while opening");
                     }
-                    publish(next, snapshot);
+                    nextRefresher.start();
+                    candidate = null;
+                    publish(established, establishedSnapshot);
+                    refresher = nextRefresher;
                     state = State.OPEN;
                 }
-                return;
             } catch (RuntimeException failure) {
-                lastFailure = failure;
                 synchronized (stateLock) {
-                    if (candidate == next) {
+                    if (candidate == established) {
                         candidate = null;
                     }
                 }
-                if (next != null) {
-                    next.close();
+                if (nextRefresher != null) {
+                    nextRefresher.stop();
                 }
-                if (attempt < reconnectPolicy.getConnectAttempts()) {
-                    sleep(reconnectPolicy.delayFor(attempt));
+                established.close();
+                synchronized (stateLock) {
+                    state = State.CLOSED;
                 }
+                reconnectExecutor.shutdownNow();
+                throw failure;
             }
+        } finally {
+            synchronized (stateLock) {
+                opening = false;
+            }
+        }
+    }
+
+    /**
+     * Construct the refresher for this session. Package-private for testing: tests override this
+     * to observe refresher lifecycle without a public constructor or getter.
+     */
+    ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
+        return new ConfigRefresher(intervalSeconds, refreshOnce);
+    }
+
+    /**
+     * The refresher's periodic callback: send one {@code photon.config} refresh and apply the
+     * result.
+     *
+     * <p>Sends the overrides if they have not yet been acknowledged by the server, otherwise
+     * sends the no-argument form ("my overrides are unchanged"). A RESP3 null reply means the
+     * server's config has not changed, so nothing is applied or rescheduled. Any other reply is
+     * parsed, its predicates compiled, and installed as a single immutable snapshot; the
+     * refresher is then rescheduled on the interval the new config carries.
+     *
+     * <p>A {@link PhotonError} from either step is caught here so it cannot escape the refresher
+     * thread and silently stop every future refresh: the current config and schedule are left in
+     * place and the next tick retries. If the failure leaves the connector dead, the existing
+     * background reconnect path replaces it. Replies from a connector that has since been closed
+     * or replaced are discarded.
+     */
+    void refreshOnce() {
+        PhotonConnector active;
+        ConfigRefresher activeRefresher;
+        Map<String, Object> payload;
+        synchronized (stateLock) {
+            if (state != State.OPEN || connector == null) {
+                return;
+            }
+            active = connector;
+            activeRefresher = refresher;
+            payload = overridesSent ? null : overrides;
+        }
+
+        SerializedCommand command = PhotonProtocol.serializeConfig(payload);
+        RespValue reply;
+        try {
+            reply = active.execute(command.getCommandName(),
+                    command.getArgs().toArray(new byte[0][]));
+        } catch (PhotonError e) {
+            handleRefreshFailure(active, e);
+            return;
+        }
+
+        if (reply instanceof RespNull) {
+            return;
+        }
+
+        ResolvedConfig newConfig;
+        PredicateEvaluator newPredicates;
+        try {
+            newConfig = PhotonProtocol.parseConfigResponse(reply);
+            newPredicates = PredicateEvaluator.compile(newConfig.getRaw());
+        } catch (PhotonError e) {
+            handleRefreshFailure(active, e);
+            return;
         }
 
         synchronized (stateLock) {
-            state = State.CLOSED;
+            if (state != State.OPEN || connector != active || refresher != activeRefresher) {
+                // The session closed or reconnected while this refresh was in flight.
+                return;
+            }
+            activeRefresher.setInterval(newConfig.getRefreshInterval());
+            overridesSent = true;
+            snapshot = new ConnectionSnapshot(newConfig, newPredicates);
         }
-        reconnectExecutor.shutdownNow();
-        throw lastFailure != null
-                ? lastFailure
-                : new PhotonConnectionError("Photon initial connection failed");
+    }
+
+    /**
+     * Log a refresh failure unless the connector is already being replaced, and start recovery
+     * if the failure made the active connector unusable.
+     */
+    private void handleRefreshFailure(PhotonConnector active, PhotonError e) {
+        if (state == State.OPEN && connector == active) {
+            LOGGER.log(Level.WARNING, "Config refresh failed; keeping the current config", e);
+        }
+        if (active.isDead()) {
+            beginReconnect(active);
+        }
     }
 
     /**
@@ -206,8 +387,9 @@ public class PhotonSession implements Closeable {
         if (cancellation.isCancelled()) {
             throw new PhotonRequestCancellation.CancelledException();
         }
-
-        PredicateEvaluator evaluator = predicateEvaluator;
+        ConnectionSnapshot currentSnapshot = snapshot;
+        PredicateEvaluator evaluator =
+                currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
         if (evaluator != null && !evaluator.shouldRouteToPhoton(request)) {
             return null;
         }
@@ -224,6 +406,12 @@ public class PhotonSession implements Closeable {
 
         try {
             return active.request(request, cancellation);
+        } catch (PhotonRejectedError failure) {
+            if (PHOTON_AUTH_ERROR.equals(failure.getCode())) {
+                beginReconnect(active);
+                return null;
+            }
+            throw failure;
         } catch (PhotonError failure) {
             if (active.isDead()) {
                 beginReconnect(active);
@@ -232,22 +420,41 @@ public class PhotonSession implements Closeable {
         }
     }
 
+    /**
+     * Stop the refresher, then close the connector. Idempotent.
+     *
+     * <p>The refresher is stopped strictly before the connector closes, so a refresh can never
+     * fire into a half-closed connection during an orderly shutdown. The state transition is
+     * synchronized against {@link #open()}, so an in-flight opener cannot publish or start a
+     * refresher after shutdown wins the lifecycle.
+     *
+     * <p>Marking the session closed and capturing the refresher happen under the lock; joining
+     * the refresher thread and closing the connector happen after the lock is released. Holding
+     * the lock across the join would risk a stall if refresh publication ever needed it too.
+     */
     @Override
     public void close() {
         PhotonConnector active;
-        PhotonConnector opening;
+        PhotonConnector openingConnector;
+        ConfigRefresher activeRefresher;
         synchronized (stateLock) {
             if (state == State.CLOSED) {
                 return;
             }
             state = State.CLOSED;
             active = connector;
-            opening = candidate;
+            openingConnector = candidate;
             connector = null;
+            candidate = null;
+            activeRefresher = refresher;
+            refresher = null;
             stateLock.notifyAll();
         }
-        if (opening != null && opening != active) {
-            opening.close();
+        if (activeRefresher != null) {
+            activeRefresher.stop();
+        }
+        if (openingConnector != null && openingConnector != active) {
+            openingConnector.close();
         }
         if (active != null) {
             active.close();
@@ -259,6 +466,12 @@ public class PhotonSession implements Closeable {
     public boolean isOpen() {
         State current = state;
         return current == State.OPEN || current == State.RECONNECTING;
+    }
+
+    /** Return whether a configured connector is currently available for requests. */
+    boolean isConnectionHealthy() {
+        PhotonConnector active = connector;
+        return state == State.OPEN && active != null && active.isReady();
     }
 
     private ConnectionSnapshot initializeWithTimeout(PhotonConnector next) {
@@ -404,8 +617,12 @@ public class PhotonSession implements Closeable {
     }
 
     private void publish(PhotonConnector next, ConnectionSnapshot snapshot) {
-        config = snapshot.config;
-        predicateEvaluator = snapshot.predicateEvaluator;
+        ConfigRefresher activeRefresher = refresher;
+        if (activeRefresher != null) {
+            activeRefresher.setInterval(snapshot.config.getRefreshInterval());
+        }
+        overridesSent = true;
+        this.snapshot = snapshot;
         connector = next;
     }
 
@@ -475,6 +692,7 @@ public class PhotonSession implements Closeable {
         };
     }
 
+    /** Immutable pairing of a resolved config with its compiled predicates. */
     private static final class ConnectionSnapshot {
         private final ResolvedConfig config;
         private final PredicateEvaluator predicateEvaluator;

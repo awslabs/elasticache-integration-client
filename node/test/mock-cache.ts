@@ -50,6 +50,10 @@ function _push(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`>${values.length}`), CRLF, ...values]);
 }
 
+function _null(): Buffer {
+  return Buffer.concat([Buffer.from("_"), CRLF]);
+}
+
 function _error(code: string, message: string): Buffer {
   return Buffer.concat([Buffer.from(`-${`${code} ${message}`.trim()}`), CRLF]);
 }
@@ -126,6 +130,8 @@ export interface MockCacheOptions {
   failure?: Failure;
   failureCommand?: string; // which command triggers `failure` (e.g. "auth")
   failureAfterReply?: boolean; // reply normally first, then apply `failure`
+  // reply for a no-arg photon.config; undefined = RESP3 null ("unchanged"). Mutable between cycles.
+  noArgConfigReply?: Record<string, unknown>;
 }
 
 // The certificate and key are checked-in fixtures used by the TLS server.
@@ -155,6 +161,15 @@ export class MockCache {
   readonly receivedCommands: Buffer[][] = [];
   readonly photonCommandLog: string[] = [];
   readonly requests: ReceivedRequest[] = [];
+  /** One entry per `photon.config`: the parsed overrides object, or `null` for the no-arg form. */
+  readonly configOverrides: (Record<string, unknown> | null)[] = [];
+  /**
+   * Reply for a no-argument `photon.config`; `undefined` means the RESP3 null ("unchanged").
+   * Mutable between refresh cycles so a test can simulate a cache-side config change.
+   */
+  noArgConfigReply?: Record<string, unknown>;
+  /** Raw no-argument config frame override for transport/protocol failure tests. */
+  noArgConfigFrame?: Buffer;
   readonly host = "127.0.0.1";
   port?: number;
   certPath?: string;
@@ -190,6 +205,7 @@ export class MockCache {
     this.failure = options.failure;
     this.failureCommand = (options.failureCommand ?? REQUEST_COMMAND).toLowerCase();
     this.failureAfterReply = options.failureAfterReply ?? false;
+    this.noArgConfigReply = options.noArgConfigReply;
   }
 
   /** Return the host and active ephemeral port. */
@@ -233,7 +249,22 @@ export class MockCache {
     }
     if (name === CONFIG_COMMAND) {
       this.photonCommandLog.push(name);
-      if (args.length !== 1) return _error("CONFIG_INVALID", `expected 1 arg, got ${args.length}`);
+      if (args.length > 1) {
+        return _error("CONFIG_INVALID", `expected 0 or 1 args, got ${args.length}`);
+      }
+      if (args.length === 0) {
+        this.configOverrides.push(null);
+        if (this.noArgConfigFrame !== undefined) return this.noArgConfigFrame;
+        if (this.noArgConfigReply === undefined) return _null();
+        return _bulk(Buffer.from(JSON.stringify(this.noArgConfigReply)));
+      }
+      let overrides: unknown;
+      try {
+        overrides = JSON.parse(args[0]!.toString("utf8"));
+      } catch {
+        return _error("CONFIG_INVALID", "overrides must be a JSON object");
+      }
+      this.configOverrides.push(overrides as Record<string, unknown>);
       return _bulk(Buffer.from(JSON.stringify(this.config)));
     }
     if (name === REQUEST_COMMAND) {

@@ -7,6 +7,7 @@ import {
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
+  PhotonRejectedError,
   PhotonTimeoutError,
 } from "../src/errors.js";
 import * as photon from "../src/index.js";
@@ -59,5 +60,13 @@ describe("Photon errors", () => {
     expect(error.endpointUrl).toBe("https://origin.example:8443");
     expect(error.$retryable).toEqual({});
     expect(error.message).toContain("https://origin.example:8443");
+  });
+
+  it("preserves the RESP error code on a rejection", () => {
+    const error = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+
+    expect(error.code).toBe("ORIGIN_ERROR");
+    expect(error.message).toBe("origin unavailable");
+    expect(error).toBeInstanceOf(PhotonError);
   });
 });

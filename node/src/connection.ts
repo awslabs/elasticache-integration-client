@@ -25,7 +25,7 @@ import {
 
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
-const DEFAULT_REQUEST_TIMEOUT = 100; // Covers the slowest legitimate cache miss (proxy -> DDB -> proxy).
+const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: AUTH and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
@@ -222,7 +222,7 @@ export interface PhotonConnectorOptions {
   tls?: boolean;
   /** TCP/TLS establishment timeout in milliseconds. */
   connectTimeout?: number;
-  /** Per-request response timeout in milliseconds. */
+  /** Per-request response timeout in milliseconds. Defaults to 5000. */
   requestTimeout?: number;
   /** Timeout for AUTH and photon.config initialization commands in milliseconds. */
   configTimeout?: number;
@@ -258,8 +258,15 @@ export interface PhotonConnectorOptions {
  * The object form is the Node equivalent of Python's callable provider class.
  */
 export type AuthProvider =
-  | (() => [string, string] | Promise<[string, string]>)
-  | { getAuth: () => [string, string] | Promise<[string, string]> };
+  | ((() => [string, string] | Promise<[string, string]>) & {
+      refreshAuth?: () => [string, string] | Promise<[string, string]>;
+    })
+  | {
+      getAuth: () => [string, string] | Promise<[string, string]>;
+      refreshAuth?: () => [string, string] | Promise<[string, string]>;
+    };
+
+class PhotonAuthenticationRejected extends PhotonConnectionError {}
 
 type ConnectedSocket = Socket | TLSSocket;
 
@@ -411,6 +418,13 @@ export class PhotonConnector {
       if (error instanceof PhotonTimeoutError) {
         await this.close();
         throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
+      }
+      if (error instanceof PhotonAuthenticationRejected) {
+        try {
+          await this.authProvider.refreshAuth?.();
+        } catch {
+          // Preserve the cache's AUTH rejection; the next attempt retries token refresh.
+        }
       }
       throw error;
     }
@@ -818,7 +832,7 @@ export class PhotonConnector {
   private verifyAuthReply(reply: RespValue): void {
     if (reply instanceof RespError) {
       this.markDead(new PhotonConnectionLost("AUTH rejected"));
-      throw new PhotonConnectionError(`IAM AUTH rejected: ${reply.code}`);
+      throw new PhotonAuthenticationRejected(`IAM AUTH rejected: ${reply.code}`);
     }
     if (reply !== "OK") {
       const error = new PhotonConnectionLost("unexpected AUTH reply");

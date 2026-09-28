@@ -57,6 +57,7 @@ import java.util.function.Consumer;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -76,7 +77,8 @@ class PhotonAsyncClientTest {
     void setUp() throws Exception {
         cache = new MockCache();
         cache.setConfigJson(
-                "{\"version\":\"1.0\",\"predicates\":[{\"expr\":\"true\"}]}");
+                "{\"version\":\"1.0\",\"refresh_interval\":60,"
+                        + "\"predicates\":[{\"expr\":\"true\"}]}");
         server = new MockTlsServer(cache);
         clientSslContext = server.getSslContext();
     }
@@ -233,7 +235,7 @@ class PhotonAsyncClientTest {
     }
 
     @Test
-    void deferredAsyncTimeoutFallsBackAndKeepsPhotonConnectionUsable() throws Exception {
+    void deferredAsyncTimeoutRetriesThroughSdkAndKeepsPhotonConnectionUsable() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
         CountDownLatch firstReceived = new CountDownLatch(1);
         cache.setReplyFunction(request -> {
@@ -265,9 +267,11 @@ class PhotonAsyncClientTest {
                     result.client().listTables();
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
 
-            // The transport failure is handed to the SDK, which retries through Photon.
+            // The deferred timeout preserves a healthy connection, so ListTables is returned
+            // to the SDK as retryable and the SDK's next attempt succeeds through Photon.
             assertEquals(Collections.singletonList("still-from-photon"),
                     timedOut.get(5, TimeUnit.SECONDS).tableNames());
+            assertNull(origin.request.get());
 
             // The request ID was already removed after timeout, so this push is treated as unknown and dropped.
             server.sendPush(responsePush(

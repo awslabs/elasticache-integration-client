@@ -27,6 +27,12 @@ public class MockCache {
             + "\"vars\":{\"ops\":[\"GetItem\",\"BatchGetItem\",\"Query\",\"Scan\","
             + "\"PutItem\",\"UpdateItem\",\"DeleteItem\",\"BatchWriteItem\","
             + "\"TransactGetItems\",\"TransactWriteItems\"]}}]}";
+    /**
+     * Reply for a zero-argument ({@code photon.config} with no overrides) request. {@code null}
+     * means "unchanged", replied as a RESP3 null; set this to simulate the server changing its
+     * own config independently of the client. Mutable between ticks.
+     */
+    private String noArgConfigReply = null;
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;
@@ -36,6 +42,7 @@ public class MockCache {
     private final List<String> receivedCommands = new ArrayList<>();
     private final List<ReceivedRequest> requests = new ArrayList<>();
     private final List<AuthAttempt> authAttempts = new ArrayList<>();
+    private boolean overridesSupplied;
 
     public void setReply(Reply reply) {
         this.reply = reply;
@@ -52,6 +59,22 @@ public class MockCache {
 
     public void setConfigJson(String configJson) {
         this.configJson = configJson;
+    }
+
+    /**
+     * Set the reply for a zero-argument {@code photon.config} (mutable between ticks). Pass
+     * {@code null} to go back to replying with a RESP3 null ("unchanged").
+     */
+    public void setNoArgConfigReply(String noArgConfigReply) {
+        this.noArgConfigReply = noArgConfigReply;
+    }
+
+    /**
+     * Whether the most recently handled {@code photon.config} request supplied an overrides
+     * argument (the 1-argument form), as opposed to the 0-argument "unchanged" form.
+     */
+    public boolean wasOverridesSupplied() {
+        return overridesSupplied;
     }
 
     public void setFailureMode(FailureMode mode) {
@@ -171,9 +194,19 @@ public class MockCache {
     }
 
     private RespValue handleConfig(List<RespValue> command) {
-        // Expects: photon.config [json_overrides]
-        if (command.size() != 2) {
-            return new RespError("ERR", "photon.config requires exactly 1 argument, got " + (command.size() - 1));
+        // Expects: photon.config [json_overrides]. Zero args means "overrides unchanged since
+        // last send"; one arg is the explicit-overrides form. Two or more args is invalid.
+        int argCount = command.size() - 1;
+        if (argCount > 1) {
+            return new RespError("ERR", "photon.config takes at most 1 argument, got " + argCount);
+        }
+
+        overridesSupplied = argCount == 1;
+        if (argCount == 0) {
+            if (noArgConfigReply == null) {
+                return RespNull.INSTANCE;
+            }
+            return new RespBulkString(noArgConfigReply.getBytes(StandardCharsets.UTF_8));
         }
         return new RespBulkString(configJson.getBytes(StandardCharsets.UTF_8));
     }

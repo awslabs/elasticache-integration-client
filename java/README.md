@@ -4,10 +4,16 @@ Photon integration for AWS SDK for Java v2 DynamoDB clients.
 
 Photon connects and authenticates before returning the SDK client. Requests are
 sent to Photon when the configured predicates match and otherwise use the
-configured DynamoDB origin transport. Predicate declines and non-transport
-Photon failures use origin fallback. Connection loss, request timeouts, and an
-expired reconnect fallback window are returned to the SDK as retryable
-transport failures. SDK retries, response deserialization, and caller-provided
+configured DynamoDB origin transport. While reconnecting, requests that have
+not been sent to Photon use origin fallback until the configured fallback
+window expires. After a request is sent, indeterminate failures fall back only
+when the connection drops and the operation is in the shared replay-safe
+catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
+SDK-retryable only for a cataloged operation. `PHOTON_AUTH_ERROR` closes the
+stale connection and passes the rejected request through while reconnecting.
+Other RESP errors, failures for non-idempotent operations, malformed responses,
+an expired fallback window, and shutdown are surfaced without starting an
+origin request. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh are provided by the Amazon ElastiCache
@@ -32,8 +38,24 @@ operations.
 
 Expressions that cannot be compiled are ignored. Evaluation errors and
 malformed or non-object JSON bodies count as no match. The resolved config is
-compiled when the session opens and refreshed and recompiled after every
-successful reconnect.
+compiled when the session opens, after every successful reconnect, and whenever
+a periodic refresh returns an updated config. Config and compiled predicates
+are published together, so requests never observe values from different
+refreshes.
+
+The `photon.config` response must include `refresh_interval` as a positive JSON
+integer within the Java `Integer` range. Missing, null, fractional, non-positive,
+and overflowing values are protocol errors. The session starts a daemon
+refresher using this interval. After the initial explicit override map is
+acknowledged, refreshes use the zero-argument `photon.config` form to indicate
+that the overrides are unchanged. A RESP3 null reply leaves the current config
+and interval unchanged; a valid config reply atomically replaces the config and
+predicates and sets the next refresh interval.
+
+Refresh failures retain the last-known-good config. If a failure makes the
+active connector unusable, the normal background reconnect loop replaces it
+and fetches a fresh config. Periodic refresh pauses while reconnecting, and a
+late reply from a closed or replaced connector is ignored.
 
 ## Synchronous client
 
@@ -131,10 +153,11 @@ While reconnecting, cache-eligible requests may use the signed origin fallback.
 `fallbackDurationSeconds` controls that window: a negative value allows
 fallback indefinitely, zero disables fallback, and a positive value allows
 fallback for that many seconds. Once the window ends, Photon raises a retryable
-transport failure for the AWS SDK to handle. Requests already admitted to a
-failed Photon connection are also returned to the SDK as transport failures;
-they are never directly replayed against origin because Photon may have
-processed them.
+transport failure for the AWS SDK to handle. If a request already admitted to
+Photon fails as the connection drops, it falls back directly only when its
+operation is in the shared replay-safe catalog. On a healthy connection, an
+`ORIGIN_ERROR` is SDK-retryable only for a cataloged operation; other RESP
+errors and non-idempotent failures are terminal for that attempt.
 
 Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
 

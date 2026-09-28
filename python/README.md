@@ -18,6 +18,8 @@ The library delivers the happy path: intercept → serialize → `photon.config`
 `photon.request` → return the cached response over a real TLS RESP3 connection, with
 session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connector**
 (`PhotonConnector`) — no Glide or other native dependency.
+Its per-request timeout defaults to 5 seconds and can be overridden with the
+public factory's `request_timeout` argument.
 
 ## Reconnection and fallback
 
@@ -44,9 +46,13 @@ under the SDK's default retry mode a raised request is retried, which is usually
 retry after backoff can land once the connection is back — but with `fallback_duration=0` it turns
 one fast failure into several.
 
-**A request that fails in flight is never replayed and never passed through**, because Photon cannot
-know whether it reached the origin service and re-sending it could apply a write twice. It raises
-botocore's own transport error and the SDK decides whether to retry.
+When there is no live cache connection, the request has not been sent and can safely pass through
+for any operation while the fallback window remains open. After a request is sent, origin fallback
+is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
+While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
+cataloged operation. `PHOTON_AUTH_ERROR` closes the stale connection and passes the rejected
+request through while reconnection obtains fresh authentication. Other RESP errors, malformed
+replies, and failures for non-idempotent operations propagate without origin fallback.
 
 ## Next steps:
 

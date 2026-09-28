@@ -23,6 +23,7 @@ import pytest
 
 from photon.connection import PhotonConnector, _PendingRequests, _SocketReader
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
@@ -95,6 +96,11 @@ class TestPhotonConnector:
     # ======================================================================== #
     # 1. Establishment — getting a usable connection (TCP, TLS, misuse)
     # ======================================================================== #
+
+    def test_request_timeout_defaults_to_five_seconds(self):
+        self.conn = PhotonConnector("127.0.0.1", 1, tls=False)
+
+        assert self.conn._request_timeout == 5.0
 
     def test_connect_and_handshake(self):
         """connect() yields a working connection: the photon.config handshake round-trips
@@ -260,6 +266,32 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionError):
             conn._verify_hello_reply(reply)
         assert conn._closed
+
+    def test_reauth_rejection_keeps_the_connection_open(self):
+        """A background re-AUTH reply arrives in order, so a rejection is not a FIFO desync: the
+        connection stays open and the proxy keeps serving on its last valid token. This is the
+        opposite of the HELLO bring-up, where a rejection closes. Internals: _verify_auth_reply
+        tested directly."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonAuthError):
+            conn._verify_auth_reply(RespError("WRONGPASS", "bad token"))
+        assert not conn._closed
+
+    @pytest.mark.parametrize("reply", [
+        "WHAT",                                 # a well-framed but unexpected simple string
+        b"cached response body",                # a bulk string from another request
+        {b"k": b"v"},                           # a map
+        7,                                      # an int
+    ], ids=["simple", "bulk", "map", "int"])
+    def test_reauth_unexpected_reply_closes_the_connection(self, reply):
+        """Any non-OK reply other than an error means the FIFO is out of sync, so the connection
+        closes and the reply is kept out of the message (it may be another request's body)."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonAuthError) as excinfo:
+            conn._verify_auth_reply(reply)
+        assert conn._closed
+        assert type(reply).__name__ in str(excinfo.value)
+        assert repr(reply) not in str(excinfo.value)
 
     def test_handshake_carries_the_credentials_inline(self):
         """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's FAS from the

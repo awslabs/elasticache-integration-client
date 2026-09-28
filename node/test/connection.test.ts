@@ -72,6 +72,13 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("three");
   });
 
+  it("decodes a RESP3 null frame", async () => {
+    const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
+
+    await expect(reader.readFrame()).resolves.toBeNull();
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
+
   it("turns clean EOF into PhotonConnectionLost", async () => {
     const reader = new SocketReader(sourceFrom([]));
 
@@ -278,6 +285,12 @@ describe("PhotonConnector initialization timeout", () => {
 });
 
 describe("PhotonConnector", () => {
+  it("defaults the request timeout to five seconds", () => {
+    const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
+
+    expect((connector as unknown as { requestTimeout: number }).requestTimeout).toBe(5_000);
+  });
+
   it("rejects use before connect", async () => {
     const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
 
@@ -331,6 +344,17 @@ describe("PhotonConnector", () => {
       Buffer.from("content-type:application/json"),
       Buffer.from('{"ok":1}'),
     ]);
+
+    await connector.close();
+  });
+
+  it("round-trips a RESP3 null reply over the socket", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+
+    await connector.connect();
+    // A bare photon.config makes the mock send the literal `_\r\n` frame.
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
 
     await connector.close();
   });
@@ -696,13 +720,17 @@ describe("PhotonConnector", () => {
     const cache = await startCache({
       authResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
     });
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(),
+    });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
-      authProvider: () => ["test-user", "test-token"],
+      authProvider,
     });
 
     await connector.connect();
     await expect(connector.authenticate()).rejects.toThrow("IAM AUTH failed");
+    expect(authProvider.refreshAuth).not.toHaveBeenCalled();
     await connector.close();
   });
 
@@ -722,6 +750,56 @@ describe("PhotonConnector", () => {
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
       PhotonConnectionLost,
     );
+  });
+
+  it("invalidates managed credentials after AUTH rejection", async () => {
+    const cache = await startCache({
+      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    const authProvider = Object.assign(() => ["test-user", "cached-token"] as [string, string], {
+      refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.authenticate()).rejects.toThrow(
+      "IAM AUTH rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
+    await connector.close();
+  });
+
+  it("preserves an object auth provider receiver while invalidating credentials", async () => {
+    const cache = await startCache({
+      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    class StatefulAuthProvider {
+      refreshed = false;
+
+      getAuth(): [string, string] {
+        return ["test-user", "cached-token"];
+      }
+
+      refreshAuth(): [string, string] {
+        this.refreshed = true;
+        return ["test-user", "replacement-token"];
+      }
+    }
+    const authProvider = new StatefulAuthProvider();
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.authenticate()).rejects.toThrow(
+      "IAM AUTH rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshed).toBe(true);
+    await connector.close();
   });
 
   it("times out a request and makes the connection unusable", async () => {

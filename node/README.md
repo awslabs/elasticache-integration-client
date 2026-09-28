@@ -20,20 +20,29 @@ This package currently ports the Python implementation's:
   differentiated connect/request/initialization timeouts, idempotent close,
   and injected AUTH credentials;
 - a session that performs connect, AUTH, and the `photon.config` handshake,
-  periodically refreshes and atomically replaces its resolved config,
-  reconnects failed transports in the background, and controls safe origin
-  fallback with a per-outage window;
+  reconnects failed transports in the background, periodically refreshes the
+  config on the interval the cache returns, and controls safe origin fallback
+  with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the Photon copy, and routes idempotent Photon failures to
-  the origin;
+  SigV4 headers from the Photon copy, routes dropped-connection failures to the
+  origin only for operations in the shared replay-safe catalog, and marks a
+  healthy-connection `ORIGIN_ERROR` retryable only for those operations;
 - an async `client()` factory that returns an ordinary AWS SDK v3 client.
 
 Automatic Photon failover to another endpoint remains out of scope. Deferred
 cache responses are correlated by request ID and later `photon.response`
-pushes, while callers still receive ordinary promises. A timeout for a deferred
-request removes only that request and preserves the connection; a FIFO or write
-timeout remains connection-fatal. The middleware sends requests with no
-matching predicate directly to origin.
+pushes, while callers still receive ordinary promises. The per-request timeout
+defaults to 5 seconds and can be overridden with
+`connectorOptions.requestTimeout`. A timeout for a deferred request removes only
+that request and preserves the connection; a FIFO or write timeout remains
+connection-fatal. The middleware sends requests with no matching predicate
+directly to origin and has a narrow origin fallback for cataloged idempotent
+requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
+returned to the SDK as retryable for a cataloged operation.
+`PHOTON_AUTH_ERROR` closes the stale connection, starts background recovery, and
+passes the explicitly rejected request through. Other RESP errors, malformed
+responses, and failures for non-idempotent operations propagate without origin
+fallback.
 
 ## Request routing
 
@@ -46,7 +55,13 @@ A request is sent to Photon when any predicate evaluates to `true`. Otherwise,
 the original signed SDK request continues to the configured origin transport
 without a cache round trip. Invalid predicates are ignored independently.
 Evaluation errors and malformed or non-object JSON bodies count as no match.
-The resolved config is compiled once when the session opens.
+
+The predicates are compiled when the session opens and recompiled whenever a
+refresh returns a new config. A refresh sends `photon.config` with no argument;
+a RESP3 null reply means the config is unchanged. A failed or malformed config
+reply keeps the last known-good config, predicates, and refresh interval, and
+the next cycle retries. A transport timeout or connection loss discards the
+unusable connector and starts background recovery.
 
 ## Client
 
@@ -72,12 +87,15 @@ The factory completes IAM authentication and the `photon.config` handshake
 before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
-the original signed request remains untouched for origin pass-through. Photon
-errors for idempotent operations therefore return to the SDK's normal origin
-request and retry pipeline. Non-idempotent Photon errors, fallback-window
-exhaustion, and request validation errors propagate. Calling `destroy()`
-detaches Photon before SDK teardown, rejects in-flight Photon requests, stops
-reconnect activity, and is safe to repeat.
+the original signed request remains untouched for origin pass-through. When the
+Photon connection drops, failures for operations in the shared replay-safe
+catalog return to the SDK's normal origin pipeline. While the connection
+remains healthy, only an `ORIGIN_ERROR` for a cataloged operation is marked
+SDK-retryable. Other RESP errors, non-idempotent failures, and request
+validation errors and fallback-window exhaustion propagate. Calling `destroy()`
+detaches Photon before SDK teardown, rejects in-flight Photon requests without
+passing shutdown failures to the origin, stops reconnect activity, and is safe
+to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through the `overrides`
@@ -124,12 +142,27 @@ Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
 attempt including the capped tail. Closing or destroying the SDK client
 interrupts reconnect backoff and prevents further attempts.
 
-AUTH normally uses `@aws/developer-toolkit-elasticache` to presign a short-lived
-IAM token from the SDK credential chain. The toolkit validates cache names and
-user IDs and normalizes them to lowercase before signing. A caller that already
-holds a token, or that authenticates against a local or test endpoint, supplies
-`connectorOptions.authProvider` instead: it returns `[userId, token]` and
-replaces token generation entirely, so no AWS credentials are required.
+AUTH normally uses `@aws/developer-toolkit-elasticache` to cache and
+automatically refresh short-lived IAM tokens from the SDK credential chain.
+The toolkit validates cache names and user IDs, normalizes them to lowercase
+before signing, and refreshes the cached token in the background. If Photon
+receives an AUTH rejection, it invalidates that token so the next connection
+attempt uses a newly signed one. Destroying the SDK client stops background
+token refresh. A caller that already holds a token, or that authenticates
+against a local or test endpoint, supplies `connectorOptions.authProvider`
+instead: it returns `[userId, token]` and replaces toolkit token management
+entirely, so no AWS credentials are required.
+
+The first token is minted lazily. Set `iamRefreshAfterSeconds` to customize its
+background refresh point; the accepted range, defaults, retry behavior, and
+safety margin are defined by the
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
+
+The `client()` factory creates this default manager, so destroying the returned
+SDK client also closes the manager and stops its timers. When
+`connectorOptions.authProvider` is supplied, Photon does not create or close
+that provider; the caller owns its lifecycle, matching Java's explicitly
+constructed `IamAuthTokenManager`.
 
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when

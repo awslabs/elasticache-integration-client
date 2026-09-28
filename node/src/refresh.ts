@@ -32,20 +32,38 @@ export interface ConfigRefresherOptions {
 export class ConfigRefresher {
   private readonly jitter: number;
   private readonly random: () => number;
+  private intervalSeconds: number;
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
 
   constructor(
-    private readonly intervalSeconds: number,
+    intervalSeconds: number,
     private readonly refreshOnce: () => void | Promise<void>,
     options: ConfigRefresherOptions = {},
   ) {
-    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
-      throw new PhotonError(`Invalid refresh interval: must be positive, got ${intervalSeconds}`);
-    }
     this.jitter = options.jitter ?? DEFAULT_JITTER;
     if (!Number.isFinite(this.jitter) || this.jitter < 0 || this.jitter >= 1) {
       throw new PhotonError(`Invalid jitter: must be in [0, 1), got ${this.jitter}`);
+    }
+    this.validateInterval(intervalSeconds);
+    this.intervalSeconds = intervalSeconds;
+    this.random = options.random ?? Math.random;
+  }
+
+  /**
+   * Replace the interval used by future cycles.
+   *
+   * A wait already in progress is left alone, so a refreshed config takes effect from the next
+   * scheduled cycle onwards.
+   */
+  setInterval(intervalSeconds: number): void {
+    this.validateInterval(intervalSeconds);
+    this.intervalSeconds = intervalSeconds;
+  }
+
+  private validateInterval(intervalSeconds: number): void {
+    if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) {
+      throw new PhotonError(`Invalid refresh interval: must be positive, got ${intervalSeconds}`);
     }
     // Check the longest delay jitter can produce, not the interval itself.
     const maxDelayMs = intervalSeconds * 1000 * (1 + this.jitter);
@@ -55,7 +73,6 @@ export class ConfigRefresher {
           `of ${MAX_TIMEOUT_MS}ms`,
       );
     }
-    this.random = options.random ?? Math.random;
   }
 
   /** Schedule the first cycle. Idempotent; a no-op once stopped. */
@@ -74,8 +91,8 @@ export class ConfigRefresher {
   }
 
   /**
-   * Schedule one cycle, then reschedule once it finishes so each delay gets
-   * freshly computed jitter and refreshes never overlap.
+   * Schedule one cycle, then reschedule once the cycle finishes so each delay
+   * gets freshly computed jitter and refreshes never overlap.
    */
   private schedule(): void {
     const timer = setTimeout(() => {
@@ -92,8 +109,11 @@ export class ConfigRefresher {
   private async runCycle(): Promise<void> {
     try {
       await this.refreshOnce();
-    } catch {
-      // A failed refresh keeps the previous config; the next cycle retries.
+    } catch (error) {
+      // A failed refresh keeps the previous config; the next cycle retries. An
+      // unhandled rejection here would surface as an unhandledRejection and can
+      // take down the host process, so it is logged and swallowed instead.
+      console.warn("Config refresh callback failed:", error);
     }
     if (!this.stopped) this.schedule();
   }

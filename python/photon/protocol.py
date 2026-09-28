@@ -10,7 +10,7 @@ This module builds the two Photon commands and interprets their replies:
 from __future__ import annotations
 
 import json
-from photon.exceptions import PhotonError, PhotonProtocolError
+from photon.exceptions import PhotonError, PhotonProtocolError, PhotonRejectedError
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.resp import RespError, RespPush, RespValue
 
@@ -55,9 +55,13 @@ def normalize_headers(headers: dict[str, str]) -> bytes:
 
 def _parse_headers(raw_headers: bytes) -> dict[str, str]:
     """Parse a normalized header blob (LF-separated ``name:value``) into a dict."""
+    try:
+        text = raw_headers.decode()
+    except UnicodeDecodeError as exc:
+        raise PhotonProtocolError("Invalid UTF-8 in response headers") from exc
     return {
         key.strip(): value.strip()
-        for line in raw_headers.decode().split("\n")
+        for line in text.split("\n")
         for key, sep, value in [line.partition(":")]
         if sep
     }
@@ -109,7 +113,7 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
 
 def _parse_refresh_interval(value: object) -> int:
     """Validate the ``refresh_interval`` field: required, ``int``, and positive.
-    ``refresh_interval`` feeds directly into :class:`~photon.refresh.ConfigRefresher`'s jittered
+    ``refresh_interval`` feeds directly into :class:`~photon.refresh.Refresher`'s jittered
     delay arithmetic, so a missing, wrongly-typed, or non-positive value is considered malformed.
     """
     if value is None:
@@ -139,27 +143,26 @@ def serialize_request(request: PhotonRequest) -> tuple[str, list[bytes]]:
 def parse_request_response(value: RespValue) -> PhotonResponse:
     """Interpret a ``photon.request`` reply into a PhotonResponse.
 
-    Expects a 3-element array ``[status, headers, body]``. Raises :class:`PhotonError` on a
-    ``RespError`` reply, malformed shape, wrong element types, or out-of-range status.
+    Expects a 3-element array ``[status, headers, body]``.
     """
     if isinstance(value, RespError):
-        raise PhotonError(f"photon.request failed: {value}")
+        raise PhotonRejectedError(value.code, f"photon.request failed: {value}")
     if not isinstance(value, list) or len(value) != 3:
-        raise PhotonError(
+        raise PhotonProtocolError(
             f"Malformed request response: expected 3-element array, got {type(value).__name__}"
         )
     status_raw, headers_raw, body_raw = value
     if not isinstance(headers_raw, bytes) or not isinstance(body_raw, bytes):
-        raise PhotonError(
+        raise PhotonProtocolError(
             f"Malformed request response elements: "
             f"headers={type(headers_raw).__name__}, body={type(body_raw).__name__}"
         )
     try:
         status = int(status_raw)
     except (TypeError, ValueError) as exc:
-        raise PhotonError(f"Invalid status code: {status_raw!r}") from exc
+        raise PhotonProtocolError(f"Invalid status code: {status_raw!r}") from exc
     if not (_MIN_STATUS <= status <= _MAX_STATUS):
-        raise PhotonError(f"Status code out of range (100-599): {status}")
+        raise PhotonProtocolError(f"Status code out of range (100-599): {status}")
     return PhotonResponse(
         status_code=status,
         headers=_parse_headers(headers_raw),

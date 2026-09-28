@@ -3,6 +3,7 @@ package software.amazon.photon.session;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import software.amazon.awssdk.core.exception.RetryableException;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
@@ -12,13 +13,17 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
+import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
@@ -28,6 +33,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -37,6 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncHttpClientTest {
@@ -197,7 +204,7 @@ class PhotonAsyncHttpClientTest {
     void cancellationDuringOriginFallbackCancelsOriginFuture() throws Exception {
         BlockingOrigin origin = new BlockingOrigin();
         PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new GenericFailingSession(),
+                new DroppedConnectionSession(),
                 preparedContext(),
                 origin,
                 false,
@@ -215,17 +222,153 @@ class PhotonAsyncHttpClientTest {
     }
 
     @Test
-    void connectionFailureReturnsTransportErrorWithoutCallingOrigin() {
+    void droppedIdempotentTransportFailureDelegatesToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new FailingSession(),
+                new DroppedTimeoutSession(),
                 preparedContext(),
                 origin,
                 false,
                 Runnable::run,
                 null);
 
-        assertTrue(client.execute(executeRequest()).isCompletedExceptionally());
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void nonIdempotentTransportFailureDoesNotContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new TimeoutSession(),
+                preparedContext("UpdateItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof PhotonTimeoutError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void malformedResponseDoesNotRetryOrContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new ProtocolFailureSession(),
+                preparedContext("GetItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof PhotonProtocolError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void nonOriginRejectionDoesNotContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new RejectedSession(),
+                preparedContext("GetItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof PhotonRejectedError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void idempotentOriginErrorIsRetryableWithoutContactingOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new OriginErrorSession(),
+                preparedContext("GetItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof PhotonRejectedError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void nonIdempotentOriginErrorIsNonRetryableWithoutContactingOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new OriginErrorSession(),
+                preparedContext("UpdateItem"),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        ExecutionException failure = assertThrows(
+                ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof PhotonRejectedError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void expiredFallbackWindowDoesNotContactOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new CacheUnavailableSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        assertThrows(ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void shutdownFailureDoesNotStartIdempotentFallback() {
+        RecordingOrigin origin = new RecordingOrigin();
+        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
+                new ClosedFailureSession(),
+                preparedContext(),
+                origin,
+                false,
+                Runnable::run,
+                null);
+
+        assertThrows(ExecutionException.class,
+                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -258,14 +401,22 @@ class PhotonAsyncHttpClientTest {
     }
 
     private static PhotonRequestContext preparedContext() {
+        return preparedContext("ListTables");
+    }
+
+    private static PhotonRequestContext preparedContext(String operation) {
         PhotonRequestContext context = new PhotonRequestContext();
-        prepareAttempt(context);
+        prepareAttempt(context, operation);
         return context;
     }
 
     private static void prepareAttempt(PhotonRequestContext context) {
+        prepareAttempt(context, "ListTables");
+    }
+
+    private static void prepareAttempt(PhotonRequestContext context, String operation) {
         ExecutionAttributes attributes = new ExecutionAttributes();
-        context.capture(photonRequest(), attributes);
+        context.capture(photonRequest(operation), attributes);
         context.prepareAttempt(attributes);
     }
 
@@ -285,11 +436,15 @@ class PhotonAsyncHttpClientTest {
     }
 
     private static PhotonRequest photonRequest() {
+        return photonRequest("ListTables");
+    }
+
+    private static PhotonRequest photonRequest(String operation) {
         return new PhotonRequest(
                 "POST",
                 "https://dynamodb.us-east-1.amazonaws.com/",
                 Collections.emptyMap(),
-                new RequestMetadata("dynamodb", "ListTables"));
+                new RequestMetadata("dynamodb", operation));
     }
 
     private static AsyncExecuteRequest executeRequest() {
@@ -307,12 +462,28 @@ class PhotonAsyncHttpClientTest {
                 .build();
     }
 
-    private static final class BlockingSession extends PhotonSession {
+    private abstract static class OpenSession extends PhotonSession {
+        private OpenSession() {
+            super(new PhotonConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        public boolean isOpen() {
+            return true;
+        }
+
+        @Override
+        boolean isConnectionHealthy() {
+            return true;
+        }
+    }
+
+    private static final class BlockingSession extends OpenSession {
         private final CountDownLatch started = new CountDownLatch(1);
         private final CountDownLatch cancelled = new CountDownLatch(1);
 
         private BlockingSession() {
-            super(new PhotonConnector("unused", 1, null), "user", "token");
+            super();
         }
 
         @Override
@@ -326,15 +497,15 @@ class PhotonAsyncHttpClientTest {
         }
     }
 
-    private static final class ImmediateSession extends PhotonSession {
+    private static final class ImmediateSession extends OpenSession {
         private ImmediateSession() {
-            super(new PhotonConnector("unused", 1, null), "user", "token");
+            super();
         }
     }
 
-    private static final class DecliningSession extends PhotonSession {
+    private static final class DecliningSession extends OpenSession {
         private DecliningSession() {
-            super(new PhotonConnector("unused", 1, null), "user", "token");
+            super();
         }
 
         @Override
@@ -343,9 +514,9 @@ class PhotonAsyncHttpClientTest {
         }
     }
 
-    private static final class FailingSession extends PhotonSession {
+    private static final class FailingSession extends OpenSession {
         private FailingSession() {
-            super(new PhotonConnector("unused", 1, null), "user", "token");
+            super();
         }
 
         @Override
@@ -354,14 +525,87 @@ class PhotonAsyncHttpClientTest {
         }
     }
 
-    private static final class GenericFailingSession extends PhotonSession {
-        private GenericFailingSession() {
+    private static class TimeoutSession extends OpenSession {
+        private TimeoutSession() {
+            super();
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonTimeoutError("cache timed out");
+        }
+    }
+
+    private static final class DroppedTimeoutSession extends TimeoutSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+    }
+
+    private static final class ProtocolFailureSession extends OpenSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonProtocolError("malformed response");
+        }
+    }
+
+    private static final class RejectedSession extends OpenSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonRejectedError("UNSUPPORTED", "request rejected");
+        }
+    }
+
+    private static final class OriginErrorSession extends OpenSession {
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+        }
+    }
+
+    private static final class ClosedFailureSession extends PhotonSession {
+        private ClosedFailureSession() {
             super(new PhotonConnector("unused", 1, null), "user", "token");
         }
 
         @Override
         PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
-            throw new PhotonError("cache declined request");
+            throw new PhotonConnectionLost("session closed");
+        }
+    }
+
+    private static final class CacheUnavailableSession extends OpenSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonCacheUnavailable("fallback window expired");
+        }
+    }
+
+    private static final class DroppedConnectionSession extends OpenSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+
+        @Override
+        PhotonResponse request(PhotonRequest request, PhotonRequestCancellation cancellation) {
+            throw new PhotonConnectionLost("cache connection dropped");
         }
     }
 
