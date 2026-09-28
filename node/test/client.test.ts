@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { constructStack } from "@smithy/core/client";
 import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from "@smithy/types";
 
-import { PhotonError } from "../src/errors.js";
+import { PhotonConfigError } from "../src/errors.js";
 
 const mocks = vi.hoisted(() => ({
   buildCacheAuthProvider: vi.fn(),
@@ -153,7 +153,7 @@ describe("client", () => {
       expect.any(Function),
       { timeout: 42 },
       {
-        configStalenessThresholdMs: 3_600_000,
+        stalenessDurationMs: 3_600_000,
       },
     );
     expect(mocks.session.open).toHaveBeenCalledOnce();
@@ -181,7 +181,7 @@ describe("client", () => {
       expect.any(Function),
       {},
       {
-        configStalenessThresholdMs: 3_600_000,
+        stalenessDurationMs: 3_600_000,
       },
     );
   });
@@ -203,7 +203,7 @@ describe("client", () => {
       { timeout: 42 },
       {
         ...reconnectPolicy,
-        configStalenessThresholdMs: 3_600_000,
+        stalenessDurationMs: 3_600_000,
       },
     );
   });
@@ -235,7 +235,7 @@ describe("client", () => {
       { timeout: 42 },
       {
         fallbackDurationMs: 60_000,
-        configStalenessThresholdMs: 3_600_000,
+        stalenessDurationMs: 3_600_000,
       },
     );
   });
@@ -273,29 +273,29 @@ describe("client", () => {
       expect.any(Function),
       {},
       {
-        configStalenessThresholdMs: 3_600_000,
+        stalenessDurationMs: 3_600_000,
       },
     );
   });
 
-  it("plumbs a custom configStalenessThreshold to the session as milliseconds", async () => {
+  it("plumbs a custom stalenessDuration to the session as milliseconds", async () => {
     setup();
 
-    await client("dynamodb", FakeClient, { ...options, configStalenessThreshold: 120 });
+    await client("dynamodb", FakeClient, { ...options, stalenessDuration: 120 });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      configStalenessThresholdMs: 120_000,
+      stalenessDurationMs: 120_000,
     });
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, 2 ** 53])(
-    "rejects an invalid configStalenessThreshold of %s before creating the SDK client",
-    async (configStalenessThreshold) => {
+    "rejects an invalid stalenessDuration of %s before creating the SDK client",
+    async (stalenessDuration) => {
       setup();
 
       await expect(
-        client("dynamodb", FakeClient, { ...options, configStalenessThreshold }),
-      ).rejects.toThrow(PhotonError);
+        client("dynamodb", FakeClient, { ...options, stalenessDuration }),
+      ).rejects.toThrow(PhotonConfigError);
       expect(createdClients).toHaveLength(0);
       expect(mocks.sessionConstructor).not.toHaveBeenCalled();
     },

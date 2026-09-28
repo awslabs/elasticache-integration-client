@@ -2,6 +2,7 @@ import { TextDecoder } from "node:util";
 
 import { Environment, type ParseResult } from "@marcbachmann/cel-js";
 
+import { PhotonConfigUnevaluable } from "./errors.js";
 import type { PhotonRequest } from "./models.js";
 
 interface CompiledPredicate {
@@ -34,11 +35,17 @@ function parseBody(body: Buffer | string | null): Record<string, unknown> | unde
   }
 }
 
-function compilePredicate(entry: unknown): CompiledPredicate | undefined {
-  if (!isRecord(entry) || typeof entry.expr !== "string") return undefined;
-  const variables = entry.vars === undefined ? {} : entry.vars;
-  if (!isRecord(variables)) return undefined;
+function compilePredicate(entry: unknown): CompiledPredicate {
+  if (!isRecord(entry)) {
+    throw new PhotonConfigUnevaluable("Predicate entry is not an object");
+  }
+  if (typeof entry.expr !== "string") {
+    throw new PhotonConfigUnevaluable("Predicate entry has no string 'expr'");
+  }
+  const variables = isRecord(entry.vars) ? entry.vars : {};
 
+  let expression: ParseResult;
+  let valid: boolean;
   try {
     const environment = new Environment({ homogeneousAggregateLiterals: false });
     for (const [name, type] of Object.entries(REQUEST_VARIABLES)) {
@@ -50,31 +57,45 @@ function compilePredicate(entry: unknown): CompiledPredicate | undefined {
       }
     }
 
-    const expression = environment.parse(entry.expr);
-    const checked = expression.check();
-    if (!checked.valid) return undefined;
-    return { expression, variables: { ...variables } };
-  } catch {
-    return undefined;
+    expression = environment.parse(entry.expr);
+    valid = expression.check().valid;
+  } catch (cause) {
+    throw new PhotonConfigUnevaluable(
+      `Predicate expression cannot be compiled: ${JSON.stringify(entry.expr)}`,
+      { cause },
+    );
   }
+  if (!valid) {
+    throw new PhotonConfigUnevaluable(
+      `Predicate expression cannot be compiled: ${JSON.stringify(entry.expr)}`,
+    );
+  }
+  return { expression, variables: { ...variables } };
 }
 
 /**
  * Compiles and evaluates the CEL request-routing predicates from photon.config.
  *
- * Invalid entries are ignored independently. Runtime errors and bodies that
- * are not JSON objects count as no match.
+ * Runtime errors and bodies that are not JSON objects count as no match. An
+ * entry that cannot be compiled is different: it taints the whole config,
+ * which is rejected rather than caching by the entries that did compile.
  */
 export class PredicateEvaluator {
   private constructor(private readonly predicates: readonly CompiledPredicate[]) {}
 
+  /**
+   * Compile the `predicates` of a resolved config, in wire order. A missing or
+   * non-array `predicates` compiles to no predicates, so every request passes
+   * through.
+   *
+   * @throws PhotonConfigUnevaluable An entry is not an object, has no string
+   *   `expr`, or has an expression this client cannot compile. Caching by the
+   *   entries that happened to compile would route a different set of requests
+   *   than the proxy resolved.
+   */
   static compile(rawConfig: Record<string, unknown> | undefined): PredicateEvaluator {
     if (!Array.isArray(rawConfig?.predicates)) return new PredicateEvaluator([]);
-    return new PredicateEvaluator(
-      rawConfig.predicates
-        .map((entry) => compilePredicate(entry))
-        .filter((entry): entry is CompiledPredicate => entry !== undefined),
-    );
+    return new PredicateEvaluator(rawConfig.predicates.map((entry) => compilePredicate(entry)));
   }
 
   /** Return true as soon as one compiled predicate matches the request. */

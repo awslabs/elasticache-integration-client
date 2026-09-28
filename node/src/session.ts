@@ -12,8 +12,10 @@
  *
  * Each active connection owns a ConfigRefresher, which periodically re-issues
  * photon.config and swaps in the new config and predicates. A refresh that
- * fails keeps the last known-good state. Prolonged soft failures discard the
- * connector and enter the normal reconnect/fallback path.
+ * fails keeps the last known-good state. Once the staleness window passes with
+ * no config confirmed by the server, the config is no longer trusted: the
+ * connection is dropped so a new one re-resolves it, and requests fall back
+ * meanwhile.
  */
 import { performance } from "node:perf_hooks";
 
@@ -21,6 +23,8 @@ import type { PhotonConnector } from "./connection.js";
 import {
   PhotonCacheUnavailable,
   PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
@@ -67,13 +71,25 @@ export interface ReconnectPolicyOptions {
   jitter?: number;
 }
 
-/** Default staleness threshold: one hour of unbroken soft refresh failures. */
-export const DEFAULT_CONFIG_STALENESS_THRESHOLD_MS = 3_600_000;
+/** Default staleness window: one hour. */
+export const DEFAULT_STALENESS_DURATION_MS = 3_600_000;
+
+/** A config failure that cannot fix itself, so it is logged at error level on every occurrence. */
+function isPermanentConfigFailure(error: PhotonError): boolean {
+  return error instanceof PhotonOverridesRejected || error instanceof PhotonConfigUnevaluable;
+}
+
+/** The cause of a permanent config failure, worded the same on every path. */
+function configFailureCause(error: PhotonError): string {
+  return error instanceof PhotonOverridesRejected
+    ? "the proxy rejected the overrides (CONFIG_INVALID)"
+    : "the config has a predicate this client cannot evaluate";
+}
 
 /** Session recovery settings. `clock` is injectable for deterministic staleness tests. */
 export interface PhotonSessionOptions extends ReconnectPolicyOptions {
-  /** Milliseconds of soft refresh failures tolerated before replacing the connector. */
-  configStalenessThresholdMs?: number;
+  /** How long the resolved config stays trusted while refreshes are failing, in milliseconds. */
+  stalenessDurationMs?: number;
   /** Monotonic clock in milliseconds. */
   clock?: () => number;
 }
@@ -209,10 +225,10 @@ export class PhotonSession {
   private factoryClosed = false;
   /** Whether `overrides` have already been sent, so a refresh can use the no-argument form. */
   private overridesSent = false;
-  private readonly configStalenessThresholdMs: number;
+  private readonly stalenessDurationMs: number;
   private readonly clock: () => number;
-  /** Set once the opening handshake succeeds, and on every refresh that confirms the config. */
-  private lastRefreshSuccess: number | undefined;
+  /** When the config stops being trusted; restarted by every confirmation from the server. */
+  private configDeadline = 0;
 
   constructor(
     connectorOrFactory: PhotonConnector | PhotonConnectorFactory,
@@ -224,8 +240,7 @@ export class PhotonSession {
       ? (connectorOrFactory as PhotonConnectorFactory)
       : singleConnectorFactory(connectorOrFactory as PhotonConnector);
     this.reconnectPolicy = resolveReconnectPolicy(sessionOptions, this.reconnectable);
-    this.configStalenessThresholdMs =
-      sessionOptions?.configStalenessThresholdMs ?? DEFAULT_CONFIG_STALENESS_THRESHOLD_MS;
+    this.stalenessDurationMs = sessionOptions?.stalenessDurationMs ?? DEFAULT_STALENESS_DURATION_MS;
     this.clock = sessionOptions?.clock ?? (() => performance.now());
   }
 
@@ -248,6 +263,11 @@ export class PhotonSession {
 
   get connectionState(): ConnectionState {
     return this.connection;
+  }
+
+  /** Whether the config has gone unconfirmed long enough to stop trusting it. */
+  get configStale(): boolean {
+    return this.clock() >= this.configDeadline;
   }
 
   /** Open the initial connection with bounded retries. */
@@ -299,10 +319,15 @@ export class PhotonSession {
   }
 
   /**
-   * Refresh the config. Null records success without changing state; a valid payload replaces the
-   * config, predicates, and interval. Soft failures retain the last-good state until the
-   * staleness threshold forces connector replacement. Transport failures start recovery
-   * immediately.
+   * Send one `photon.config` refresh and apply the result.
+   *
+   * A null reply installs nothing; any other reply replaces the config, predicates, and interval.
+   * Either way the server confirmed the config, restarting the staleness window. Nothing is sent
+   * while no connection is available.
+   *
+   * A failed refresh keeps the current config until the staleness window passes, then drops the
+   * connection so a new one re-resolves it. A successful refresh never drops. Transport failures
+   * start recovery immediately.
    */
   private async refreshOnce(): Promise<void> {
     const connector = this.connector;
@@ -331,7 +356,7 @@ export class PhotonSession {
         }
         return;
       }
-      this.handleSoftRefreshFailure(error.message, connector, refresher);
+      this.refreshFailed(error, connector, refresher);
       return;
     }
 
@@ -345,28 +370,38 @@ export class PhotonSession {
       return;
     }
     if (value === null) {
-      this.lastRefreshSuccess = this.clock();
+      this.configConfirmed();
       return;
     }
 
     try {
       const config = parseConfigResponse(value);
-      // Reschedule first: an interval this refresher cannot schedule is a malformed config, and
-      // rejecting it before the swap keeps the whole previous config rather than half of it.
+      const predicateEvaluator = PredicateEvaluator.compile(config.raw);
+      // Reschedule before the swap: an interval this refresher cannot schedule is a malformed
+      // config, and rejecting it first keeps the whole previous config rather than half of it.
       refresher.setInterval(config.refreshInterval);
       this.overridesSent = true;
       this._config = config;
-      this.predicateEvaluator = PredicateEvaluator.compile(config.raw);
-      this.lastRefreshSuccess = this.clock();
+      this.predicateEvaluator = predicateEvaluator;
+      this.configConfirmed();
     } catch (error) {
       if (!(error instanceof PhotonError)) throw error;
-      this.handleSoftRefreshFailure(error.message, connector, refresher);
+      this.refreshFailed(error, connector, refresher);
     }
   }
 
-  /** Log a soft failure and replace the connector once the threshold is reached. */
-  private handleSoftRefreshFailure(
-    message: string,
+  /** Restart the staleness window after any confirmation from the server. */
+  private configConfirmed(): void {
+    this.configDeadline = this.clock() + this.stalenessDurationMs;
+  }
+
+  /**
+   * Log a failed refresh, and drop `connector` once the staleness window has passed.
+   *
+   * Does nothing if the connector was replaced while the refresh was in flight.
+   */
+  private refreshFailed(
+    error: PhotonError,
     connector: PhotonConnector,
     refresher: ConfigRefresher,
   ): void {
@@ -378,14 +413,18 @@ export class PhotonSession {
     ) {
       return;
     }
-    console.warn(`photon.config refresh failed, keeping the previous config: ${message}`);
-    if (
-      this.lastRefreshSuccess !== undefined &&
-      this.clock() - this.lastRefreshSuccess >= this.configStalenessThresholdMs
-    ) {
+    if (isPermanentConfigFailure(error)) {
+      console.error(
+        `Config refresh failed: ${configFailureCause(error)}. Keeping the last good config ` +
+          `until the staleness window drops the connection: ${error.message}`,
+      );
+    } else {
+      console.warn(`Config refresh failed; keeping the current config: ${error.message}`);
+    }
+    if (this.configStale) {
       console.warn(
-        `photon.config has been stale for at least ${this.configStalenessThresholdMs}ms; ` +
-          "replacing the connector and using outage fallback",
+        `No config confirmed for ${this.stalenessDurationMs / 1_000}s; ` +
+          "dropping the connection so a new one resolves it",
       );
       this.handleDisconnect(connector);
     }
@@ -484,8 +523,21 @@ export class PhotonSession {
     await connector.connect();
     await connector.authenticate();
     const [command, args] = serializeConfig(this.overrides);
-    const config = parseConfigResponse(await connector.execute(command, ...args));
-    return { config, evaluator: PredicateEvaluator.compile(config.raw) };
+    const reply = await connector.execute(command, ...args);
+    try {
+      const config = parseConfigResponse(reply);
+      return { config, evaluator: PredicateEvaluator.compile(config.raw) };
+    } catch (error) {
+      // Logged on every attempt: the reconnect loop discards its failures, and these never
+      // fix themselves.
+      if (error instanceof PhotonError && isPermanentConfigFailure(error)) {
+        console.error(
+          `Configuring a connection failed: ${configFailureCause(error)}. ` +
+            `The connection is closed and retried: ${error.message}`,
+        );
+      }
+      throw error;
+    }
   }
 
   private async initializeWithTimeout(
@@ -523,7 +575,7 @@ export class PhotonSession {
     this.predicateEvaluator = initialized.evaluator;
     this.connector = connector;
     this.overridesSent = true;
-    this.lastRefreshSuccess = this.clock();
+    this.configConfirmed();
     this.refresher = refresher;
     refresher.start();
   }

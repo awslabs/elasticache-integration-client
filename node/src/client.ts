@@ -3,7 +3,7 @@ import { PhotonConnector, type PhotonConnectorOptions } from "./connection.js";
 import { PhotonConfigError, PhotonError } from "./errors.js";
 import { PhotonHandle, type PhotonCompatibleClient } from "./middleware.js";
 import {
-  DEFAULT_CONFIG_STALENESS_THRESHOLD_MS,
+  DEFAULT_STALENESS_DURATION_MS,
   parseEndpoint,
   PhotonSession,
   type ReconnectPolicyOptions,
@@ -39,10 +39,11 @@ export interface PhotonClientOptions<TConfig extends object> {
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
   /**
-   * Positive whole seconds before soft config refresh failures replace the current connector and
-   * enter normal outage recovery. Defaults to 3600 (one hour).
+   * How long, in seconds, the resolved config stays trusted while refreshes are failing. Past it
+   * the connection is dropped so a new one re-resolves the config. Defaults to one hour; must be a
+   * positive whole number of seconds.
    */
-  configStalenessThreshold?: number;
+  stalenessDuration?: number;
 }
 
 interface InitializeOptions {
@@ -54,29 +55,21 @@ interface InitializeOptions {
   fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
   overrides: Readonly<Record<string, unknown>>;
-  configStalenessThresholdMs: number;
+  stalenessDurationMs: number;
 }
 
 /**
- * Validate and convert the public seconds-based staleness option to milliseconds.
+ * Validate and convert the public seconds-based staleness window to milliseconds.
  *
  * Runs before transport initialization so a bad value fails fast instead of after a connection
  * and IAM authentication have already succeeded.
  */
-function resolveConfigStalenessThresholdMs(thresholdSeconds: number | undefined): number {
-  if (thresholdSeconds === undefined) {
-    return DEFAULT_CONFIG_STALENESS_THRESHOLD_MS;
+function stalenessDurationMs(seconds: number | undefined): number {
+  if (seconds === undefined) return DEFAULT_STALENESS_DURATION_MS;
+  if (!Number.isSafeInteger(seconds * 1_000) || !Number.isInteger(seconds) || seconds <= 0) {
+    throw new PhotonConfigError("stalenessDuration must be a positive whole number of seconds");
   }
-  if (
-    !Number.isInteger(thresholdSeconds) ||
-    thresholdSeconds <= 0 ||
-    !Number.isSafeInteger(thresholdSeconds * 1000)
-  ) {
-    throw new PhotonError(
-      `Invalid configStalenessThreshold: must be a positive whole number of seconds, got ${thresholdSeconds}`,
-    );
-  }
-  return thresholdSeconds * 1000;
+  return seconds * 1_000;
 }
 
 /**
@@ -120,7 +113,7 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     ...(options.fallbackDuration === undefined
       ? {}
       : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
-    configStalenessThresholdMs: options.configStalenessThresholdMs,
+    stalenessDurationMs: options.stalenessDurationMs,
   };
   const session = new PhotonSession(connectorFactory, options.overrides, reconnectPolicy);
   try {
@@ -174,9 +167,9 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     fallbackDuration,
     reconnectPolicy,
     overrides = {},
-    configStalenessThreshold,
+    stalenessDuration,
   } = options;
-  const configStalenessThresholdMs = resolveConfigStalenessThresholdMs(configStalenessThreshold);
+  const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
   const sdkClient = new ClientCtor({
     ...clientConfig,
     ...(region === undefined ? {} : { region }),
@@ -192,7 +185,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
       ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
       overrides,
-      configStalenessThresholdMs,
+      stalenessDurationMs: resolvedStalenessDurationMs,
     });
   } catch (error) {
     try {

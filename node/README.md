@@ -53,17 +53,17 @@ by the predicate's `vars` object.
 
 A request is sent to Photon when any predicate evaluates to `true`. Otherwise,
 the original signed SDK request continues to the configured origin transport
-without a cache round trip. Invalid predicates are ignored independently.
-Evaluation errors and malformed or non-object JSON bodies count as no match.
+without a cache round trip. Evaluation errors and malformed or non-object JSON
+bodies count as no match. A predicate that cannot be compiled is different: one
+bad entry rejects the whole config rather than caching by the entries that did
+compile, because those would route a different set of requests than the proxy
+resolved. `client()` fails on such a config, a reconnect retries, and a refresh
+keeps the last good config.
 
 The predicates are compiled when the session opens and recompiled whenever a
-refresh returns a new config. A refresh sends `photon.config` with no argument;
-a RESP3 null reply means unchanged and resets the staleness clock. Failed or
-malformed replies keep the last-known-good state and retry. After
-`configStalenessThreshold` seconds (default 3600), the session discards the
-current connector and starts background recovery. Requests then follow the
-configured outage fallback window; in-flight failures fall back only when
-idempotent. Transport timeouts and connection loss trigger the same recovery.
+refresh returns a new config. A refresh sends `photon.config` with no argument,
+and a RESP3 null reply means the config is unchanged. See
+[Config staleness](#config-staleness) for what happens when refreshes fail.
 
 ## Client
 
@@ -101,9 +101,7 @@ to repeat.
 `region` and `userId` are optional and otherwise resolve from the standard
 Node.js AWS configuration. `clientConfig` and `connectorOptions` are
 Node-specific; all `photon.config` overrides are passed through `overrides`.
-`configStalenessThreshold` is the positive whole number of seconds allowed
-between successful refreshes before the active connector is replaced (default
-3600).
+`stalenessDuration` is described under [Config staleness](#config-staleness).
 
 ## Reconnection and fallback
 
@@ -126,6 +124,29 @@ can safely use the origin. `fallbackDuration` controls that per-outage window:
 The window resets after every successful reconnect. Requests that do not match
 the resolved predicates continue to origin even after a finite window expires.
 `PhotonCacheUnavailable` is exported and marked retryable for the AWS SDK.
+
+## Config staleness
+
+The resolved config is re-fetched periodically on the live connection. A
+refresh that fails changes nothing: the last config the server confirmed stays
+in force and the next refresh retries. A config the server sends, an empty
+"unchanged" reply, and each new connection resolving its own config all count
+as confirmation.
+
+`stalenessDuration` bounds that tolerance. It is a positive whole number of
+seconds and defaults to one hour. A refresh that fails past it means the config
+can no longer be trusted, so Photon drops the connection, and bringing up the
+replacement resolves a fresh config. A refresh that succeeds restarts the
+window, so a healthy connection is never dropped. Requests fall back meanwhile under the
+`fallbackDuration` rules above. A request already in flight when the connection
+drops falls back only when it is idempotent.
+
+A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a config with a
+predicate this client cannot compile never fix themselves, so they log at error
+level on every occurrence, including each connection attempt. On refresh they
+still keep the last good config until the
+staleness window drops the connection. Refresh timeouts and connection loss
+start recovery immediately.
 
 ```ts
 const dynamodb = await client("dynamodb", DynamoDBClient, {

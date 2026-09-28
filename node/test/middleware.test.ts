@@ -351,7 +351,7 @@ describe("photon middleware", () => {
       connector,
       {},
       {
-        configStalenessThresholdMs: 1000,
+        stalenessDurationMs: 1000,
         clock: () => clock,
       },
     );
@@ -394,7 +394,7 @@ describe("photon middleware", () => {
       connector,
       {},
       {
-        configStalenessThresholdMs: 1000,
+        stalenessDurationMs: 1000,
         clock: () => clock,
       },
     );

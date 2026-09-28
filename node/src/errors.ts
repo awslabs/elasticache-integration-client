@@ -12,6 +12,12 @@ export class PhotonConnectionError extends PhotonError {}
 /** Invalid Photon client or reconnect configuration. */
 export class PhotonConfigError extends PhotonError {}
 
+/** The proxy rejected the `photon.config` overrides (`CONFIG_INVALID`). */
+export class PhotonOverridesRejected extends PhotonError {}
+
+/** The resolved config carried a predicate this client cannot evaluate. */
+export class PhotonConfigUnevaluable extends PhotonError {}
+
 /** A RESP frame was malformed or could not be decoded. */
 export class PhotonProtocolError extends PhotonError {}
 
