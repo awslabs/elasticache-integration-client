@@ -1,6 +1,7 @@
 package software.amazon.photon.predicate;
 
 import org.junit.jupiter.api.Test;
+import software.amazon.photon.exception.PhotonConfigUnevaluable;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.RequestMetadata;
 
@@ -14,6 +15,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PredicateEvaluatorTest {
@@ -38,29 +40,38 @@ class PredicateEvaluatorTest {
                 singletonMap("predicates", "not-a-list")).size());
     }
 
+    // One bad entry taints the whole config: caching by the entries that did compile would route
+    // a different set of requests than the proxy resolved.
     @Test
-    void missingExpressionAndUncompilableExpressionsAreDropped() {
-        List<Object> predicates = new ArrayList<>();
-        predicates.add(singletonMap("vars", singletonMap("ops", ALL_OPERATIONS)));
-        predicates.add(predicate("this is not (valid CEL", Collections.emptyMap()));
-        predicates.addAll(predicateEntries(defaultConfig()));
+    void anyUnevaluableEntryRejectsTheWholeConfig() {
+        Map<Object, Object> nonStringKeyVariables = new LinkedHashMap<>();
+        nonStringKeyVariables.put(7, "value");
+        List<Object> badEntries = Arrays.asList(
+                "not-an-object",
+                singletonMap("vars", Collections.emptyMap()),
+                predicate("this is not (valid CEL", Collections.emptyMap()),
+                predicate("operation == 1", Collections.emptyMap()),
+                predicate("true", nonStringKeyVariables));
 
-        PredicateEvaluator evaluator = PredicateEvaluator.compile(
-                singletonMap("predicates", predicates));
-
-        assertEquals(1, evaluator.size());
-        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", "{}")));
+        for (Object bad : badEntries) {
+            List<Object> predicates = new ArrayList<>();
+            predicates.add(predicate("operation == 'GetItem'", Collections.emptyMap()));
+            predicates.add(bad);
+            assertThrows(PhotonConfigUnevaluable.class,
+                    () -> PredicateEvaluator.compile(singletonMap("predicates", predicates)),
+                    String.valueOf(bad));
+        }
     }
 
     @Test
-    void predicateWithNonStringVariableKeyIsDropped() {
-        Map<Object, Object> invalidVariables = new LinkedHashMap<>();
-        invalidVariables.put(7, "value");
+    void nonObjectVarsAreTreatedAsNoVars() {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("expr", "operation == 'GetItem'");
+        entry.put("vars", "not-an-object");
 
-        PredicateEvaluator evaluator = PredicateEvaluator.compile(config(
-                predicate("true", invalidVariables)));
+        PredicateEvaluator evaluator = PredicateEvaluator.compile(config(entry));
 
-        assertEquals(0, evaluator.size());
+        assertTrue(evaluator.shouldRouteToPhoton(request("GetItem", "dynamodb", "{}")));
     }
 
     @Test

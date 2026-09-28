@@ -135,8 +135,8 @@ public final class PhotonAsyncHandle implements Closeable {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
-        private long configStalenessThresholdSeconds =
-                PhotonSession.DEFAULT_CONFIG_STALENESS_THRESHOLD_SECONDS;
+        private long stalenessDurationSeconds =
+                PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkAsyncHttpClient originHttpClient;
         private Executor executor;
         private int maxBufferedRequestBytes = DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
@@ -202,12 +202,12 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         /**
-         * Set how long soft config refresh failures may continue, in seconds since the last
-         * successful refresh, before the session closes the connector and enters reconnect and
-         * origin-fallback recovery (default: 3600).
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing.
+         * Past it the connection is dropped so a new one re-resolves the config. Defaults to one
+         * hour; must be a positive whole number of seconds.
          */
-        public Builder configStalenessThresholdSeconds(long configStalenessThresholdSeconds) {
-            this.configStalenessThresholdSeconds = configStalenessThresholdSeconds;
+        public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
+            this.stalenessDurationSeconds = stalenessDurationSeconds;
             return this;
         }
 
@@ -301,7 +301,7 @@ public final class PhotonAsyncHandle implements Closeable {
                     authProvider,
                     overrides,
                     reconnectPolicy,
-                    configStalenessThresholdSeconds);
+                    stalenessDurationSeconds);
         }
 
         private static ExecutorService createDefaultExecutor() {

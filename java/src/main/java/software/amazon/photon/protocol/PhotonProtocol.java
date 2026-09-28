@@ -3,6 +3,7 @@ package software.amazon.photon.protocol;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonOverridesRejected;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
@@ -39,6 +40,8 @@ public final class PhotonProtocol {
     public static final String CONFIG_COMMAND = "photon.config";
     public static final String REQUEST_COMMAND = "photon.request";
     public static final String PUSH_KIND_RESPONSE = "photon.response";
+    /** RESP error code the proxy returns when it rejects the {@code photon.config} overrides. */
+    public static final String CONFIG_INVALID_CODE = "CONFIG_INVALID";
 
     private static final Set<String> EXCLUDED_HEADERS;
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
@@ -126,10 +129,16 @@ public final class PhotonProtocol {
     /**
      * Parse a config response. Expects a JSON bulk string.
      * Rejects arrays and errors.
+     *
+     * @throws PhotonOverridesRejected the reply is a {@code CONFIG_INVALID} error
      */
     public static ResolvedConfig parseConfigResponse(RespValue value) {
         if (value instanceof RespError) {
             RespError error = (RespError) value;
+            if (CONFIG_INVALID_CODE.equals(error.getCode())) {
+                throw new PhotonOverridesRejected(
+                        "photon.config rejected: " + error.getCode() + " " + error.getMessage());
+            }
             throw new PhotonError("Server error: " + error.getCode() + " " + error.getMessage());
         }
         if (value instanceof RespArray) {

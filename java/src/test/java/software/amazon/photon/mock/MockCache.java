@@ -33,6 +33,8 @@ public class MockCache {
      * own config independently of the client. Mutable between ticks.
      */
     private String noArgConfigReply = null;
+    /** Error reply for a zero-argument {@code photon.config}; takes precedence when set. */
+    private RespError noArgConfigError = null;
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;
@@ -67,6 +69,11 @@ public class MockCache {
      */
     public void setNoArgConfigReply(String noArgConfigReply) {
         this.noArgConfigReply = noArgConfigReply;
+    }
+
+    /** Reply to zero-argument {@code photon.config} with an error. Pass {@code null} to clear. */
+    public void setNoArgConfigError(RespError noArgConfigError) {
+        this.noArgConfigError = noArgConfigError;
     }
 
     /**
@@ -203,6 +210,9 @@ public class MockCache {
 
         overridesSupplied = argCount == 1;
         if (argCount == 0) {
+            if (noArgConfigError != null) {
+                return noArgConfigError;
+            }
             if (noArgConfigReply == null) {
                 return RespNull.INSTANCE;
             }

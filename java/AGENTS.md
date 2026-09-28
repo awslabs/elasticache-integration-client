@@ -138,15 +138,17 @@ an explicit empty map, is resent), and applies the result. A RESP3 null reply
 means the server's config is unchanged, so nothing is applied or rescheduled;
 otherwise the reply is parsed, its predicates compiled, and both published
 together as one immutable snapshot, with the refresher's interval updated to
-match. A refresh failure (`PhotonError`) is logged and leaves the current
-config, predicates, and interval as last-known-good. If it kills the connector,
-the normal reconnect loop obtains a fresh connection and config; periodic ticks
-do nothing while reconnecting, and stale replies from replaced connectors are
-discarded. Every successful refresh, including a null reply, and every open or
-reconnect resets a staleness clock. Once soft failures (the connector is still
-alive) have continued for `configStalenessThresholdSeconds` (default 3600), the
-session closes the connector and enters the normal reconnect and
-origin-fallback path, matching the Node client.
+match. A refresh failure (`PhotonError`) that kills the connector starts the
+normal reconnect loop, which obtains a fresh connection and config; periodic
+ticks do nothing while reconnecting, and stale replies from replaced connectors
+are discarded. Any other refresh failure is logged and leaves the current
+config, predicates, and interval as last-known-good. Every config reply, null
+reply, open, and reconnect restarts the staleness window. A refresh that fails
+after `stalenessDurationSeconds` (default 3600) have passed without
+confirmation drops the connector into the normal reconnect and origin-fallback
+path. `PhotonOverridesRejected` (`CONFIG_INVALID`) and `PhotonConfigUnevaluable` 
+(a predicate that cannot be compiled, which rejects the whole config) are logged 
+at `SEVERE` on every occurrence.
 
 ## Security and test boundaries
 
