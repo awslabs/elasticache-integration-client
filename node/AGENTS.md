@@ -169,7 +169,8 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   contents.
 - `npm run pack:smoke` verifies the tarball contains both ESM and CommonJS
   entrypoints and excludes source, tests, cache artifacts, and private keys.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- `.github/workflows/node-release.yml` validates annotated release tags, builds
+  one npm tarball, and publishes that exact artifact through the protected
+  `release` environment. Keep npm publication tokenless and provenance-enabled.
 
 Keep changes small and reviewable.

@@ -1,0 +1,211 @@
+name: Node.js Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate (Node.js ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24]
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate source and tests
+        run: |
+          npm run check:idempotency
+          npm run format:check
+          npm run lint
+          npm run typecheck
+          npm test
+
+  package:
+    name: Build release tarball
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: node
+    outputs:
+      artifact-name: ${{ steps.metadata.outputs.artifact-name }}
+      dist-tag: ${{ steps.metadata.outputs.dist-tag }}
+      package-name: ${{ steps.metadata.outputs.package-name }}
+      tarball: ${{ steps.metadata.outputs.tarball }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: node/package-lock.json
+
+      - name: Validate release tag
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "Unsupported release tag: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+            echo "Release tag must be annotated: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          version="${RELEASE_TAG#v}"
+          package_version="$(node --input-type=commonjs -p "require('./package.json').version")"
+          if [[ "$version" != "$package_version" ]]; then
+            echo "Tag version $version does not match package.json version $package_version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and smoke test tarball
+        run: npm run pack:smoke
+
+      - name: Inspect package metadata
+        run: |
+          tarball="$(find .artifacts -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          test -n "$tarball"
+          npx --no-install publint "$tarball"
+          npx --no-install attw "$tarball"
+
+      - name: Record release metadata and checksum
+        id: metadata
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          package_name="$(node --input-type=commonjs -p "require('./package.json').name")"
+          tarball_path="$(find .artifacts -maxdepth 1 -type f -name '*.tgz' -print -quit)"
+          tarball="$(basename "$tarball_path")"
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            dist_tag="next"
+          else
+            dist_tag="latest"
+          fi
+          (
+            cd .artifacts
+            shasum -a 256 "$tarball" > "$tarball.sha256"
+          )
+          echo "artifact-name=photon-nodejs-$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
+          echo "package-name=$package_name" >> "$GITHUB_OUTPUT"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Upload immutable release artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.metadata.outputs.artifact-name }}
+          path: |
+            node/.artifacts/${{ steps.metadata.outputs.tarball }}
+            node/.artifacts/${{ steps.metadata.outputs.tarball }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish to npm
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: release
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: node
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24
+
+      - name: Download validated tarball
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: ${{ needs.package.outputs.artifact-name }}
+          path: node/.artifacts
+
+      - name: Verify artifact checksum
+        env:
+          TARBALL: ${{ needs.package.outputs.tarball }}
+        run: |
+          cd .artifacts
+          shasum -a 256 -c "$TARBALL.sha256"
+
+      - name: Verify trusted publishing prerequisites
+        run: |
+          node -e "const [major, minor] = process.versions.node.split('.').map(Number); if (major < 22 || (major === 22 && minor < 14)) process.exit(1)"
+          node -e "const { execFileSync } = require('node:child_process'); const [major, minor, patch] = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim().split('.').map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1)"
+
+      - name: Publish validated tarball
+        env:
+          DIST_TAG: ${{ needs.package.outputs.dist-tag }}
+          TARBALL: ${{ needs.package.outputs.tarball }}
+        run: npm publish ".artifacts/$TARBALL" --ignore-scripts --provenance --access public --tag "$DIST_TAG"
+
+      - name: Wait for npm propagation
+        env:
+          PACKAGE_NAME: ${{ needs.package.outputs.package-name }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          for attempt in {1..20}; do
+            published_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$RELEASE_VERSION" ]]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "$PACKAGE_NAME@$RELEASE_VERSION did not become available on npm" >&2
+          exit 1
+
+      - name: Smoke test published package
+        env:
+          PACKAGE_NAME: ${{ needs.package.outputs.package-name }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: node scripts/package-consumer-smoke.mjs "$PACKAGE_NAME@$RELEASE_VERSION" "$PACKAGE_NAME" "$RELEASE_VERSION"

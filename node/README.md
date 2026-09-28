@@ -190,5 +190,9 @@ Until the ElastiCache toolkit is published to npm, it is pinned as a Git
 submodule. Initialize it after cloning with
 `git submodule update --init --recursive`.
 
-The package builds ESM and CommonJS outputs, emits TypeScript declarations, and
-does not publish as part of this prototype.
+The package builds ESM and CommonJS outputs and emits TypeScript declarations.
+Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
+release workflow. It validates the tag against `package.json`, tests and
+inspects one tarball, then publishes that exact artifact through the protected
+`release` environment using npm trusted publishing. Release candidates use the
+`next` npm distribution tag; stable releases use `latest`.
