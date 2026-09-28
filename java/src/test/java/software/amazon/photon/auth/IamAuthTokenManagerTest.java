@@ -63,6 +63,25 @@ class IamAuthTokenManagerTest {
     }
 
     @Test
+    void refreshInvalidatesCachedTokenAndUsesRotatedCredentials() {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        IamAuthTokenManager manager = manager(
+                countingCredentials(credentialCalls, null),
+                Duration.ofMinutes(5));
+        try {
+            AuthCredentials rejected = manager.get();
+            AuthCredentials replacement = manager.refresh();
+
+            assertEquals(2, credentialCalls.get());
+            assertTrue(rejected.getToken().contains(FIRST_ACCESS_KEY));
+            assertTrue(replacement.getToken().contains(ROTATED_ACCESS_KEY));
+            assertEquals(replacement, manager.get());
+        } finally {
+            manager.close();
+        }
+    }
+
+    @Test
     void closeStopsCredentialAccess() {
         IamAuthTokenManager manager = manager(
                 countingCredentials(new AtomicInteger(), null),

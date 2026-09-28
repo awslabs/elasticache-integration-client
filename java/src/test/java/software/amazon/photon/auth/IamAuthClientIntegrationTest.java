@@ -14,11 +14,13 @@ import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTcpProxy;
 import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.resp.RespError;
+import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.session.PhotonClient;
 import software.amazon.photon.session.PhotonSession;
 import software.amazon.photon.session.ReconnectPolicy;
 
 import javax.net.ssl.SSLContext;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
@@ -149,6 +151,40 @@ class IamAuthClientIntegrationTest {
             assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
             assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
         }
+    }
+
+    @Test
+    void authRejectionForcesRefreshBeforeBoundedRetry() {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        cache.setAuthReplyFunction((userId, token) -> token.contains(FIRST_ACCESS_KEY)
+                ? new RespError("invalid-iam-credentials", "credentials rejected")
+                : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
+        IamAuthTokenProvider authProvider = authProvider(() -> {
+            int call = credentialCalls.incrementAndGet();
+            return AwsBasicCredentials.create(
+                    call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
+                    call == 1 ? "first-secret" : "rotated-secret");
+        });
+
+        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .sslContext(clientSslContext)
+                .authProvider(authProvider)
+                .origin(DynamoDbClient.builder(), builder -> builder
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(SDK_CREDENTIALS))
+                .build()) {
+            assertTrue(result.handle().isOpen());
+        }
+
+        assertEquals(2, credentialCalls.get());
+        List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
+        assertEquals(2, attempts.size());
+        assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
+        assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
+        assertEquals(
+                Arrays.asList("AUTH", "AUTH", "PHOTON.CONFIG"),
+                cache.getReceivedCommands());
     }
 
     @Test

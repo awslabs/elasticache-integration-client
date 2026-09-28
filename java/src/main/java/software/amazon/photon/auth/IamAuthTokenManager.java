@@ -79,6 +79,23 @@ public final class IamAuthTokenManager
     }
 
     /**
+     * Invalidate the current token and synchronously install a replacement.
+     *
+     * <p>Use after the Photon endpoint rejects cached IAM credentials. The
+     * rejected connection must be discarded before opening a replacement.
+     */
+    public AuthCredentials refresh() {
+        try {
+            String token = toolkitTokenManager.refreshToken();
+            return new AuthCredentials(toolkitTokenManager.getUserId(), token);
+        } catch (ToolkitInputException e) {
+            throw new PhotonError(e.getMessage(), e);
+        } catch (RuntimeException e) {
+            throw new PhotonError("Failed to force-refresh IAM auth token", e);
+        }
+    }
+
+    /**
      * Get the normalized user ID used in generated credentials.
      */
     public String getUserId() {

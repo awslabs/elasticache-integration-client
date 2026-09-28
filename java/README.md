@@ -105,6 +105,11 @@ clock skew and reconnect transit time. Configure an earlier refresh with
 
 Photon asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.
+If Photon rejects cached IAM credentials during `AUTH`, the failed connection
+is discarded, the manager force-refreshes the token with newly resolved AWS
+credentials, and the existing bounded connect or reconnect policy opens the
+next connection with the replacement token. Persistent IAM configuration
+errors still surface after the configured connection-attempt limit.
 Closing the Photon result or handle also closes the internally created manager;
 no additional lifecycle step is required. Generic caller-supplied auth
 providers remain caller-owned. `IamAuthTokenManager` is available for advanced

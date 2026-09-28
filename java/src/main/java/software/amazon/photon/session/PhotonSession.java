@@ -1,8 +1,10 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenManager;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonAuthenticationError;
 import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
@@ -297,10 +299,26 @@ public class PhotonSession implements Closeable {
         if (credentials == null) {
             throw new PhotonConnectionError("Auth provider returned null credentials");
         }
-        next.authenticate(credentials.getUserId(), credentials.getToken());
+        try {
+            next.authenticate(credentials.getUserId(), credentials.getToken());
+        } catch (PhotonAuthenticationError authFailure) {
+            forceRefreshAfterRejection(authFailure);
+            throw authFailure;
+        }
         ResolvedConfig nextConfig = next.configureAndStartReader(overrides);
         return new ConnectionSnapshot(
                 nextConfig, PredicateEvaluator.compile(nextConfig.getRaw()));
+    }
+
+    private void forceRefreshAfterRejection(PhotonAuthenticationError authFailure) {
+        if (!(authProvider instanceof IamAuthTokenManager)) {
+            return;
+        }
+        try {
+            ((IamAuthTokenManager) authProvider).refresh();
+        } catch (RuntimeException refreshFailure) {
+            authFailure.addSuppressed(refreshFailure);
+        }
     }
 
     private void beginReconnect(PhotonConnector failed) {
