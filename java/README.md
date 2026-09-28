@@ -183,9 +183,9 @@ ordinary transitive dependencies in the generated Photon POM.
 
 ## Releasing
 
-Java releases are built from annotated tags named `vMAJOR.MINOR.PATCH`, with an
-optional prerelease suffix such as `v1.2.0-rc.1`. The tag version must match
-`version` in `build.gradle.kts`.
+Java releases are built from annotated `vMAJOR.MINOR.PATCH` or
+`vMAJOR.MINOR.PATCH-rc.N` tags. The tag version must match `version` in
+`build.gradle.kts`.
 
 The `Java Release` workflow tests Java 8, 11, and 17, builds the main, sources,
 and Javadocs JARs once, validates their POM and contents, and runs clean Gradle
@@ -202,4 +202,6 @@ Configure these secrets on the `release` GitHub environment:
 
 After Maven Central propagation, the workflow resolves the published version
 from clean consumers and attaches the validated unsigned artifacts and
-checksums to the GitHub release.
+checksums to the GitHub release. A manual workflow run performs the same test,
+packaging, artifact validation, and consumer-smoke stages without entering the
+release environment or publishing to Maven Central.

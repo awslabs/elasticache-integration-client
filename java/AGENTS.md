@@ -164,6 +164,7 @@ discarded.
   with `-PreleasePublishing`, so normal Java 8 builds do not load the
   JDK-11+ publishing plugin. The tag-triggered workflow validates unsigned
   artifacts before its protected `release` environment signs and publishes
-  them.
+  them. Manual workflow dispatches perform the full validation as a
+  non-publishing dry run.
 
 Keep changes small and reviewable.
