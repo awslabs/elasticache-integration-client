@@ -137,15 +137,15 @@ as confirmation.
 seconds and defaults to one hour. A refresh that fails past it means the config
 can no longer be trusted, so Photon drops the connection, and bringing up the
 replacement resolves a fresh config. A refresh that succeeds restarts the
-window, so a healthy connection is never dropped. Requests fall back meanwhile under the
-`fallbackDuration` rules above. A request already in flight when the connection
+window, so a healthy connection is never dropped. Requests fall back meanwhile
+under the `fallbackDuration` rules above. A request already in flight when the connection
 drops falls back only when it is idempotent.
 
 A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a config with a
 predicate this client cannot compile never fix themselves, so they log at error
 level on every occurrence, including each connection attempt. On refresh they
-still keep the last good config until the
-staleness window drops the connection. Refresh timeouts and connection loss
+still keep the last good config until the staleness window drops the
+connection. Refresh timeouts and connection loss
 start recovery immediately.
 
 ```ts

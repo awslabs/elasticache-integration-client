@@ -50,6 +50,7 @@ function fakeSession(overrides: Partial<PhotonSession> & { isOpen?: boolean } = 
 /** A minimal PhotonConnector double for real-session recovery tests. */
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
   return {
+    isReady: true,
     connect: vi.fn(async () => undefined),
     authenticate: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string) =>
@@ -414,6 +415,7 @@ describe("photon middleware", () => {
       session,
       connectionLost,
       goStale: async () => {
+        expect(session.isConnectionHealthy).toBe(true);
         clock = 1000;
         await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
         expect(session.connectionState).toBe("reconnecting");
