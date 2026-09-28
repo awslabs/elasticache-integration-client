@@ -3,7 +3,6 @@ package software.amazon.photon.session;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.auth.IamAuthTokenManager;
 import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
@@ -35,7 +34,7 @@ public final class PhotonAsyncHandle implements Closeable {
     private final PhotonSession session;
     private final PhotonAsyncInterceptor interceptor;
     private final PhotonAsyncHttpClient httpClient;
-    private final IamAuthTokenManager ownedAuthManager;
+    private final ManagedIamAuthProvider ownedAuthProvider;
     private State state = State.CREATED;
 
     private PhotonAsyncHandle(PhotonSession session,
@@ -45,7 +44,7 @@ public final class PhotonAsyncHandle implements Closeable {
                               ExecutorService ownedExecutor,
                               int maxBufferedRequestBytes,
                               int maxConcurrentBodyCollectors,
-                              IamAuthTokenManager ownedAuthManager) {
+                              ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.interceptor = new PhotonAsyncInterceptor(
                 session,
@@ -56,7 +55,7 @@ public final class PhotonAsyncHandle implements Closeable {
                 maxBufferedRequestBytes,
                 maxConcurrentBodyCollectors);
         this.httpClient = interceptor.getHttpClient();
-        this.ownedAuthManager = ownedAuthManager;
+        this.ownedAuthProvider = ownedAuthProvider;
     }
 
     /**
@@ -109,8 +108,8 @@ public final class PhotonAsyncHandle implements Closeable {
                 httpClient.close();
             } finally {
                 try {
-                    if (ownedAuthManager != null) {
-                        ownedAuthManager.close();
+                    if (ownedAuthProvider != null) {
+                        ownedAuthProvider.close();
                     }
                 } finally {
                     state = State.CLOSED;
@@ -173,9 +172,12 @@ public final class PhotonAsyncHandle implements Closeable {
         /**
          * Set the auth provider.
          *
-         * <p>Caller-supplied generic providers remain caller-owned.
+         * <p>Other caller-supplied providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            if (authProvider instanceof IamAuthTokenProvider) {
+                return authProvider((IamAuthTokenProvider) authProvider);
+            }
             this.authProvider = authProvider;
             this.iamAuthProvider = null;
             return this;
@@ -265,10 +267,10 @@ public final class PhotonAsyncHandle implements Closeable {
         public PhotonAsyncHandle build() {
             validateConfiguration();
 
-            IamAuthTokenManager ownedAuthManager =
-                    iamAuthProvider != null ? iamAuthProvider.newTokenManager() : null;
+            ManagedIamAuthProvider ownedAuthProvider =
+                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
             Supplier<AuthCredentials> resolvedAuthProvider =
-                    ownedAuthManager != null ? ownedAuthManager : authProvider;
+                    ownedAuthProvider != null ? ownedAuthProvider : authProvider;
             boolean ownsOriginClient = originHttpClient == null;
             SdkAsyncHttpClient resolvedOriginClient = null;
             ExecutorService ownedExecutor = null;
@@ -288,7 +290,7 @@ public final class PhotonAsyncHandle implements Closeable {
                         ownedExecutor,
                         maxBufferedRequestBytes,
                         maxConcurrentBodyCollectors,
-                        ownedAuthManager);
+                        ownedAuthProvider);
             } catch (RuntimeException failure) {
                 if (ownedExecutor != null) {
                     ownedExecutor.shutdownNow();
@@ -296,8 +298,8 @@ public final class PhotonAsyncHandle implements Closeable {
                 if (ownsOriginClient && resolvedOriginClient != null) {
                     resolvedOriginClient.close();
                 }
-                if (ownedAuthManager != null) {
-                    ownedAuthManager.close();
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
                 }
                 throw failure;
             }

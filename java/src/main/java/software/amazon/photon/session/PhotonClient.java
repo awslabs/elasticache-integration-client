@@ -219,10 +219,14 @@ public final class PhotonClient {
          * .authProvider(iamAuth)
          * }</pre>
          *
-         * <p>Photon creates and closes an auto-refresh manager for a concrete
-         * {@code IamAuthTokenProvider}. Generic providers remain caller-owned.
+         * <p>Photon creates and closes an auto-refresh manager for an
+         * {@code IamAuthTokenProvider}, including one held through a
+         * {@code Supplier} reference. Other providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            if (authProvider instanceof IamAuthTokenProvider) {
+                return authProvider((IamAuthTokenProvider) authProvider);
+            }
             this.authProvider = authProvider;
             this.iamAuthProvider = null;
             return this;

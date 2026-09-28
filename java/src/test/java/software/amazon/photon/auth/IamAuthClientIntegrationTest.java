@@ -9,6 +9,7 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
 import software.amazon.photon.mock.MockTcpProxy;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -63,7 +65,7 @@ class IamAuthClientIntegrationTest {
     @Test
     void syncAndAsyncClientsAuthenticateWithFreshToolkitCredentials() {
         AtomicInteger credentialCalls = new AtomicInteger();
-        IamAuthTokenProvider authProvider = authProvider(() -> {
+        Supplier<AuthCredentials> authProvider = authProvider(() -> {
             int call = credentialCalls.incrementAndGet();
             return AwsBasicCredentials.create(
                     call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
@@ -105,6 +107,32 @@ class IamAuthClientIntegrationTest {
         assertEquals(
                 Arrays.asList("AUTH", "PHOTON.CONFIG", "AUTH", "PHOTON.CONFIG"),
                 cache.getReceivedCommands());
+    }
+
+    @Test
+    void nonOkSimpleAuthReplyDoesNotForceTokenRefresh() {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        cache.setAuthReplyFunction((userId, token) ->
+                new RespSimpleString("NOT-OK".getBytes(StandardCharsets.UTF_8)));
+        Supplier<AuthCredentials> authProvider = authProvider(() -> {
+            credentialCalls.incrementAndGet();
+            return AwsBasicCredentials.create(FIRST_ACCESS_KEY, "first-secret");
+        });
+
+        assertThrows(PhotonConnectionError.class, () -> PhotonClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .sslContext(clientSslContext)
+                .authProvider(authProvider)
+                .origin(DynamoDbClient.builder(), builder -> builder
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(SDK_CREDENTIALS))
+                .build());
+
+        assertEquals(1, credentialCalls.get());
+        assertEquals(3, cache.getAuthAttempts().size());
+        assertTrue(cache.getAuthAttempts().stream()
+                .allMatch(attempt -> attempt.getToken().contains(FIRST_ACCESS_KEY)));
+        assertAuthOnly(cache.getReceivedCommands());
     }
 
     @Test
@@ -160,7 +188,7 @@ class IamAuthClientIntegrationTest {
         cache.setAuthReplyFunction((userId, token) -> token.contains(FIRST_ACCESS_KEY)
                 ? new RespError("invalid-iam-credentials", "credentials rejected")
                 : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
-        IamAuthTokenProvider authProvider = authProvider(() -> {
+        Supplier<AuthCredentials> authProvider = authProvider(() -> {
             int call = credentialCalls.incrementAndGet();
             return AwsBasicCredentials.create(
                     call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,

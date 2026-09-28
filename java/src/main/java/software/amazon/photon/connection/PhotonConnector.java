@@ -326,7 +326,7 @@ public class PhotonConnector implements Closeable {
             String ok = new String(((RespSimpleString) authReply).getValue(), StandardCharsets.UTF_8);
             if (!"OK".equals(ok)) {
                 markDead();
-                throw new PhotonAuthenticationError("AUTH failed: " + ok);
+                throw new PhotonConnectionError("AUTH failed: " + ok);
             }
         } catch (PhotonConnectionError e) {
             throw e;

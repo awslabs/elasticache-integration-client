@@ -1,7 +1,6 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.auth.IamAuthTokenManager;
 import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
@@ -61,17 +60,17 @@ public class PhotonHandle implements Closeable {
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
     private final PhotonHttpClient httpClient;
-    private final IamAuthTokenManager ownedAuthManager;
+    private final ManagedIamAuthProvider ownedAuthProvider;
     private boolean opened = false;
     private boolean closed = false;
 
     private PhotonHandle(PhotonSession session, SdkHttpClient originClient,
                          boolean ownsOriginClient,
-                         IamAuthTokenManager ownedAuthManager) {
+                         ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
-        this.ownedAuthManager = ownedAuthManager;
+        this.ownedAuthProvider = ownedAuthProvider;
     }
 
     /**
@@ -136,8 +135,8 @@ public class PhotonHandle implements Closeable {
             try {
                 httpClient.close();
             } finally {
-                if (ownedAuthManager != null) {
-                    ownedAuthManager.close();
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
                 }
             }
         }
@@ -202,9 +201,12 @@ public class PhotonHandle implements Closeable {
         /**
          * Set the auth provider (required).
          *
-         * <p>Caller-supplied generic providers remain caller-owned.
+         * <p>Other caller-supplied providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            if (authProvider instanceof IamAuthTokenProvider) {
+                return authProvider((IamAuthTokenProvider) authProvider);
+            }
             this.authProvider = authProvider;
             this.iamAuthProvider = null;
             return this;
@@ -303,10 +305,10 @@ public class PhotonHandle implements Closeable {
                 }
             }
 
-            IamAuthTokenManager ownedAuthManager =
-                    iamAuthProvider != null ? iamAuthProvider.newTokenManager() : null;
+            ManagedIamAuthProvider ownedAuthProvider =
+                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
             Supplier<AuthCredentials> resolvedAuthProvider =
-                    ownedAuthManager != null ? ownedAuthManager : authProvider;
+                    ownedAuthProvider != null ? ownedAuthProvider : authProvider;
             SdkHttpClient origin = null;
             boolean ownsOrigin = originHttpClient == null;
             try {
@@ -321,13 +323,13 @@ public class PhotonHandle implements Closeable {
                         overrides,
                         reconnectPolicy);
                 return new PhotonHandle(
-                        session, origin, ownsOrigin, ownedAuthManager);
+                        session, origin, ownsOrigin, ownedAuthProvider);
             } catch (RuntimeException failure) {
                 if (ownsOrigin && origin != null) {
                     origin.close();
                 }
-                if (ownedAuthManager != null) {
-                    ownedAuthManager.close();
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
                 }
                 throw failure;
             }

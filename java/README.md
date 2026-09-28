@@ -19,7 +19,7 @@ override configuration remain in the normal SDK pipeline.
 IAM token generation and refresh are provided by the Amazon ElastiCache
 developer toolkit. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
-fixed 15-minute SigV4 signing contract. Photon sends the resulting bearer token
+SigV4 signing contract. Photon sends the resulting bearer token
 only in the TLS-protected `AUTH` exchange; origin request signing remains owned
 by the AWS SDK.
 
@@ -117,12 +117,12 @@ Photon closes only transports and executors it creates itself.
 ## IAM token refresh
 
 When a concrete `IamAuthTokenProvider` is supplied to `PhotonClient`,
-`PhotonHandle`, or `PhotonAsyncHandle`, Photon creates an internal
-`IamAuthTokenManager`. It caches the current IAM token and refreshes it in the
-background after five minutes by default. A refresh resolves AWS credentials
-again, retries transient signing failures while the current token remains
-valid, and reserves the final 20 seconds of the 15-minute token lifetime for
-clock skew and reconnect transit time. Configure an earlier refresh with
+`PhotonHandle`, or `PhotonAsyncHandle`, Photon creates and owns the toolkit
+token manager. It caches the current IAM token and refreshes it in the
+background. The refresh defaults, accepted range, retry behavior, and safety
+margin are defined by the
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh).
+Configure a custom refresh point with
 `IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
 
 Photon asks its manager for credentials on every connection and reconnect, so a
@@ -133,9 +133,8 @@ credentials, and the existing bounded connect or reconnect policy opens the
 next connection with the replacement token. Persistent IAM configuration
 errors still surface after the configured connection-attempt limit.
 Closing the Photon result or handle also closes the internally created manager;
-no additional lifecycle step is required. Generic caller-supplied auth
-providers remain caller-owned. `IamAuthTokenManager` is available for advanced
-manual lifecycle integration.
+no additional lifecycle step is required. Other caller-supplied auth providers
+remain caller-owned.
 
 ## Reconnection and fallback
 

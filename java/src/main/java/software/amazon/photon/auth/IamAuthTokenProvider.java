@@ -4,6 +4,9 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
+import software.amazon.elasticache.auth.ElastiCacheIamAuthTokenManager;
+import software.amazon.elasticache.auth.ToolkitInputException;
+import software.amazon.photon.exception.PhotonError;
 
 import java.time.Duration;
 import java.util.Objects;
@@ -19,9 +22,9 @@ import java.util.function.Supplier;
  *
  * <p>This provider implements {@code Supplier<AuthCredentials>} and can be
  * used directly with {@link software.amazon.photon.connection.PhotonConnector}.
- * When passed as a concrete provider to {@code PhotonClient},
- * {@code PhotonHandle}, or {@code PhotonAsyncHandle}, Photon creates and owns
- * an auto-refreshing manager from this configuration.
+ * When passed directly to {@code PhotonClient}, {@code PhotonHandle}, or
+ * {@code PhotonAsyncHandle}, including through a {@code Supplier} reference,
+ * Photon creates and owns an auto-refreshing manager from this configuration.
  *
  * <p>Usage:
  * <pre>{@code
@@ -59,8 +62,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
     /**
      * Generate fresh authentication credentials.
      *
-     * <p>Each call resolves credentials and mints a new token. The token
-     * is valid for 15 minutes but should be used immediately.
+     * <p>Each call resolves credentials and mints a new token. The toolkit
+     * owns the token validity contract.
      *
      * @return the user ID and token for AUTH
      */
@@ -92,15 +95,16 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
     }
 
     /**
-     * Create an independent auto-refreshing manager from this provider's
+     * Create an independent toolkit auto-refresh manager from this provider's
      * configuration.
      *
-     * <p>Photon clients and handles call this automatically when this concrete
-     * provider is passed to {@code authProvider(...)}.
+     * <p>Photon clients and handles call this automatically when this provider
+     * is passed to {@code authProvider(...)}.
      */
-    public IamAuthTokenManager newTokenManager() {
-        IamAuthTokenManager.Builder managerBuilder = IamAuthTokenManager.builder()
-                .cacheName(getCacheName())
+    public ElastiCacheIamAuthTokenManager newTokenManager() {
+        ElastiCacheIamAuthTokenManager.Builder managerBuilder =
+                ElastiCacheIamAuthTokenManager.builder()
+                .serverlessCacheName(getCacheName())
                 .userId(getUserId())
                 .region(getRegion())
                 .credentialsProvider(credentialsProvider);
@@ -110,7 +114,13 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         if (onTokenChanged != null) {
             managerBuilder.onTokenChanged(onTokenChanged);
         }
-        return managerBuilder.build();
+        try {
+            return managerBuilder.build();
+        } catch (ToolkitInputException e) {
+            throw new PhotonError(e.getMessage(), e);
+        } catch (RuntimeException e) {
+            throw new PhotonError("Failed to initialize IAM token auto-refresh", e);
+        }
     }
 
     /**
@@ -227,8 +237,10 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         /**
          * Set the token expiration duration.
          *
-         * <p>Retained for source compatibility. The ElastiCache toolkit fixes
-         * token lifetime at 15 minutes, so any other value is rejected.
+         * <p>Retained for source compatibility. The ElastiCache toolkit owns
+         * the token lifetime, so unsupported values are rejected. See the
+         * <a href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
          */
@@ -240,7 +252,10 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         /**
          * Set how long after issuance Photon-managed tokens refresh.
          *
-         * <p>The toolkit default is five minutes.
+         * <p>The accepted range, default, retry behavior, and safety margin are
+         * defined by the
+         * <a href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
          */
         public Builder refreshAfter(Duration refreshAfter) {
             this.refreshAfter = refreshAfter;

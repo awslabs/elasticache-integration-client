@@ -1,7 +1,6 @@
 package software.amazon.photon.session;
 
 import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.auth.IamAuthTokenManager;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonAuthenticationError;
@@ -524,11 +523,11 @@ public class PhotonSession implements Closeable {
     }
 
     private void forceRefreshAfterRejection(PhotonAuthenticationError authFailure) {
-        if (!(authProvider instanceof IamAuthTokenManager)) {
+        if (!(authProvider instanceof ManagedIamAuthProvider)) {
             return;
         }
         try {
-            ((IamAuthTokenManager) authProvider).refresh();
+            ((ManagedIamAuthProvider) authProvider).refresh();
         } catch (RuntimeException refreshFailure) {
             authFailure.addSuppressed(refreshFailure);
         }
