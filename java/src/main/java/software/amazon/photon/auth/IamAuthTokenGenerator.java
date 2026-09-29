@@ -19,11 +19,11 @@ import software.amazon.photon.exception.PhotonError;
  *
  * <p>Example token format:
  *
- * <pre>
+ * <pre>{@code
  * my-cache/?Action=connect&User=default&ResourceType=ServerlessCache
  * &X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=...
  * &X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=...
- * </pre>
+ * }</pre>
  *
  * <p>Usage:
  *

@@ -92,7 +92,7 @@ public final class PhotonProtocol {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Format metadata as "service=<svc>&op=<op>" encoded UTF-8. */
+    /** Format metadata as {@code "service=<svc>&op=<op>"} encoded UTF-8. */
     public static byte[] formatMetadata(String service, String operation) {
         String svc = service != null ? service : "";
         String op = operation != null ? operation : "";

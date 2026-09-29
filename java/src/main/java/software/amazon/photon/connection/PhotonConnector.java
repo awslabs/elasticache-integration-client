@@ -52,13 +52,13 @@ import software.amazon.photon.resp.RespValue;
  * <p>For simpler use, {@link #connectAndAuthenticate(String, String)} and {@link
  * #connectAndAuthenticate(Supplier, Map)} combine these steps.
  *
- * <h3>Thread Safety</h3>
+ * <h2>Thread Safety</h2>
  *
  * <p>This connection is thread-safe once fully connected. The {@code request()} method uses a
  * send-lock to serialize writes while allowing concurrent callers. A background reader thread
  * resolves positional and request-ID responses.
  *
- * <h3>Timeout Behavior</h3>
+ * <h2>Timeout Behavior</h2>
  *
  * <p>A timeout while a request is still FIFO-correlated closes the connection, because a late reply
  * could be matched to the wrong caller. A deferred request tracked by ID can time out
@@ -220,7 +220,7 @@ public class PhotonConnector implements Closeable {
      * Establish the TCP + TLS connection.
      *
      * <p>After this returns, the socket is connected and TLS handshake is complete, but no Photon
-     * protocol handshake has occurred. Call {@link #authenticate(String)} next.
+     * protocol handshake has occurred. Call {@link #authenticate(String, String)} next.
      *
      * @throws PhotonConnectionError if the connection fails
      */

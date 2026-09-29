@@ -1,8 +1,10 @@
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.Exec
 
 plugins {
     java
+    jacoco
     id("com.diffplug.spotless") version "8.10.3"
     id("net.ltgt.errorprone") version "5.1.1"
 }
@@ -13,6 +15,8 @@ version = "0.0.1"
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
+    withSourcesJar()
+    withJavadocJar()
 }
 
 repositories {
@@ -93,4 +97,38 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.test {
     useJUnitPlatform()
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
+// The vendored IAM toolkit is a files(...) dependency, so it is not inside the main JAR
+// and a generated POM would not declare it. Publishing is out of scope for now.
+val verifyJars by tasks.registering {
+    description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
+    val jars = mapOf(
+        tasks.jar to listOf("software/amazon/photon/session/PhotonClient.class", "idempotent-operations.json"),
+        tasks.named<Jar>("sourcesJar") to listOf("software/amazon/photon/session/PhotonClient.java"),
+        tasks.named<Jar>("javadocJar") to listOf("index.html")
+    )
+    jars.keys.forEach { inputs.file(it.flatMap { jar -> jar.archiveFile }) }
+    doLast {
+        jars.forEach { (jarTask, expected) ->
+            val jarFile = jarTask.get().archiveFile.get().asFile
+            ZipFile(jarFile).use { zip ->
+                expected.forEach { entry ->
+                    check(zip.getEntry(entry) != null) { "${jarFile.name} is missing $entry" }
+                }
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(verifyJars)
 }
