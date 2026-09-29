@@ -7,6 +7,8 @@
 cd python
 pip install -e '.[test]'   # runtime deps: boto3, botocore
 python -m pytest           # see tests/README.md for details
+pip install -e '.[dev]'    # pinned ruff, mypy, build, twine
+ruff format --check . && ruff check . && mypy
 ```
 
 Runtime requires Python ≥ 3.10. See [`tests/README.md`](tests/README.md) for the test layout and
