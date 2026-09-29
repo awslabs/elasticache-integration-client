@@ -40,7 +40,7 @@ import java.util.logging.Logger;
  * <p>Initial connection is bounded by {@link ReconnectPolicy#getConnectAttempts()}
  * and {@link ReconnectPolicy#getConnectionTimeoutMs()}. Once open, an idle or
  * in-flight disconnect starts one background reconnect loop. The loop obtains
- * fresh credentials, repeats {@code AUTH} and {@code photon.config}, and keeps
+ * fresh credentials, repeats {@code HELLO 3 AUTH} and {@code photon.config}, and keeps
  * trying until it succeeds or the session closes.
  *
  * <p>While no connector is available, matching requests use origin fallback
@@ -208,10 +208,10 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Open the session: connect, authenticate, perform the config handshake,
+     * Open the session: connect, negotiate RESP3 and authenticate, perform the config exchange,
      * compile the resolved predicates, then start the config refresher.
      *
-     * <p>Connect/authenticate/config failures are retried with a new connector and fresh
+     * <p>Connect/handshake/config failures are retried with a new connector and fresh
      * credentials. Once a connector is live, refresher construction and startup are local session
      * setup rather than connectivity, so a failure there closes the connector and fails
      * immediately instead of repeating a successful handshake. The session becomes {@code OPEN}
@@ -603,7 +603,7 @@ public class PhotonSession implements Closeable {
         if (credentials == null) {
             throw new PhotonConnectionError("Auth provider returned null credentials");
         }
-        next.authenticate(credentials.getUserId(), credentials.getToken());
+        next.handshake(credentials.getUserId(), credentials.getToken());
         try {
             ResolvedConfig nextConfig = next.configureAndStartReader(overrides);
             return new ConnectionSnapshot(

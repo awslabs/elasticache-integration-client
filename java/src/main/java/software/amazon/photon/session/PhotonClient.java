@@ -22,7 +22,7 @@ import java.util.function.Supplier;
  * Factory for creating AWS SDK clients wired up with Photon.
  *
  * <p>This provides a one-liner API that creates an SDK client, connects to Photon,
- * authenticates, performs the config handshake, and installs the interceptor
+ * negotiates RESP3 and authenticates, performs the config exchange, and installs the interceptor
  * and Photon-first HTTP transport with transparent origin fallback.
  *
  * <p>Usage:
@@ -248,7 +248,7 @@ public final class PhotonClient {
         }
 
         /**
-         * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
+         * Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000).
          */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
@@ -333,7 +333,7 @@ public final class PhotonClient {
          * Set the origin SDK client builder for a Photon-enabled client.
          *
          * <p>Calling {@link OriginBuilder#build()} on the returned builder connects to
-         * Photon, authenticates, performs the config handshake, installs the interceptor
+         * Photon, negotiates RESP3 and authenticates, performs the config exchange, installs the interceptor
          * and HTTP transport, and returns a {@link Result} containing the ready-to-use
          * SDK client.
          *
@@ -561,7 +561,7 @@ public final class PhotonClient {
         /**
          * Build the SDK client with Photon enabled.
          *
-         * <p>This connects to Photon, authenticates, performs the config handshake,
+         * <p>This connects to Photon, negotiates RESP3 and authenticates, performs the config exchange,
          * installs the interceptor and HTTP transport, and returns a {@link Result}
          * containing the ready-to-use SDK client.
          *

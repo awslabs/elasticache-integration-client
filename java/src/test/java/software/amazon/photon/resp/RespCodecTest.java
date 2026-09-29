@@ -6,7 +6,9 @@ import software.amazon.photon.exception.PhotonProtocolError;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -232,6 +234,44 @@ class RespCodecTest {
         assertTrue(array.getElements().get(2) instanceof RespSimpleString);
     }
 
+    // === Decode tests - Map ===
+
+    @Test
+    void decode_map() throws IncompleteFrame {
+        byte[] data = ("%2\r\n$5\r\nproto\r\n:3\r\n"
+                + "$6\r\nserver\r\n$6\r\nvalkey\r\n").getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+
+        Map<RespValue, RespValue> expected = new LinkedHashMap<>();
+        expected.put(new RespBulkString("proto".getBytes(StandardCharsets.UTF_8)),
+                new RespInteger(3));
+        expected.put(new RespBulkString("server".getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString("valkey".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(new RespMap(expected), result.getValue());
+        assertEquals(data.length, result.getPosition());
+    }
+
+    @Test
+    void decode_emptyMap() throws IncompleteFrame {
+        DecodeResult result = RespCodec.decode("%0\r\n".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(new RespMap(Collections.emptyMap()), result.getValue());
+    }
+
+    @Test
+    void decode_negativeMapLength_throwsProtocolError() {
+        byte[] data = "%-1\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_truncatedMapValue_throwsIncompleteFrame() {
+        byte[] data = "%1\r\n$5\r\nproto\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
     // === Decode tests - Push (>) ===
 
     @Test
@@ -293,6 +333,12 @@ class RespCodecTest {
     @Test
     void decode_largeArrayCount_doesNotPreallocateFromWireValue() {
         byte[] data = "*2000000000\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_largeMapCount_doesNotPreallocateFromWireValue() {
+        byte[] data = "%2000000000\r\n".getBytes(StandardCharsets.UTF_8);
         assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
     }
 

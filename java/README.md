@@ -20,7 +20,8 @@ IAM token generation is provided by the Amazon ElastiCache developer toolkit.
 The toolkit validates and lowercases cache names and user IDs, resolves fresh
 AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
 contract. Photon sends the resulting bearer token only in the TLS-protected
-`AUTH` exchange; origin request signing remains owned by the AWS SDK.
+`HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3 before the
+connection becomes usable; origin request signing remains owned by the AWS SDK.
 
 ## Request routing
 
@@ -120,8 +121,8 @@ try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder
 }
 ```
 
-`buildAsync` performs the Photon connection, authentication, and configuration
-handshake before returning. DynamoDB operations are asynchronous and do not
+`buildAsync` performs the Photon connection, RESP3/authentication handshake, and
+configuration exchange before returning. DynamoDB operations are asynchronous and do not
 block SDK event-loop threads while waiting for Photon.
 
 The default asynchronous origin transport is the SDK Netty HTTP client. Use
@@ -145,11 +146,11 @@ Photon closes only transports and executors it creates itself.
 Sync and async clients share the same recovery behavior. A disconnect starts
 one background reconnect loop immediately, even while the client is idle. Each
 attempt creates a new TLS connection, resolves fresh credentials, repeats
-`AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
+`HELLO 3 AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
 Reconnect attempts continue until one succeeds or the session closes.
 
 Initial startup remains bounded: by default Photon makes three attempts, and
-each complete connect, authentication, and configuration attempt is limited to
+each complete connect, HELLO/authentication, and configuration attempt is limited to
 five seconds.
 
 While reconnecting, cache-eligible requests may use the signed origin fallback.

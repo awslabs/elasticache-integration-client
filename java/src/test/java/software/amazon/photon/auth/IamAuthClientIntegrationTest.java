@@ -95,7 +95,7 @@ class IamAuthClientIntegrationTest {
         assertFalse(attempts.get(1).getToken().contains(FIRST_ACCESS_KEY));
         assertFalse(attempts.get(0).getToken().equals(attempts.get(1).getToken()));
         assertEquals(
-                Arrays.asList("AUTH", "PHOTON.CONFIG", "AUTH", "PHOTON.CONFIG"),
+                Arrays.asList("HELLO", "PHOTON.CONFIG", "HELLO", "PHOTON.CONFIG"),
                 cache.getReceivedCommands());
     }
 
@@ -115,11 +115,11 @@ class IamAuthClientIntegrationTest {
                         .credentialsProvider(SDK_CREDENTIALS))
                 .build());
 
-        assertTrue(error.getMessage().contains("AUTH failed"));
+        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertFalse(cache.getAuthAttempts().isEmpty());
         assertTrue(cache.getAuthAttempts().stream()
                 .allMatch(attempt -> attempt.getToken().contains("AKIAINVALIDCREDENTIAL")));
-        assertAuthOnly(cache.getReceivedCommands());
+        assertHelloOnly(cache.getReceivedCommands());
     }
 
     @Test
@@ -136,11 +136,11 @@ class IamAuthClientIntegrationTest {
                         .credentialsProvider(SDK_CREDENTIALS))
                 .build());
 
-        assertTrue(error.getMessage().contains("AUTH failed"));
+        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertEquals("expired-token", cache.getAuthAttempts().get(0).getToken());
         assertTrue(cache.getAuthAttempts().stream()
                 .allMatch(attempt -> "expired-token".equals(attempt.getToken())));
-        assertAuthOnly(cache.getReceivedCommands());
+        assertHelloOnly(cache.getReceivedCommands());
     }
 
     private static IamAuthTokenProvider authProvider(
@@ -153,8 +153,8 @@ class IamAuthClientIntegrationTest {
                 .build();
     }
 
-    private static void assertAuthOnly(List<String> commands) {
+    private static void assertHelloOnly(List<String> commands) {
         assertFalse(commands.isEmpty());
-        assertTrue(commands.stream().allMatch("AUTH"::equals));
+        assertTrue(commands.stream().allMatch("HELLO"::equals));
     }
 }

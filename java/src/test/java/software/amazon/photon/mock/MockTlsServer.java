@@ -179,6 +179,15 @@ public class MockTlsServer implements Closeable {
             for (RespValue element : elements) {
                 encodeValue(out, element);
             }
+        } else if (value instanceof RespMap) {
+            java.util.Map<RespValue, RespValue> entries = ((RespMap) value).getEntries();
+            String header = "%" + entries.size() + "\r\n";
+            byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
+            out.write(headerBytes, 0, headerBytes.length);
+            for (java.util.Map.Entry<RespValue, RespValue> entry : entries.entrySet()) {
+                encodeValue(out, entry.getKey());
+                encodeValue(out, entry.getValue());
+            }
         } else if (value instanceof RespPush) {
             List<RespValue> elements = ((RespPush) value).getElements();
             String header = ">" + elements.size() + "\r\n";

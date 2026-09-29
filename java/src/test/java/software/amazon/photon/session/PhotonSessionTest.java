@@ -883,7 +883,7 @@ class PhotonSessionTest {
         }
 
         @Override
-        public void authenticate(String userId, String authToken) {
+        public void handshake(String userId, String authToken) {
             // Test connections accept any credentials without a protocol exchange.
         }
 

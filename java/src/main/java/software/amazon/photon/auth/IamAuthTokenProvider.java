@@ -49,7 +49,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      * <p>Each call resolves credentials and mints a new token. The token
      * is valid for 15 minutes but should be used immediately.
      *
-     * @return the user ID and token for AUTH
+     * @return the user ID and token for the {@code HELLO 3 AUTH} handshake
      */
     @Override
     public AuthCredentials get() {

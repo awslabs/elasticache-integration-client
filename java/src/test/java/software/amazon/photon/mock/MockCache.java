@@ -40,8 +40,10 @@ public class MockCache {
     private boolean failureAfterReply = false;
     private BiFunction<String, String, RespValue> authReplyFunction =
             (userId, token) -> new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8));
+    private RespValue helloReply;
 
     private final List<String> receivedCommands = new ArrayList<>();
+    private final List<List<RespValue>> receivedCommandFrames = new ArrayList<>();
     private final List<ReceivedRequest> requests = new ArrayList<>();
     private final List<AuthAttempt> authAttempts = new ArrayList<>();
     private boolean overridesSupplied;
@@ -104,12 +106,20 @@ public class MockCache {
         this.authReplyFunction = Objects.requireNonNull(authReplyFunction, "authReplyFunction");
     }
 
+    public void setHelloReply(RespValue helloReply) {
+        this.helloReply = helloReply;
+    }
+
     public List<AuthAttempt> getAuthAttempts() {
         return Collections.unmodifiableList(authAttempts);
     }
 
     public List<String> getReceivedCommands() {
         return Collections.unmodifiableList(receivedCommands);
+    }
+
+    public List<List<RespValue>> getReceivedCommandFrames() {
+        return Collections.unmodifiableList(receivedCommandFrames);
     }
 
     public List<ReceivedRequest> getRequests() {
@@ -134,6 +144,7 @@ public class MockCache {
 
         String cmdName = extractString(command.get(0)).toUpperCase();
         receivedCommands.add(cmdName);
+        receivedCommandFrames.add(Collections.unmodifiableList(new ArrayList<>(command)));
 
         // Check failure mode
         if (failureMode != FailureMode.NONE) {
@@ -146,6 +157,9 @@ public class MockCache {
 
         RespValue response;
         switch (cmdName) {
+            case "HELLO":
+                response = handleHello(command);
+                break;
             case "AUTH":
                 response = handleAuth(command);
                 break;
@@ -180,6 +194,53 @@ public class MockCache {
         String token = extractString(command.get(2));
         authAttempts.add(new AuthAttempt(userId, token));
         return authReplyFunction.apply(userId, token);
+    }
+
+    private RespValue handleHello(List<RespValue> command) {
+        if (command.size() < 2) {
+            return new RespError("NOPROTO", "unsupported protocol version");
+        }
+        String protocol = extractString(command.get(1));
+        if (!"2".equals(protocol) && !"3".equals(protocol)) {
+            return new RespError("NOPROTO", "unsupported protocol version");
+        }
+
+        int trailerSize = command.size() - 2;
+        if (trailerSize != 0
+                && (trailerSize != 3
+                || !"AUTH".equalsIgnoreCase(extractString(command.get(2))))) {
+            return new RespError("ERR", "syntax error");
+        }
+        if (trailerSize == 3) {
+            String userId = extractString(command.get(3));
+            String token = extractString(command.get(4));
+            authAttempts.add(new AuthAttempt(userId, token));
+            RespValue authReply = authReplyFunction.apply(userId, token);
+            if (authReply instanceof RespError) {
+                return authReply;
+            }
+        }
+        if (helloReply != null) {
+            return helloReply;
+        }
+
+        Map<RespValue, RespValue> fields = new LinkedHashMap<>();
+        fields.put(bs("server"), bs("valkey"));
+        fields.put(bs("version"), bs("8.0.0"));
+        fields.put(bs("proto"), new RespInteger(Long.parseLong(protocol)));
+        fields.put(bs("id"), new RespInteger(1));
+        fields.put(bs("mode"), bs("cluster"));
+        fields.put(bs("role"), bs("primary"));
+        fields.put(bs("modules"), new RespArray(Collections.emptyList()));
+        if ("2".equals(protocol)) {
+            List<RespValue> flatFields = new ArrayList<>();
+            for (Map.Entry<RespValue, RespValue> field : fields.entrySet()) {
+                flatFields.add(field.getKey());
+                flatFields.add(field.getValue());
+            }
+            return new RespArray(flatFields);
+        }
+        return new RespMap(fields);
     }
 
     public static final class AuthAttempt {
@@ -308,5 +369,9 @@ public class MockCache {
         } else {
             throw new PhotonProtocolError("Expected bytes value, got: " + value);
         }
+    }
+
+    private RespBulkString bs(String value) {
+        return new RespBulkString(value.getBytes(StandardCharsets.UTF_8));
     }
 }

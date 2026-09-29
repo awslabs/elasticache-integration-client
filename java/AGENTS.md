@@ -80,13 +80,13 @@ require the corresponding tests, README, and build checks to change with it.
   whole connection for FIFO/send/write timeouts; deferred request-ID timeouts
   may fail only that request and drop a later push for the removed ID.
 - **Session lifecycle:** flag changes that permit requests before
-  `connect → authenticate → photon.config`, use after close, or duplicate
+  `connect → HELLO 3 AUTH → photon.config`, use after close, or duplicate
   teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
   and idempotent `close()`.
 - **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after AUTH failure, disabled
+  provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to AUTH, and keep
+  credentials for each fresh 15-minute token, confine tokens to the HELLO AUTH trailer, and keep
   verified TLS with hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
@@ -158,7 +158,7 @@ at `SEVERE` on every occurrence.
   other secret material.
 - The Java IAM toolkit is pinned under `vendor/` and built by Gradle through
   Maven. Keep token validation and signing in that library; Photon owns only
-  the adapter, TLS connection, and AUTH lifecycle.
+  the adapter, TLS connection, and HELLO/AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
 - Test TLS certificates under `src/test/` are localhost-only fixtures and must
   not be used for production.

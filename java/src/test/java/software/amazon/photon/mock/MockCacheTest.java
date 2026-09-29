@@ -165,6 +165,42 @@ class MockCacheTest {
         assertTrue(((RespError) response).getMessage().contains("exactly 2 arguments"));
     }
 
+    // === HELLO ===
+
+    @Test
+    void handleHello3_withInlineAuthReturnsMapAndRecordsCredentials() {
+        RespValue response = cache.handle(Arrays.asList(
+                bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user"), bs("password123")));
+
+        assertTrue(response instanceof RespMap);
+        RespValue proto = ((RespMap) response).getEntries().get(bs("proto"));
+        assertEquals(new RespInteger(3), proto);
+        assertEquals("iam-user", cache.getAuthAttempts().get(0).getUserId());
+        assertEquals("password123", cache.getAuthAttempts().get(0).getToken());
+    }
+
+    @Test
+    void handleHello2_returnsResp2Array() {
+        RespValue response = cache.handle(Arrays.asList(bs("HELLO"), bs("2")));
+
+        assertTrue(response instanceof RespArray);
+    }
+
+    @Test
+    void handleHello_rejectsUnsupportedProtocol() {
+        RespValue response = cache.handle(Arrays.asList(bs("HELLO"), bs("4")));
+
+        assertEquals("NOPROTO", ((RespError) response).getCode());
+    }
+
+    @Test
+    void handleHello_rejectsMalformedAuthTrailer() {
+        RespValue response = cache.handle(Arrays.asList(
+                bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user")));
+
+        assertEquals("ERR", ((RespError) response).getCode());
+    }
+
     // === Reply configuration ===
 
     @Test

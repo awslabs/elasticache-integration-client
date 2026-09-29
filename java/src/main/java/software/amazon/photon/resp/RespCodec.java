@@ -5,7 +5,9 @@ import software.amazon.photon.exception.PhotonProtocolError;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * RESP3 wire protocol encoder and decoder.
@@ -100,6 +102,8 @@ public final class RespCodec {
                 return decodeArray(data, start);
             case '>':
                 return decodePush(data, start);
+            case '%':
+                return decodeMap(data, start);
             case '_':
                 return decodeNull(data, start);
             default:
@@ -251,6 +255,34 @@ public final class RespCodec {
         }
         RespArray array = (RespArray) result.getValue();
         return new DecodeResult(new RespPush(array.getElements()), result.getPosition());
+    }
+
+    private static DecodeResult decodeMap(byte[] data, int start) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1);
+        if (crlfPos < 0) {
+            throw new IncompleteFrame("Incomplete map length");
+        }
+        String countStr = new String(
+                data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
+        int count;
+        try {
+            count = Integer.parseInt(countStr);
+        } catch (NumberFormatException e) {
+            throw new PhotonProtocolError("Invalid map count: " + countStr);
+        }
+        if (count < 0) {
+            throw new PhotonProtocolError("Invalid map count: " + count);
+        }
+
+        Map<RespValue, RespValue> entries = new LinkedHashMap<>();
+        int pos = crlfPos + 2;
+        for (int i = 0; i < count; i++) {
+            DecodeResult key = decode(data, pos);
+            DecodeResult value = decode(data, key.getPosition());
+            entries.put(key.getValue(), value.getValue());
+            pos = value.getPosition();
+        }
+        return new DecodeResult(new RespMap(entries), pos);
     }
 
     /**
