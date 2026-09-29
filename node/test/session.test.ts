@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  PhotonAuthError,
   PhotonCacheUnavailable,
   PhotonConfigError,
   PhotonOverridesRejected,
@@ -14,7 +15,7 @@ import { PhotonConnector } from "../src/connection.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import { RespError } from "../src/resp.js";
 import { PhotonSession, parseEndpoint } from "../src/session.js";
-import type { ConfigRefresher } from "../src/refresh.js";
+import type { Refresher } from "../src/refresh.js";
 import { MockCache, MockTcpProxy } from "./mock-cache.js";
 
 function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
@@ -22,6 +23,7 @@ function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnecto
     isReady: true,
     connect: vi.fn(async () => undefined),
     authenticate: vi.fn(async () => undefined),
+    reauthenticate: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string, ...args: Buffer[]) => {
       if (command !== "photon.config") {
         return [200, Buffer.from("content-type:application/json"), Buffer.from("ok")];
@@ -43,6 +45,7 @@ function controlledConnector(
     predicate?: string;
     connect?: () => Promise<void>;
     authenticate?: () => Promise<void>;
+    reauthenticate?: () => Promise<void>;
     config?: () => Promise<unknown>;
     request?: () => Promise<unknown>;
   } = {},
@@ -62,6 +65,9 @@ function controlledConnector(
     }),
     authenticate: vi.fn(async () => {
       await options.authenticate?.();
+    }),
+    reauthenticate: vi.fn(async () => {
+      await options.reauthenticate?.();
     }),
     execute: vi.fn(async (command: string) => {
       if (command === "photon.config") {
@@ -120,9 +126,13 @@ async function waitForState(session: PhotonSession, state: string): Promise<void
   });
 }
 
-/** Reach the session's private refresher; lifecycle assertions need it, callers do not. */
-function refresherOf(session: PhotonSession): ConfigRefresher | undefined {
-  return (session as unknown as { refresher: ConfigRefresher | undefined }).refresher;
+/** Reach the session's private refreshers; lifecycle assertions need them, callers do not. */
+function configRefresherOf(session: PhotonSession): Refresher | undefined {
+  return (session as unknown as { configRefresher: Refresher | undefined }).configRefresher;
+}
+
+function reauthRefresherOf(session: PhotonSession): Refresher | undefined {
+  return (session as unknown as { reauthRefresher: Refresher | undefined }).reauthRefresher;
 }
 
 describe("PhotonSession", () => {
@@ -379,7 +389,7 @@ describe("PhotonSession", () => {
     expect(connector.execute).toHaveBeenCalledOnce();
   });
 
-  it("starts a refresher on the resolved interval once predicates are compiled", async () => {
+  it("starts config and authentication refreshers after opening", async () => {
     const delays: number[] = [];
     const realSetTimeout = globalThis.setTimeout;
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
@@ -397,8 +407,11 @@ describe("PhotonSession", () => {
 
       // The refresher is scheduled from the config's 60s interval, +/- 20% jitter.
       const refreshDelays = delays.filter((delay) => delay >= 48_000 && delay <= 72_000);
+      const reauthDelays = delays.filter((delay) => delay >= 720_000 && delay <= 1_080_000);
       expect(refreshDelays).toHaveLength(1);
-      expect(refresherOf(session)).toBeDefined();
+      expect(reauthDelays).toHaveLength(1);
+      expect(configRefresherOf(session)).toBeDefined();
+      expect(reauthRefresherOf(session)).toBeDefined();
     } finally {
       setTimeoutSpy.mockRestore();
       await session.close();
@@ -414,8 +427,55 @@ describe("PhotonSession", () => {
     const session = new PhotonSession(connector);
 
     await expect(session.open()).rejects.toThrow("config failed");
-    expect(refresherOf(session)).toBeUndefined();
+    expect(configRefresherOf(session)).toBeUndefined();
+    expect(reauthRefresherOf(session)).toBeUndefined();
     expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it("re-authenticates the live connector", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    vi.mocked(connector.reauthenticate).mockClear();
+
+    await reauthenticateOnce(session);
+
+    expect(connector.reauthenticate).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("propagates a re-AUTH rejection so the refresher applies backoff", async () => {
+    const rejection = new PhotonAuthError("IAM AUTH rejected: WRONGPASS");
+    const connector = fakeConnector({
+      reauthenticate: vi.fn(async () => {
+        throw rejection;
+      }),
+    });
+    const session = new PhotonSession(connector);
+    await session.open();
+
+    await expect(reauthenticateOnce(session)).rejects.toBe(rejection);
+    await session.close();
+  });
+
+  it("skips re-AUTH while reconnecting", async () => {
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    vi.mocked(connector.reauthenticate).mockClear();
+    const internals = session as unknown as {
+      connection: "alive" | "reconnecting";
+      connector: PhotonConnector | undefined;
+    };
+    internals.connection = "reconnecting";
+    internals.connector = undefined;
+
+    await reauthenticateOnce(session);
+
+    expect(connector.reauthenticate).not.toHaveBeenCalled();
+    internals.connection = "alive";
+    internals.connector = connector;
+    await session.close();
   });
 
   it("reconnects when a refresh timeout makes the connector unusable", async () => {
@@ -427,7 +487,7 @@ describe("PhotonSession", () => {
       .mockReturnValue(replacement.connector);
     const session = new PhotonSession(factory, {}, { baseDelayMs: 1, maxDelayMs: 1, jitter: 0 });
     await session.open();
-    const refresher = refresherOf(session);
+    const refresher = configRefresherOf(session);
     if (refresher === undefined) throw new Error("expected a refresher");
     const stop = vi.spyOn(refresher, "stop");
     vi.mocked(initial.connector.execute).mockRejectedValue(
@@ -494,26 +554,32 @@ describe("PhotonSession", () => {
   });
 
   it.each(["close", "destroy"] as const)(
-    "stops the refresher before tearing the connector down on %s",
+    "stops both refreshers before tearing the connector down on %s",
     async (teardown) => {
       const connector = fakeConnector();
       const session = new PhotonSession(connector);
       await session.open();
-      const refresher = refresherOf(session);
-      if (refresher === undefined) throw new Error("expected a refresher");
+      const refresher = configRefresherOf(session);
+      const reauthRefresher = reauthRefresherOf(session);
+      if (refresher === undefined || reauthRefresher === undefined) {
+        throw new Error("expected both refreshers");
+      }
       const stop = vi.spyOn(refresher, "stop");
+      const stopReauth = vi.spyOn(reauthRefresher, "stop");
 
       if (teardown === "close") await session.close();
       else session.destroy();
 
       // A refresh must never fire into a half-closed connection.
       const stopOrder = stop.mock.invocationCallOrder[0];
+      const stopReauthOrder = stopReauth.mock.invocationCallOrder[0];
       const teardownMock = vi.mocked(teardown === "close" ? connector.close : connector.destroy);
       const teardownOrder = teardownMock.mock.invocationCallOrder[0];
-      if (stopOrder === undefined || teardownOrder === undefined) {
-        throw new Error("expected teardown to stop the refresher");
+      if (stopOrder === undefined || stopReauthOrder === undefined || teardownOrder === undefined) {
+        throw new Error("expected teardown to stop both refreshers");
       }
       expect(stopOrder).toBeLessThan(teardownOrder);
+      expect(stopReauthOrder).toBeLessThan(teardownOrder);
     },
   );
 
@@ -539,7 +605,8 @@ describe("PhotonSession", () => {
       await vi.advanceTimersByTimeAsync(60_000);
 
       expect(refreshOnce).toHaveBeenCalledOnce();
-      expect(vi.getTimerCount()).toBe(0);
+      // The config callback is still in flight; only the independent re-AUTH timer remains.
+      expect(vi.getTimerCount()).toBe(1);
 
       await session.close();
       finishRefresh();
@@ -1079,6 +1146,12 @@ describe("PhotonSession", () => {
     expect(
       () => new PhotonSession(() => connector, {}, { connectionTimeoutMs: aboveTimerLimit }),
     ).toThrow("at most 2147483647");
+    expect(
+      () => new PhotonSession(() => connector, {}, { authRefreshIntervalMs: aboveTimerLimit }),
+    ).toThrow("at most 2147483647");
+    expect(() => new PhotonSession(() => connector, {}, { authRefreshIntervalMs: 0 })).toThrow(
+      "greater than zero",
+    );
     expect(() => new PhotonSession(() => connector, {}, { baseDelayMs: aboveTimerLimit })).toThrow(
       "at most 2147483647",
     );
@@ -1120,6 +1193,15 @@ describe("PhotonSession", () => {
 /** Invoke the session's private refresh cycle directly, as the refresher's timer would. */
 function refreshOnce(session: PhotonSession): Promise<void> {
   return (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+}
+
+/** Invoke one background authentication refresh directly. */
+function reauthenticateOnce(session: PhotonSession): Promise<void> {
+  return (
+    session as unknown as {
+      reauthenticateOnce: () => Promise<void>;
+    }
+  ).reauthenticateOnce();
 }
 
 const REFRESHED_CONFIG = Buffer.from(
@@ -1235,7 +1317,7 @@ describe("PhotonSession config refresh", () => {
     const connector = fakeConnector();
     const session = new PhotonSession(connector);
     await session.open();
-    const refresher = refresherOf(session);
+    const refresher = configRefresherOf(session);
     if (refresher === undefined) throw new Error("expected a refresher");
     const setInterval = vi.spyOn(refresher, "setInterval");
     vi.mocked(connector.execute).mockResolvedValue(REFRESHED_CONFIG);
@@ -1256,7 +1338,7 @@ describe("PhotonSession config refresh", () => {
     const session = new PhotonSession(connector);
     await session.open();
     const config = session.config;
-    const refresher = refresherOf(session);
+    const refresher = configRefresherOf(session);
     if (refresher === undefined) throw new Error("expected a refresher");
     const setInterval = vi.spyOn(refresher, "setInterval");
     vi.mocked(connector.execute).mockImplementation(reply);
@@ -1447,7 +1529,7 @@ describe("PhotonSession config refresh", () => {
     const session = new PhotonSession(connector);
     await session.open();
     const config = session.config;
-    const refresher = refresherOf(session);
+    const refresher = configRefresherOf(session);
     if (refresher === undefined) throw new Error("expected a refresher");
     const setInterval = vi.spyOn(refresher, "setInterval");
     vi.mocked(connector.execute).mockResolvedValue(
@@ -1511,7 +1593,7 @@ describe("PhotonSession config refresh", () => {
     const session = new PhotonSession(connector);
 
     await expect(session.open()).rejects.toBeInstanceOf(ErrorType);
-    expect(refresherOf(session)).toBeUndefined();
+    expect(configRefresherOf(session)).toBeUndefined();
     expect(error).toHaveBeenCalledWith(expect.stringContaining("Configuring a connection failed"));
     error.mockRestore();
   });

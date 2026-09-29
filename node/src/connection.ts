@@ -6,6 +6,7 @@ import {
 } from "node:tls";
 
 import {
+  PhotonAuthError,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
@@ -398,14 +399,7 @@ export class PhotonConnector {
   async authenticate(): Promise<void> {
     if (this.authProvider === undefined) return;
 
-    let credentials: [string, string];
-    try {
-      credentials = await (typeof this.authProvider === "function"
-        ? this.authProvider()
-        : this.authProvider.getAuth());
-    } catch (error) {
-      throw new PhotonError("AUTH provider failed", { cause: error });
-    }
+    const credentials = await this.authCredentials();
 
     try {
       const reply = await this.execute(
@@ -424,6 +418,40 @@ export class PhotonConnector {
           await this.authProvider.refreshAuth?.();
         } catch {
           // Preserve the cache's AUTH rejection; the next attempt retries token refresh.
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Re-authenticate the ready connection with fresh credentials.
+   *
+   * An explicit rejection leaves the connection open so the proxy can keep
+   * serving with its last valid authentication state. A timeout or unexpected
+   * reply closes the connection for FIFO safety.
+   */
+  async reauthenticate(): Promise<void> {
+    if (this.authProvider === undefined) return;
+
+    const credentials = await this.authCredentials();
+    try {
+      const reply = await this.execute(
+        "AUTH",
+        Buffer.from(credentials[0], "utf8"),
+        Buffer.from(credentials[1], "utf8"),
+      );
+      this.verifyReauthenticationReply(reply);
+    } catch (error) {
+      if (error instanceof PhotonTimeoutError) {
+        await this.close();
+        throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
+      }
+      if (error instanceof PhotonAuthError && !this.isDead) {
+        try {
+          await this.authProvider.refreshAuth?.();
+        } catch {
+          // Preserve the cache's rejection; the next backoff attempt retries credential refresh.
         }
       }
       throw error;
@@ -839,6 +867,36 @@ export class PhotonConnector {
       this.markDead(error);
       throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
     }
+  }
+
+  private verifyReauthenticationReply(reply: RespValue): void {
+    if (reply instanceof RespError) {
+      throw new PhotonAuthError(`IAM AUTH rejected: ${reply.code}`);
+    }
+    if (reply === "OK") return;
+
+    this.markDead(new PhotonConnectionLost("unexpected AUTH reply"));
+    throw new PhotonAuthError(
+      `IAM AUTH failed: unexpected reply of type ${this.authReplyType(reply)}`,
+    );
+  }
+
+  private async authCredentials(): Promise<[string, string]> {
+    try {
+      return await (typeof this.authProvider === "function"
+        ? this.authProvider()
+        : this.authProvider!.getAuth());
+    } catch (error) {
+      throw new PhotonError("AUTH provider failed", { cause: error });
+    }
+  }
+
+  private authReplyType(reply: RespValue): string {
+    if (reply === null) return "null";
+    if (Buffer.isBuffer(reply)) return "Buffer";
+    if (Array.isArray(reply)) return "Array";
+    if (typeof reply === "object") return reply.constructor.name;
+    return typeof reply;
   }
 
   private async waitForResponse(response: Promise<RespValue>, timeout: number): Promise<RespValue> {

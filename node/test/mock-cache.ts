@@ -177,7 +177,7 @@ export class MockCache {
 
   // Contract-engine state.
   private config: Record<string, unknown>;
-  private readonly authResponse?: Reply;
+  private authResponse?: Reply;
   private readonly response?: Reply;
   private readonly responseFn?: ReplyFactory;
   private readonly failure?: Failure;
@@ -229,6 +229,11 @@ export class MockCache {
   /** Change the config returned by subsequent connection handshakes. */
   setConfig(config: Record<string, unknown>): void {
     this.config = config;
+  }
+
+  /** Change the AUTH reply used by subsequent attempts. */
+  setAuthResponse(reply?: Reply): void {
+    this.authResponse = reply;
   }
 
   /**
