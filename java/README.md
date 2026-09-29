@@ -19,8 +19,13 @@ override configuration remain in the normal SDK pipeline.
 IAM token generation is provided by the Amazon ElastiCache developer toolkit.
 The toolkit validates and lowercases cache names and user IDs, resolves fresh
 AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
-contract. Photon sends the resulting bearer token only in the TLS-protected
-`AUTH` exchange; origin request signing remains owned by the AWS SDK.
+contract. Photon obtains a fresh token and repeats `AUTH` on each live
+connection on a jittered 15-minute base interval by default. A rejected refresh
+is retried with reconnect backoff while the connection keeps serving with its
+last valid authentication state. A timed-out or malformed AUTH reply drops the
+connection for FIFO safety and starts normal recovery. Photon sends tokens only
+in TLS-protected `AUTH` exchanges; origin request signing remains owned by the
+AWS SDK.
 
 ## Request routing
 
@@ -169,6 +174,7 @@ Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
         .fallbackDurationSeconds(30)
         .connectAttempts(3)
         .connectionTimeoutMs(5_000)
+        .authRefreshIntervalSeconds(900)
         .baseDelayMs(100)
         .maxDelayMs(3_200)
         .jitterFactor(0.2)

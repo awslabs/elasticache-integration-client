@@ -86,8 +86,10 @@ require the corresponding tests, README, and build checks to change with it.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to AUTH, and keep
-  verified TLS with hostname checking as the default.
+  credentials for each fresh 15-minute token, periodically re-AUTH live
+  connections, keep the last valid state after an explicit rejection, invalidate
+  the stream after a timeout or malformed reply, confine tokens to AUTH, and
+  keep verified TLS with hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
   auth, session opening, and interceptor installation succeed, and clean up

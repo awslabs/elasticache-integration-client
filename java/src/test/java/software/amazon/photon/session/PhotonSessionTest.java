@@ -7,6 +7,7 @@ import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
 import software.amazon.photon.exception.PhotonConfigUnevaluable;
+import software.amazon.photon.exception.PhotonAuthError;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
@@ -130,15 +131,70 @@ class PhotonSessionTest {
         assertTrue(error.getMessage().contains("closed"));
     }
 
+    @Test
+    void reauthenticateOnce_usesFreshCredentialsOnTheLiveConnector() {
+        TestConnector connector = new TestConnector();
+        AtomicInteger credentialCalls = new AtomicInteger();
+        PhotonSession session = new PhotonSession(
+                () -> connector,
+                () -> new AuthCredentials(
+                        TEST_USER, "token-" + credentialCalls.incrementAndGet()),
+                null,
+                fastPolicy());
+        try {
+            session.open();
+
+            session.reauthenticateOnce();
+
+            assertEquals(2, credentialCalls.get());
+            assertEquals(1, connector.getReauthenticationCount());
+            assertEquals("token-2", connector.getLastReauthenticationToken());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void reauthenticateOnce_propagatesRejectionForRunnerBackoff() {
+        TestConnector connector = new TestConnector() {
+            @Override
+            public void reauthenticate(String userId, String authToken) {
+                throw new PhotonAuthError("IAM AUTH rejected: WRONGPASS");
+            }
+        };
+        PhotonSession session = new PhotonSession(
+                () -> connector,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        try {
+            session.open();
+            assertThrows(PhotonAuthError.class, session::reauthenticateOnce);
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void reconnectPolicy_rejectsNonPositiveAuthRefreshInterval() {
+        assertThrows(IllegalArgumentException.class, () -> ReconnectPolicy.builder()
+                .authRefreshIntervalSeconds(0)
+                .build());
+        assertThrows(IllegalArgumentException.class, () -> ReconnectPolicy.builder()
+                .authRefreshIntervalSeconds(-1)
+                .build());
+    }
+
     // === Refresher lifecycle tests ===
 
     /**
-     * Captures the refresher a session builds so a test can inspect its thread. The session's
+     * Captures the refreshers a session builds so a test can inspect their threads. The session's
      * package-private createRefresher() seam avoids adding any public constructor or getter.
      */
     private static class RefresherCapturingSession extends PhotonSession {
         private final List<String> teardownOrder;
-        private ConfigRefresher captured;
+        private Refresher configCaptured;
+        private Refresher reauthCaptured;
 
         RefresherCapturingSession(PhotonConnector connector, List<String> teardownOrder) {
             super(connector, TEST_USER, TEST_TOKEN);
@@ -146,16 +202,23 @@ class PhotonSessionTest {
         }
 
         @Override
-        ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
-            captured = new ConfigRefresher(intervalSeconds, refreshOnce) {
+        Refresher createRefresher(double intervalSeconds, Runnable refreshOnce, String name,
+                                  Refresher.FailureDelay failureDelay) {
+            Refresher captured = new Refresher(
+                    intervalSeconds, refreshOnce, name, 0, failureDelay) {
                 @Override
                 void stop(long timeoutMillis) {
                     if (teardownOrder != null) {
-                        teardownOrder.add("refresher.stop");
+                        teardownOrder.add(name + ".stop");
                     }
                     super.stop(timeoutMillis);
                 }
             };
+            if ("photon-refresher".equals(name)) {
+                configCaptured = captured;
+            } else if ("photon-reauth".equals(name)) {
+                reauthCaptured = captured;
+            }
             return captured;
         }
     }
@@ -163,15 +226,19 @@ class PhotonSessionTest {
     @Test
     void open_startsRefresherThread() {
         RefresherCapturingSession session = new RefresherCapturingSession(createConnection(), null);
-        assertNull(session.captured);
+        assertNull(session.configCaptured);
+        assertNull(session.reauthCaptured);
 
         session.open();
         try {
-            assertNotNull(session.captured);
-            assertNotNull(session.captured.thread());
-            assertTrue(session.captured.thread().isAlive());
-            assertEquals("photon-refresher", session.captured.thread().getName());
-            assertTrue(session.captured.thread().isDaemon());
+            assertNotNull(session.configCaptured);
+            assertNotNull(session.reauthCaptured);
+            assertTrue(session.configCaptured.thread().isAlive());
+            assertTrue(session.reauthCaptured.thread().isAlive());
+            assertEquals("photon-refresher", session.configCaptured.thread().getName());
+            assertEquals("photon-reauth", session.reauthCaptured.thread().getName());
+            assertTrue(session.configCaptured.thread().isDaemon());
+            assertTrue(session.reauthCaptured.thread().isDaemon());
         } finally {
             session.close();
         }
@@ -181,12 +248,15 @@ class PhotonSessionTest {
     void close_stopsRefresherThread() {
         RefresherCapturingSession session = new RefresherCapturingSession(createConnection(), null);
         session.open();
-        Thread refresherThread = session.captured.thread();
-        assertTrue(refresherThread.isAlive());
+        Thread configThread = session.configCaptured.thread();
+        Thread reauthThread = session.reauthCaptured.thread();
+        assertTrue(configThread.isAlive());
+        assertTrue(reauthThread.isAlive());
 
         session.close();
 
-        assertFalse(refresherThread.isAlive());
+        assertFalse(configThread.isAlive());
+        assertFalse(reauthThread.isAlive());
     }
 
     @Test
@@ -205,7 +275,8 @@ class PhotonSessionTest {
         session.open();
         session.close();
 
-        assertEquals(Arrays.asList("refresher.stop", "connector.close"), order);
+        assertEquals(Arrays.asList(
+                "photon-reauth.stop", "photon-refresher.stop", "connector.close"), order);
     }
 
     @Test
@@ -219,7 +290,8 @@ class PhotonSessionTest {
         PhotonSession session = new PhotonSession(connectorFactory,
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy()) {
             @Override
-            ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
+            Refresher createRefresher(double intervalSeconds, Runnable refreshOnce, String name,
+                                      Refresher.FailureDelay failureDelay) {
                 throw new IllegalStateException("refresher construction failed");
             }
         };
@@ -243,8 +315,9 @@ class PhotonSessionTest {
         PhotonSession session = new PhotonSession(connectorFactory,
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy()) {
             @Override
-            ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
-                return new ConfigRefresher(intervalSeconds, refreshOnce) {
+            Refresher createRefresher(double intervalSeconds, Runnable refreshOnce, String name,
+                                      Refresher.FailureDelay failureDelay) {
+                return new Refresher(intervalSeconds, refreshOnce, name, 0, failureDelay) {
                     @Override
                     void start() {
                         throw new RuntimeException("refresher start failed");
@@ -259,6 +332,40 @@ class PhotonSessionTest {
                 "refresher start failure must not retry the connect handshake");
         assertFalse(created.get(0).isReady(), "connector remained open after refresher failure");
         assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a failed open()");
+    }
+
+    @Test
+    void reauthRefresherStartFailure_stopsConfigRefresherAndCleansUpConnector() {
+        List<PhotonConnector> created = new ArrayList<>();
+        Supplier<PhotonConnector> connectorFactory = () -> {
+            PhotonConnector connector = createConnection();
+            created.add(connector);
+            return connector;
+        };
+        PhotonSession session = new PhotonSession(connectorFactory,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy()) {
+            @Override
+            Refresher createRefresher(double intervalSeconds, Runnable refreshOnce, String name,
+                                      Refresher.FailureDelay failureDelay) {
+                Refresher refresher =
+                        new Refresher(intervalSeconds, refreshOnce, name, 0, failureDelay);
+                if ("photon-reauth".equals(name)) {
+                    return new Refresher(intervalSeconds, refreshOnce, name, 0, failureDelay) {
+                        @Override
+                        void start() {
+                            throw new RuntimeException("reauth refresher start failed");
+                        }
+                    };
+                }
+                return refresher;
+            }
+        };
+
+        assertThrows(RuntimeException.class, session::open);
+        assertEquals(PhotonSession.State.CLOSED, session.getState());
+        assertEquals(1, created.size());
+        assertFalse(created.get(0).isReady());
+        assertFalse(refresherThreadExists(), "a background refresher leaked from a failed open()");
     }
 
     @Test
@@ -316,12 +423,14 @@ class PhotonSessionTest {
         assertFalse(refresherThreadExists(), "a photon-refresher thread leaked from a close() racing open()");
     }
 
-    /** True if any live thread is named "photon-refresher". */
+    /** True if either session background thread is still alive. */
     private static boolean refresherThreadExists() {
         Thread[] threads = new Thread[Thread.activeCount() * 2];
         int found = Thread.enumerate(threads);
         for (int i = 0; i < found; i++) {
-            if (threads[i] != null && "photon-refresher".equals(threads[i].getName())
+            if (threads[i] != null
+                    && ("photon-refresher".equals(threads[i].getName())
+                        || "photon-reauth".equals(threads[i].getName()))
                     && threads[i].isAlive()) {
                 return true;
             }
@@ -851,6 +960,8 @@ class PhotonSessionTest {
         private final boolean failConnect;
         private final String predicateExpression;
         private final AtomicInteger requestCount = new AtomicInteger();
+        private final AtomicInteger reauthenticationCount = new AtomicInteger();
+        private volatile String lastReauthenticationToken;
 
         private TestConnector() {
             this(false);
@@ -874,6 +985,14 @@ class PhotonSessionTest {
             return requestCount.get();
         }
 
+        private int getReauthenticationCount() {
+            return reauthenticationCount.get();
+        }
+
+        private String getLastReauthenticationToken() {
+            return lastReauthenticationToken;
+        }
+
         @Override
         public void connect() {
             if (failConnect) {
@@ -885,6 +1004,12 @@ class PhotonSessionTest {
         @Override
         public void authenticate(String userId, String authToken) {
             // Test connections accept any credentials without a protocol exchange.
+        }
+
+        @Override
+        public void reauthenticate(String userId, String authToken) {
+            reauthenticationCount.incrementAndGet();
+            lastReauthenticationToken = authToken;
         }
 
         @Override
@@ -1257,7 +1382,7 @@ class PhotonSessionTest {
             assertNull(refreshFailure.get());
             assertSame(replacementConfig, session.getConfig());
             assertNull(session.request(request()));
-            double nextDelay = session.refresher().nextRefreshDelaySeconds();
+            double nextDelay = session.configRefresher().nextRefreshDelaySeconds();
             assertTrue(nextDelay >= 24 && nextDelay <= 36,
                     "reconnect did not apply the replacement refresh interval: " + nextDelay);
         } finally {

@@ -7,13 +7,14 @@ import java.util.concurrent.ThreadLocalRandom;
  *
  * <p>Initial connection attempts are bounded. After an established connection
  * is lost, reconnect attempts continue until one succeeds or the session is
- * closed.
+ * closed. The same backoff schedule is used when background AUTH refresh fails.
  */
 public final class ReconnectPolicy {
 
     public static final long UNLIMITED_FALLBACK = -1;
     public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
     public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+    public static final long DEFAULT_AUTH_REFRESH_INTERVAL_SECONDS = 900;
     public static final long DEFAULT_BASE_DELAY_MS = 100;
     public static final long DEFAULT_MAX_DELAY_MS = 3_200;
     public static final double DEFAULT_JITTER_FACTOR = 0.2;
@@ -21,6 +22,7 @@ public final class ReconnectPolicy {
     private final long fallbackDurationSeconds;
     private final int connectAttempts;
     private final long connectionTimeoutMs;
+    private final long authRefreshIntervalSeconds;
     private final long baseDelayMs;
     private final long maxDelayMs;
     private final double jitterFactor;
@@ -29,6 +31,7 @@ public final class ReconnectPolicy {
         this.fallbackDurationSeconds = builder.fallbackDurationSeconds;
         this.connectAttempts = builder.connectAttempts;
         this.connectionTimeoutMs = builder.connectionTimeoutMs;
+        this.authRefreshIntervalSeconds = builder.authRefreshIntervalSeconds;
         this.baseDelayMs = builder.baseDelayMs;
         this.maxDelayMs = builder.maxDelayMs;
         this.jitterFactor = builder.jitterFactor;
@@ -55,6 +58,11 @@ public final class ReconnectPolicy {
     /** Return the timeout for one complete connection initialization attempt. */
     public long getConnectionTimeoutMs() {
         return connectionTimeoutMs;
+    }
+
+    /** Return how often a live connection obtains fresh credentials and runs AUTH again. */
+    public long getAuthRefreshIntervalSeconds() {
+        return authRefreshIntervalSeconds;
     }
 
     /** Return the first reconnect backoff delay. */
@@ -90,6 +98,7 @@ public final class ReconnectPolicy {
         private long fallbackDurationSeconds = UNLIMITED_FALLBACK;
         private int connectAttempts = DEFAULT_CONNECT_ATTEMPTS;
         private long connectionTimeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS;
+        private long authRefreshIntervalSeconds = DEFAULT_AUTH_REFRESH_INTERVAL_SECONDS;
         private long baseDelayMs = DEFAULT_BASE_DELAY_MS;
         private long maxDelayMs = DEFAULT_MAX_DELAY_MS;
         private double jitterFactor = DEFAULT_JITTER_FACTOR;
@@ -120,6 +129,12 @@ public final class ReconnectPolicy {
             return this;
         }
 
+        /** Set how often a live connection obtains fresh credentials and runs AUTH again. */
+        public Builder authRefreshIntervalSeconds(long authRefreshIntervalSeconds) {
+            this.authRefreshIntervalSeconds = authRefreshIntervalSeconds;
+            return this;
+        }
+
         /** Set the first reconnect backoff delay. */
         public Builder baseDelayMs(long baseDelayMs) {
             this.baseDelayMs = baseDelayMs;
@@ -141,6 +156,7 @@ public final class ReconnectPolicy {
         public ReconnectPolicy build() {
             requirePositive("connectAttempts", connectAttempts);
             requirePositive("connectionTimeoutMs", connectionTimeoutMs);
+            requirePositive("authRefreshIntervalSeconds", authRefreshIntervalSeconds);
             requirePositive("baseDelayMs", baseDelayMs);
             requirePositive("maxDelayMs", maxDelayMs);
             if (maxDelayMs < baseDelayMs) {
