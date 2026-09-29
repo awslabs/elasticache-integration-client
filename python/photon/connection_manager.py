@@ -118,7 +118,8 @@ class ConnectionManager:
         """Remove a serving connector and begin reconnecting.
 
         Used when a valid protocol reply says the connection's authentication is no longer usable,
-        and when the session stops trusting the connection's config.
+        when the session stops trusting the connection's config, and when a request sees its
+        connector die.
         The state changes before the connector is closed, so the request that observed the error
         can pass through immediately and later requests cannot race back onto the stale connector.
         """
@@ -143,12 +144,16 @@ class ConnectionManager:
     def wait_for_connector(self) -> PhotonConnector | None:
         """Return the live connector, waiting for a reconnect only right after a drop; else ``None``."""
         connector = self._connector
-        if connector is not None:
+        if connector is not None and connector.is_alive:
             return connector
+        if connector is not None:
+            # Dead but not yet removed by the reconnect thread: remove it now, which starts the hold.
+            self.invalidate_connection(connector)
         remaining = self._hold_deadline - time.monotonic()
         if remaining > 0:
             self._connected.wait(remaining)
-        return self._connector
+        connector = self._connector
+        return connector if connector is not None and connector.is_alive else None
 
     def init_connection(self) -> None:
         """Open the first connection, then watch it on a background thread.

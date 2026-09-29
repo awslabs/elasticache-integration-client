@@ -116,15 +116,27 @@ def test_missing_or_malformed_event_name_raises(event_name):
         hooks._aws_to_photon_request(request, event_name)
 
 
-def test_dropped_idempotent_photon_failure_passes_through():
+def test_dropped_idempotent_photon_failure_is_sdk_retryable():
+    # The SDK retries it, and the retry goes through the cache again.
     sdk = MockClient()
     session = mock_session()
     session.is_connection_healthy = False
     session.request.side_effect = PhotonConnectionLost("socket died")
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    responses = sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
-    assert first_non_none_response(responses) is None
+    with pytest.raises(ConnectionClosedError):
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+
+
+def test_dropped_idempotent_timeout_is_sdk_retryable():
+    sdk = MockClient()
+    session = mock_session()
+    session.is_connection_healthy = False
+    session.request.side_effect = PhotonTimeoutError("timed out")
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ReadTimeoutError):
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
 
 
 @pytest.mark.parametrize(
@@ -164,15 +176,15 @@ def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
         PhotonConnectionError("connect failed"),
     ],
 )
-def test_connection_errors_are_not_mislabeled_as_healthy_retries(photon_error):
+def test_idempotent_connection_errors_are_sdk_retryable(photon_error):
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = photon_error
     hooks.PhotonHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
-    with pytest.raises(type(photon_error)) as exc_info:
+    with pytest.raises(ConnectionClosedError) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
-    assert exc_info.value is photon_error
+    assert exc_info.value.__cause__ is photon_error
 
 
 def test_non_origin_rejection_is_non_retryable_and_does_not_fallback():

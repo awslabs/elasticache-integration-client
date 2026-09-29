@@ -290,10 +290,9 @@ class PhotonSession:
         (``request_wait``) for the reconnect to land before falling back — so a quick
         reconnect is ridden out rather than sending the request to the origin.
 
-        Once a request is sent to Photon, failures propagate to the hook. Direct
-        origin fallback is limited to a dropped connection and a replay-safe
-        operation. Retryable healthy-connection failures are returned through
-        botocore so the SDK or application decides whether to retry them.
+        Once a request is sent to Photon, failures propagate to the hook. For a
+        replay-safe operation the hook returns them through botocore as retryable, so
+        the SDK or application decides whether to retry them.
 
         Raises:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
@@ -306,7 +305,7 @@ class PhotonSession:
 
         # Read the connector once; the reconnect thread may replace it concurrently.
         connector = self._connection_manager.connector
-        if connector is None:
+        if connector is None or not connector.is_alive:
             # No live connector: wait briefly for a reconnect before falling back
             connector = self._connection_manager.wait_for_connector()
         if connector is None:

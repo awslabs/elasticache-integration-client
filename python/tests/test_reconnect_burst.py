@@ -13,7 +13,7 @@ import pytest
 
 import photon.session as session_mod
 from photon.connection_manager import ConnectionManager, ConnectionState
-from photon.exceptions import PhotonCacheUnavailable
+from photon.exceptions import PhotonCacheUnavailable, PhotonConnectionLost
 from photon.models import PhotonRequest, RequestMetadata
 from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession
@@ -91,6 +91,54 @@ def test_request_served_when_reconnect_lands_within_the_wait(monkeypatch):
         session.close()
 
 
+def _write() -> PhotonRequest:
+    return PhotonRequest(
+        method="POST",
+        url="https://dynamodb/",
+        headers={},
+        body=b"{}",
+        metadata=RequestMetadata(service="dynamodb", operation="PutItem"),
+    )
+
+
+def test_request_on_a_dead_connector_waits_for_the_reconnect(monkeypatch):
+    # The connector died but the reconnect thread has not taken it down yet. A write must not be
+    # sent on it and fail: it waits for the reconnect and is served on the new connector.
+    session = _session(monkeypatch, request_wait=2.0)
+    try:
+        cm = session._connection_manager
+        dead = mock_connector()
+        dead.is_alive = False
+        cm._connector = dead
+        assert session.request(_write()) is not None
+        dead.execute.assert_not_called()
+        assert cm.connector is not dead
+    finally:
+        session.close()
+
+
+def test_retry_after_an_in_flight_loss_waits_for_the_reconnect(monkeypatch):
+    # The loss goes up for the SDK to retry. The retry finds the dead connector, removes it,
+    # and is served on the new connector instead of failing again.
+    monkeypatch.setattr(session_mod, "should_route_to_photon", lambda predicates, request: True)
+    session = PhotonSession(mock_connector, policy=ReconnectPolicy(request_wait=2.0))
+    try:
+        cm = session._connection_manager
+        dying = cm.connector
+
+        def lose(*args, **kwargs):
+            dying.is_alive = False
+            raise PhotonConnectionLost("socket died")
+
+        dying.execute.side_effect = lose
+        with pytest.raises(PhotonConnectionLost):
+            session.request(_req())
+        assert session.request(_req()) is not None
+        assert cm.connector is not dying
+    finally:
+        session.close()
+
+
 # --- ConnectionManager wait_for_connector ----------------------------------------------------
 
 
@@ -124,6 +172,19 @@ def test_wait_for_connector_does_not_wait_after_the_hold():
     started = time.monotonic()
     assert cm.wait_for_connector() is None
     assert time.monotonic() - started < 0.05
+
+
+def test_wait_for_connector_takes_a_dead_connector_out_of_service():
+    cm = ConnectionManager(lambda: MagicMock(), lambda c: None, ReconnectPolicy(request_wait=0.05))
+    dead = MagicMock()
+    dead.is_alive = False
+    cm._connector = dead
+    cm._state = ConnectionState.ALIVE
+    cm._connected.set()
+    assert cm.wait_for_connector() is None
+    assert cm.connector is None
+    assert cm.state is ConnectionState.RECONNECTING
+    dead.close.assert_called_once()
 
 
 def test_invalidate_connection_starts_a_hold():
