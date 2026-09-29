@@ -50,9 +50,9 @@ def test_close_tears_down_photon():
     session = mock_session()
     hooks.PhotonHandle(sdk, session)
     sdk.close()
-    assert sdk.closed is True          # original close ran
+    assert sdk.closed is True  # original close ran
     session.close.assert_called_once()
-    assert _emit(sdk) is None          # handler unregistered: emit reaches no handler
+    assert _emit(sdk) is None  # handler unregistered: emit reaches no handler
     session.request.assert_not_called()
 
 
@@ -70,8 +70,9 @@ def test__aws_to_photon_request_maps_fields():
 
 def test_undecodable_header_value_raises_photon_error():
     """A non-UTF-8 bytes header value raises PhotonError, not a bare UnicodeDecodeError."""
-    request = mock.Mock(method="POST", url="https://host/",
-                        headers={"x-odd": b"\xff\xfe"}, body=b"{}")
+    request = mock.Mock(
+        method="POST", url="https://host/", headers={"x-odd": b"\xff\xfe"}, body=b"{}"
+    )
     with pytest.raises(PhotonError):
         hooks._aws_to_photon_request(request, "before-send.service.Operation")
 
@@ -82,8 +83,9 @@ def test_undecodable_header_value_passes_through():
     sdk = MockClient()
     session = mock_session()
     hooks.PhotonHandle(sdk, session)
-    request = mock.Mock(method="POST", url="https://host/",
-                        headers={"x-odd": b"\xff\xfe"}, body=b"{}")
+    request = mock.Mock(
+        method="POST", url="https://host/", headers={"x-odd": b"\xff\xfe"}, body=b"{}"
+    )
     responses = sdk.meta.events.emit("before-send.service.Operation", request=request)
     assert first_non_none_response(responses) is None
     session.request.assert_not_called()
@@ -93,8 +95,10 @@ def test_undecodable_header_value_passes_through():
     "event_name,expected",
     [
         ("before-send.service.Operation", ("service", "Operation")),
-        ("before-send.application-autoscaling.RegisterScalableTarget",
-         ("application-autoscaling", "RegisterScalableTarget")),
+        (
+            "before-send.application-autoscaling.RegisterScalableTarget",
+            ("application-autoscaling", "RegisterScalableTarget"),
+        ),
     ],
 )
 def test_parse_event_name(event_name, expected):
@@ -111,6 +115,7 @@ def test_missing_or_malformed_event_name_raises(event_name):
     with pytest.raises(PhotonError):
         hooks._aws_to_photon_request(request, event_name)
 
+
 def test_dropped_idempotent_photon_failure_passes_through():
     sdk = MockClient()
     session = mock_session()
@@ -122,11 +127,14 @@ def test_dropped_idempotent_photon_failure_passes_through():
     assert first_non_none_response(responses) is None
 
 
-@pytest.mark.parametrize("photon_error", [
-    PhotonTimeoutError("timed out"),
-    PhotonConnectionLost("socket died"),
-    PhotonConnectionError("connect failed"),
-])
+@pytest.mark.parametrize(
+    "photon_error",
+    [
+        PhotonTimeoutError("timed out"),
+        PhotonConnectionLost("socket died"),
+        PhotonConnectionError("connect failed"),
+    ],
+)
 def test_non_idempotent_transport_failure_is_non_retryable(photon_error):
     """A non-idempotent transport failure is not marked retryable."""
     sdk = MockClient()
@@ -149,10 +157,13 @@ def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
 
 
-@pytest.mark.parametrize("photon_error", [
-    PhotonConnectionLost("socket died"),
-    PhotonConnectionError("connect failed"),
-])
+@pytest.mark.parametrize(
+    "photon_error",
+    [
+        PhotonConnectionLost("socket died"),
+        PhotonConnectionError("connect failed"),
+    ],
+)
 def test_connection_errors_are_not_mislabeled_as_healthy_retries(photon_error):
     sdk = MockClient()
     session = mock_session()
@@ -238,10 +249,13 @@ def test_non_photon_error_propagates():
         _emit(sdk)
 
 
-@pytest.mark.parametrize("caught_as", [
-    PhotonCacheUnavailable,  # reaches the application instead of being passed through
-    ConnectionClosedError,   # under the botocore name an application already handles
-])
+@pytest.mark.parametrize(
+    "caught_as",
+    [
+        PhotonCacheUnavailable,  # reaches the application instead of being passed through
+        ConnectionClosedError,  # under the botocore name an application already handles
+    ],
+)
 def test_cache_unavailable_reaches_the_application(caught_as):
     """An escalated cache-unavailable error propagates, under either of its names."""
     sdk = MockClient()

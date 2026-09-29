@@ -67,11 +67,13 @@ def clock(monkeypatch):
 
 def stale_session(connector) -> PhotonSession:
     """A session whose config stops being trusted ``STALENESS_WINDOW`` seconds after a refresh."""
-    return PhotonSession(lambda: connector,
-                         config_policy=ConfigPolicy(staleness_duration=STALENESS_WINDOW))
+    return PhotonSession(
+        lambda: connector, config_policy=ConfigPolicy(staleness_duration=STALENESS_WINDOW)
+    )
 
 
 # --- lifecycle: opening the connection --------------------------------------------------------
+
 
 def test_connect_and_configure_order():
     """Construction drives connect(), handshake(), then the photon.config exchange."""
@@ -83,8 +85,9 @@ def test_connect_and_configure_order():
         "handshake",
         "execute",
     ]
-    connector.execute.assert_called_once_with("photon.config", b'{"flag":true}',
-                                              timeout=connector.config_timeout)
+    connector.execute.assert_called_once_with(
+        "photon.config", b'{"flag":true}', timeout=connector.config_timeout
+    )
 
 
 def test_resolved_config_stored_on_construction():
@@ -118,6 +121,7 @@ def test_policy_none_uses_the_default_policy():
 
 
 # --- lifecycle: refresher --------------------------------------------------------
+
 
 def test_construction_starts_refresher():
     """Construction starts a live refresher thread; close() stops it."""
@@ -155,6 +159,7 @@ def test_a_failed_refresher_closes_everything(failing_step, monkeypatch):
     """The connection is already open and configured by the time the runners are started, so a
     runner that cannot be constructed or started closes it rather than leaking it, and the
     original error propagates."""
+
     def fail(*args, **kwargs):
         raise RuntimeError("can't start new thread")
 
@@ -166,6 +171,7 @@ def test_a_failed_refresher_closes_everything(failing_step, monkeypatch):
 
 
 # --- refresh: fetch and apply ----------------------------------------------------
+
 
 def test_refresh_once_sends_the_no_argument_form():
     """A refresh tick sends photon.config with no argument: the connection was configured with
@@ -288,8 +294,11 @@ def test_refresh_once_unevaluable_config_alarms_at_once_without_dropping(caplog)
     connector.execute.reset_mock()  # discard the configure call
     connector.execute.side_effect = None
     connector.execute.return_value = json.dumps(
-        {"version": "1.0", "refresh_interval": 60,
-         "predicates": [{"expr": "this is not (valid CEL", "vars": {}}]}
+        {
+            "version": "1.0",
+            "refresh_interval": 60,
+            "predicates": [{"expr": "this is not (valid CEL", "vars": {}}],
+        }
     ).encode()
     with caplog.at_level("ERROR", logger="photon.session"):
         session._refresh_once()  # must not raise
@@ -299,13 +308,27 @@ def test_refresh_once_unevaluable_config_alarms_at_once_without_dropping(caplog)
     session.close()
 
 
-@pytest.mark.parametrize("reply, error, cause", [
-    (RespError("CONFIG_INVALID", "table does not exist"),
-     PhotonOverridesRejected, "CONFIG_INVALID"),
-    (json.dumps({"version": "1.0", "refresh_interval": 60,
-                 "predicates": [{"expr": "this is not (valid CEL", "vars": {}}]}).encode(),
-     PhotonConfigUnevaluable, "cannot evaluate"),
-])
+@pytest.mark.parametrize(
+    "reply, error, cause",
+    [
+        (
+            RespError("CONFIG_INVALID", "table does not exist"),
+            PhotonOverridesRejected,
+            "CONFIG_INVALID",
+        ),
+        (
+            json.dumps(
+                {
+                    "version": "1.0",
+                    "refresh_interval": 60,
+                    "predicates": [{"expr": "this is not (valid CEL", "vars": {}}],
+                }
+            ).encode(),
+            PhotonConfigUnevaluable,
+            "cannot evaluate",
+        ),
+    ],
+)
 def test_configuring_a_connection_alarms_a_config_failure_on_every_attempt(
     reply, error, cause, caplog
 ):
@@ -366,6 +389,7 @@ def test_predicates_swap_is_visible_to_the_next_request():
 
 
 # --- refresh: the staleness window ------------------------------------------------
+
 
 def test_a_configured_connection_starts_the_window_trusted(clock):
     """Configuring the connection confirms a config, so a new session trusts what it routes by."""
@@ -510,6 +534,7 @@ def test_the_window_runs_while_no_connection_is_available(clock):
 
 # --- replies from a closed connection -------------------------------------------------------
 
+
 def _config_reply(refresh_interval: int) -> bytes:
     return json.dumps(
         {"version": "1.0", "refresh_interval": refresh_interval, "predicates": []}
@@ -522,9 +547,11 @@ def _closes_before_install(connector, reply):
     Reproduces the gap between a reply arriving and the session installing it, which is where a
     connection can end and a replacement come up.
     """
+
     def _execute(command, *args, timeout=None):
         connector.is_alive = False
         return reply
+
     return _execute
 
 
@@ -601,6 +628,7 @@ def test_a_first_attempt_that_closes_before_its_install_is_retried():
 
 # --- request path ---------------------------------------------------------------
 
+
 def test_request_delegates_to_connector():
     """request() serializes the photon.request command, forwards it to execute(), and returns
     the parsed response."""
@@ -630,11 +658,13 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
     connector.execute.return_value = RespError("PHOTON_AUTH_ERROR", "missing FAS")
     session._connection_manager.invalidate_connection = mock.Mock()
 
-    response = session.request(PhotonRequest(
-        method="POST",
-        url="https://dynamodb.us-east-1.amazonaws.com/",
-        metadata=RequestMetadata(service="dynamodb", operation="UpdateItem"),
-    ))
+    response = session.request(
+        PhotonRequest(
+            method="POST",
+            url="https://dynamodb.us-east-1.amazonaws.com/",
+            metadata=RequestMetadata(service="dynamodb", operation="UpdateItem"),
+        )
+    )
 
     assert response is None
     session._connection_manager.invalidate_connection.assert_called_once_with(connector)
@@ -647,12 +677,18 @@ def test_request_after_close_is_rejected_before_connector_use():
     session.close()
     connector.execute.reset_mock()  # discard the constructor's config call
     with pytest.raises(PhotonError):
-        session.request(PhotonRequest(method="POST", url="https://x/",
-                                      metadata=RequestMetadata(service="dynamodb", operation="GetItem")))
+        session.request(
+            PhotonRequest(
+                method="POST",
+                url="https://x/",
+                metadata=RequestMetadata(service="dynamodb", operation="GetItem"),
+            )
+        )
     connector.execute.assert_not_called()
 
 
 # --- lifecycle: close -----------------------------------------------------------
+
 
 def test_close_delegates_to_connector():
     """close() delegates to the connector; the connector's own close() is idempotent."""
@@ -672,6 +708,7 @@ def test_is_open_tracks_lifecycle():
 
 
 # --- endpoint parsing -----------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "endpoint,expected",

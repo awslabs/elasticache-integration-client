@@ -12,7 +12,7 @@ Where Photon hooks into the boto3 client event lifecycle
     3. provide-client-params
     4. before-call
     5. request-created
-    6. before-send   <=== PHOTON HANDLER     
+    6. before-send   <=== PHOTON HANDLER
     7. needs-retry
     8. after-call
     9. after-call-error
@@ -87,8 +87,7 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
     # header values arrive from botocore as bytes; convert them to strings
     try:
         headers = {
-            k: v.decode() if isinstance(v, bytes) else v
-            for k, v in (request.headers or {}).items()
+            k: v.decode() if isinstance(v, bytes) else v for k, v in (request.headers or {}).items()
         }
     except UnicodeDecodeError as exc:
         raise PhotonError("Undecodable header value in prepared request") from exc
@@ -105,8 +104,9 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
 def _photon_to_aws_response(url: str, response: PhotonResponse) -> AWSResponse:
     """Adapt a PhotonResponse into a botocore ``AWSResponse`` that short-circuits the SDK call."""
     # wrap body so botocore can read it as a stream
-    raw = Urllib3Response(body=BytesIO(response.body), status=response.status_code,
-                          preload_content=False)
+    raw = Urllib3Response(
+        body=BytesIO(response.body), status=response.status_code, preload_content=False
+    )
     return AWSResponse(
         url=url,
         status_code=response.status_code,
@@ -170,11 +170,7 @@ class PhotonHandle:
                 http_request.metadata.service, http_request.metadata.operation
             )
             if isinstance(exc, PhotonRejectedError):
-                if (
-                    exc.code == _ORIGIN_ERROR
-                    and self._session.is_connection_healthy
-                    and idempotent
-                ):
+                if exc.code == _ORIGIN_ERROR and self._session.is_connection_healthy and idempotent:
                     raise PhotonOriginError(endpoint_url=request.url) from exc
                 raise
             if (

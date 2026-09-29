@@ -35,7 +35,7 @@ def _settle(outcome: Future, run: Callable[..., None], *args) -> None:
     try:
         run(*args)
     except BaseException as exc:
-        outcome.set_exception(exc)   # re-raised on the waiting thread, type intact
+        outcome.set_exception(exc)  # re-raised on the waiting thread, type intact
     else:
         outcome.set_result(None)
 
@@ -43,10 +43,10 @@ def _settle(outcome: Future, run: Callable[..., None], *args) -> None:
 class ConnectionState(Enum):
     """Lifecycle of the connection the manager owns."""
 
-    INIT = "init"                  # created, connection not open yet
-    ALIVE = "alive"                # live connector; requests go to the cache
+    INIT = "init"  # created, connection not open yet
+    ALIVE = "alive"  # live connector; requests go to the cache
     RECONNECTING = "reconnecting"  # no live connector; requests fall back or escalate
-    CLOSED = "closed"              # terminal; no further reconnects are started
+    CLOSED = "closed"  # terminal; no further reconnects are started
 
 
 class ConnectionManager:
@@ -84,7 +84,7 @@ class ConnectionManager:
         # monotonic deadline until which requests may pass through; only meaningful while RECONNECTING.
         self._fallback_deadline = 0.0
 
-        self._closing = threading.Event()      # set by close(); also interrupts a backoff sleep
+        self._closing = threading.Event()  # set by close(); also interrupts a backoff sleep
         self._reconnect_needed = threading.Event()  # "the connection needs rebuilding"
         self._reconnect_thread: threading.Thread | None = None
 
@@ -131,11 +131,7 @@ class ConnectionManager:
     def connection_healthy(self) -> bool:
         """Whether a live configured connector is currently available."""
         connector = self._connector
-        return (
-            self._state is ConnectionState.ALIVE
-            and connector is not None
-            and connector.is_alive
-        )
+        return self._state is ConnectionState.ALIVE and connector is not None and connector.is_alive
 
     def init_connection(self) -> None:
         """Open the first connection, then watch it on a background thread.
@@ -208,9 +204,12 @@ class ConnectionManager:
                 self._connect_and_configure(connector)
             else:
                 outcome: Future = Future()
-                threading.Thread(target=_settle,
-                                 args=(outcome, self._connect_and_configure, connector),
-                                 name=_CONNECT_THREAD, daemon=True).start()
+                threading.Thread(
+                    target=_settle,
+                    args=(outcome, self._connect_and_configure, connector),
+                    name=_CONNECT_THREAD,
+                    daemon=True,
+                ).start()
                 try:
                     outcome.result(timeout=timeout)
                 except FuturesTimeout as exc:
@@ -230,11 +229,11 @@ class ConnectionManager:
         ensuring that only one reconnect can run at a time.
         """
         while True:
-            self._reconnect_needed.wait() # sleeps until a reconnect was triggered
+            self._reconnect_needed.wait()  # sleeps until a reconnect was triggered
             # Cleared before the check, never after the rebuild: a connector that dies mid-rebuild
             # must leave the flag set, and it only ever notifies once.
             self._reconnect_needed.clear()
-            if self._closing.is_set():   # close() sets this too, to wake us up so we can exit
+            if self._closing.is_set():  # close() sets this too, to wake us up so we can exit
                 return
             try:
                 if self._begin_reconnect():
@@ -292,15 +291,19 @@ class ConnectionManager:
                 candidate = self._open_connection()
             except Exception as exc:
                 delay = self._policy.delay_for(attempt)
-                logger.debug("photon reconnect attempt %d failed (%s); retrying in %.3fs",
-                             attempt, exc, delay)
+                logger.debug(
+                    "photon reconnect attempt %d failed (%s); retrying in %.3fs",
+                    attempt,
+                    exc,
+                    delay,
+                )
                 if self._closing.wait(delay):
-                    return # close() happened during the backoff
+                    return  # close() happened during the backoff
                 continue
 
             if self._finish_reconnect(candidate, attempt):
-                return   # published, the connection is ALIVE
-            candidate.close()   # brought up but never published: ours to close, unlike a failed one
+                return  # published, the connection is ALIVE
+            candidate.close()  # brought up but never published: ours to close, unlike a failed one
             return
 
     def _finish_reconnect(self, candidate: PhotonConnector, attempt: int) -> bool:
@@ -324,7 +327,7 @@ class ConnectionManager:
             self._state = ConnectionState.CLOSED
             connector, candidate = self._connector, self._candidate
         self._closing.set()
-        self._reconnect_needed.set()     # wake the reconnect thread so it can exit
+        self._reconnect_needed.set()  # wake the reconnect thread so it can exit
         if candidate:
             # A candidate still being opened blocks on the network and never looks at _closing, so
             # closing it is what frees the reconnect thread. Without this, the join below waits out
@@ -335,8 +338,9 @@ class ConnectionManager:
         if thread and thread is not threading.current_thread():
             thread.join(timeout=_RECONNECT_JOIN_TIMEOUT)
             if thread.is_alive():
-                logger.warning("photon reconnect thread did not stop within %ss",
-                               _RECONNECT_JOIN_TIMEOUT)
+                logger.warning(
+                    "photon reconnect thread did not stop within %ss", _RECONNECT_JOIN_TIMEOUT
+                )
 
         if connector:
             connector.close()

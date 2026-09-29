@@ -50,9 +50,20 @@ DEFAULT_RESOLVED_CONFIG = {
     "predicates": [
         {
             "expr": "service == 'dynamodb' && operation in ops",
-            "vars": {"ops": ["GetItem", "BatchGetItem", "Query", "Scan", "PutItem", "UpdateItem",
-                             "DeleteItem", "BatchWriteItem", "TransactGetItems",
-                             "TransactWriteItems"]},
+            "vars": {
+                "ops": [
+                    "GetItem",
+                    "BatchGetItem",
+                    "Query",
+                    "Scan",
+                    "PutItem",
+                    "UpdateItem",
+                    "DeleteItem",
+                    "BatchWriteItem",
+                    "TransactGetItems",
+                    "TransactWriteItems",
+                ]
+            },
         }
     ],
 }
@@ -71,24 +82,27 @@ def table_allowlist_config(*tables: str) -> dict:
         "predicates": [
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.TableName) && body.TableName in allowed",
-                "vars": {"ops": ["GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem"],
-                         "allowed": allowed},
+                "&& has(body.TableName) && body.TableName in allowed",
+                "vars": {
+                    "ops": ["GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem"],
+                    "allowed": allowed,
+                },
             },
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.RequestItems) && size(body.RequestItems) > 0 "
-                        "&& body.RequestItems.all(t, t in allowed)",
+                "&& has(body.RequestItems) && size(body.RequestItems) > 0 "
+                "&& body.RequestItems.all(t, t in allowed)",
                 "vars": {"ops": ["BatchGetItem", "BatchWriteItem"], "allowed": allowed},
             },
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.TransactItems) && size(body.TransactItems) > 0 "
-                        "&& body.TransactItems.all(i, i.all(k, i[k].TableName in allowed))",
+                "&& has(body.TransactItems) && size(body.TransactItems) > 0 "
+                "&& body.TransactItems.all(i, i.all(k, i[k].TableName in allowed))",
                 "vars": {"ops": ["TransactGetItems", "TransactWriteItems"], "allowed": allowed},
             },
         ],
     }
+
 
 # Error codes the real cache uses in its `-<CODE> <message>` replies. They are
 # client-visible protocol, so the mock replies with the same names.
@@ -299,7 +313,7 @@ class MockCache:
         failure_command: str = "photon.request",  # which command triggers `failure` (e.g. "auth")
         failure_after_reply: bool = False,  # reply normally first, then apply `failure`
         no_arg_config_reply: dict | None = None,  # reply for no-arg photon.config; None = RESP3
-                                                   # null ("unchanged"). Mutable between ticks.
+        # null ("unchanged"). Mutable between ticks.
     ) -> None:
         self._config = config or DEFAULT_RESOLVED_CONFIG
         self.tls = tls
@@ -521,7 +535,10 @@ class MockCache:
                 self._listen_sock.close()  # unblocks accept()
             except OSError:
                 pass
-        if self._accept_thread is not None and self._accept_thread is not threading.current_thread():
+        if (
+            self._accept_thread is not None
+            and self._accept_thread is not threading.current_thread()
+        ):
             self._accept_thread.join(5)
         # The self-signed cert/key were written with delete=False; remove them so a
         # test run doesn't accumulate temp files (one of them is a private key).
@@ -544,9 +561,7 @@ class MockCache:
                 continue
             except OSError:
                 break  # listening socket closed by stop()
-            threading.Thread(
-                target=self._handle_connection, args=(conn,), daemon=True
-            ).start()
+            threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
 
     def _handle_connection(self, conn: socket.socket) -> None:
         if self.tls:

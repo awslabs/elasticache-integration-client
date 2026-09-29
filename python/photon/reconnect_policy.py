@@ -38,8 +38,7 @@ class ReconnectPolicy:
 
     def __post_init__(self) -> None:
         if self.fallback_duration is not None and (
-            isinstance(self.fallback_duration, bool)
-            or not isinstance(self.fallback_duration, int)
+            isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
         ):
             raise PhotonConfigError("fallback_duration must be a whole number of seconds or None")
         if self.connect_attempts < 1:
@@ -70,7 +69,7 @@ class ReconnectPolicy:
         """
         # Bound the exponent so a long run of failures cannot overflow the float
         exponent = min(attempt - 1, 1023)
-        delay = min(self.max_delay, self.base_delay * 2 ** exponent)
+        delay = min(self.max_delay, self.base_delay * 2**exponent)
         if not self.jitter:
             return delay
         return delay * random.uniform(1 - self.jitter, 1 + self.jitter)

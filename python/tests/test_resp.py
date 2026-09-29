@@ -14,6 +14,7 @@ from photon.resp import (
 
 # --- AC1: codec API + IncompleteFrame is a plain Exception --------------------
 
+
 def test_incomplete_frame_is_not_photon_error():
     """IncompleteFrame ("need more bytes") must be a plain Exception, NOT a PhotonError, so an incremental reader can distinguish truncation from corruption."""
     assert issubclass(IncompleteFrame, Exception)
@@ -21,6 +22,7 @@ def test_incomplete_frame_is_not_photon_error():
 
 
 # --- AC2: encode/decode_resp round-trip --------------------------------------------
+
 
 def test_encode_decode_round_trip():
     """Encoding a command then decoding it yields the original elements and consumes the whole buffer."""
@@ -33,15 +35,11 @@ def test_encode_decode_round_trip():
 def test_encode_resp_resp3_array_framing():
     """Verifies the exact RESP3 byte framing (*N, $len, CRLFs) produced by the encoder."""
     encoded = encode_resp("photon.request", b"POST", b"https://x/")
-    assert encoded == (
-        b"*3\r\n"
-        b"$14\r\nphoton.request\r\n"
-        b"$4\r\nPOST\r\n"
-        b"$10\r\nhttps://x/\r\n"
-    )
+    assert encoded == (b"*3\r\n$14\r\nphoton.request\r\n$4\r\nPOST\r\n$10\r\nhttps://x/\r\n")
 
 
 # --- AC3: all RESP3 prefixes decode_resp -------------------------------------------
+
 
 def test_decode_simple_string():
     """Decodes a + simple string to str (bulk strings stay bytes) and reports bytes consumed."""
@@ -159,6 +157,7 @@ def test_decode_negative_map_length_raises_protocol_error():
 
 # --- AC4: truncation raises IncompleteFrame -----------------------------------
 
+
 @pytest.mark.parametrize(
     "partial, message",
     [
@@ -180,6 +179,7 @@ def test_truncation_raises_incomplete_frame(partial, message):
 
 
 # --- AC5: garbage raises PhotonProtocolError ----------------------------------
+
 
 @pytest.mark.parametrize(
     "garbage, message",
