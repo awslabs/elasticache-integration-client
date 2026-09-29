@@ -1,5 +1,10 @@
 package software.amazon.photon.mock;
 
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.cert.X509CertificateHolder;
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import software.amazon.photon.resp.*;
 
 import javax.net.ssl.*;
@@ -199,8 +204,6 @@ public class MockTlsServer implements Closeable {
         keyGen.initialize(2048, new SecureRandom());
         KeyPair keyPair = keyGen.generateKeyPair();
 
-        // Create a self-signed X509 certificate using sun.security.x509 internals
-        // For Java 11 compatibility, we use a simpler approach with KeyStore
         X509Certificate cert = generateSelfSignedCert(keyPair);
 
         KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
@@ -220,50 +223,17 @@ public class MockTlsServer implements Closeable {
         return ctx;
     }
 
-    @SuppressWarnings("all")
     private X509Certificate generateSelfSignedCert(KeyPair keyPair) throws Exception {
-        // Use reflection to access sun.security.x509 classes (available in Java 11)
         long now = System.currentTimeMillis();
         Date notBefore = new Date(now);
         Date notAfter = new Date(now + 365L * 24 * 60 * 60 * 1000);
 
         // Use CN=localhost so hostname verification passes when connecting to localhost
-        Class<?> x500NameClass = Class.forName("sun.security.x509.X500Name");
-        Object issuer = x500NameClass.getConstructor(String.class).newInstance("CN=localhost");
-
-        Class<?> certInfoClass = Class.forName("sun.security.x509.X509CertInfo");
-        Object certInfo = certInfoClass.getConstructor().newInstance();
-
-        Class<?> certValidityClass = Class.forName("sun.security.x509.CertificateValidity");
-        Object validity = certValidityClass.getConstructor(Date.class, Date.class).newInstance(notBefore, notAfter);
-
-        Class<?> serialNumClass = Class.forName("sun.security.x509.CertificateSerialNumber");
-        Object serialNum = serialNumClass.getConstructor(int.class).newInstance((int) (now / 1000));
-
-        // Set fields on CertInfo
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "validity", validity);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "serialNumber", serialNum);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "subject", issuer);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "issuer", issuer);
-
-        Class<?> certKeyClass = Class.forName("sun.security.x509.CertificateX509Key");
-        Object certKey = certKeyClass.getConstructor(java.security.PublicKey.class).newInstance(keyPair.getPublic());
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "key", certKey);
-
-        // Algorithm
-        Class<?> algIdClass = Class.forName("sun.security.x509.AlgorithmId");
-        Object algId = algIdClass.getMethod("get", String.class).invoke(null, "SHA256withRSA");
-        Class<?> certAlgClass = Class.forName("sun.security.x509.CertificateAlgorithmId");
-        Object certAlg = certAlgClass.getConstructor(algIdClass).newInstance(algId);
-        certInfoClass.getMethod("set", String.class, Object.class).invoke(certInfo, "algorithmID", certAlg);
-
-        // Create X509CertImpl and sign it
-        Class<?> x509CertImplClass = Class.forName("sun.security.x509.X509CertImpl");
-        Object cert = x509CertImplClass.getConstructor(certInfoClass).newInstance(certInfo);
-        x509CertImplClass.getMethod("sign", java.security.PrivateKey.class, String.class)
-                .invoke(cert, keyPair.getPrivate(), "SHA256withRSA");
-
-        return (X509Certificate) cert;
+        X500Name subject = new X500Name("CN=localhost");
+        X509CertificateHolder holder = new JcaX509v3CertificateBuilder(
+                subject, BigInteger.valueOf(now), notBefore, notAfter, subject, keyPair.getPublic())
+                .build(new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate()));
+        return new JcaX509CertificateConverter().getCertificate(holder);
     }
 
     @Override

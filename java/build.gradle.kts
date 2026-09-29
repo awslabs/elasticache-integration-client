@@ -62,6 +62,7 @@ dependencies {
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
 
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
@@ -75,12 +76,4 @@ tasks.withType<JavaCompile>().configureEach {
 
 tasks.test {
     useJUnitPlatform()
-
-    if (JavaVersion.current().isJava9Compatible) {
-        // Required for MockTlsServer's reflective certificate generation on Java 17+.
-        jvmArgs(
-            "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
-            "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
-        )
-    }
 }
