@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * Per-request timeout.
- */
+/** Per-request timeout. */
 public class PhotonTimeoutError extends PhotonError {
 
     public PhotonTimeoutError(String message) {

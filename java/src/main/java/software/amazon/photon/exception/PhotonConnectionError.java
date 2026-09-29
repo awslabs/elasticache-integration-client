@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * Connection bring-up failed.
- */
+/** Connection bring-up failed. */
 public class PhotonConnectionError extends PhotonError {
 
     public PhotonConnectionError(String message) {

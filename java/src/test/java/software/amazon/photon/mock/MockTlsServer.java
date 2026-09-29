@@ -1,5 +1,19 @@
 package software.amazon.photon.mock;
 
+import java.io.*;
+import java.math.BigInteger;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.security.KeyPair;
+import java.security.KeyPairGenerator;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.Date;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import javax.net.ssl.*;
 import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
@@ -7,26 +21,9 @@ import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import software.amazon.photon.resp.*;
 
-import javax.net.ssl.*;
-import java.io.*;
-import java.net.ServerSocket;
-import java.net.Socket;
-import java.nio.charset.StandardCharsets;
-import java.security.KeyPair;
-import java.security.KeyPairGenerator;
-import java.security.KeyStore;
-import java.security.SecureRandom;
-import java.security.cert.X509Certificate;
-import java.math.BigInteger;
-import java.security.cert.Certificate;
-import java.util.ArrayList;
-import java.util.Date;
-import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 /**
- * Threaded TLS test server implementing the Photon cache contract.
- * Uses a self-signed certificate for testing.
+ * Threaded TLS test server implementing the Photon cache contract. Uses a self-signed certificate
+ * for testing.
  */
 public class MockTlsServer implements Closeable {
 
@@ -74,7 +71,7 @@ public class MockTlsServer implements Closeable {
 
     private void handleClient(Socket client) {
         try (InputStream in = client.getInputStream();
-             OutputStream out = client.getOutputStream()) {
+                OutputStream out = client.getOutputStream()) {
             activeOutput = out;
             byte[] buffer = new byte[8192];
             ByteArrayOutputStream accum = new ByteArrayOutputStream();
@@ -208,13 +205,14 @@ public class MockTlsServer implements Closeable {
 
         KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
         ks.load(null, null);
-        ks.setKeyEntry("server", keyPair.getPrivate(), "password".toCharArray(),
-                new Certificate[]{cert});
+        ks.setKeyEntry(
+                "server", keyPair.getPrivate(), "password".toCharArray(), new Certificate[] {cert});
 
         KeyManagerFactory kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
         kmf.init(ks, "password".toCharArray());
 
-        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        TrustManagerFactory tmf =
+                TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
         ks.setCertificateEntry("ca", cert);
         tmf.init(ks);
 
@@ -230,9 +228,10 @@ public class MockTlsServer implements Closeable {
 
         // Use CN=localhost so hostname verification passes when connecting to localhost
         X500Name subject = new X500Name("CN=localhost");
-        X509CertificateHolder holder = new JcaX509v3CertificateBuilder(
-                subject, BigInteger.valueOf(now), notBefore, notAfter, subject, keyPair.getPublic())
-                .build(new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate()));
+        X509CertificateHolder holder =
+                new JcaX509v3CertificateBuilder(
+                                subject, BigInteger.valueOf(now), notBefore, notAfter, subject, keyPair.getPublic())
+                        .build(new JcaContentSignerBuilder("SHA256withRSA").build(keyPair.getPrivate()));
         return new JcaX509CertificateConverter().getCertificate(holder);
     }
 

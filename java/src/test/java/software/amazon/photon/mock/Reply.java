@@ -3,9 +3,7 @@ package software.amazon.photon.mock;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-/**
- * Represents a canned reply from the mock cache server.
- */
+/** Represents a canned reply from the mock cache server. */
 public class Reply {
 
     private final boolean isError;
@@ -16,8 +14,14 @@ public class Reply {
     private final String errorMessage;
     private final Long requestId;
 
-    private Reply(boolean isError, int statusCode, Map<String, String> headers, byte[] body,
-                  String errorCode, String errorMessage, Long requestId) {
+    private Reply(
+            boolean isError,
+            int statusCode,
+            Map<String, String> headers,
+            byte[] body,
+            String errorCode,
+            String errorMessage,
+            Long requestId) {
         this.isError = isError;
         this.statusCode = statusCode;
         this.headers = headers;

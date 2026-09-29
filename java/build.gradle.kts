@@ -3,6 +3,7 @@ import org.gradle.api.tasks.Exec
 
 plugins {
     java
+    id("com.diffplug.spotless") version "8.10.3"
 }
 
 group = "software.amazon.photon"
@@ -15,6 +16,19 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+spotless {
+    java {
+        target("src/**/*.java")
+        importOrder()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+        googleJavaFormat("1.22.0").reflowLongStrings()
+        leadingSpacesToTabs(2)
+        leadingTabsToSpaces(4)
+    }
 }
 
 sourceSets {
