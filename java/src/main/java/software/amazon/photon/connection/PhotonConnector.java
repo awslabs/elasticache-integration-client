@@ -332,16 +332,6 @@ public class PhotonConnector implements Closeable {
         }
     }
 
-    /**
-     * Compatibility alias for {@link #handshake(String, String)}.
-     *
-     * @deprecated use {@link #handshake(String, String)}; this method no longer sends standalone AUTH
-     */
-    @Deprecated
-    public void authenticate(String userId, String authToken) {
-        handshake(userId, authToken);
-    }
-
     private void verifyHelloReply(RespValue reply) {
         if (reply instanceof RespError) {
             markDead();
