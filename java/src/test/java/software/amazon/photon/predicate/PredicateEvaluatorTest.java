@@ -33,11 +33,20 @@ class PredicateEvaluatorTest {
     }
 
     @Test
-    void missingOrMalformedPredicatesCompileToEmpty() {
+    void missingPredicatesCompileToEmpty() {
         assertEquals(0, PredicateEvaluator.compile(null).size());
         assertEquals(0, PredicateEvaluator.compile(Collections.emptyMap()).size());
-        assertEquals(0, PredicateEvaluator.compile(
-                singletonMap("predicates", "not-a-list")).size());
+    }
+
+    @Test
+    void nonListPredicatesRejectTheConfig() {
+        List<Object> nonLists = Arrays.asList("nope", singletonMap("expr", "true"), null);
+
+        for (Object value : nonLists) {
+            assertThrows(PhotonConfigUnevaluable.class,
+                    () -> PredicateEvaluator.compile(singletonMap("predicates", value)),
+                    String.valueOf(value));
+        }
     }
 
     // One bad entry taints the whole config: caching by the entries that did compile would route

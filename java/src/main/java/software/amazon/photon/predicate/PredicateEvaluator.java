@@ -54,20 +54,27 @@ public final class PredicateEvaluator {
     /**
      * Compile the ordered predicate entries in a resolved config.
      *
-     * <p>A missing or non-list {@code predicates} compiles to an empty evaluator, so every
-     * request passes through.
+     * <p>A missing {@code predicates} key compiles to an empty evaluator, so every request
+     * passes through.
      *
-     * @throws PhotonConfigUnevaluable an entry is not an object, has no string {@code expr}, or
-     *     has an expression this client cannot compile. Caching by the entries that happened to
+     * @throws PhotonConfigUnevaluable {@code predicates} is present but not a list, an entry is
+     *     not an object, has no string {@code expr}, or has an expression this client cannot
+     *     compile. Caching by the entries that happened to
      *     compile would route a different set of requests than the proxy resolved.
      */
     public static PredicateEvaluator compile(Map<String, Object> rawConfig) {
-        if (rawConfig == null || !(rawConfig.get("predicates") instanceof List)) {
+        if (rawConfig == null || !rawConfig.containsKey("predicates")) {
             return new PredicateEvaluator(Collections.<CompiledPredicate>emptyList());
+        }
+        Object entries = rawConfig.get("predicates");
+        if (!(entries instanceof List)) {
+            throw new PhotonConfigUnevaluable(
+                    "Config 'predicates' must be a list, got "
+                            + (entries == null ? "null" : entries.getClass().getSimpleName()));
         }
 
         List<CompiledPredicate> compiled = new ArrayList<>();
-        for (Object rawEntry : (List<?>) rawConfig.get("predicates")) {
+        for (Object rawEntry : (List<?>) entries) {
             compiled.add(compilePredicate(rawEntry));
         }
         return new PredicateEvaluator(compiled);
