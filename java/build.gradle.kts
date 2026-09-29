@@ -95,8 +95,17 @@ tasks.withType<JavaCompile>().configureEach {
     }
 }
 
+// Gradle itself runs on JDK 21. Pass -PtestJavaVersion=<n> to run the tests on another
+// installed JDK, which is how CI covers every supported Java version.
+val testJavaVersion = providers.gradleProperty("testJavaVersion")
+
 tasks.test {
     useJUnitPlatform()
+    if (testJavaVersion.isPresent) {
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(testJavaVersion.get().toInt()))
+        })
+    }
     finalizedBy(tasks.jacocoTestReport)
 }
 

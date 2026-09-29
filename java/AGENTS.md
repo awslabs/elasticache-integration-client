@@ -26,7 +26,13 @@
 
 ## Validation
 
-- Use `./gradlew build` for the complete local gate (compile, test, check).
+- Use `./gradlew build` for the complete local gate: compile with Error Prone,
+  Spotless check, tests, JaCoCo reports, Javadoc, and the JAR contents check.
+  Gradle must run on JDK 21.
+- Run `./gradlew spotlessApply` to format `src/` with google-java-format.
+- Run tests on another JDK with `./gradlew test -PtestJavaVersion=<8|11|17|21>`.
+  The JDK must be installed locally, or listed in
+  `-Porg.gradle.java.installations.paths=<paths>`.
 - Run focused tests first when appropriate:
   `./gradlew test --tests "ClassName"` or
   `./gradlew test --tests "ClassName.methodName"`.
@@ -39,8 +45,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 8 source and bytecode compatibility; CI also validates JDK 11 and
-  JDK 17. Do not use language or library APIs introduced after Java 8.
+- Target Java 8 source and bytecode compatibility; CI runs the tests on JDK 8,
+  11, 17, and 21. Do not use language or library APIs introduced after Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.

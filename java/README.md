@@ -200,3 +200,14 @@ Until the Java toolkit is published to a Maven repository, it is pinned as a
 Git submodule and built as part of `./gradlew build`. Initialize it after
 cloning with `git submodule update --init --recursive`. Maven must be available
 on `PATH` for the sourced toolkit build.
+
+Gradle runs on JDK 21 because Error Prone 2.50 requires JDK 21 and
+Gradle 8.14 cannot run on JDK 25. The compiler emits Java 8 bytecode
+(`options.release = 8`). Tests run on Java 8, 11, 17, and 21. To run them on
+another installed JDK, pass `-PtestJavaVersion=<n>`, for example
+`./gradlew test -PtestJavaVersion=8`.
+
+`./gradlew build` also runs Spotless with google-java-format
+(`./gradlew spotlessApply` fixes formatting), writes JaCoCo reports to
+`build/reports/jacoco/test/`, builds the sources and Javadoc JARs, and checks
+the JAR contents.
