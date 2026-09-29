@@ -15,6 +15,7 @@ import dev.cel.parser.CelStandardMacro;
 import dev.cel.runtime.CelEvaluationException;
 import dev.cel.runtime.CelRuntime;
 import dev.cel.runtime.CelRuntimeFactory;
+import software.amazon.photon.exception.PhotonConfigUnevaluable;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.RequestMetadata;
 
@@ -24,18 +25,16 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.logging.Level;
-import java.util.logging.Logger;
 
 /**
  * Compiles and evaluates the CEL routing predicates returned by {@code photon.config}.
  *
- * <p>Compilation and evaluation are fail-safe: a predicate that cannot be compiled
- * is ignored, and an evaluation failure counts as no match.
+ * <p>An evaluation failure, or a body that is not a JSON object, counts as no match. An
+ * entry that cannot be compiled is different: it taints the whole config, which is rejected
+ * rather than caching by the entries that did compile.
  */
 public final class PredicateEvaluator {
 
-    private static final Logger LOGGER = Logger.getLogger(PredicateEvaluator.class.getName());
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
             .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final TypeReference<Map<String, Object>> MAP_TYPE =
@@ -55,41 +54,28 @@ public final class PredicateEvaluator {
     /**
      * Compile the ordered predicate entries in a resolved config.
      *
-     * <p>Missing or malformed predicate collections compile to an empty evaluator.
-     * Individual entries without a string {@code expr}, or whose expression cannot
-     * be compiled, are ignored without affecting valid siblings.
+     * <p>A missing {@code predicates} key compiles to an empty evaluator, so every request
+     * passes through.
+     *
+     * @throws PhotonConfigUnevaluable {@code predicates} is present but not a list, an entry is
+     *     not an object, has no string {@code expr}, or has an expression this client cannot
+     *     compile. Caching by the entries that happened to
+     *     compile would route a different set of requests than the proxy resolved.
      */
     public static PredicateEvaluator compile(Map<String, Object> rawConfig) {
-        if (rawConfig == null || !(rawConfig.get("predicates") instanceof List)) {
+        if (rawConfig == null || !rawConfig.containsKey("predicates")) {
             return new PredicateEvaluator(Collections.<CompiledPredicate>emptyList());
+        }
+        Object entries = rawConfig.get("predicates");
+        if (!(entries instanceof List)) {
+            throw new PhotonConfigUnevaluable(
+                    "Config 'predicates' must be a list, got "
+                            + (entries == null ? "null" : entries.getClass().getSimpleName()));
         }
 
         List<CompiledPredicate> compiled = new ArrayList<>();
-        for (Object rawEntry : (List<?>) rawConfig.get("predicates")) {
-            if (!(rawEntry instanceof Map)) {
-                continue;
-            }
-            Map<?, ?> entry = (Map<?, ?>) rawEntry;
-            Object expression = entry.get("expr");
-            if (!(expression instanceof String)) {
-                continue;
-            }
-            Map<String, Object> variables;
-            if (entry.get("vars") instanceof Map) {
-                variables = stringKeyedMap(entry.get("vars"));
-                if (variables == null) {
-                    LOGGER.warning("Ignoring predicate with a non-string variable key");
-                    continue;
-                }
-            } else {
-                variables = Collections.emptyMap();
-            }
-            try {
-                compiled.add(compileOne((String) expression, variables));
-            } catch (CelValidationException | CelEvaluationException | RuntimeException e) {
-                LOGGER.log(Level.WARNING,
-                        "Ignoring predicate with an uncompilable CEL expression", e);
-            }
+        for (Object rawEntry : (List<?>) entries) {
+            compiled.add(compilePredicate(rawEntry));
         }
         return new PredicateEvaluator(compiled);
     }
@@ -115,6 +101,27 @@ public final class PredicateEvaluator {
 
     int size() {
         return predicates.size();
+    }
+
+    private static CompiledPredicate compilePredicate(Object rawEntry) {
+        if (!(rawEntry instanceof Map)) {
+            throw new PhotonConfigUnevaluable("Predicate entry is not an object");
+        }
+        Map<?, ?> entry = (Map<?, ?>) rawEntry;
+        Object expression = entry.get("expr");
+        if (!(expression instanceof String)) {
+            throw new PhotonConfigUnevaluable("Predicate entry has no string 'expr'");
+        }
+        Map<String, Object> variables = stringKeyedMap(entry.get("vars"));
+        if (variables == null) {
+            throw new PhotonConfigUnevaluable("Predicate entry has a non-string variable key");
+        }
+        try {
+            return compileOne((String) expression, variables);
+        } catch (CelValidationException | CelEvaluationException | RuntimeException e) {
+            throw new PhotonConfigUnevaluable(
+                    "Predicate expression cannot be compiled: \"" + expression + "\"", e);
+        }
     }
 
     private static CompiledPredicate compileOne(

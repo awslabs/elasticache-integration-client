@@ -7,6 +7,8 @@ from botocore.exceptions import ConnectionClosedError
 from photon.exceptions import (
     PhotonCacheUnavailable,
     PhotonConfigError,
+    PhotonOverridesRejected,
+    PhotonConfigUnevaluable,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
@@ -18,6 +20,8 @@ from photon.exceptions import (
 
 _SUBCLASSES = [
     PhotonConfigError,
+    PhotonOverridesRejected,
+    PhotonConfigUnevaluable,
     PhotonConnectionError,
     PhotonProtocolError,
     PhotonRejectedError,

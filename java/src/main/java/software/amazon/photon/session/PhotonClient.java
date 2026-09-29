@@ -154,6 +154,8 @@ public final class PhotonClient {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+        private long stalenessDurationSeconds =
+                PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkHttpClient originHttpClient;
         private SdkAsyncHttpClient originAsyncHttpClient;
         private Executor asyncExecutor;
@@ -269,6 +271,16 @@ public final class PhotonClient {
                 throw new NullPointerException("reconnectPolicy");
             }
             this.reconnectPolicy = reconnectPolicy;
+            return this;
+        }
+
+        /**
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing.
+         * Past it the connection is dropped so a new one re-resolves the config. Defaults to one
+         * hour; must be a positive whole number of seconds.
+         */
+        public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
+            this.stalenessDurationSeconds = stalenessDurationSeconds;
             return this;
         }
 
@@ -472,6 +484,7 @@ public final class PhotonClient {
                     .initializationTimeoutMs(initializationTimeoutMs)
                     .requestTimeoutMs(requestTimeoutMs)
                     .reconnectPolicy(reconnectPolicy)
+                    .stalenessDurationSeconds(stalenessDurationSeconds)
                     .originHttpClient(originHttpClient)
                     .build();
         }
@@ -489,6 +502,7 @@ public final class PhotonClient {
                     .initializationTimeoutMs(initializationTimeoutMs)
                     .requestTimeoutMs(requestTimeoutMs)
                     .reconnectPolicy(reconnectPolicy)
+                    .stalenessDurationSeconds(stalenessDurationSeconds)
                     .originHttpClient(originAsyncHttpClient)
                     .executor(asyncExecutor)
                     .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)

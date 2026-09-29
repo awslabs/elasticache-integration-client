@@ -159,6 +159,8 @@ public class PhotonHandle implements Closeable {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+        private long stalenessDurationSeconds =
+                PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkHttpClient originHttpClient;
 
         private Builder() {}
@@ -247,6 +249,16 @@ public class PhotonHandle implements Closeable {
         }
 
         /**
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing.
+         * Past it the connection is dropped so a new one re-resolves the config. Defaults to one
+         * hour; must be a positive whole number of seconds.
+         */
+        public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
+            this.stalenessDurationSeconds = stalenessDurationSeconds;
+            return this;
+        }
+
+        /**
          * Set a caller-managed HTTP client for origin fallback.
          *
          * <p>Photon does not close a caller-provided client.
@@ -285,7 +297,8 @@ public class PhotonHandle implements Closeable {
                             requestTimeoutMs, PhotonConnector.DEFAULT_MAX_PENDING),
                     authProvider,
                     overrides,
-                    reconnectPolicy);
+                    reconnectPolicy,
+                    stalenessDurationSeconds);
             SdkHttpClient origin = originHttpClient;
             boolean ownsOrigin = false;
             if (origin == null) {

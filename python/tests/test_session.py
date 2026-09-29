@@ -11,17 +11,64 @@ test_protocol.py; these tests assert only session behavior (lifecycle + delegati
 """
 
 import json
+import time
 from unittest import mock
 
 import pytest
 
-from photon.exceptions import PhotonConfigError, PhotonError
+from photon import session as session_module
+from photon.config_policy import ConfigPolicy
+from photon.exceptions import (
+    PhotonConfigError,
+    PhotonOverridesRejected,
+    PhotonConfigUnevaluable,
+    PhotonConnectionError,
+    PhotonError,
+)
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata
 from photon.reconnect_policy import ReconnectPolicy
-from photon.resp import RespError
 from photon.refresh import Refresher
+from photon.resp import RespError
 from photon.session import PhotonSession, parse_endpoint
 from tests.mock import mock_connector
+
+# Short enough to read, long enough that only a deliberate advance reaches it.
+STALENESS_WINDOW = 10
+
+
+class _FakeClock:
+    """A monotonic clock the test moves by hand, to reach a deadline without waiting for it.
+
+    Substituted for the ``time`` module inside :mod:`photon.session`, which reads ``monotonic()``
+    to set the staleness deadline and to check it.
+    """
+
+    def __init__(self) -> None:
+        self.now = time.monotonic()
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Install a hand-moved clock on the session module before any session is built.
+
+    Installed up front so construction's own deadline is stamped from the same clock the test
+    later advances; a session built against the real clock could never be made stale.
+    """
+    fake = _FakeClock()
+    monkeypatch.setattr(session_module, "time", fake)
+    return fake
+
+
+def stale_session(connector) -> PhotonSession:
+    """A session whose config stops being trusted ``STALENESS_WINDOW`` seconds after a refresh."""
+    return PhotonSession(lambda: connector,
+                         config_policy=ConfigPolicy(staleness_duration=STALENESS_WINDOW))
 
 
 # --- lifecycle: opening the connection --------------------------------------------------------
@@ -214,6 +261,92 @@ def test_refresh_once_swallows_malformed_reply_and_keeps_current_config():
     session.close()
 
 
+def test_refresh_once_config_invalid_alarms_at_once_without_dropping(caplog):
+    """A CONFIG_INVALID on refresh alarms at once (error level) but does not drop the connection:
+    the caching behavior rides the staleness window like any failing refresh; only the alarm is
+    immediate."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    connector.execute.reset_mock()  # discard the configure call
+    connector.execute.side_effect = PhotonOverridesRejected(
+        "photon.config rejected: CONFIG_INVALID"
+    )
+    with caplog.at_level("ERROR", logger="photon.session"):
+        session._refresh_once()  # must not raise
+    connector.close.assert_not_called()
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    session.close()
+
+
+def test_refresh_once_unevaluable_config_alarms_at_once_without_dropping(caplog):
+    """A resolved config carrying a predicate the client cannot compile taints the whole config:
+    it alarms but keeps the last good config until the window drops the connection — it does not
+    cache by the entries that did compile, and it does not drop immediately."""
+    connector = mock_connector()
+    session = PhotonSession(lambda: connector)
+    original_config = session._config
+    connector.execute.reset_mock()  # discard the configure call
+    connector.execute.side_effect = None
+    connector.execute.return_value = json.dumps(
+        {"version": "1.0", "refresh_interval": 60,
+         "predicates": [{"expr": "this is not (valid CEL", "vars": {}}]}
+    ).encode()
+    with caplog.at_level("ERROR", logger="photon.session"):
+        session._refresh_once()  # must not raise
+    connector.close.assert_not_called()
+    assert session._config is original_config  # untrusted config was not installed
+    assert any(r.levelname == "ERROR" for r in caplog.records)
+    session.close()
+
+
+@pytest.mark.parametrize("reply, error, cause", [
+    (RespError("CONFIG_INVALID", "table does not exist"),
+     PhotonOverridesRejected, "CONFIG_INVALID"),
+    (json.dumps({"version": "1.0", "refresh_interval": 60,
+                 "predicates": [{"expr": "this is not (valid CEL", "vars": {}}]}).encode(),
+     PhotonConfigUnevaluable, "cannot evaluate"),
+])
+def test_configuring_a_connection_alarms_a_config_failure_on_every_attempt(
+    reply, error, cause, caplog
+):
+    """A config failure that cannot fix itself is logged at ERROR each time a connection is
+    configured. It still fails the attempt, so the connection is closed and retried."""
+    session = PhotonSession(lambda: mock_connector())
+    config = session._config
+    with caplog.at_level("ERROR", logger="photon.session"):
+        for _ in range(2):
+            connector = mock_connector()
+            connector.execute.side_effect = None
+            connector.execute.return_value = reply
+            with pytest.raises(error):
+                session._configure(connector)
+    assert [r.levelname for r in caplog.records] == ["ERROR", "ERROR"]
+    assert all(cause in r.getMessage() for r in caplog.records)
+    assert session._config is config
+    session.close()
+
+
+def test_a_config_invalid_refresh_still_reaches_the_staleness_window(clock, caplog):
+    """CONFIG_INVALID does not restart the window, so successive rejections reach it and the
+    connection is dropped once the window elapses — the shared stale-config degradation path."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    connector.execute.side_effect = PhotonOverridesRejected("rejected")
+
+    clock.advance(STALENESS_WINDOW - 1)
+    session._refresh_once()  # alarms, does not confirm the config, does not drop
+    assert session.config_stale is False  # still inside the window
+    connector.close.assert_not_called()
+
+    clock.advance(1)
+    connector.execute.reset_mock()
+    with caplog.at_level("WARNING", logger="photon.session"):
+        session._refresh_once()  # now past the window: the shared path drops the connection
+    connector.close.assert_called_once_with()
+    assert "dropping the connection" in caplog.text
+    session.close()
+
+
 def test_predicates_swap_is_visible_to_the_next_request():
     """A predicate recompiled by _replace_config takes effect on the very next request() call."""
     connector = mock_connector()
@@ -229,6 +362,240 @@ def test_predicates_swap_is_visible_to_the_next_request():
         metadata=RequestMetadata(service="dynamodb", operation="GetItem"),
     )
     assert session.request(request) is None  # no predicate left to match
+    session.close()
+
+
+# --- refresh: the staleness window ------------------------------------------------
+
+def test_a_configured_connection_starts_the_window_trusted(clock):
+    """Configuring the connection confirms a config, so a new session trusts what it routes by."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    assert session.config_stale is False
+    clock.advance(STALENESS_WINDOW)
+    assert session.config_stale is True  # nothing confirmed it since
+    session.close()
+
+
+def test_a_healthy_refresh_past_the_window_keeps_the_connection(clock):
+    """The window bounds how long refreshes may fail, not the time between ticks: a refresh that
+    succeeds after the window has passed restarts it, even when ticks are further apart."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    clock.advance(STALENESS_WINDOW)
+    connector.execute.reset_mock()  # discard the configure call
+
+    session._refresh_once()
+
+    connector.execute.assert_called_once()
+    connector.close.assert_not_called()
+    assert session.config_stale is False
+    session.close()
+
+
+def test_a_failing_refresh_past_the_window_drops_the_connection(clock, caplog):
+    """A refresh that fails once the window has passed drops the connection, so the one that
+    replaces it resolves a config as it is built."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = json.dumps({"version": "1.0"}).encode()  # no refresh_interval
+    clock.advance(STALENESS_WINDOW)
+
+    with caplog.at_level("WARNING", logger="photon.session"):
+        session._refresh_once()
+
+    connector.close.assert_called_once_with()
+    assert "dropping the connection" in caplog.text
+    session.close()
+
+
+def test_a_failure_from_a_replaced_connector_leaves_the_replacement(clock):
+    """A refresh that fails after its connector was replaced must not touch the replacement."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    replacement = mock_connector()
+
+    def _replaced_then_failed(command, *args, timeout=None):
+        session._connection_manager._connector = replacement
+        raise PhotonError("malformed")
+
+    connector.execute.side_effect = _replaced_then_failed
+    clock.advance(STALENESS_WINDOW)
+
+    session._refresh_once()
+
+    replacement.close.assert_not_called()
+    assert session._connection_manager.connector is replacement
+    session.close()
+
+
+def test_a_null_reply_restarts_the_window(clock):
+    """An empty reply installs nothing but still confirms the config: the server would resolve the
+    same one now, which is exactly what the window measures."""
+    connector = mock_connector()
+    session = stale_session(connector)
+
+    clock.advance(STALENESS_WINDOW - 1)
+    session._refresh_once()  # mock_connector answers the no-argument form with a null
+
+    # Well past the original deadline: only a restarted window is still trusted here.
+    clock.advance(STALENESS_WINDOW - 1)
+    assert session.config_stale is False
+    session.close()
+
+
+def test_a_resolved_config_reply_restarts_the_window(clock):
+    """A config the server sends confirms it too, so applying one resets the window."""
+    connector = mock_connector()
+    session = stale_session(connector)
+
+    clock.advance(STALENESS_WINDOW - 1)
+    connector.execute.side_effect = None
+    connector.execute.return_value = json.dumps(
+        {"version": "1.0", "refresh_interval": 45, "predicates": []}
+    ).encode()
+    session._refresh_once()
+
+    # Well past the original deadline: only a restarted window is still trusted here.
+    clock.advance(STALENESS_WINDOW - 1)
+    assert session.config_stale is False
+    session.close()
+
+
+def test_configuring_a_new_connection_restarts_the_window(clock):
+    """A reconnect resolves its own config as it is configured, which is what makes dropping a
+    stale connection a fix rather than only a symptom."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    clock.advance(STALENESS_WINDOW)
+    assert session.config_stale is True
+
+    session._configure(mock_connector())
+    assert session.config_stale is False
+    session.close()
+
+
+def test_a_failed_refresh_does_not_restart_the_window(clock):
+    """Only the server can confirm a config, so a refresh that fails leaves the window running and
+    successive failures reach it."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    connector.execute.side_effect = PhotonError("connection lost")
+
+    clock.advance(STALENESS_WINDOW - 1)
+    session._refresh_once()
+    assert session.config_stale is False  # still inside the window
+    clock.advance(1)
+    assert session.config_stale is True
+    session.close()
+
+
+def test_the_window_runs_while_no_connection_is_available(clock):
+    """The window measures time without a confirmed config, whatever the reason: a tick that finds
+    no connection confirms nothing, so a long outage reaches the window like a failing refresh."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    session._connection_manager._connector = None
+    connector.reset_mock()
+
+    clock.advance(STALENESS_WINDOW)
+    session._refresh_once()  # nothing to send and nothing to drop
+
+    connector.execute.assert_not_called()
+    connector.close.assert_not_called()
+    assert session.config_stale is True
+    session.close()
+
+
+# --- replies from a closed connection -------------------------------------------------------
+
+def _config_reply(refresh_interval: int) -> bytes:
+    return json.dumps(
+        {"version": "1.0", "refresh_interval": refresh_interval, "predicates": []}
+    ).encode()
+
+
+def _closes_before_install(connector, reply):
+    """An ``execute`` that answers and then marks ``connector`` closed.
+
+    Reproduces the gap between a reply arriving and the session installing it, which is where a
+    connection can end and a replacement come up.
+    """
+    def _execute(command, *args, timeout=None):
+        connector.is_alive = False
+        return reply
+    return _execute
+
+
+def test_a_refresh_reply_from_a_closed_connection_is_dropped(clock):
+    """A config that arrives after its connection closed installs nothing and confirms nothing,
+    so it cannot overwrite the config a replacement connection resolved."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    config, predicates = session._config, session._predicates
+    connector.execute.side_effect = _closes_before_install(connector, _config_reply(45))
+
+    clock.advance(STALENESS_WINDOW - 1)
+    session._refresh_once()
+
+    assert session._config is config
+    assert session._predicates is predicates
+    assert session._config_refresher._interval == 60
+    clock.advance(1)  # the original deadline still stands
+    assert session.config_stale is True
+    session.close()
+
+
+def test_a_null_reply_from_a_closed_connection_does_not_restart_the_window(clock):
+    """An "unchanged" reply speaks only for the connection that sent it, so once that connection
+    has closed it confirms nothing."""
+    connector = mock_connector()
+    session = stale_session(connector)
+    connector.execute.side_effect = _closes_before_install(connector, None)
+
+    clock.advance(STALENESS_WINDOW - 1)
+    session._refresh_once()
+
+    clock.advance(1)  # the original deadline still stands
+    assert session.config_stale is True
+    session.close()
+
+
+def test_configuring_a_connection_that_closes_before_its_install_fails():
+    """A connection that closes between its config reply and the install fails its configure,
+    leaving the config already in force: a late install from an abandoned attempt is refused."""
+    session = PhotonSession(lambda: mock_connector())
+    config = session._config
+    late = mock_connector()
+    late.execute.side_effect = _closes_before_install(late, _config_reply(45))
+
+    with pytest.raises(PhotonConnectionError):
+        session._configure(late)
+
+    assert session._config is config
+    assert session._config_refresher._interval == 60
+    session.close()
+
+
+def test_a_first_attempt_that_closes_before_its_install_is_retried():
+    """Construction treats a dropped install as a failed attempt and retries, so the session
+    starts on the second attempt's config instead of on none."""
+    first = mock_connector()
+    first.execute.side_effect = _closes_before_install(first, _config_reply(30))
+    second = mock_connector()
+    second.execute.side_effect = None
+    second.execute.return_value = _config_reply(45)
+    connectors = iter([first, second])
+
+    session = PhotonSession(
+        lambda: next(connectors),
+        policy=ReconnectPolicy(connect_attempts=2, base_delay=0.001, max_delay=0.001),
+    )
+
+    first.close.assert_called()
+    assert session._config.refresh_interval == 45
+    assert session._config_refresher._interval == 45
     session.close()
 
 

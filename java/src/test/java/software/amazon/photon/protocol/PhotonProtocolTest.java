@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonOverridesRejected;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
@@ -213,6 +214,15 @@ class PhotonProtocolTest {
         RespError error = new RespError("ERR", "something failed");
         PhotonError thrown = assertThrows(PhotonError.class, () -> PhotonProtocol.parseConfigResponse(error));
         assertFalse(thrown instanceof PhotonProtocolError);
+        assertFalse(thrown instanceof PhotonOverridesRejected);
+    }
+
+    @Test
+    void parseConfigResponse_configInvalidIsOverridesRejected() {
+        RespError error = new RespError("CONFIG_INVALID", "unknown override key");
+        PhotonOverridesRejected thrown = assertThrows(PhotonOverridesRejected.class,
+                () -> PhotonProtocol.parseConfigResponse(error));
+        assertTrue(thrown.getMessage().contains("unknown override key"));
     }
 
     @Test

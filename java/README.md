@@ -38,8 +38,12 @@ transport without a cache round trip. This supports the proxy's read-through
 and write-through routing, including table allowlists for batch and transaction
 operations.
 
-Expressions that cannot be compiled are ignored. Evaluation errors and
-malformed or non-object JSON bodies count as no match. The resolved config is
+Evaluation errors and malformed or non-object JSON bodies count as no match. A
+predicate that cannot be compiled is different: one bad entry rejects the whole
+config rather than caching by the entries that did compile, because those would
+route a different set of requests than the proxy resolved. Opening the session
+fails on such a config, a reconnect retries, and a refresh keeps the last good
+config. The resolved config is
 compiled when the session opens, after every successful reconnect, and whenever
 a periodic refresh returns an updated config. Config and compiled predicates
 are published together, so requests never observe values from different
@@ -54,10 +58,33 @@ that the overrides are unchanged. A RESP3 null reply leaves the current config
 and interval unchanged; a valid config reply atomically replaces the config and
 predicates and sets the next refresh interval.
 
-Refresh failures retain the last-known-good config. If a failure makes the
-active connector unusable, the normal background reconnect loop replaces it
-and fetches a fresh config. Periodic refresh pauses while reconnecting, and a
-late reply from a closed or replaced connector is ignored.
+Periodic refresh pauses while reconnecting, and a late reply from a closed or
+replaced connector is ignored. See [Config staleness](#config-staleness) for
+what happens when refreshes fail.
+
+## Config staleness
+
+A refresh that fails changes nothing: the last config the server confirmed
+stays in force and the next refresh retries. A config the server sends, an
+empty "unchanged" reply, and each new connection resolving its own config all
+count as confirmation.
+
+`stalenessDurationSeconds` bounds that tolerance. It is a positive whole number
+of seconds and defaults to one hour. A refresh that fails past it means the
+config can no longer be trusted, so Photon drops the connection, and bringing
+up the replacement resolves a fresh config. A refresh that succeeds restarts
+the window, so a healthy connection is never dropped. Requests fall back
+meanwhile under the configured origin-fallback window. A request already in
+flight when the connection drops falls back only when it is idempotent. Set the
+duration with `PhotonClient.Builder.stalenessDurationSeconds(long)`.
+
+A `CONFIG_INVALID` reply (the proxy rejected the overrides,
+`PhotonOverridesRejected`) and a config with a predicate this client cannot
+compile (`PhotonConfigUnevaluable`) never fix themselves, so they log at
+`SEVERE` on every occurrence, including each connection attempt. On refresh
+they still keep the last good config until the staleness window drops the
+connection. Refresh failures that kill the connection start recovery
+immediately.
 
 ## Synchronous client
 

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonConfigUnevaluable;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.mock.MockCache;
@@ -18,6 +19,7 @@ import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
 import software.amazon.photon.protocol.PhotonProtocol;
 import software.amazon.photon.resp.RespBulkString;
+import software.amazon.photon.resp.RespError;
 import software.amazon.photon.resp.RespValue;
 
 import javax.net.ssl.SSLContext;
@@ -35,6 +37,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
@@ -1261,6 +1264,254 @@ class PhotonSessionTest {
             releaseReply.countDown();
             session.close();
             refreshThread.join(TimeUnit.SECONDS.toMillis(5));
+        }
+    }
+
+    // === Config staleness tests ===
+
+    private static final long STALENESS_DURATION_SECONDS = 10;
+
+    /** Session over MockCache connections with a fake clock and a 10-second staleness window. */
+    private PhotonSession stalenessSession(AtomicLong clock, AtomicInteger connections) {
+        return new PhotonSession(
+                () -> {
+                    connections.incrementAndGet();
+                    return createConnection();
+                },
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy(),
+                STALENESS_DURATION_SECONDS,
+                clock::get);
+    }
+
+    private static void advanceSeconds(AtomicLong clock, long seconds) {
+        clock.addAndGet(TimeUnit.SECONDS.toNanos(seconds));
+    }
+
+    private static void awaitConnections(AtomicInteger connections, int expected)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (connections.get() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertEquals(expected, connections.get());
+    }
+
+    @Test
+    void staleness_failureBeforeWindowKeepsConnector() {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce();
+
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertSame(originalConfig, session.getConfig());
+            assertEquals(1, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_failureAfterWindowDropsConnector() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS);
+            session.refreshOnce();
+
+            awaitConnections(connections, 2);
+            awaitState(session, PhotonSession.State.OPEN);
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_nullReplyResetsClock() {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce(); // RESP3 null: unchanged
+
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce();
+
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertEquals(1, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_appliedConfigResetsClock() {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+
+            cache.setNoArgConfigReply(
+                    "{\"version\":\"2.0\",\"refresh_interval\":60,\"predicates\":[]}");
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce();
+            assertEquals("2.0", session.getConfig().getVersion());
+
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce();
+
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertEquals(1, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_reconnectResetsClock() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            cache.setNoArgConfigReply("{\"version\":\"1.0\"}"); // missing refresh_interval
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS);
+            session.refreshOnce();
+            awaitConnections(connections, 2);
+            awaitState(session, PhotonSession.State.OPEN);
+
+            // The replacement published a fresh config, so one soft failure is not yet stale.
+            session.refreshOnce();
+
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertEquals(2, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_rejectsInvalidDuration() {
+        for (long invalid : new long[] {0, -1, Long.MAX_VALUE}) {
+            assertThrows(IllegalArgumentException.class, () -> new PhotonSession(
+                    this::createConnection,
+                    () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                    null,
+                    fastPolicy(),
+                    invalid));
+        }
+    }
+
+    @Test
+    void staleness_handleBuilderPassesDurationToSession() {
+        assertThrows(IllegalArgumentException.class, () -> PhotonHandle.builder()
+                .host("localhost")
+                .port(server.getPort())
+                .sslContext(clientSslContext)
+                .authCredentials(TEST_USER, TEST_TOKEN)
+                .stalenessDurationSeconds(0)
+                .build());
+    }
+
+    @Test
+    void staleness_isConfigStaleTracksConfirmation() {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            assertFalse(session.isConfigStale());
+
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS);
+            assertTrue(session.isConfigStale());
+
+            session.refreshOnce(); // RESP3 null: unchanged
+            assertFalse(session.isConfigStale());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_overridesRejectedKeepsConfigUntilWindowPasses() throws Exception {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            cache.setNoArgConfigError(new RespError("CONFIG_INVALID", "unknown override key"));
+
+            advanceSeconds(clock, STALENESS_DURATION_SECONDS - 1);
+            session.refreshOnce();
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertSame(originalConfig, session.getConfig());
+            assertEquals(1, connections.get());
+
+            advanceSeconds(clock, 1);
+            session.refreshOnce();
+            awaitConnections(connections, 2);
+            awaitState(session, PhotonSession.State.OPEN);
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void staleness_unevaluablePredicateOnRefreshKeepsLastGoodConfig() {
+        AtomicLong clock = new AtomicLong();
+        AtomicInteger connections = new AtomicInteger();
+        PhotonSession session = stalenessSession(clock, connections);
+        try {
+            session.open();
+            ResolvedConfig originalConfig = session.getConfig();
+            cache.setNoArgConfigReply("{\"version\":\"2.0\",\"refresh_interval\":60,"
+                    + "\"predicates\":[{\"expr\":\"operation == 'GetItem'\"},"
+                    + "{\"expr\":\"this is not (valid CEL\"}]}");
+
+            session.refreshOnce();
+
+            assertEquals(PhotonSession.State.OPEN, session.getState());
+            assertSame(originalConfig, session.getConfig());
+            assertFalse(session.isConfigStale());
+            assertEquals(1, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void open_failsOnConfigWithUnevaluablePredicate() {
+        cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,"
+                + "\"predicates\":[{\"expr\":\"this is not (valid CEL\"}]}");
+        PhotonSession session = new PhotonSession(
+                this::createConnection,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                fastPolicy());
+        try {
+            assertThrows(PhotonConfigUnevaluable.class, session::open);
+            assertEquals(PhotonSession.State.CLOSED, session.getState());
+        } finally {
+            session.close();
         }
     }
 }
