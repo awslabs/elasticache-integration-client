@@ -116,8 +116,9 @@ tasks.jacocoTestReport {
     }
 }
 
-// The vendored IAM toolkit is a files(...) dependency, so it is not inside the main JAR
-// and a generated POM would not declare it. Publishing is out of scope for now.
+// TODO(#52): add POM generation and validation once the IAM toolkit is published (#49).
+// The vendored toolkit is a files(...) dependency, so it is not inside the main JAR and a
+// generated POM would not declare it.
 val verifyJars by tasks.registering {
     description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
     val jars = mapOf(

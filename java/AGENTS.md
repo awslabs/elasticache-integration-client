@@ -166,8 +166,9 @@ at `SEVERE` on every occurrence.
   Maven. Keep token validation and signing in that library; Photon owns only
   the adapter, TLS connection, and AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
-- Test TLS certificates under `src/test/` are localhost-only fixtures and must
-  not be used for production.
+- `MockTlsServer` generates a self-signed `CN=localhost` certificate at test
+  time with BouncyCastle (test scope only). It is a localhost-only fixture and
+  must not be used for production.
 
 ## Generated and build files
 

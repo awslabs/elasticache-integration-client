@@ -10,7 +10,8 @@ jobs:
   build:
     strategy:
       matrix:
-        # Test JDK. Gradle, Error Prone, and Spotless always run on JDK 21.
+        # The JDK the tests run on. Every job also installs JDK 21 to run Gradle
+        # (compile, Error Prone, Spotless), which still emits Java 8 bytecode.
         java-version: [8, 11, 17, 21]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -21,8 +22,9 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      # The last java-version entry becomes JAVA_HOME, so Gradle runs on JDK 21.
-      # setup-java also exports JAVA_HOME_<major>_X64 for the test toolchain.
+      # Install the matrix JDK for the tests and JDK 21 for Gradle. The last entry
+      # becomes JAVA_HOME, which Gradle runs on. setup-java also exports
+      # JAVA_HOME_<major>_X64, which the test toolchain uses to find the matrix JDK.
       - name: Set up JDK ${{ matrix.java-version }} and JDK 21
         uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
