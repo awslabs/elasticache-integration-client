@@ -630,7 +630,10 @@ class PhotonConnector:
         try:
             while not self._closed:
                 # Block until one complete RESP frame has arrived off the socket.
-                value = await self._reader.read_frame()
+                reader = self._reader
+                if reader is None:  # released; _release_conn has already failed the callers
+                    break
+                value = await reader.read_frame()
                 if isinstance(value, RespPush):
                     # Out-of-band frame: a deferred request's response, matched by id.
                     self._handle_push(value)

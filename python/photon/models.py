@@ -41,6 +41,6 @@ class PhotonResponse:
 class ResolvedConfig:
     """Resolved configuration returned by the ``photon.config`` handshake."""
 
+    refresh_interval: int
     version: str | None = None
-    refresh_interval: int | None = None
     raw: dict | None = None

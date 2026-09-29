@@ -118,7 +118,9 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
     return data[after_header:end], end + 2
 
 
-def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_array(
+    data: bytes, header: bytes, after_header: int
+) -> tuple[list[RespValue] | None, int]:
     """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
     if count == -1:

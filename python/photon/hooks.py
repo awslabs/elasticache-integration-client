@@ -36,7 +36,6 @@ from photon.exceptions import (
     PhotonConnectionLost,
     PhotonError,
     PhotonOriginError,
-    PhotonProtocolError,
     PhotonRejectedError,
     PhotonTimeoutError,
 )
@@ -148,7 +147,7 @@ class PhotonHandle:
         propagate.
         """
         try:
-            http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
+            http_request = _aws_to_photon_request(request, kwargs.get("event_name", ""))
         except PhotonError:
             logger.warning(
                 "Photon could not adapt the request; passing through to the service",

@@ -144,7 +144,7 @@ def _simple_string(data: bytes) -> bytes:
     return b"+" + data + _CRLF
 
 
-def _push(items: List[bytes]) -> bytes:
+def _push(items: list[bytes]) -> bytes:
     return b">" + str(len(items)).encode() + _CRLF + b"".join(items)
 
 
