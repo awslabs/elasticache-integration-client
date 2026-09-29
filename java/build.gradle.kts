@@ -4,6 +4,7 @@ import org.gradle.api.tasks.Exec
 plugins {
     java
     id("com.diffplug.spotless") version "8.10.3"
+    id("net.ltgt.errorprone") version "5.1.1"
 }
 
 group = "software.amazon.photon"
@@ -72,6 +73,8 @@ dependencies {
     implementation("software.amazon.awssdk:http-auth-aws")
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
+
+    errorprone("com.google.errorprone:error_prone_core:2.50.0")
 
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
