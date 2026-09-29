@@ -120,13 +120,21 @@ describe("PredicateEvaluator", () => {
     ).toBe(false);
   });
 
-  it("compiles a missing or non-array predicates field to no predicates", () => {
+  it("compiles a missing predicates field to no predicates", () => {
     expect(PredicateEvaluator.compile(undefined).shouldRouteToPhoton(request("GetItem"))).toBe(
       false,
     );
-    expect(
-      PredicateEvaluator.compile({ predicates: "invalid" }).shouldRouteToPhoton(request("GetItem")),
-    ).toBe(false);
+    expect(PredicateEvaluator.compile({}).shouldRouteToPhoton(request("GetItem"))).toBe(false);
+  });
+
+  it.each([
+    ["a string", "nope"],
+    ["an object", { expr: "true" }],
+    ["null", null],
+  ])("rejects the config when predicates is %s", (_, value) => {
+    expect(() => PredicateEvaluator.compile({ predicates: value })).toThrow(
+      PhotonConfigUnevaluable,
+    );
   });
 
   // One bad entry taints the whole config: caching by the entries that did compile would route a

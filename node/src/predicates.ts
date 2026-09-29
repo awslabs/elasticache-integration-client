@@ -84,18 +84,26 @@ export class PredicateEvaluator {
   private constructor(private readonly predicates: readonly CompiledPredicate[]) {}
 
   /**
-   * Compile the `predicates` of a resolved config, in wire order. A missing or
-   * non-array `predicates` compiles to no predicates, so every request passes
+   * Compile the `predicates` of a resolved config, in wire order. A missing
+   * `predicates` key compiles to no predicates, so every request passes
    * through.
    *
-   * @throws PhotonConfigUnevaluable An entry is not an object, has no string
-   *   `expr`, or has an expression this client cannot compile. Caching by the
-   *   entries that happened to compile would route a different set of requests
-   *   than the proxy resolved.
+   * @throws PhotonConfigUnevaluable `predicates` is present but not an array,
+   *   an entry is not an object, has no string `expr`, or has an expression
+   *   this client cannot compile. Caching by the entries that happened to
+   *   compile would route a different set of requests than the proxy resolved.
    */
   static compile(rawConfig: Record<string, unknown> | undefined): PredicateEvaluator {
-    if (!Array.isArray(rawConfig?.predicates)) return new PredicateEvaluator([]);
-    return new PredicateEvaluator(rawConfig.predicates.map((entry) => compilePredicate(entry)));
+    if (rawConfig === undefined || rawConfig === null || !("predicates" in rawConfig)) {
+      return new PredicateEvaluator([]);
+    }
+    const entries = rawConfig.predicates;
+    if (!Array.isArray(entries)) {
+      throw new PhotonConfigUnevaluable(
+        `Config 'predicates' must be a list, got ${entries === null ? "null" : typeof entries}`,
+      );
+    }
+    return new PredicateEvaluator(entries.map((entry) => compilePredicate(entry)));
   }
 
   /** Return true as soon as one compiled predicate matches the request. */
