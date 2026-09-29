@@ -231,9 +231,9 @@ describe("SocketReader limits", () => {
   });
 });
 
-describe("PhotonConnector authentication timeout", () => {
-  it("uses the dedicated config timeout for AUTH", async () => {
-    const cache = await startCache({ failure: "hang", failureCommand: "auth" });
+describe("PhotonConnector handshake timeout", () => {
+  it("uses the dedicated config timeout for HELLO", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "hello" });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
       requestTimeout: 5_000,
@@ -241,20 +241,20 @@ describe("PhotonConnector authentication timeout", () => {
       authProvider: () => ["test-user", "test-token"],
     });
     await connector.connect();
-    const authentication = connector.authenticate();
+    const handshake = connector.handshake();
 
     try {
       await expect(
         Promise.race([
-          authentication,
+          handshake,
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("request timeout exceeded")), 100),
           ),
         ]),
-      ).rejects.toThrow("IAM AUTH timed out");
+      ).rejects.toThrow("HELLO 3 timed out");
     } finally {
       await connector.close();
-      await authentication.catch(() => undefined);
+      await handshake.catch(() => undefined);
     }
   });
 });
@@ -493,7 +493,7 @@ describe("PhotonConnector", () => {
   });
 
   it("keeps a request-id-shaped reply positional for a non-request command", async () => {
-    const cache = await startCache({ authResponse: Reply.requestId(42) });
+    const cache = await startCache({ helloResponse: Reply.requestId(42) });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
       configTimeout: 100,
@@ -501,7 +501,13 @@ describe("PhotonConnector", () => {
     await connector.connect();
 
     await expect(
-      connector.execute("AUTH", Buffer.from("test-user"), Buffer.from("test-token")),
+      connector.execute(
+        "HELLO",
+        Buffer.from("3"),
+        Buffer.from("AUTH"),
+        Buffer.from("test-user"),
+        Buffer.from("test-token"),
+      ),
     ).resolves.toBe("42");
     await connector.close();
   });
@@ -697,7 +703,7 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
-  it("runs injected AUTH before the caller sends later commands", async () => {
+  it("negotiates RESP3 and carries credentials in one HELLO command", async () => {
     const cache = await startCache();
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
@@ -705,10 +711,12 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await connector.authenticate();
+    await connector.handshake();
 
-    expect(cache.photonCommandLog).toEqual(["auth"]);
+    expect(cache.photonCommandLog).toEqual(["hello"]);
     expect(cache.receivedCommands[0]).toEqual([
+      Buffer.from("HELLO"),
+      Buffer.from("3"),
       Buffer.from("AUTH"),
       Buffer.from("test-user"),
       Buffer.from("test-token"),
@@ -716,9 +724,17 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
-  it("does not accept a bulk string containing OK as AUTH success", async () => {
+  it("requires an auth provider for the HELLO handshake", async () => {
+    const connector = new PhotonConnector("host", 6379, { tls: false });
+
+    await expect(connector.handshake()).rejects.toThrow(
+      "PhotonConnector requires an auth provider to handshake",
+    );
+  });
+
+  it("does not accept a bulk string as HELLO success", async () => {
     const cache = await startCache({
-      authResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
+      helloResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
     });
     const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
       refreshAuth: vi.fn(),
@@ -729,14 +745,19 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await expect(connector.authenticate()).rejects.toThrow("IAM AUTH failed");
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 failed: expected a map reply, got bulk string",
+    );
     expect(authProvider.refreshAuth).not.toHaveBeenCalled();
     await connector.close();
   });
 
-  it("makes the connection unusable when AUTH is rejected", async () => {
+  it.each([
+    Buffer.from("%1\r\n$5\r\nproto\r\n:2\r\n"),
+    Buffer.from("%1\r\n$6\r\nserver\r\n$6\r\nvalkey\r\n"),
+  ])("makes the connection unusable when HELLO does not confirm RESP3", async (helloReply) => {
     const cache = await startCache({
-      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+      helloResponse: new Reply(helloReply),
     });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
@@ -744,17 +765,47 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await expect(connector.authenticate()).rejects.toThrow(
-      "IAM AUTH rejected: invalid-iam-credentials",
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 failed: reply did not report proto 3",
     );
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
       PhotonConnectionLost,
     );
   });
 
-  it("invalidates managed credentials after AUTH rejection", async () => {
+  it("reports a connection drop during HELLO as a handshake failure", async () => {
+    const cache = await startCache({ failure: "drop", failureCommand: "hello" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow("HELLO 3 failed: connection lost");
+    expect(connector.isDead).toBe(true);
+  });
+
+  it("makes the connection unusable when HELLO is rejected", async () => {
     const cache = await startCache({
-      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
+    );
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
+      PhotonConnectionLost,
+    );
+  });
+
+  it("invalidates managed credentials after HELLO rejection", async () => {
+    const cache = await startCache({
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
     });
     const authProvider = Object.assign(() => ["test-user", "cached-token"] as [string, string], {
       refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
@@ -765,8 +816,8 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await expect(connector.authenticate()).rejects.toThrow(
-      "IAM AUTH rejected: invalid-iam-credentials",
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
     );
     expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
     await connector.close();
@@ -774,7 +825,7 @@ describe("PhotonConnector", () => {
 
   it("preserves an object auth provider receiver while invalidating credentials", async () => {
     const cache = await startCache({
-      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
     });
     class StatefulAuthProvider {
       refreshed = false;
@@ -795,8 +846,8 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await expect(connector.authenticate()).rejects.toThrow(
-      "IAM AUTH rejected: invalid-iam-credentials",
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
     );
     expect(authProvider.refreshed).toBe(true);
     await connector.close();
