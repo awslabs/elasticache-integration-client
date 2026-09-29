@@ -123,6 +123,16 @@ function timerDelay(value: number, name: string): number {
   return value;
 }
 
+function jitteredTimerInterval(value: number, name: string, jitter: number): number {
+  const interval = timerDelay(value, name);
+  if (interval * (1 + jitter) > MAX_TIMER_DELAY_MS) {
+    throw new PhotonConfigError(
+      `${name} must remain at most ${MAX_TIMER_DELAY_MS} after jitter is applied`,
+    );
+  }
+  return interval;
+}
+
 function positiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new PhotonConfigError(`${name} must be a positive integer`);
@@ -163,9 +173,10 @@ function resolveReconnectPolicy(
       options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
       "connectionTimeoutMs",
     ),
-    authRefreshIntervalMs: timerDelay(
+    authRefreshIntervalMs: jitteredTimerInterval(
       options?.authRefreshIntervalMs ?? DEFAULT_AUTH_REFRESH_INTERVAL_MS,
       "authRefreshIntervalMs",
+      jitter,
     ),
     baseDelayMs,
     maxDelayMs,
