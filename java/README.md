@@ -9,7 +9,7 @@ not been sent to Photon use origin fallback until the configured fallback
 window expires. After a request is sent, indeterminate failures fall back only
 when the connection drops and the operation is in the shared replay-safe
 catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `PHOTON_AUTH_ERROR` closes the
+SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
 stale connection and passes the rejected request through while reconnecting.
 Other RESP errors, failures for non-idempotent operations, malformed responses,
 an expired fallback window, and shutdown are surfaced without starting an

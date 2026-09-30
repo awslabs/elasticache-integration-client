@@ -47,7 +47,7 @@ from photon.protocol import (
 
 logger = logging.getLogger(__name__)
 
-_PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
+_AUTH_ERROR = "AUTH_ERROR"
 
 
 def _config_failure_cause(exc: PhotonError) -> str:
@@ -317,7 +317,7 @@ class PhotonSession:
         try:
             return parse_request_response(connector.execute(command, *args))
         except PhotonRejectedError as exc:
-            if exc.code != _PHOTON_AUTH_ERROR:
+            if exc.code != _AUTH_ERROR:
                 raise
             self._connection_manager.invalidate_connection(connector)
             return None

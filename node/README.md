@@ -39,7 +39,7 @@ connection-fatal. The middleware sends requests with no matching predicate
 directly to origin and has a narrow origin fallback for cataloged idempotent
 requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
 returned to the SDK as retryable for a cataloged operation.
-`PHOTON_AUTH_ERROR` closes the stale connection, starts background recovery, and
+`AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. Other RESP errors, malformed
 responses, and failures for non-idempotent operations propagate without origin
 fallback.

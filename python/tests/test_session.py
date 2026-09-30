@@ -655,7 +655,7 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
     connector = mock_connector()
     session = PhotonSession(lambda: connector)
     connector.execute.side_effect = None
-    connector.execute.return_value = RespError("PHOTON_AUTH_ERROR", "missing FAS")
+    connector.execute.return_value = RespError("AUTH_ERROR", "missing FAS")
     session._connection_manager.invalidate_connection = mock.Mock()
 
     response = session.request(

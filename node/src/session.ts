@@ -42,7 +42,7 @@ import {
 import { PredicateEvaluator } from "./predicates.js";
 import { ConfigRefresher } from "./refresh.js";
 
-const PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
+const AUTH_ERROR = "AUTH_ERROR";
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 const DEFAULT_BASE_DELAY_MS = 100;
@@ -463,7 +463,7 @@ export class PhotonSession {
     try {
       return parseRequestResponse(await currentConnector.execute(command, ...args));
     } catch (error) {
-      if (error instanceof PhotonRejectedError && error.code === PHOTON_AUTH_ERROR) {
+      if (error instanceof PhotonRejectedError && error.code === AUTH_ERROR) {
         this.handleDisconnect(currentConnector);
         return undefined;
       }

@@ -56,7 +56,7 @@ import software.amazon.photon.resp.RespValue;
 public class PhotonSession implements Closeable {
 
     private static final Logger LOGGER = Logger.getLogger(PhotonSession.class.getName());
-    private static final String PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
+    private static final String AUTH_ERROR = "AUTH_ERROR";
     private static final AtomicInteger THREAD_IDS = new AtomicInteger();
 
     /** Default staleness window: one hour. */
@@ -517,7 +517,7 @@ public class PhotonSession implements Closeable {
         try {
             return active.request(request, cancellation);
         } catch (PhotonRejectedError failure) {
-            if (PHOTON_AUTH_ERROR.equals(failure.getCode())) {
+            if (AUTH_ERROR.equals(failure.getCode())) {
                 beginReconnect(active);
                 return null;
             }

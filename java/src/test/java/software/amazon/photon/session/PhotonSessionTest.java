@@ -375,7 +375,7 @@ class PhotonSessionTest {
 
     @Test
     void authErrorPassesThroughAndStartsReconnect() {
-        cache.setReply(Reply.error("PHOTON_AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         PhotonSession session = new PhotonSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
