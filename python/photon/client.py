@@ -2,14 +2,42 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import boto3
 
 from photon.auth import build_cache_auth_provider
 from photon.config_policy import DEFAULT_STALENESS_DURATION, ConfigPolicy
 from photon.connection import PhotonConnector
+from photon.exceptions import PhotonConfigError
 from photon.hooks import PhotonHandle
 from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
+
+
+@dataclass(frozen=True, kw_only=True)
+class PhotonClientConfiguration:
+    """How a Photon client behaves. Every field has a default, so pass only what you change.
+
+    Attributes:
+        request_timeout: Maximum time, in seconds, to wait for each Photon request response.
+            Defaults to 5 seconds.
+        fallback_duration: How long, in seconds, requests may be served directly by the origin
+            service while Photon has no connection to the cache. ``None`` (the default) or any
+            negative value means indefinitely, so a cache outage never becomes an application
+            outage. ``0`` means never — the first request after a connection is lost raises
+            :class:`~photon.exceptions.PhotonCacheUnavailable`.
+        staleness_duration: How long, in seconds, the resolved config stays trusted while refreshes
+            are failing. Past it the connection is dropped so a new one re-resolves the config.
+            Defaults to one hour; must be a positive whole number of seconds.
+
+    Values are checked by :func:`client`, which raises
+    :class:`~photon.exceptions.PhotonConfigError` for one that is not usable.
+    """
+
+    request_timeout: float = 5.0
+    fallback_duration: int | None = None
+    staleness_duration: int = DEFAULT_STALENESS_DURATION
 
 
 def client(
@@ -21,10 +49,8 @@ def client(
     user_id: str | None = None,
     verify: bool = True,
     ca_certs: str | None = None,
-    request_timeout: float = 5.0,
-    fallback_duration: int | None = None,
-    staleness_duration: int = DEFAULT_STALENESS_DURATION,
-    **overrides,
+    client_configuration: PhotonClientConfiguration | None = None,
+    overrides: dict | None = None,
 ):
     """Create a boto3 client for ``service`` wired up with Photon.
 
@@ -39,26 +65,28 @@ def client(
         user_id: Optional ElastiCache IAM user id (defaults to ``default.iam-user``).
         verify: Verify the cache's TLS certificate. False is for self-signed test rigs only.
         ca_certs: CA bundle to verify against instead of the system trust store.
-        request_timeout: Maximum time, in seconds, to wait for each Photon request response.
-            Defaults to 5 seconds.
-        fallback_duration: How long, in seconds, requests may be served directly by the origin
-            service while Photon has no connection to the cache. ``None`` (the default) or any
-            negative value means indefinitely, so a cache outage never becomes an application
-            outage. ``0`` means never — the first request after a connection is lost raises
-            :class:`~photon.exceptions.PhotonCacheUnavailable`.
-        staleness_duration: How long, in seconds, the resolved config stays trusted while refreshes
-            are failing. Past it the connection is dropped so a new one re-resolves the config.
-            Defaults to one hour; must be a positive whole number of seconds.
-        **overrides: Additional photon.config overrides.
+        client_configuration: How Photon behaves: timeouts, fallback and config staleness. See
+            :class:`~photon.PhotonClientConfiguration`; omitted means all defaults.
+        overrides: Optional ``photon.config`` overrides sent to the cache.
 
     Example::
 
         ddb = photon.client("dynamodb", endpoint="my-cache:6379",
-                            cache_name="my-cache", region_name="us-east-1")
+                            cache_name="my-cache", region_name="us-east-1",
+                            client_configuration=photon.PhotonClientConfiguration(
+                                fallback_duration=60))
     """
+    configuration = client_configuration or PhotonClientConfiguration()
     sdk_client = boto3.Session(region_name=region_name).client(service)
 
     try:
+        request_timeout = configuration.request_timeout
+        if (
+            isinstance(request_timeout, bool)
+            or not isinstance(request_timeout, (int, float))
+            or request_timeout <= 0
+        ):
+            raise PhotonConfigError("request_timeout must be a positive number of seconds")
         host, port = parse_endpoint(endpoint)
         auth_provider = build_cache_auth_provider(
             cache_name=cache_name, user_id=user_id, region=region_name
@@ -78,9 +106,9 @@ def client(
         # so the first intercepted request already has a ready session.
         session = PhotonSession(
             connector_factory,
-            overrides=overrides or None,
-            policy=ReconnectPolicy(fallback_duration=fallback_duration),
-            config_policy=ConfigPolicy(staleness_duration=staleness_duration),
+            overrides=dict(overrides) if overrides else None,
+            policy=ReconnectPolicy(fallback_duration=configuration.fallback_duration),
+            config_policy=ConfigPolicy(staleness_duration=configuration.staleness_duration),
         )
         PhotonHandle(sdk_client, session)
     except BaseException:

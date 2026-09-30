@@ -81,6 +81,7 @@ def test_public_api_surface():
 
     assert photon.__all__ == [
         "client",
+        "PhotonClientConfiguration",
         "PhotonCacheUnavailable",
         "PhotonConfigError",
         "PhotonError",
