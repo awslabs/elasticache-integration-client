@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.exception.PhotonAuthenticationError;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonError;
@@ -1209,7 +1210,7 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
-    void handshake_rejected_closesConnectionWithoutExposingToken() {
+    void handshake_protocolRejected_closesConnectionWithoutExposingToken() {
         cache.setHelloReply(new RespError("NOPROTO", "unsupported protocol version"));
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
@@ -1219,6 +1220,26 @@ class PhotonConnectorIntegrationTest {
                     assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
 
             assertTrue(error.getMessage().contains("NOPROTO"));
+            assertFalse(error.getMessage().contains(TEST_TOKEN));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_inlineAuthRejected_closesConnectionWithoutExposingToken() {
+        cache.setAuthReplyFunction(
+                (userId, token) -> new RespError("WRONGPASS", "invalid username-password pair"));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonAuthenticationError error =
+                    assertThrows(
+                            PhotonAuthenticationError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("WRONGPASS"));
             assertFalse(error.getMessage().contains(TEST_TOKEN));
             assertTrue(conn.isDead());
         } finally {

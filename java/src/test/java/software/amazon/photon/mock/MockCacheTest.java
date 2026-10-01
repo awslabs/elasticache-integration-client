@@ -183,7 +183,24 @@ class MockCacheTest {
     void handleHello2_returnsResp2Array() {
         RespValue response = cache.handle(Arrays.asList(bs("HELLO"), bs("2")));
 
-        assertTrue(response instanceof RespArray);
+        assertEquals(
+                new RespArray(
+                        Arrays.asList(
+                                bs("server"),
+                                bs("valkey"),
+                                bs("version"),
+                                bs("8.0.0"),
+                                bs("proto"),
+                                new RespInteger(2),
+                                bs("id"),
+                                new RespInteger(1),
+                                bs("mode"),
+                                bs("cluster"),
+                                bs("role"),
+                                bs("primary"),
+                                bs("modules"),
+                                new RespArray(Collections.emptyList()))),
+                response);
     }
 
     @Test
