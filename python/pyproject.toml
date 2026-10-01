@@ -44,6 +44,9 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+# Rounded down to the nearest 5 from the 2026-10-01 baseline (94.3% to 94.7% combined
+# line and branch across runs).
+fail_under = 90
 
 [tool.ruff]
 line-length = 100
