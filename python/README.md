@@ -20,10 +20,11 @@ Python publication is driven by annotated Git tags. Stable releases use
 `vMAJOR.MINOR.PATCH`; release candidates use `vMAJOR.MINOR.PATCH-rc.N`, which maps to the
 PEP 440 version `MAJOR.MINOR.PATCHrcN`.
 
-Before tagging, update both the version in `pyproject.toml` and `photon.__version__`. The
-`Python Release` workflow rejects any tag that does not match both values. It builds one wheel and
-one source distribution, validates and smoke tests those exact artifacts on Python 3.10, 3.12,
-and 3.14, then waits for approval from the protected `release` environment before publishing
+Before tagging, update the version in `pyproject.toml`; `photon.__version__` reads that installed
+distribution metadata. The `Python Release` workflow rejects any tag that does not match the
+project version. It runs the reusable Python CI workflow, builds one wheel and one source
+distribution, and smoke tests the wheel on Python 3.10, 3.12, and 3.14 before waiting for approval
+from the protected `release` environment and publishing
 with PyPI trusted publishing and attestations. The workflow verifies the published version and
 attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
 

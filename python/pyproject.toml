@@ -20,6 +20,7 @@ test = [
     "pytest>=7",
     "pytest-cov>=4",
     "cryptography>=42",  # used by tests/mock.py to mint a self-signed cert for the TLS e2e
+    "packaging>=24",
 ]
 dev = [
     "ruff==0.16.9",

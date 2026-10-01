@@ -40,6 +40,9 @@ jobs:
           cache: pip
           cache-dependency-path: python/pyproject.toml
 
+      - name: Install release build tools
+        run: python -m pip install --upgrade build packaging twine
+
       - name: Resolve release mode and package version
         id: version
         shell: bash
@@ -74,22 +77,14 @@ jobs:
           echo "project-name=${project_name}" >>"${GITHUB_OUTPUT}"
           echo "should-publish=${should_publish}" >>"${GITHUB_OUTPUT}"
 
-      - name: Install release build tools
-        run: python -m pip install --upgrade build twine
-
       - name: Build wheel and source distribution once
         run: python -m build --outdir release/dist
 
       - name: Validate distribution metadata
         run: python -m twine check release/dist/*
 
-      - name: Inspect contents and record checksums
-        run: |
-          set -euo pipefail
-          python scripts/release.py inspect \
-            --dist-dir release/dist \
-            --expected-version "${{ steps.version.outputs.version }}" \
-            --checksums release/python-SHA256SUMS
+      - name: Check packaged idempotency catalog
+        run: unzip -l release/dist/*.whl | grep -q "photon/idempotent-operations.json"
 
       - name: Upload immutable release distributions
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -100,54 +95,54 @@ jobs:
           retention-days: 30
 
   validate:
-    name: Validate Python ${{ matrix.python-version }}
+    name: Run Python CI
+    uses: ./.github/workflows/python-ci.yml
+
+  smoke:
+    name: Smoke test wheel on Python ${{ matrix.python-version }}
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.12", "3.14"]
 
     steps:
-      - name: Checkout release revision
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: python/pyproject.toml
-
-      - name: Run the complete test suite
-        working-directory: python
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          python -m pip install -e '.[test]'
-          python -m pytest
 
       - name: Download the distributions built by the release job
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: ${{ needs.build.outputs.artifact-name }}
-          path: python/release
+          path: release
 
-      - name: Install and smoke test the exact wheel
+      - name: Install and smoke test the wheel
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          smoke_env="${RUNNER_TEMP}/photon-wheel-smoke"
-          python -m venv "${smoke_env}"
-          "${smoke_env}/bin/python" -m pip install --upgrade pip
-          "${smoke_env}/bin/python" -m pip install python/release/dist/*.whl
-          "${smoke_env}/bin/python" python/scripts/release.py smoke \
-            --expected-version "${{ needs.build.outputs.version }}"
+          python -m pip install release/dist/*.whl
+          python - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          import photon
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert version("photon") == expected
+          assert photon.__version__ == expected
+          for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
+              assert hasattr(photon, name), name
+          PY
 
   publish:
     name: Publish to PyPI
-    needs: [build, validate]
+    needs: [build, validate, smoke]
     if: needs.build.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -165,13 +160,6 @@ jobs:
           name: ${{ needs.build.outputs.artifact-name }}
           path: release
 
-      - name: Verify validated distribution checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd release/dist
-          sha256sum --check ../python-SHA256SUMS
-
       - name: Publish the exact validated distributions
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
@@ -185,9 +173,6 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - name: Checkout release smoke test
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -195,6 +180,9 @@ jobs:
 
       - name: Wait for PyPI and smoke test the published version
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+          PROJECT_NAME: ${{ needs.build.outputs.project-name }}
         run: |
           set -euo pipefail
           smoke_env="${RUNNER_TEMP}/photon-pypi-smoke"
@@ -203,7 +191,7 @@ jobs:
 
           for attempt in {1..20}; do
             if "${smoke_env}/bin/python" -m pip install \
-              "${{ needs.build.outputs.project-name }}==${{ needs.build.outputs.version }}"; then
+              "${PROJECT_NAME}==${EXPECTED_VERSION}"; then
               break
             fi
             if [[ "${attempt}" == "20" ]]; then
@@ -213,8 +201,18 @@ jobs:
             sleep 30
           done
 
-          "${smoke_env}/bin/python" python/scripts/release.py smoke \
-            --expected-version "${{ needs.build.outputs.version }}"
+          "${smoke_env}/bin/python" - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          import photon
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert version("photon") == expected
+          assert photon.__version__ == expected
+          for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
+              assert hasattr(photon, name), name
+          PY
 
   github-release:
     name: Attach Python artifacts to GitHub Release
@@ -237,6 +235,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          (cd release/dist && sha256sum * > ../python-SHA256SUMS)
+
           if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             if ! gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes; then
               gh release view "${GITHUB_REF_NAME}" >/dev/null
