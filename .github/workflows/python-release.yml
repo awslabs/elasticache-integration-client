@@ -134,7 +134,7 @@ jobs:
           import photon
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("photon") == expected
+          assert version("photon-python") == expected
           assert photon.__version__ == expected
           for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
               assert hasattr(photon, name), name
@@ -208,7 +208,7 @@ jobs:
           import photon
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("photon") == expected
+          assert version("photon-python") == expected
           assert photon.__version__ == expected
           for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
               assert hasattr(photon, name), name

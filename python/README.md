@@ -29,10 +29,12 @@ from the protected `release` environment and publishing
 with PyPI trusted publishing and attestations. The workflow verifies the published version and
 attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
 
-The PyPI project must configure `.github/workflows/python-release.yml` as its trusted publisher
-for the `release` environment. No PyPI token is used by the workflow. A manual workflow run
-performs the same test, packaging, artifact validation, and wheel smoke stages without entering
-the release environment or publishing to PyPI.
+The provisional PyPI distribution name is `photon-python`, while the import package remains
+`photon`; the public distribution name is pending the final naming decision. The PyPI project must
+configure `.github/workflows/python-release.yml` as its trusted publisher for the `release`
+environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
+packaging, artifact validation, and wheel smoke stages without entering the release environment or
+publishing to PyPI.
 
 ## Current state
 

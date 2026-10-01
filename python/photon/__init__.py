@@ -21,7 +21,7 @@ from importlib.metadata import version
 from photon.client import client
 from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
 
-__version__ = version("photon")
+__version__ = version("photon-python")
 
 # Library best practice: attach a NullHandler to the package logger so Photon never emits
 # "No handlers could be found" warnings or configures logging on the application's behalf.
