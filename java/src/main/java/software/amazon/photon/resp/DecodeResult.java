@@ -1,8 +1,6 @@
 package software.amazon.photon.resp;
 
-/**
- * Result of decoding a RESP value: the value and the position after it.
- */
+/** Result of decoding a RESP value: the value and the position after it. */
 public class DecodeResult {
 
     private final RespValue value;

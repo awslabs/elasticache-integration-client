@@ -112,12 +112,37 @@ describe("RESP codec", () => {
     expect(decodeResp(Buffer.from(`*-1${CRLF}`))).toEqual([null, 5]);
   });
 
+  it("decodes a RESP3 map", () => {
+    const frame = Buffer.from(
+      `%2${CRLF}$5${CRLF}proto${CRLF}:3${CRLF}$6${CRLF}server${CRLF}$6${CRLF}valkey${CRLF}`,
+    );
+
+    expect(decodeResp(frame)).toEqual([
+      new Map<unknown, unknown>([
+        [Buffer.from("proto"), 3],
+        [Buffer.from("server"), Buffer.from("valkey")],
+      ]),
+      frame.length,
+    ]);
+  });
+
+  it("decodes an empty RESP3 map", () => {
+    expect(decodeResp(Buffer.from(`%0${CRLF}`))).toEqual([new Map(), 4]);
+  });
+
+  it("preserves aggregate RESP3 map keys", () => {
+    const [value] = decodeResp(Buffer.from(`%1${CRLF}*1${CRLF}:1${CRLF}:2${CRLF}`));
+
+    expect(value).toEqual(new Map([[[1], 2]]));
+  });
+
   it.each([
     Buffer.from(""), // empty buffer
     Buffer.from("+missing-crlf"), // header with no terminating CRLF
     Buffer.from(`$5${CRLF}hell`), // bulk one byte short of declared length (+ trailing CRLF)
     Buffer.from(`$5${CRLF}hello`), // bulk body present but trailing CRLF missing
     Buffer.from(`*2${CRLF}:1${CRLF}`), // array missing its second element
+    Buffer.from(`%1${CRLF}$5${CRLF}proto${CRLF}`), // map key missing its value
     Buffer.from(`>2${CRLF}:1${CRLF}`), // push missing its second element
     Buffer.from(":"), // integer header with no CRLF yet
   ])("truncation raises IncompleteFrame: %j", (partial) => {
@@ -142,6 +167,7 @@ describe("RESP codec", () => {
     Buffer.from(`$5${CRLF}helloXX`), // body is followed by a non-CRLF terminator
     Buffer.from(`$-2${CRLF}`), // only -1 is a valid null bulk length
     Buffer.from(`*-2${CRLF}`), // only -1 is a valid null array length
+    Buffer.from(`%-1${CRLF}`), // RESP3 has no null map
   ])("malformed framing raises PhotonProtocolError: %j", (malformed) => {
     expect(() => decodeResp(malformed)).toThrow(PhotonProtocolError);
   });

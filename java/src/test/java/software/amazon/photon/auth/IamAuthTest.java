@@ -1,26 +1,22 @@
 package software.amazon.photon.auth;
 
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.Nested;
-import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.photon.exception.PhotonError;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.photon.exception.PhotonError;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-/**
- * Unit tests for IAM authentication: parameter validation, token format, and error handling.
- */
+/** Unit tests for IAM authentication: parameter validation, token format, and error handling. */
 class IamAuthTest {
 
     // AWS documentation example credentials (intentionally fake)
@@ -35,7 +31,8 @@ class IamAuthTest {
 
     private static AwsCredentialsProvider sessionCredentials() {
         return StaticCredentialsProvider.create(
-                AwsSessionCredentials.create(EXAMPLE_ACCESS_KEY, EXAMPLE_SECRET_KEY, EXAMPLE_SESSION_TOKEN));
+                AwsSessionCredentials.create(
+                        EXAMPLE_ACCESS_KEY, EXAMPLE_SECRET_KEY, EXAMPLE_SESSION_TOKEN));
     }
 
     // =========================================================================
@@ -47,12 +44,13 @@ class IamAuthTest {
 
         @Test
         void generateToken_createsSchemeFreeSigV4Token() {
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .userId("my-user")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .userId("my-user")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             String token = generator.generateToken();
 
@@ -63,101 +61,115 @@ class IamAuthTest {
             // Must contain the expected query params
             assertTrue(token.contains("Action=connect"), "Token should contain Action=connect");
             assertTrue(token.contains("User=my-user"), "Token should contain User=my-user");
-            assertTrue(token.contains("ResourceType=ServerlessCache"),
+            assertTrue(
+                    token.contains("ResourceType=ServerlessCache"),
                     "Token should contain ResourceType=ServerlessCache");
 
             // Must contain SigV4 signing params
             assertTrue(token.contains("X-Amz-Credential="), "Token should contain X-Amz-Credential");
             assertTrue(token.contains("X-Amz-Signature="), "Token should contain X-Amz-Signature");
             assertTrue(token.contains("X-Amz-Expires=900"), "Token should contain X-Amz-Expires=900");
-            assertTrue(token.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"),
-                    "Token should contain algorithm");
+            assertTrue(
+                    token.contains("X-Amz-Algorithm=AWS4-HMAC-SHA256"), "Token should contain algorithm");
         }
 
         @Test
         void generateToken_withSessionCredentials_includesSecurityToken() {
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(sessionCredentials())
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(sessionCredentials())
+                            .build();
 
             String token = generator.generateToken();
 
-            assertTrue(token.contains("X-Amz-Security-Token="),
+            assertTrue(
+                    token.contains("X-Amz-Security-Token="),
                     "Token should contain security token for session credentials");
         }
 
         @Test
         void generateToken_usesDefaultUserId() {
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             String token = generator.generateToken();
 
-            assertTrue(token.contains("User=" + IamAuthTokenGenerator.DEFAULT_USER_ID),
+            assertTrue(
+                    token.contains("User=" + IamAuthTokenGenerator.DEFAULT_USER_ID),
                     "Token should use default user ID when not specified");
             assertEquals(IamAuthTokenGenerator.DEFAULT_USER_ID, generator.getUserId());
         }
 
         @Test
         void generateToken_emptyUserIdUsesDefault() {
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .userId("")
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .userId("")
+                            .build();
 
             String token = generator.generateToken();
 
-            assertTrue(token.contains("User=" + IamAuthTokenGenerator.DEFAULT_USER_ID),
+            assertTrue(
+                    token.contains("User=" + IamAuthTokenGenerator.DEFAULT_USER_ID),
                     "Token should use default user ID when empty string specified");
             assertEquals(IamAuthTokenGenerator.DEFAULT_USER_ID, generator.getUserId());
         }
 
         @Test
         void generateToken_rejectsNonStandardExpiry() {
-            PhotonError error = assertThrows(PhotonError.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("my-cache")
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(staticCredentials())
-                            .expiresIn(Duration.ofSeconds(300))
-                            .build());
+            PhotonError error =
+                    assertThrows(
+                            PhotonError.class,
+                            () ->
+                                    IamAuthTokenGenerator.builder()
+                                            .cacheName("my-cache")
+                                            .region(Region.US_EAST_1)
+                                            .credentialsProvider(staticCredentials())
+                                            .expiresIn(Duration.ofSeconds(300))
+                                            .build());
 
             assertTrue(error.getMessage().contains("exactly 900 seconds"));
         }
 
         @Test
         void generateToken_rejectsCustomSigningClock() {
-            PhotonError error = assertThrows(PhotonError.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("my-cache")
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(staticCredentials())
-                            .clock(Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
-                            .build());
+            PhotonError error =
+                    assertThrows(
+                            PhotonError.class,
+                            () ->
+                                    IamAuthTokenGenerator.builder()
+                                            .cacheName("my-cache")
+                                            .region(Region.US_EAST_1)
+                                            .credentialsProvider(staticCredentials())
+                                            .clock(Clock.fixed(Instant.EPOCH, ZoneOffset.UTC))
+                                            .build());
 
             assertTrue(error.getMessage().contains("clock customization is not supported"));
         }
 
         @Test
         void generateToken_differentRegions() {
-            for (Region region : new Region[]{Region.US_EAST_1, Region.EU_WEST_1, Region.AP_SOUTHEAST_2}) {
-                IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                        .cacheName("my-cache")
-                        .region(region)
-                        .credentialsProvider(staticCredentials())
-                        .build();
+            for (Region region :
+                    new Region[] {Region.US_EAST_1, Region.EU_WEST_1, Region.AP_SOUTHEAST_2}) {
+                IamAuthTokenGenerator generator =
+                        IamAuthTokenGenerator.builder()
+                                .cacheName("my-cache")
+                                .region(region)
+                                .credentialsProvider(staticCredentials())
+                                .build();
 
                 String token = generator.generateToken();
 
-                assertTrue(token.contains(region.id()),
-                        "Token should contain region: " + region.id());
+                assertTrue(token.contains(region.id()), "Token should contain region: " + region.id());
             }
         }
 
@@ -165,31 +177,36 @@ class IamAuthTest {
         void generateToken_throwsOnNullCredentials() {
             AwsCredentialsProvider nullProvider = () -> null;
 
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(nullProvider)
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(nullProvider)
+                            .build();
 
             PhotonError error = assertThrows(PhotonError.class, generator::generateToken);
-            assertTrue(error.getMessage().contains("No AWS credentials"),
+            assertTrue(
+                    error.getMessage().contains("No AWS credentials"),
                     "Error should mention missing credentials");
         }
 
         @Test
         void generateToken_throwsOnCredentialProviderException() {
-            AwsCredentialsProvider failingProvider = () -> {
-                throw new RuntimeException("Credential resolution failed");
-            };
+            AwsCredentialsProvider failingProvider =
+                    () -> {
+                        throw new RuntimeException("Credential resolution failed");
+                    };
 
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(failingProvider)
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(failingProvider)
+                            .build();
 
             PhotonError error = assertThrows(PhotonError.class, generator::generateToken);
-            assertTrue(error.getMessage().contains("No AWS credentials"),
+            assertTrue(
+                    error.getMessage().contains("No AWS credentials"),
                     "Error should mention missing credentials");
             assertNotNull(error.getCause(), "Error should have cause");
         }
@@ -197,20 +214,23 @@ class IamAuthTest {
         @Test
         void generateToken_errorDoesNotLeakCredentials() {
             // Simulate an error that might contain credential material
-            AwsCredentialsProvider failingProvider = () -> {
-                throw new RuntimeException("Error with secret=" + EXAMPLE_SECRET_KEY);
-            };
+            AwsCredentialsProvider failingProvider =
+                    () -> {
+                        throw new RuntimeException("Error with secret=" + EXAMPLE_SECRET_KEY);
+                    };
 
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(failingProvider)
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(failingProvider)
+                            .build();
 
             PhotonError error = assertThrows(PhotonError.class, generator::generateToken);
 
             // The error message should not contain the secret key
-            assertFalse(error.getMessage().contains(EXAMPLE_SECRET_KEY),
+            assertFalse(
+                    error.getMessage().contains(EXAMPLE_SECRET_KEY),
                     "Error message should not contain credential material");
         }
 
@@ -218,24 +238,25 @@ class IamAuthTest {
         void generateToken_freshCredentialsEachCall() {
             AtomicInteger callCount = new AtomicInteger(0);
             String rotatedAccessKey = "ASIAROTATEDCREDENTIAL";
-            AwsCredentialsProvider countingProvider = () -> {
-                int call = callCount.incrementAndGet();
-                return AwsBasicCredentials.create(
-                        call == 1 ? EXAMPLE_ACCESS_KEY : rotatedAccessKey,
-                        call == 1 ? EXAMPLE_SECRET_KEY : "rotated-secret");
-            };
+            AwsCredentialsProvider countingProvider =
+                    () -> {
+                        int call = callCount.incrementAndGet();
+                        return AwsBasicCredentials.create(
+                                call == 1 ? EXAMPLE_ACCESS_KEY : rotatedAccessKey,
+                                call == 1 ? EXAMPLE_SECRET_KEY : "rotated-secret");
+                    };
 
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(countingProvider)
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(countingProvider)
+                            .build();
 
             String first = generator.generateToken();
             String second = generator.generateToken();
 
-            assertEquals(2, callCount.get(),
-                    "Credentials should be resolved fresh on each call");
+            assertEquals(2, callCount.get(), "Credentials should be resolved fresh on each call");
             assertTrue(first.contains(EXAMPLE_ACCESS_KEY));
             assertFalse(first.contains(rotatedAccessKey));
             assertTrue(second.contains(rotatedAccessKey));
@@ -245,12 +266,13 @@ class IamAuthTest {
 
         @Test
         void generateToken_usesToolkitValidationAndNormalization() {
-            IamAuthTokenGenerator generator = IamAuthTokenGenerator.builder()
-                    .cacheName("My-Cache")
-                    .userId("IAM-User")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenGenerator generator =
+                    IamAuthTokenGenerator.builder()
+                            .cacheName("My-Cache")
+                            .userId("IAM-User")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             String token = generator.generateToken();
 
@@ -259,13 +281,16 @@ class IamAuthTest {
             assertEquals("my-cache", generator.getCacheName());
             assertEquals("iam-user", generator.getUserId());
 
-            PhotonError error = assertThrows(PhotonError.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("bad/cache")
-                            .userId("iam-user")
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(staticCredentials())
-                            .build());
+            PhotonError error =
+                    assertThrows(
+                            PhotonError.class,
+                            () ->
+                                    IamAuthTokenGenerator.builder()
+                                            .cacheName("bad/cache")
+                                            .userId("iam-user")
+                                            .region(Region.US_EAST_1)
+                                            .credentialsProvider(staticCredentials())
+                                            .build());
             assertTrue(error.getMessage().contains("serverlessCacheName"));
         }
 
@@ -273,40 +298,49 @@ class IamAuthTest {
 
         @Test
         void builder_rejectsNullCacheName() {
-            assertThrows(NullPointerException.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(staticCredentials())
-                            .build());
+            assertThrows(
+                    NullPointerException.class,
+                    () ->
+                            IamAuthTokenGenerator.builder()
+                                    .region(Region.US_EAST_1)
+                                    .credentialsProvider(staticCredentials())
+                                    .build());
         }
 
         @Test
         void builder_rejectsEmptyCacheName() {
-            PhotonError error = assertThrows(PhotonError.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("")
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(staticCredentials())
-                            .build());
+            PhotonError error =
+                    assertThrows(
+                            PhotonError.class,
+                            () ->
+                                    IamAuthTokenGenerator.builder()
+                                            .cacheName("")
+                                            .region(Region.US_EAST_1)
+                                            .credentialsProvider(staticCredentials())
+                                            .build());
             assertTrue(error.getMessage().contains("serverlessCacheName"));
         }
 
         @Test
         void builder_rejectsNullRegion() {
-            assertThrows(NullPointerException.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("my-cache")
-                            .credentialsProvider(staticCredentials())
-                            .build());
+            assertThrows(
+                    NullPointerException.class,
+                    () ->
+                            IamAuthTokenGenerator.builder()
+                                    .cacheName("my-cache")
+                                    .credentialsProvider(staticCredentials())
+                                    .build());
         }
 
         @Test
         void builder_rejectsNullCredentialsProvider() {
-            assertThrows(NullPointerException.class, () ->
-                    IamAuthTokenGenerator.builder()
-                            .cacheName("my-cache")
-                            .region(Region.US_EAST_1)
-                            .build());
+            assertThrows(
+                    NullPointerException.class,
+                    () ->
+                            IamAuthTokenGenerator.builder()
+                                    .cacheName("my-cache")
+                                    .region(Region.US_EAST_1)
+                                    .build());
         }
     }
 
@@ -319,12 +353,13 @@ class IamAuthTest {
 
         @Test
         void get_returnsUserIdAndToken() {
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .userId("my-user")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .userId("my-user")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             AuthCredentials creds = provider.get();
 
@@ -336,32 +371,34 @@ class IamAuthTest {
         @Test
         void get_mintsNewTokenEachCall() {
             AtomicInteger callCount = new AtomicInteger(0);
-            AwsCredentialsProvider countingProvider = () -> {
-                callCount.incrementAndGet();
-                return AwsBasicCredentials.create(EXAMPLE_ACCESS_KEY, EXAMPLE_SECRET_KEY);
-            };
+            AwsCredentialsProvider countingProvider =
+                    () -> {
+                        callCount.incrementAndGet();
+                        return AwsBasicCredentials.create(EXAMPLE_ACCESS_KEY, EXAMPLE_SECRET_KEY);
+                    };
 
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(countingProvider)
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(countingProvider)
+                            .build();
 
             provider.get();
             provider.get();
             provider.get();
 
-            assertEquals(3, callCount.get(),
-                    "Each get() should mint a fresh token");
+            assertEquals(3, callCount.get(), "Each get() should mint a fresh token");
         }
 
         @Test
         void get_usesDefaultUserId() {
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             AuthCredentials creds = provider.get();
 
@@ -370,11 +407,12 @@ class IamAuthTest {
 
         @Test
         void create_withCacheAndRegion() {
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .region(Region.EU_WEST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .region(Region.EU_WEST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             assertEquals("my-cache", provider.getCacheName());
             assertEquals(Region.EU_WEST_1, provider.getRegion());
@@ -383,27 +421,26 @@ class IamAuthTest {
 
         @Test
         void builder_rejectsNullCacheName() {
-            assertThrows(NullPointerException.class, () ->
-                    IamAuthTokenProvider.builder()
-                            .region(Region.US_EAST_1)
-                            .build());
+            assertThrows(
+                    NullPointerException.class,
+                    () -> IamAuthTokenProvider.builder().region(Region.US_EAST_1).build());
         }
 
         @Test
         void builder_rejectsNullRegion() {
-            assertThrows(NullPointerException.class, () ->
-                    IamAuthTokenProvider.builder()
-                            .cacheName("my-cache")
-                            .build());
+            assertThrows(
+                    NullPointerException.class,
+                    () -> IamAuthTokenProvider.builder().cacheName("my-cache").build());
         }
 
         @Test
         void toString_doesNotContainToken() {
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             String str = provider.toString();
 
@@ -432,14 +469,12 @@ class IamAuthTest {
 
         @Test
         void constructor_rejectsNullUserId() {
-            assertThrows(NullPointerException.class, () ->
-                    new AuthCredentials(null, "token"));
+            assertThrows(NullPointerException.class, () -> new AuthCredentials(null, "token"));
         }
 
         @Test
         void constructor_rejectsNullToken() {
-            assertThrows(NullPointerException.class, () ->
-                    new AuthCredentials("user", null));
+            assertThrows(NullPointerException.class, () -> new AuthCredentials("user", null));
         }
 
         @Test
@@ -449,8 +484,7 @@ class IamAuthTest {
             String str = creds.toString();
 
             assertTrue(str.contains("user"));
-            assertFalse(str.contains("secret-token-value"),
-                    "toString should not expose token");
+            assertFalse(str.contains("secret-token-value"), "toString should not expose token");
         }
 
         @Test
@@ -485,12 +519,13 @@ class IamAuthTest {
             // This test verifies the API shape works with PhotonConnector
             // without actually connecting (no mock server needed)
 
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .userId("my-user")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .userId("my-user")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             // The provider implements Supplier<AuthCredentials>
             // PhotonConnector.connectAndAuthenticate accepts Supplier<String> for the token
@@ -506,11 +541,12 @@ class IamAuthTest {
         @Test
         void provider_asSupplierForConnectionAuth() {
             // Demonstrates how to use with PhotonConnector's Supplier<String> API
-            IamAuthTokenProvider provider = IamAuthTokenProvider.builder()
-                    .cacheName("my-cache")
-                    .region(Region.US_EAST_1)
-                    .credentialsProvider(staticCredentials())
-                    .build();
+            IamAuthTokenProvider provider =
+                    IamAuthTokenProvider.builder()
+                            .cacheName("my-cache")
+                            .region(Region.US_EAST_1)
+                            .credentialsProvider(staticCredentials())
+                            .build();
 
             // This is how you'd pass it to PhotonConnector:
             // conn.connectAndAuthenticate(() -> provider.get().getToken());

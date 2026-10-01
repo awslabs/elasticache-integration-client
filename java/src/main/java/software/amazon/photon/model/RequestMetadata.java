@@ -3,9 +3,7 @@ package software.amazon.photon.model;
 import java.util.Locale;
 import java.util.Objects;
 
-/**
- * Metadata about the originating request.
- */
+/** Metadata about the originating request. */
 public class RequestMetadata {
 
     private final String service;

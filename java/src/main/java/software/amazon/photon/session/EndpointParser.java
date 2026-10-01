@@ -17,11 +17,12 @@ public final class EndpointParser {
      * Parse a host:port endpoint string.
      *
      * <p>Examples:
+     *
      * <ul>
-     *   <li>{@code cache.example.com:6379} → host=cache.example.com, port=6379</li>
-     *   <li>{@code 127.0.0.1:6379} → host=127.0.0.1, port=6379</li>
-     *   <li>{@code [::1]:6379} → host=::1, port=6379</li>
-     *   <li>{@code ::1:6379} → host=::1, port=6379 (unbracketed IPv6)</li>
+     *   <li>{@code cache.example.com:6379} → host=cache.example.com, port=6379
+     *   <li>{@code 127.0.0.1:6379} → host=127.0.0.1, port=6379
+     *   <li>{@code [::1]:6379} → host=::1, port=6379
+     *   <li>{@code ::1:6379} → host=::1, port=6379 (unbracketed IPv6)
      * </ul>
      *
      * @param endpoint the endpoint string in host:port format
@@ -69,9 +70,7 @@ public final class EndpointParser {
         return new ParsedEndpoint(host, port);
     }
 
-    /**
-     * A parsed host:port endpoint.
-     */
+    /** A parsed host:port endpoint. */
     public static final class ParsedEndpoint {
         private final String host;
         private final int port;

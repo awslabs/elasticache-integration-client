@@ -9,19 +9,20 @@ not been sent to Photon use origin fallback until the configured fallback
 window expires. After a request is sent, indeterminate failures fall back only
 when the connection drops and the operation is in the shared replay-safe
 catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `PHOTON_AUTH_ERROR` closes the
+SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
 stale connection and passes the rejected request through while reconnecting.
 Other RESP errors, failures for non-idempotent operations, malformed responses,
 an expired fallback window, and shutdown are surfaced without starting an
 origin request. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 
-IAM token generation is provided by the Amazon ElastiCache developer toolkit.
-The toolkit validates and lowercases cache names and user IDs, resolves fresh
-AWS credentials for every token, and owns the fixed 15-minute SigV4 signing
-contract. Photon sends the resulting bearer token only in the TLS-protected
-`HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3 before the
-connection becomes usable; origin request signing remains owned by the AWS SDK.
+IAM token generation and refresh are provided by the Amazon ElastiCache
+developer toolkit. The toolkit validates and lowercases cache names and user
+IDs, resolves fresh AWS credentials for every newly signed token, and owns the
+SigV4 signing contract. Photon sends the resulting bearer token only in the
+TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
+before the connection becomes usable; origin request signing remains owned by
+the AWS SDK.
 
 ## Request routing
 
@@ -141,6 +142,28 @@ with `asyncExecutor(Executor)`. If that executor rejects a request because it is
 at capacity, Photon sends the buffered request through the origin fallback.
 Photon closes only transports and executors it creates itself.
 
+## IAM token refresh
+
+When a concrete `IamAuthTokenProvider` is supplied to `PhotonClient`,
+`PhotonHandle`, or `PhotonAsyncHandle`, Photon creates and owns the toolkit
+token manager. It caches the current IAM token and refreshes it in the
+background. The refresh defaults, accepted range, retry behavior, and safety
+margin are defined by the
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh).
+Configure a custom refresh point with
+`IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
+
+Photon asks its manager for credentials on every connection and reconnect, so a
+reconnect uses the latest valid token without synchronously signing a new one.
+If Photon rejects cached IAM credentials during `HELLO 3 AUTH`, the failed
+connection is discarded, the manager force-refreshes the token with newly resolved AWS
+credentials, and the existing bounded connect or reconnect policy opens the
+next connection with the replacement token. Persistent IAM configuration
+errors still surface after the configured connection-attempt limit.
+Closing the Photon result or handle also closes the internally created manager;
+no additional lifecycle step is required. Other caller-supplied auth providers
+remain caller-owned.
+
 ## Reconnection and fallback
 
 Sync and async clients share the same recovery behavior. A disconnect starts
@@ -201,3 +224,14 @@ Until the Java toolkit is published to a Maven repository, it is pinned as a
 Git submodule and built as part of `./gradlew build`. Initialize it after
 cloning with `git submodule update --init --recursive`. Maven must be available
 on `PATH` for the sourced toolkit build.
+
+Gradle runs on JDK 21 because Error Prone 2.50 requires JDK 21 and
+Gradle 8.14 cannot run on JDK 25. The compiler emits Java 8 bytecode
+(`options.release = 8`). Tests run on Java 8, 11, 17, and 21. To run them on
+another installed JDK, pass `-PtestJavaVersion=<n>`, for example
+`./gradlew test -PtestJavaVersion=8`.
+
+`./gradlew build` also runs Spotless with google-java-format
+(`./gradlew spotlessApply` fixes formatting), writes JaCoCo reports to
+`build/reports/jacoco/test/`, builds the sources and Javadoc JARs, and checks
+the JAR contents.

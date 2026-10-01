@@ -3,9 +3,7 @@ package software.amazon.photon.resp;
 import java.util.Map;
 import java.util.Objects;
 
-/**
- * RESP3 map value.
- */
+/** RESP3 map value. */
 public class RespMap implements RespValue {
 
     private final Map<RespValue, RespValue> entries;

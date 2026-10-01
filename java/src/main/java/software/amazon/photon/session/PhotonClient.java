@@ -1,5 +1,11 @@
 package software.amazon.photon.session;
 
+import java.io.Closeable;
+import java.util.Map;
+import java.util.concurrent.Executor;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
+import javax.net.ssl.SSLContext;
 import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.SdkClient;
 import software.amazon.awssdk.core.client.builder.SdkAsyncClientBuilder;
@@ -9,23 +15,18 @@ import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.exception.PhotonError;
-
-import javax.net.ssl.SSLContext;
-import java.io.Closeable;
-import java.util.Map;
-import java.util.concurrent.Executor;
-import java.util.function.Consumer;
-import java.util.function.Supplier;
 
 /**
  * Factory for creating AWS SDK clients wired up with Photon.
  *
- * <p>This provides a one-liner API that creates an SDK client, connects to Photon,
- * negotiates RESP3 and authenticates, performs the config exchange, and installs the interceptor
- * and Photon-first HTTP transport with transparent origin fallback.
+ * <p>This provides a one-liner API that creates an SDK client, connects to Photon, negotiates RESP3
+ * and authenticates, performs the config exchange, and installs the interceptor and Photon-first
+ * HTTP transport with transparent origin fallback.
  *
  * <p>Usage:
+ *
  * <pre>{@code
  * PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
  *     .endpoint("my-cache.serverless.use1.cache.amazonaws.com:6379")
@@ -38,10 +39,9 @@ import java.util.function.Supplier;
  * }
  * }</pre>
  *
- * <p>The {@link Result} implements {@link Closeable} and closes both the Photon
- * connection and the SDK client. Use try-with-resources for automatic cleanup.
- * Asynchronous SDK clients are created with {@link Builder#buildAsync} and
- * returned in an {@link AsyncResult}.
+ * <p>The {@link Result} implements {@link Closeable} and closes both the Photon connection and the
+ * SDK client. Use try-with-resources for automatic cleanup. Asynchronous SDK clients are created
+ * with {@link Builder#buildAsync} and returned in an {@link AsyncResult}.
  *
  * <p>For more control over lifecycle, use {@link PhotonHandle} directly.
  */
@@ -51,9 +51,7 @@ public final class PhotonClient {
         // Factory class
     }
 
-    /**
-     * Create a new builder for configuring a Photon-enabled SDK client.
-     */
+    /** Create a new builder for configuring a Photon-enabled SDK client. */
     public static Builder builder() {
         return new Builder();
     }
@@ -84,8 +82,8 @@ public final class PhotonClient {
     /**
      * Result of building a Photon-enabled SDK client.
      *
-     * <p>Contains the SDK client and Photon handle. Implements {@link Closeable}
-     * to close both resources together. Use try-with-resources:
+     * <p>Contains the SDK client and Photon handle. Implements {@link Closeable} to close both
+     * resources together. Use try-with-resources:
      *
      * <pre>{@code
      * try (PhotonClient.Result<DynamoDbClient> result =
@@ -104,9 +102,7 @@ public final class PhotonClient {
             this.handle = handle;
         }
 
-        /**
-         * Get the Photon handle for direct access to session state.
-         */
+        /** Get the Photon handle for direct access to session state. */
         public PhotonHandle handle() {
             return handle;
         }
@@ -140,27 +136,24 @@ public final class PhotonClient {
         }
     }
 
-    /**
-     * Builder for creating Photon-enabled SDK clients.
-     */
+    /** Builder for creating Photon-enabled SDK clients. */
     public static final class Builder {
         private String endpoint;
         private String host;
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
+        private IamAuthTokenProvider iamAuthProvider;
         private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
-        private long stalenessDurationSeconds =
-                PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
+        private long stalenessDurationSeconds = PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkHttpClient originHttpClient;
         private SdkAsyncHttpClient originAsyncHttpClient;
         private Executor asyncExecutor;
-        private int asyncMaxBufferedRequestBytes =
-                PhotonAsyncHandle.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
+        private int asyncMaxBufferedRequestBytes = PhotonAsyncHandle.DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
         private int asyncMaxConcurrentBodyCollectors =
                 PhotonAsyncHandle.DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS;
 
@@ -198,9 +191,7 @@ public final class PhotonClient {
             return this;
         }
 
-        /**
-         * Set the SSL context (optional, uses default TLS if not specified).
-         */
+        /** Set the SSL context (optional, uses default TLS if not specified). */
         public Builder sslContext(SSLContext sslContext) {
             this.sslContext = sslContext;
             return this;
@@ -209,7 +200,9 @@ public final class PhotonClient {
         /**
          * Set the auth provider (required).
          *
-         * <p>For IAM authentication, use {@code IamAuthTokenProvider} directly:
+         * <p>For IAM authentication with automatic background refresh, use {@code IamAuthTokenProvider}
+         * directly:
+         *
          * <pre>{@code
          * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
          *     .cacheName("my-cache")
@@ -217,55 +210,58 @@ public final class PhotonClient {
          *     .build();
          * .authProvider(iamAuth)
          * }</pre>
+         *
+         * <p>Photon creates and closes an auto-refresh manager for an {@code IamAuthTokenProvider},
+         * including one held through a {@code Supplier} reference. Other providers remain caller-owned.
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            if (authProvider instanceof IamAuthTokenProvider) {
+                return authProvider((IamAuthTokenProvider) authProvider);
+            }
             this.authProvider = authProvider;
+            this.iamAuthProvider = null;
             return this;
         }
 
-        /**
-         * Set static auth credentials (convenience for non-IAM auth).
-         */
+        /** Set an IAM provider whose auto-refresh lifecycle Photon owns. */
+        public Builder authProvider(IamAuthTokenProvider authProvider) {
+            this.iamAuthProvider = authProvider;
+            this.authProvider = null;
+            return this;
+        }
+
+        /** Set static auth credentials (convenience for non-IAM auth). */
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
+            this.iamAuthProvider = null;
             return this;
         }
 
-        /**
-         * Set config overrides sent in the photon.config handshake (optional).
-         */
+        /** Set config overrides sent in the photon.config handshake (optional). */
         public Builder overrides(Map<String, Object> overrides) {
             this.overrides = overrides;
             return this;
         }
 
-        /**
-         * Set connect timeout in milliseconds (default: 5000).
-         */
+        /** Set connect timeout in milliseconds (default: 5000). */
         public Builder connectTimeoutMs(int connectTimeoutMs) {
             this.connectTimeoutMs = connectTimeoutMs;
             return this;
         }
 
-        /**
-         * Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000).
-         */
+        /** Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000). */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
             return this;
         }
 
-        /**
-         * Set the total timeout for each Photon request attempt in milliseconds (default: 5000).
-         */
+        /** Set the total timeout for each Photon request attempt in milliseconds (default: 5000). */
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
             return this;
         }
 
-        /**
-         * Set reconnect and origin-fallback behavior for sync and async clients.
-         */
+        /** Set reconnect and origin-fallback behavior for sync and async clients. */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {
                 throw new NullPointerException("reconnectPolicy");
@@ -275,9 +271,9 @@ public final class PhotonClient {
         }
 
         /**
-         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing.
-         * Past it the connection is dropped so a new one re-resolves the config. Defaults to one
-         * hour; must be a positive whole number of seconds.
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing. Past
+         * it the connection is dropped so a new one re-resolves the config. Defaults to one hour; must
+         * be a positive whole number of seconds.
          */
         public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
             this.stalenessDurationSeconds = stalenessDurationSeconds;
@@ -305,25 +301,21 @@ public final class PhotonClient {
         }
 
         /**
-         * Set the caller-managed executor used by the async transport for blocking
-         * Photon socket requests.
+         * Set the caller-managed executor used by the async transport for blocking Photon socket
+         * requests.
          */
         public Builder asyncExecutor(Executor asyncExecutor) {
             this.asyncExecutor = asyncExecutor;
             return this;
         }
 
-        /**
-         * Set the maximum async request body Photon buffers (default: 16 MiB).
-         */
+        /** Set the maximum async request body Photon buffers (default: 16 MiB). */
         public Builder asyncMaxBufferedRequestBytes(int asyncMaxBufferedRequestBytes) {
             this.asyncMaxBufferedRequestBytes = asyncMaxBufferedRequestBytes;
             return this;
         }
 
-        /**
-         * Set the maximum async request bodies collected concurrently (default: 8).
-         */
+        /** Set the maximum async request bodies collected concurrently (default: 8). */
         public Builder asyncMaxConcurrentBodyCollectors(int asyncMaxConcurrentBodyCollectors) {
             this.asyncMaxConcurrentBodyCollectors = asyncMaxConcurrentBodyCollectors;
             return this;
@@ -332,12 +324,12 @@ public final class PhotonClient {
         /**
          * Set the origin SDK client builder for a Photon-enabled client.
          *
-         * <p>Calling {@link OriginBuilder#build()} on the returned builder connects to
-         * Photon, negotiates RESP3 and authenticates, performs the config exchange, installs the interceptor
-         * and HTTP transport, and returns a {@link Result} containing the ready-to-use
-         * SDK client.
+         * <p>Calling {@link OriginBuilder#build()} on the returned builder connects to Photon,
+         * negotiates RESP3 and authenticates, performs the config exchange, installs the interceptor
+         * and HTTP transport, and returns a {@link Result} containing the ready-to-use SDK client.
          *
          * <p>Example:
+         *
          * <pre>{@code
          * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
          *         .endpoint("cache.example.com:6379")
@@ -362,6 +354,7 @@ public final class PhotonClient {
          * Set the origin SDK client builder and additional SDK configuration.
          *
          * <p>Example:
+         *
          * <pre>{@code
          * try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
          *         .endpoint("cache.example.com:6379")
@@ -379,8 +372,7 @@ public final class PhotonClient {
          * @return a typed builder ready to build the Photon-enabled SDK client
          */
         public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
-                OriginBuilder<B, C> origin(
-                B sdkClientBuilder, Consumer<B> sdkConfigurer) {
+                OriginBuilder<B, C> origin(B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             if (sdkClientBuilder == null) {
                 throw new NullPointerException("sdkClientBuilder");
             }
@@ -407,13 +399,14 @@ public final class PhotonClient {
 
                 // Merge Photon interceptor into any existing override configuration
                 // instead of replacing it (preserves user's retries, timeouts, metrics, etc.)
-                ClientOverrideConfiguration mergedConfig = mergeOverrideConfig(
-                        sdkClientBuilder, handle.getInterceptor());
+                ClientOverrideConfiguration mergedConfig =
+                        mergeOverrideConfig(sdkClientBuilder, handle.getInterceptor());
 
-                client = sdkClientBuilder
-                        .overrideConfiguration(mergedConfig)
-                        .httpClient(handle.getHttpClient())
-                        .build();
+                client =
+                        sdkClientBuilder
+                                .overrideConfiguration(mergedConfig)
+                                .httpClient(handle.getHttpClient())
+                                .build();
             } catch (Exception e) {
                 try {
                     handle.close();
@@ -426,17 +419,13 @@ public final class PhotonClient {
             return new Result<>(client, handle);
         }
 
-        /**
-         * Build an asynchronous SDK client with Photon enabled.
-         */
+        /** Build an asynchronous SDK client with Photon enabled. */
         public <B extends AwsClientBuilder<B, C> & SdkAsyncClientBuilder<B, C>, C extends SdkClient>
                 AsyncResult<C> buildAsync(B sdkClientBuilder) {
             return buildAsync(sdkClientBuilder, null);
         }
 
-        /**
-         * Build an asynchronous SDK client with Photon enabled and additional SDK configuration.
-         */
+        /** Build an asynchronous SDK client with Photon enabled and additional SDK configuration. */
         public <B extends AwsClientBuilder<B, C> & SdkAsyncClientBuilder<B, C>, C extends SdkClient>
                 AsyncResult<C> buildAsync(B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             PhotonAsyncHandle handle = buildAsyncHandle();
@@ -453,12 +442,13 @@ public final class PhotonClient {
                 if (sdkConfigurer != null) {
                     sdkConfigurer.accept(sdkClientBuilder);
                 }
-                ClientOverrideConfiguration mergedConfig = mergeOverrideConfig(
-                        sdkClientBuilder, handle.getInterceptor());
-                client = sdkClientBuilder
-                        .overrideConfiguration(mergedConfig)
-                        .httpClient(handle.getHttpClient())
-                        .build();
+                ClientOverrideConfiguration mergedConfig =
+                        mergeOverrideConfig(sdkClientBuilder, handle.getInterceptor());
+                client =
+                        sdkClientBuilder
+                                .overrideConfiguration(mergedConfig)
+                                .httpClient(handle.getHttpClient())
+                                .build();
             } catch (Exception e) {
                 try {
                     handle.close();
@@ -474,40 +464,50 @@ public final class PhotonClient {
         private PhotonHandle buildHandle() {
             EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
-            return PhotonHandle.builder()
-                    .host(resolvedEndpoint.getHost())
-                    .port(resolvedEndpoint.getPort())
-                    .sslContext(sslContext)
-                    .authProvider(authProvider)
-                    .overrides(overrides)
-                    .connectTimeoutMs(connectTimeoutMs)
-                    .initializationTimeoutMs(initializationTimeoutMs)
-                    .requestTimeoutMs(requestTimeoutMs)
-                    .reconnectPolicy(reconnectPolicy)
-                    .stalenessDurationSeconds(stalenessDurationSeconds)
-                    .originHttpClient(originHttpClient)
-                    .build();
+            PhotonHandle.Builder handleBuilder =
+                    PhotonHandle.builder()
+                            .host(resolvedEndpoint.getHost())
+                            .port(resolvedEndpoint.getPort())
+                            .sslContext(sslContext)
+                            .overrides(overrides)
+                            .connectTimeoutMs(connectTimeoutMs)
+                            .initializationTimeoutMs(initializationTimeoutMs)
+                            .requestTimeoutMs(requestTimeoutMs)
+                            .reconnectPolicy(reconnectPolicy)
+                            .stalenessDurationSeconds(stalenessDurationSeconds)
+                            .originHttpClient(originHttpClient);
+            if (iamAuthProvider != null) {
+                handleBuilder.authProvider(iamAuthProvider);
+            } else {
+                handleBuilder.authProvider(authProvider);
+            }
+            return handleBuilder.build();
         }
 
         private PhotonAsyncHandle buildAsyncHandle() {
             EndpointParser.ParsedEndpoint resolvedEndpoint = resolvePhotonEndpoint();
 
-            return PhotonAsyncHandle.builder()
-                    .host(resolvedEndpoint.getHost())
-                    .port(resolvedEndpoint.getPort())
-                    .sslContext(sslContext)
-                    .authProvider(authProvider)
-                    .overrides(overrides)
-                    .connectTimeoutMs(connectTimeoutMs)
-                    .initializationTimeoutMs(initializationTimeoutMs)
-                    .requestTimeoutMs(requestTimeoutMs)
-                    .reconnectPolicy(reconnectPolicy)
-                    .stalenessDurationSeconds(stalenessDurationSeconds)
-                    .originHttpClient(originAsyncHttpClient)
-                    .executor(asyncExecutor)
-                    .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)
-                    .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors)
-                    .build();
+            PhotonAsyncHandle.Builder handleBuilder =
+                    PhotonAsyncHandle.builder()
+                            .host(resolvedEndpoint.getHost())
+                            .port(resolvedEndpoint.getPort())
+                            .sslContext(sslContext)
+                            .overrides(overrides)
+                            .connectTimeoutMs(connectTimeoutMs)
+                            .initializationTimeoutMs(initializationTimeoutMs)
+                            .requestTimeoutMs(requestTimeoutMs)
+                            .reconnectPolicy(reconnectPolicy)
+                            .stalenessDurationSeconds(stalenessDurationSeconds)
+                            .originHttpClient(originAsyncHttpClient)
+                            .executor(asyncExecutor)
+                            .maxBufferedRequestBytes(asyncMaxBufferedRequestBytes)
+                            .maxConcurrentBodyCollectors(asyncMaxConcurrentBodyCollectors);
+            if (iamAuthProvider != null) {
+                handleBuilder.authProvider(iamAuthProvider);
+            } else {
+                handleBuilder.authProvider(authProvider);
+            }
+            return handleBuilder.build();
         }
 
         private EndpointParser.ParsedEndpoint resolvePhotonEndpoint() {
@@ -523,18 +523,20 @@ public final class PhotonClient {
             throw new PhotonError("endpoint or host is required");
         }
 
-        private <B extends AwsClientBuilder<B, C>, C extends SdkClient> ClientOverrideConfiguration mergeOverrideConfig(
-                B sdkClientBuilder, ExecutionInterceptor interceptor) {
+        private <B extends AwsClientBuilder<B, C>, C extends SdkClient>
+                ClientOverrideConfiguration mergeOverrideConfig(
+                        B sdkClientBuilder, ExecutionInterceptor interceptor) {
             // Get existing config from the SDK builder (includes anything set via sdkConfigurer)
             // then add our Photon interceptor to it
             ClientOverrideConfiguration existingConfig = sdkClientBuilder.overrideConfiguration();
-            ClientOverrideConfiguration.Builder configBuilder = existingConfig != null
-                    ? existingConfig.toBuilder()
-                    : ClientOverrideConfiguration.builder();
-            
+            ClientOverrideConfiguration.Builder configBuilder =
+                    existingConfig != null
+                            ? existingConfig.toBuilder()
+                            : ClientOverrideConfiguration.builder();
+
             // Add the Photon interceptor (preserves any existing interceptors)
             configBuilder.addExecutionInterceptor(interceptor);
-            
+
             return configBuilder.build();
         }
     }
@@ -546,8 +548,7 @@ public final class PhotonClient {
      * @param <C> the SDK client type
      */
     public static final class OriginBuilder<
-            B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>,
-            C extends SdkClient> {
+            B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient> {
         private final Builder photonBuilder;
         private final B sdkClientBuilder;
         private final Consumer<B> sdkConfigurer;
@@ -562,8 +563,8 @@ public final class PhotonClient {
          * Build the SDK client with Photon enabled.
          *
          * <p>This connects to Photon, negotiates RESP3 and authenticates, performs the config exchange,
-         * installs the interceptor and HTTP transport, and returns a {@link Result}
-         * containing the ready-to-use SDK client.
+         * installs the interceptor and HTTP transport, and returns a {@link Result} containing the
+         * ready-to-use SDK client.
          *
          * @return a Result containing the configured SDK client and Photon handle
          * @throws PhotonError if connection or authentication fails

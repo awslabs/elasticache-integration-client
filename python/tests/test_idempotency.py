@@ -8,8 +8,7 @@ def test_packaged_operations_match_shared_catalog():
     shared_path = Path(__file__).parents[2] / "shared" / "idempotent-operations.json"
     shared = json.loads(shared_path.read_text())
     packaged = {
-        service: sorted(operations)
-        for service, operations in IDEMPOTENT_OPERATIONS.items()
+        service: sorted(operations) for service, operations in IDEMPOTENT_OPERATIONS.items()
     }
     assert packaged == shared
 

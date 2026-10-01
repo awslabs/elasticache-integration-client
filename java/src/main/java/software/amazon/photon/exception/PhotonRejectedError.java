@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * Photon explicitly rejected a request with a RESP error reply.
- */
+/** Photon explicitly rejected a request with a RESP error reply. */
 public class PhotonRejectedError extends PhotonError {
 
     private final String code;

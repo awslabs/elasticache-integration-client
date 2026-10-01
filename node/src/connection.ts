@@ -26,8 +26,10 @@ import {
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
 const DEFAULT_REQUEST_TIMEOUT = 5_000;
-const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: AUTH and photon.config.
+const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
+const RESP3_PROTOCOL = 3;
+const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
 
 function validatePositiveInteger(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -224,7 +226,7 @@ export interface PhotonConnectorOptions {
   connectTimeout?: number;
   /** Per-request response timeout in milliseconds. Defaults to 5000. */
   requestTimeout?: number;
-  /** Timeout for AUTH and photon.config initialization commands in milliseconds. */
+  /** Timeout for HELLO and photon.config initialization commands in milliseconds. */
   configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
@@ -248,12 +250,12 @@ export interface PhotonConnectorOptions {
    * requests awaiting their async `photon.response` push. Defaults to 100.
    */
   maxPending?: number;
-  /** Provider for the `(userId, token)` credentials used by `AUTH`. */
+  /** Provider for the `(userId, token)` credentials carried by the HELLO handshake. */
   authProvider?: AuthProvider;
 }
 
 /**
- * A callback or provider object that supplies credentials for `AUTH`.
+ * A callback or provider object that supplies credentials for `HELLO 3 AUTH`.
  *
  * The object form is the Node equivalent of Python's callable provider class.
  */
@@ -266,7 +268,7 @@ export type AuthProvider =
       refreshAuth?: () => [string, string] | Promise<[string, string]>;
     };
 
-class PhotonAuthenticationRejected extends PhotonConnectionError {}
+class PhotonHandshakeRejected extends PhotonConnectionError {}
 
 type ConnectedSocket = Socket | TLSSocket;
 
@@ -394,9 +396,11 @@ export class PhotonConnector {
     }
   }
 
-  /** Send AUTH with credentials from the injected provider, if configured. */
-  async authenticate(): Promise<void> {
-    if (this.authProvider === undefined) return;
+  /** Negotiate RESP3 and authenticate in one `HELLO 3 AUTH <user> <token>` exchange. */
+  async handshake(): Promise<void> {
+    if (this.authProvider === undefined) {
+      throw new PhotonConnectionError("PhotonConnector requires an auth provider to handshake");
+    }
 
     let credentials: [string, string];
     try {
@@ -409,21 +413,27 @@ export class PhotonConnector {
 
     try {
       const reply = await this.execute(
-        "AUTH",
+        "HELLO",
+        Buffer.from("3", "ascii"),
+        Buffer.from("AUTH", "ascii"),
         Buffer.from(credentials[0], "utf8"),
         Buffer.from(credentials[1], "utf8"),
       );
-      this.verifyAuthReply(reply);
+      this.verifyHelloReply(reply);
     } catch (error) {
       if (error instanceof PhotonTimeoutError) {
         await this.close();
-        throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
+        throw new PhotonConnectionError("HELLO 3 timed out — connection closed", { cause: error });
       }
-      if (error instanceof PhotonAuthenticationRejected) {
+      if (error instanceof PhotonConnectionLost) {
+        await this.close();
+        throw new PhotonConnectionError("HELLO 3 failed: connection lost", { cause: error });
+      }
+      if (error instanceof PhotonHandshakeRejected) {
         try {
           await this.authProvider.refreshAuth?.();
         } catch {
-          // Preserve the cache's AUTH rejection; the next attempt retries token refresh.
+          // Preserve the cache's HELLO rejection; the next attempt retries token refresh.
         }
       }
       throw error;
@@ -570,12 +580,12 @@ export class PhotonConnector {
   /**
    * Select the response timeout for a command.
    *
-   * AUTH and photon.config run during connection initialization and use the
+   * HELLO and photon.config run during connection initialization and use the
    * larger config timeout. Send/drain waits remain bounded by requestTimeout.
    */
   private timeoutFor(command: string): number {
     // Bring-up commands get a larger response budget; send-side waits stay on requestTimeout.
-    return command === "AUTH" || command === "photon.config"
+    return command === "HELLO" || command === "photon.config"
       ? this.configTimeout
       : this.requestTimeout;
   }
@@ -829,15 +839,32 @@ export class PhotonConnector {
     }
   }
 
-  private verifyAuthReply(reply: RespValue): void {
+  private verifyHelloReply(reply: RespValue): void {
     if (reply instanceof RespError) {
-      this.markDead(new PhotonConnectionLost("AUTH rejected"));
-      throw new PhotonAuthenticationRejected(`IAM AUTH rejected: ${reply.code}`);
+      this.markDead(new PhotonConnectionLost("HELLO 3 rejected"));
+      throw new PhotonHandshakeRejected(`HELLO 3 rejected: ${reply.code}`);
     }
-    if (reply !== "OK") {
-      const error = new PhotonConnectionLost("unexpected AUTH reply");
+    if (!(reply instanceof Map)) {
+      const error = new PhotonConnectionLost("unexpected HELLO 3 reply shape");
       this.markDead(error);
-      throw new PhotonConnectionError(`IAM AUTH failed: unexpected reply ${String(reply)}`);
+      throw new PhotonConnectionError(
+        `HELLO 3 failed: expected a map reply, got ${describeRespType(reply)}`,
+      );
+    }
+
+    let protocol: RespValue | undefined;
+    for (const [key, value] of reply) {
+      if (Buffer.isBuffer(key) && key.equals(HELLO_PROTO_KEY)) {
+        protocol = value;
+        break;
+      }
+    }
+    if (protocol !== RESP3_PROTOCOL) {
+      const error = new PhotonConnectionLost("HELLO 3 reply did not confirm RESP3");
+      this.markDead(error);
+      throw new PhotonConnectionError(
+        `HELLO 3 failed: reply did not report proto ${RESP3_PROTOCOL}`,
+      );
     }
   }
 
@@ -859,4 +886,14 @@ export class PhotonConnector {
       );
     });
   }
+}
+
+function describeRespType(value: RespValue): string {
+  if (value === null) return "null";
+  if (Buffer.isBuffer(value)) return "bulk string";
+  if (Array.isArray(value)) return "array";
+  if (value instanceof Map) return "map";
+  if (value instanceof RespPush) return "push";
+  if (value instanceof RespError) return "error";
+  return typeof value;
 }

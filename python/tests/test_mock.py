@@ -101,6 +101,5 @@ def test_push_response_builds_both_halves_of_a_deferred_exchange():
     """Reply.push_response is the id reply followed by the photon.response push for that id."""
     reply = Reply.ok(body=b"body")
     assert Reply.push_response(42, reply).frame == (
-        b"+42\r\n"
-        b">3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n" + reply.frame
+        b"+42\r\n>3\r\n$15\r\nphoton.response\r\n$2\r\n42\r\n" + reply.frame
     )

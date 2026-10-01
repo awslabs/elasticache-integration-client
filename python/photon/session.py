@@ -37,7 +37,7 @@ from photon.exceptions import (
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.refresh import Refresher
 from photon.reconnect_policy import ReconnectPolicy
-from photon.predicates import compile_predicates, should_route_to_photon
+from photon.predicates import CompiledPredicate, compile_predicates, should_route_to_photon
 from photon.protocol import (
     parse_config_response,
     parse_request_response,
@@ -47,7 +47,7 @@ from photon.protocol import (
 
 logger = logging.getLogger(__name__)
 
-_PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
+_AUTH_ERROR = "AUTH_ERROR"
 
 
 def _config_failure_cause(exc: PhotonError) -> str:
@@ -111,16 +111,17 @@ class PhotonSession:
         """
         policy = policy or ReconnectPolicy()
         self._overrides = overrides or {}
-        self._config = None
-        self._predicates = None
+        # Both are set by _configure() during init_connection(), which raises if it fails.
+        self._config: ResolvedConfig
+        self._predicates: list[CompiledPredicate]
         self._config_policy = config_policy or ConfigPolicy()
         self._config_deadline = 0.0
-        self._install_config_lock = threading.Lock()  # serializes checking a reply's connector and installing its config
+        self._install_config_lock = (
+            threading.Lock()
+        )  # serializes checking a reply's connector and installing its config
         self._config_refresher: Refresher | None = None
         self._reauth_runner: Refresher | None = None
-        self._connection_manager = ConnectionManager(
-            connector_factory, self._configure, policy
-        )
+        self._connection_manager = ConnectionManager(connector_factory, self._configure, policy)
         self._connection_manager.init_connection()
         try:
             self._config_refresher = Refresher(
@@ -175,7 +176,8 @@ class PhotonSession:
         except (PhotonOverridesRejected, PhotonConfigUnevaluable) as exc:
             logger.error(
                 "Configuring a connection failed: %s. The connection is closed and retried",
-                _config_failure_cause(exc), exc_info=True,
+                _config_failure_cause(exc),
+                exc_info=True,
             )
             raise
         if not installed:
@@ -254,7 +256,9 @@ class PhotonSession:
         if isinstance(exc, (PhotonOverridesRejected, PhotonConfigUnevaluable)):
             logger.error(
                 "Config refresh failed: %s. Keeping the last good config until the staleness "
-                "window drops the connection", _config_failure_cause(exc), exc_info=True,
+                "window drops the connection",
+                _config_failure_cause(exc),
+                exc_info=True,
             )
         else:
             logger.warning("Config refresh failed; keeping the current config", exc_info=True)
@@ -282,10 +286,13 @@ class PhotonSession:
         or when the cache is disconnected and the fallback window is still open.
         In both cases, the request has not been sent, so falling back is safe.
 
-        Once a request is sent to Photon, failures propagate to the hook. Direct
-        origin fallback is limited to a dropped connection and a replay-safe
-        operation. Retryable healthy-connection failures are returned through
-        botocore so the SDK or application decides whether to retry them.
+        Right after a drop, a request with no connector waits a short, bounded time
+        (``request_wait``) for the reconnect to land before falling back — so a quick
+        reconnect is ridden out rather than sending the request to the origin.
+
+        Once a request is sent to Photon, failures propagate to the hook. For a
+        replay-safe operation the hook returns them through botocore as retryable, so
+        the SDK or application decides whether to retry them.
 
         Raises:
             PhotonCacheUnavailable: If the cache is disconnected and the fallback
@@ -298,16 +305,19 @@ class PhotonSession:
 
         # Read the connector once; the reconnect thread may replace it concurrently.
         connector = self._connection_manager.connector
-        if not connector:
+        if connector is None or not connector.is_alive:
+            # No live connector: wait briefly for a reconnect before falling back
+            connector = self._connection_manager.wait_for_connector()
+        if connector is None:
             if not self._connection_manager.fallback_allowed():
                 raise PhotonCacheUnavailable(endpoint_url=request.url)
-            return     # pass through
+            return None  # pass through
 
         command, args = serialize_request(request)
         try:
             return parse_request_response(connector.execute(command, *args))
         except PhotonRejectedError as exc:
-            if exc.code != _PHOTON_AUTH_ERROR:
+            if exc.code != _AUTH_ERROR:
                 raise
             self._connection_manager.invalidate_connection(connector)
             return None

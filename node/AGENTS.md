@@ -44,6 +44,9 @@ as separate steps. `npm run verify` is the equivalent aggregate local gate.
 - Keep public exports centralized in `src/index.ts`; do not expose internal
   session or middleware helpers accidentally.
 - Preserve ESM, CommonJS, and generated declaration outputs.
+- Keep `scripts/package-consumer-smoke.mjs` synchronized with the public export
+  surface. Add runtime exports to its consumer checks, and cover new type-only
+  exports through the package type validation.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
 - Use `test/mock-cache.ts` for Photon command/response integration tests. A
@@ -169,7 +172,9 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   contents.
 - `npm run pack:smoke` verifies the tarball contains both ESM and CommonJS
   entrypoints and excludes source, tests, cache artifacts, and private keys.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- `.github/workflows/node-release.yml` validates annotated release tags, builds
+  one npm tarball, and publishes that exact artifact through the protected
+  `release` environment. Manual dispatches are non-publishing dry runs. Keep npm
+  publication tokenless and provenance-enabled.
 
 Keep changes small and reviewable.

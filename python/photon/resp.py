@@ -40,7 +40,16 @@ class RespPush:
 
 # A decoded RESP value: integer, simple string (str), bulk string (bytes), array (list),
 # map (dict), error, push, or null (None).
-RespValue = int | str | bytes | list["RespValue"] | dict["RespValue", "RespValue"] | RespError | RespPush | None
+RespValue = (
+    int
+    | str
+    | bytes
+    | list["RespValue"]
+    | dict["RespValue", "RespValue"]
+    | RespError
+    | RespPush
+    | None
+)
 
 
 class IncompleteFrame(Exception):
@@ -50,13 +59,13 @@ class IncompleteFrame(Exception):
 def encode_resp(command: str, *args: bytes) -> bytes:
     r"""Encode a command and its binary args as one RESP3 frame, ready for the socket::
 
-        encode_resp("photon.request", b"POST", b"https://x/") ->
+    encode_resp("photon.request", b"POST", b"https://x/") ->
 
-        3 values       the command               arg 1            arg 2
-        │              │                         │                │
-        *3\r\n $14\r\n photon.request\r\n $4\r\n POST\r\n $10\r\n https://x/\r\n
-               │                          │               │
-               value is 14 bytes long     4 bytes long    10 bytes long
+    3 values       the command               arg 1            arg 2
+    │              │                         │                │
+    *3\r\n $14\r\n photon.request\r\n $4\r\n POST\r\n $10\r\n https://x/\r\n
+           │                          │               │
+           value is 14 bytes long     4 bytes long    10 bytes long
     """
     elements = [command.encode()] + list(args)
     frame = [b"*" + str(len(elements)).encode() + _CRLF]
@@ -109,7 +118,9 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
     return data[after_header:end], end + 2
 
 
-def _decode_array(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_array(
+    data: bytes, header: bytes, after_header: int
+) -> tuple[list[RespValue] | None, int]:
     """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
     if count == -1:
@@ -184,9 +195,9 @@ def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
     header_end = data.find(_CRLF, start)
     if header_end == -1:
         raise IncompleteFrame("incomplete frame")
-    prefix = data[start:start + 1]
+    prefix = data[start : start + 1]
     decoder = _DECODERS.get(prefix)
     if decoder is None:
         raise PhotonProtocolError(f"Unsupported RESP prefix: {prefix!r}")
-    header = data[start + 1:header_end]
+    header = data[start + 1 : header_end]
     return decoder(data, header, header_end + len(_CRLF))

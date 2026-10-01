@@ -1,8 +1,8 @@
 [submodule "java/vendor/developer-toolkit-elasticache"]
 	path = java/vendor/developer-toolkit-elasticache
 	url = https://github.com/aws/developer-toolkit-elasticache.git
-	# TODO: Track main once the Java implementation is merged there and published.
-	branch = port-iam-authentication-to-java-a9f91d0a
+	# TODO: Track main once the Java implementation is published there.
+	branch = release-2
 
 [submodule "node/vendor/developer-toolkit-elasticache"]
 	path = node/vendor/developer-toolkit-elasticache

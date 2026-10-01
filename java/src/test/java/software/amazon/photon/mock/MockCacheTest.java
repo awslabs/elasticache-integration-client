@@ -1,14 +1,12 @@
 package software.amazon.photon.mock;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.PhotonProtocolError;
-import software.amazon.photon.resp.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import software.amazon.photon.resp.*;
 
 class MockCacheTest {
 
@@ -23,8 +21,13 @@ class MockCacheTest {
 
     @Test
     void handleRequest_basic() {
-        List<RespValue> command = makeRequestCommand("GET", "https://example.com",
-                "host:example.com", new byte[0], "service=s3&op=GetObject");
+        List<RespValue> command =
+                makeRequestCommand(
+                        "GET",
+                        "https://example.com",
+                        "host:example.com",
+                        new byte[0],
+                        "service=s3&op=GetObject");
 
         RespValue response = cache.handle(command);
         assertNotNull(response);
@@ -42,9 +45,9 @@ class MockCacheTest {
 
     @Test
     void handleRequest_withTtl() {
-        List<RespValue> command = makeRequestCommand("GET", "https://example.com",
-                "", new byte[0], "service=s3&op=Get",
-                "TTL", "300");
+        List<RespValue> command =
+                makeRequestCommand(
+                        "GET", "https://example.com", "", new byte[0], "service=s3&op=Get", "TTL", "300");
 
         cache.handle(command);
         ReceivedRequest req = cache.getLastRequest();
@@ -54,9 +57,9 @@ class MockCacheTest {
 
     @Test
     void handleRequest_withNttl() {
-        List<RespValue> command = makeRequestCommand("GET", "https://example.com",
-                "", new byte[0], "service=s3&op=Get",
-                "NTTL", "60");
+        List<RespValue> command =
+                makeRequestCommand(
+                        "GET", "https://example.com", "", new byte[0], "service=s3&op=Get", "NTTL", "60");
 
         cache.handle(command);
         ReceivedRequest req = cache.getLastRequest();
@@ -66,10 +69,17 @@ class MockCacheTest {
 
     @Test
     void handleRequest_withBothTtlAndNttl() {
-        List<RespValue> command = makeRequestCommand("POST", "https://example.com/path",
-                "content-type:application/json", "body".getBytes(StandardCharsets.UTF_8),
-                "service=ec2&op=Describe",
-                "TTL", "300", "NTTL", "60");
+        List<RespValue> command =
+                makeRequestCommand(
+                        "POST",
+                        "https://example.com/path",
+                        "content-type:application/json",
+                        "body".getBytes(StandardCharsets.UTF_8),
+                        "service=ec2&op=Describe",
+                        "TTL",
+                        "300",
+                        "NTTL",
+                        "60");
 
         cache.handle(command);
         ReceivedRequest req = cache.getLastRequest();
@@ -81,12 +91,8 @@ class MockCacheTest {
     @Test
     void handleRequest_tooFewArgs() {
         // Only 3 args instead of 5 mandatory
-        List<RespValue> command = Arrays.asList(
-                bs("photon.request"),
-                bs("GET"),
-                bs("https://example.com"),
-                bs("headers")
-        );
+        List<RespValue> command =
+                Arrays.asList(bs("photon.request"), bs("GET"), bs("https://example.com"), bs("headers"));
 
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespError);
@@ -99,10 +105,7 @@ class MockCacheTest {
 
     @Test
     void handleConfig_valid() {
-        List<RespValue> command = Arrays.asList(
-                bs("photon.config"),
-                bs("{}")
-        );
+        List<RespValue> command = Arrays.asList(bs("photon.config"), bs("{}"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespBulkString);
     }
@@ -123,7 +126,8 @@ class MockCacheTest {
         List<RespValue> command = Arrays.asList(bs("photon.config"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespBulkString);
-        assertEquals("{\"version\":\"1.0\",\"refresh_interval\":30,\"predicates\":[]}",
+        assertEquals(
+                "{\"version\":\"1.0\",\"refresh_interval\":30,\"predicates\":[]}",
                 new String(((RespBulkString) response).getValue(), StandardCharsets.UTF_8));
     }
 
@@ -136,11 +140,7 @@ class MockCacheTest {
 
     @Test
     void handleConfig_tooManyArgs() {
-        List<RespValue> command = Arrays.asList(
-                bs("photon.config"),
-                bs("{}"),
-                bs("extra")
-        );
+        List<RespValue> command = Arrays.asList(bs("photon.config"), bs("{}"), bs("extra"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespError);
     }
@@ -149,8 +149,7 @@ class MockCacheTest {
 
     @Test
     void handleAuth() {
-        List<RespValue> command =
-                Arrays.asList(bs("AUTH"), bs("iam-user"), bs("password123"));
+        List<RespValue> command = Arrays.asList(bs("AUTH"), bs("iam-user"), bs("password123"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespSimpleString);
         assertArrayEquals("OK".getBytes(), ((RespSimpleString) response).getValue());
@@ -169,8 +168,9 @@ class MockCacheTest {
 
     @Test
     void handleHello3_withInlineAuthReturnsMapAndRecordsCredentials() {
-        RespValue response = cache.handle(Arrays.asList(
-                bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user"), bs("password123")));
+        RespValue response =
+                cache.handle(
+                        Arrays.asList(bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user"), bs("password123")));
 
         assertTrue(response instanceof RespMap);
         RespValue proto = ((RespMap) response).getEntries().get(bs("proto"));
@@ -195,8 +195,8 @@ class MockCacheTest {
 
     @Test
     void handleHello_rejectsMalformedAuthTrailer() {
-        RespValue response = cache.handle(Arrays.asList(
-                bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user")));
+        RespValue response =
+                cache.handle(Arrays.asList(bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user")));
 
         assertEquals("ERR", ((RespError) response).getCode());
     }
@@ -209,8 +209,8 @@ class MockCacheTest {
         headers.put("content-type", "text/plain");
         cache.setReply(Reply.ok(201, headers, "created".getBytes(StandardCharsets.UTF_8)));
 
-        List<RespValue> command = makeRequestCommand("POST", "https://example.com",
-                "", new byte[0], "service=s3&op=Put");
+        List<RespValue> command =
+                makeRequestCommand("POST", "https://example.com", "", new byte[0], "service=s3&op=Put");
 
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespArray);
@@ -223,8 +223,8 @@ class MockCacheTest {
     void handleRequest_errorReply() {
         cache.setReply(Reply.error("CACHE", "miss"));
 
-        List<RespValue> command = makeRequestCommand("GET", "https://example.com",
-                "", new byte[0], "service=s3&op=Get");
+        List<RespValue> command =
+                makeRequestCommand("GET", "https://example.com", "", new byte[0], "service=s3&op=Get");
 
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespError);
@@ -237,11 +237,13 @@ class MockCacheTest {
     void handleRequest_requestIdReply() {
         cache.setReply(Reply.requestId(Long.MAX_VALUE));
 
-        RespValue response = cache.handle(makeRequestCommand(
-                "GET", "https://example.com", "", new byte[0], "service=s3&op=Get"));
+        RespValue response =
+                cache.handle(
+                        makeRequestCommand("GET", "https://example.com", "", new byte[0], "service=s3&op=Get"));
 
-        assertEquals(new RespSimpleString(
-                Long.toString(Long.MAX_VALUE).getBytes(StandardCharsets.UTF_8)), response);
+        assertEquals(
+                new RespSimpleString(Long.toString(Long.MAX_VALUE).getBytes(StandardCharsets.UTF_8)),
+                response);
     }
 
     // === Recording ===
@@ -279,16 +281,16 @@ class MockCacheTest {
         assertNotNull(authResp);
 
         // photon.request should fail
-        List<RespValue> reqCmd = makeRequestCommand("GET", "https://example.com",
-                "", new byte[0], "service=s3&op=Get");
+        List<RespValue> reqCmd =
+                makeRequestCommand("GET", "https://example.com", "", new byte[0], "service=s3&op=Get");
         RespValue reqResp = cache.handle(reqCmd);
         assertNull(reqResp);
     }
 
     // === Helpers ===
 
-    private List<RespValue> makeRequestCommand(String method, String url, String headers,
-                                                byte[] body, String metadata, String... kwargs) {
+    private List<RespValue> makeRequestCommand(
+            String method, String url, String headers, byte[] body, String metadata, String... kwargs) {
         List<RespValue> command = new ArrayList<>();
         command.add(bs("photon.request"));
         command.add(bs(method));
