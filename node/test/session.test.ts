@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PhotonCacheUnavailable,
   PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionError,
   PhotonConnectionLost,
   PhotonError,
@@ -1124,6 +1126,9 @@ const REFRESHED_CONFIG = Buffer.from(
   '{"version":"v2","refresh_interval":30,"predicates":[{"expr":"operation == \'GetItem\'","vars":{}}]}',
 );
 
+// Short enough to read, long enough that only a deliberate advance reaches it.
+const STALENESS_WINDOW_MS = 10_000;
+
 function putItem(): PhotonRequest {
   return new PhotonRequest({
     method: "POST",
@@ -1300,6 +1305,253 @@ describe("PhotonSession config refresh", () => {
 
     await expect(refreshOnce(session)).rejects.toBe(failure);
     await session.close();
+  });
+
+  // --- refresh: the staleness window ---
+
+  /** A session whose config stops being trusted `STALENESS_WINDOW_MS` after it is confirmed. */
+  function staleSession(connector: PhotonConnector, clock: { now: number }): PhotonSession {
+    return new PhotonSession(
+      connector,
+      {},
+      { stalenessDurationMs: STALENESS_WINDOW_MS, clock: () => clock.now },
+    );
+  }
+
+  it("starts the window trusted once a connection is configured", async () => {
+    const clock = { now: 0 };
+    const session = staleSession(fakeConnector(), clock);
+    await session.open();
+
+    expect(session.configStale).toBe(false);
+    clock.now = STALENESS_WINDOW_MS;
+    expect(session.configStale).toBe(true);
+    await session.close();
+  });
+
+  it("keeps a healthy connection when a refresh succeeds past the window", async () => {
+    // The window bounds how long refreshes may fail, not the time between ticks.
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+    vi.mocked(connector.execute).mockClear();
+    vi.mocked(connector.execute).mockResolvedValueOnce(null);
+
+    clock.now = STALENESS_WINDOW_MS;
+    await refreshOnce(session);
+
+    expect(connector.execute).toHaveBeenCalledOnce();
+    expect(connector.close).not.toHaveBeenCalled();
+    expect(session.connectionState).toBe("alive");
+    expect(session.configStale).toBe(false);
+    await session.close();
+  });
+
+  it("drops the connection when a refresh fails past the window", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+    vi.mocked(connector.execute).mockClear();
+    vi.mocked(connector.execute).mockResolvedValueOnce(Buffer.from("not json"));
+
+    clock.now = STALENESS_WINDOW_MS;
+    await refreshOnce(session);
+
+    expect(connector.execute).toHaveBeenCalledOnce();
+    expect(connector.close).toHaveBeenCalledOnce();
+    expect(connector.destroy).not.toHaveBeenCalled();
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropping the connection"));
+
+    // The request has not been sent while there is no connector, so it can use outage fallback.
+    await expect(session.request(putItem())).resolves.toBeUndefined();
+    expect(connector.execute).toHaveBeenCalledOnce();
+
+    // Explicit close() remains terminal and does not tear the discarded connector down twice.
+    await session.close();
+    expect(connector.close).toHaveBeenCalledOnce();
+    warn.mockRestore();
+  });
+
+  it("keeps the connection while failing refreshes are still inside the window", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+    vi.mocked(connector.execute).mockResolvedValue(Buffer.from("not json"));
+
+    clock.now = STALENESS_WINDOW_MS - 1;
+    await refreshOnce(session);
+    expect(session.connectionState).toBe("alive");
+    expect(connector.close).not.toHaveBeenCalled();
+
+    // A failed refresh does not confirm the config, so the next tick finds the window passed.
+    clock.now = STALENESS_WINDOW_MS;
+    await refreshOnce(session);
+    expect(session.connectionState).toBe("reconnecting");
+    expect(connector.close).toHaveBeenCalledOnce();
+    await session.close();
+    warn.mockRestore();
+  });
+
+  it.each([
+    ["a null (unchanged) reply", null],
+    ["an installed config", REFRESHED_CONFIG],
+  ])("restarts the window on %s", async (_, reply) => {
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+
+    clock.now = STALENESS_WINDOW_MS - 1;
+    vi.mocked(connector.execute).mockResolvedValueOnce(reply);
+    await refreshOnce(session);
+
+    // Without the restart above, the window would have passed a whole window ago.
+    clock.now = 2 * STALENESS_WINDOW_MS - 2;
+    expect(session.configStale).toBe(false);
+    await refreshOnce(session);
+    expect(session.connectionState).toBe("alive");
+    expect(connector.close).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it("alarms at once on CONFIG_INVALID but keeps the connection and config", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    vi.mocked(connector.execute).mockResolvedValue(
+      new RespError("CONFIG_INVALID", "table does not exist"),
+    );
+
+    await refreshOnce(session);
+
+    expect(session.config).toBe(config);
+    expect(session.connectionState).toBe("alive");
+    expect(connector.close).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("CONFIG_INVALID"));
+    await session.close();
+    error.mockRestore();
+  });
+
+  it("alarms at once on an unevaluable config and installs none of it", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const connector = fakeConnector();
+    const session = new PhotonSession(connector);
+    await session.open();
+    const config = session.config;
+    const refresher = refresherOf(session);
+    if (refresher === undefined) throw new Error("expected a refresher");
+    const setInterval = vi.spyOn(refresher, "setInterval");
+    vi.mocked(connector.execute).mockResolvedValue(
+      Buffer.from(
+        '{"version":"v2","refresh_interval":30,"predicates":[' +
+          '{"expr":"operation == \'GetItem\'","vars":{}},{"expr":"this is not (valid CEL"}]}',
+      ),
+    );
+
+    await refreshOnce(session);
+
+    // Neither the config, its predicates, nor its interval were installed.
+    expect(session.config).toBe(config);
+    expect(setInterval).not.toHaveBeenCalled();
+    vi.mocked(connector.execute).mockResolvedValue([200, Buffer.alloc(0), Buffer.alloc(0)]);
+    await expect(session.request(putItem())).resolves.toBeDefined();
+    expect(session.connectionState).toBe("alive");
+    expect(connector.close).not.toHaveBeenCalled();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("cannot evaluate"));
+    await session.close();
+    error.mockRestore();
+  });
+
+  it("lets repeated CONFIG_INVALID refreshes reach the window and drop the connection", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+    vi.mocked(connector.execute).mockResolvedValue(new RespError("CONFIG_INVALID", "rejected"));
+
+    clock.now = STALENESS_WINDOW_MS - 1;
+    await refreshOnce(session);
+    expect(session.configStale).toBe(false);
+    expect(connector.close).not.toHaveBeenCalled();
+
+    clock.now = STALENESS_WINDOW_MS;
+    await refreshOnce(session);
+    expect(connector.close).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropping the connection"));
+    await session.close();
+    error.mockRestore();
+    warn.mockRestore();
+  });
+
+  it.each([
+    [
+      "a CONFIG_INVALID reply",
+      new RespError("CONFIG_INVALID", "table does not exist"),
+      PhotonOverridesRejected,
+    ],
+    [
+      "an unevaluable config",
+      Buffer.from('{"version":"v1","refresh_interval":60,"predicates":[{"expr":"(("}]}'),
+      PhotonConfigUnevaluable,
+    ],
+  ])("fails to open on %s and alarms at error level", async (_, reply, ErrorType) => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const connector = fakeConnector({ execute: vi.fn(async () => reply) });
+    const session = new PhotonSession(connector);
+
+    await expect(session.open()).rejects.toBeInstanceOf(ErrorType);
+    expect(refresherOf(session)).toBeUndefined();
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("Configuring a connection failed"));
+    error.mockRestore();
+  });
+
+  it("propagates an in-flight request error when it races a stale drop", async () => {
+    // request() itself cannot tell whether this request already reached Photon before the
+    // connector closed, so it must not silently convert the failure into an origin fallback: only
+    // the middleware knows whether the request is idempotent enough to safely retry.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = { now: 0 };
+    const connector = fakeConnector();
+    const session = staleSession(connector, clock);
+    await session.open();
+
+    let rejectRequest!: (error: unknown) => void;
+    const connectionLost = new PhotonConnectionLost("connection closed");
+    vi.mocked(connector.execute)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            rejectRequest = reject;
+          }),
+      )
+      // The refresh fails past the window, which is what drops the connection.
+      .mockResolvedValueOnce(Buffer.from("not json"));
+    vi.mocked(connector.close).mockImplementation(async () => {
+      // Dropping the stale connection closes the connector, rejecting requests already in flight.
+      rejectRequest(connectionLost);
+    });
+
+    // Started while the session is still open, so it reaches the connector.
+    const requesting = session.request(putItem());
+
+    clock.now = STALENESS_WINDOW_MS;
+    await refreshOnce(session);
+    expect(session.connectionState).toBe("reconnecting");
+
+    await expect(requesting).rejects.toBe(connectionLost);
+    await session.close();
+    warn.mockRestore();
   });
 
   it("does not install a config that arrives after teardown", async () => {

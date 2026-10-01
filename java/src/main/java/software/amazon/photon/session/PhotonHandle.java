@@ -1,27 +1,25 @@
 package software.amazon.photon.session;
 
-import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.auth.IamAuthTokenProvider;
-import software.amazon.photon.connection.PhotonConnector;
-import software.amazon.photon.exception.PhotonError;
-import software.amazon.awssdk.http.SdkHttpClient;
-import software.amazon.awssdk.http.apache.ApacheHttpClient;
-
-import javax.net.ssl.SSLContext;
 import java.io.Closeable;
 import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.function.Supplier;
+import javax.net.ssl.SSLContext;
+import software.amazon.awssdk.http.SdkHttpClient;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
+import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenProvider;
+import software.amazon.photon.connection.PhotonConnector;
+import software.amazon.photon.exception.PhotonError;
 
 /**
  * Manages the attachment of Photon to an AWS SDK client.
  *
- * <p>PhotonHandle creates and manages the lifecycle of a PhotonSession and
- * its associated PhotonConnector. It provides a clean API for setting up
- * Photon with an SDK client.
+ * <p>PhotonHandle creates and manages the lifecycle of a PhotonSession and its associated
+ * PhotonConnector. It provides a clean API for setting up Photon with an SDK client.
  *
- * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be
- * configured at client build time, so this handle is used during construction:
+ * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be configured at client
+ * build time, so this handle is used during construction:
  *
  * <pre>{@code
  * // Photon creates and owns auto-refresh for a concrete IAM provider
@@ -52,8 +50,8 @@ import java.util.function.Supplier;
  * client.close();
  * }</pre>
  *
- * <p>For simpler lifecycle management, consider using try-with-resources
- * or integrating with your application's shutdown hooks.
+ * <p>For simpler lifecycle management, consider using try-with-resources or integrating with your
+ * application's shutdown hooks.
  */
 public class PhotonHandle implements Closeable {
 
@@ -64,9 +62,11 @@ public class PhotonHandle implements Closeable {
     private boolean opened = false;
     private boolean closed = false;
 
-    private PhotonHandle(PhotonSession session, SdkHttpClient originClient,
-                         boolean ownsOriginClient,
-                         ManagedIamAuthProvider ownedAuthProvider) {
+    private PhotonHandle(
+            PhotonSession session,
+            SdkHttpClient originClient,
+            boolean ownsOriginClient,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
@@ -76,9 +76,9 @@ public class PhotonHandle implements Closeable {
     /**
      * Get the interceptor to add to an SDK client.
      *
-     * <p>The interceptor should be added during client construction via
-     * {@code overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}.
-     * The client must also use {@link #getHttpClient()} as its HTTP transport.
+     * <p>The interceptor should be added during client construction via {@code
+     * overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}. The client must also use
+     * {@link #getHttpClient()} as its HTTP transport.
      */
     public PhotonInterceptor getInterceptor() {
         return interceptor;
@@ -87,17 +87,15 @@ public class PhotonHandle implements Closeable {
     /**
      * Get the HTTP client that attempts Photon and falls back to the origin service.
      *
-     * <p>This transport must be installed together with {@link #getInterceptor()}.
-     * Installing only the interceptor bypasses Photon and sends every request
-     * through the SDK's configured origin transport.
+     * <p>This transport must be installed together with {@link #getInterceptor()}. Installing only
+     * the interceptor bypasses Photon and sends every request through the SDK's configured origin
+     * transport.
      */
     public PhotonHttpClient getHttpClient() {
         return httpClient;
     }
 
-    /**
-     * Get the underlying session.
-     */
+    /** Get the underlying session. */
     public PhotonSession getSession() {
         return session;
     }
@@ -120,9 +118,7 @@ public class PhotonHandle implements Closeable {
         opened = true;
     }
 
-    /**
-     * Close the Photon session. Idempotent.
-     */
+    /** Close the Photon session. Idempotent. */
     @Override
     public void close() {
         if (closed) {
@@ -142,23 +138,17 @@ public class PhotonHandle implements Closeable {
         }
     }
 
-    /**
-     * Check if the handle is open and ready.
-     */
+    /** Check if the handle is open and ready. */
     public boolean isOpen() {
         return opened && !closed && session.isOpen();
     }
 
-    /**
-     * Create a new builder.
-     */
+    /** Create a new builder. */
     public static Builder builder() {
         return new Builder();
     }
 
-    /**
-     * Builder for PhotonHandle.
-     */
+    /** Builder for PhotonHandle. */
     public static final class Builder {
         private String host;
         private int port = 6379;
@@ -170,29 +160,24 @@ public class PhotonHandle implements Closeable {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+        private long stalenessDurationSeconds = PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkHttpClient originHttpClient;
 
         private Builder() {}
 
-        /**
-         * Set the cache host (required).
-         */
+        /** Set the cache host (required). */
         public Builder host(String host) {
             this.host = host;
             return this;
         }
 
-        /**
-         * Set the cache port (default: 6379).
-         */
+        /** Set the cache port (default: 6379). */
         public Builder port(int port) {
             this.port = port;
             return this;
         }
 
-        /**
-         * Set the SSL context (optional, uses default if not specified).
-         */
+        /** Set the SSL context (optional, uses default if not specified). */
         public Builder sslContext(SSLContext sslContext) {
             this.sslContext = sslContext;
             return this;
@@ -212,64 +197,60 @@ public class PhotonHandle implements Closeable {
             return this;
         }
 
-        /**
-         * Set an IAM provider whose auto-refresh manager is owned by this handle.
-         */
+        /** Set an IAM provider whose auto-refresh manager is owned by this handle. */
         public Builder authProvider(IamAuthTokenProvider authProvider) {
             this.iamAuthProvider = authProvider;
             this.authProvider = null;
             return this;
         }
 
-        /**
-         * Set static auth credentials (convenience for non-IAM auth).
-         */
+        /** Set static auth credentials (convenience for non-IAM auth). */
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
             this.iamAuthProvider = null;
             return this;
         }
 
-        /**
-         * Set config overrides (optional).
-         */
+        /** Set config overrides (optional). */
         public Builder overrides(Map<String, Object> overrides) {
             this.overrides = overrides;
             return this;
         }
 
-        /**
-         * Set connect timeout in milliseconds (default: 5000).
-         */
+        /** Set connect timeout in milliseconds (default: 5000). */
         public Builder connectTimeoutMs(int connectTimeoutMs) {
             this.connectTimeoutMs = connectTimeoutMs;
             return this;
         }
 
-        /**
-         * Set the AUTH and configuration handshake timeout in milliseconds (default: 5000).
-         */
+        /** Set the AUTH and configuration handshake timeout in milliseconds (default: 5000). */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
             return this;
         }
 
-        /**
-         * Set the total timeout for each Photon request attempt in milliseconds (default: 5000).
-         */
+        /** Set the total timeout for each Photon request attempt in milliseconds (default: 5000). */
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
             return this;
         }
 
-        /**
-         * Set reconnect and origin-fallback behavior.
-         */
+        /** Set reconnect and origin-fallback behavior. */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {
                 throw new NullPointerException("reconnectPolicy");
             }
             this.reconnectPolicy = reconnectPolicy;
+            return this;
+        }
+
+        /**
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing. Past
+         * it the connection is dropped so a new one re-resolves the config. Defaults to one hour; must
+         * be a positive whole number of seconds.
+         */
+        public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
+            this.stalenessDurationSeconds = stalenessDurationSeconds;
             return this;
         }
 
@@ -312,18 +293,24 @@ public class PhotonHandle implements Closeable {
             SdkHttpClient origin = null;
             boolean ownsOrigin = originHttpClient == null;
             try {
-                origin = ownsOrigin ? ApacheHttpClient.create() : originHttpClient;
                 SSLContext resolvedSsl = ssl;
-                PhotonSession session = new PhotonSession(
-                        () -> new PhotonConnector(
-                                host, port, resolvedSsl, connectTimeoutMs,
-                                initializationTimeoutMs, requestTimeoutMs,
-                                PhotonConnector.DEFAULT_MAX_PENDING),
-                        resolvedAuthProvider,
-                        overrides,
-                        reconnectPolicy);
-                return new PhotonHandle(
-                        session, origin, ownsOrigin, ownedAuthProvider);
+                PhotonSession session =
+                        new PhotonSession(
+                                () ->
+                                        new PhotonConnector(
+                                                host,
+                                                port,
+                                                resolvedSsl,
+                                                connectTimeoutMs,
+                                                initializationTimeoutMs,
+                                                requestTimeoutMs,
+                                                PhotonConnector.DEFAULT_MAX_PENDING),
+                                resolvedAuthProvider,
+                                overrides,
+                                reconnectPolicy,
+                                stalenessDurationSeconds);
+                origin = ownsOrigin ? ApacheHttpClient.create() : originHttpClient;
+                return new PhotonHandle(session, origin, ownsOrigin, ownedAuthProvider);
             } catch (RuntimeException failure) {
                 if (ownsOrigin && origin != null) {
                     origin.close();

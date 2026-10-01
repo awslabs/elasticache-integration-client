@@ -781,6 +781,8 @@ def mock_connector() -> PhotonConnector:
     # config_timeout is an instance attribute, which autospec leaves as a bare Mock; the session
     # passes it as a timeout, so it has to be a real number.
     conn.config_timeout = 2.0
+    # A property autospec leaves as a bare Mock; must be a real bool tests can flip.
+    conn.is_alive = True
 
     def _execute(command, *args, timeout=None):
         if command == "photon.config":

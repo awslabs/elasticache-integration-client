@@ -1,14 +1,6 @@
 package software.amazon.photon.session;
 
-import org.junit.jupiter.api.Test;
-import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
-import software.amazon.awssdk.core.interceptor.SdkExecutionAttribute;
-import software.amazon.awssdk.http.ContentStreamProvider;
-import software.amazon.awssdk.http.SdkHttpFullRequest;
-import software.amazon.awssdk.http.SdkHttpFullResponse;
-import software.amazon.awssdk.http.SdkHttpMethod;
-import software.amazon.photon.model.PhotonRequest;
-import software.amazon.photon.model.PhotonResponse;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
@@ -16,22 +8,27 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import org.junit.jupiter.api.Test;
+import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
+import software.amazon.awssdk.core.interceptor.SdkExecutionAttribute;
+import software.amazon.awssdk.http.SdkHttpFullRequest;
+import software.amazon.awssdk.http.SdkHttpFullResponse;
+import software.amazon.awssdk.http.SdkHttpMethod;
+import software.amazon.photon.model.PhotonRequest;
+import software.amazon.photon.model.PhotonResponse;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-/**
- * Unit tests for SdkAdapters.
- */
+/** Unit tests for SdkAdapters. */
 class SdkAdaptersTest {
 
     // === toPhotonRequest tests ===
 
     @Test
     void toPhotonRequest_extractsMethodAndUrl() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.POST)
-                .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -41,12 +38,13 @@ class SdkAdaptersTest {
 
     @Test
     void toPhotonRequest_extractsHeaders() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.GET)
-                .uri(URI.create("https://example.com/"))
-                .putHeader("Content-Type", "application/json")
-                .putHeader("X-Custom-Header", "value")
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.GET)
+                        .uri(URI.create("https://example.com/"))
+                        .putHeader("Content-Type", "application/json")
+                        .putHeader("X-Custom-Header", "value")
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -56,12 +54,13 @@ class SdkAdaptersTest {
 
     @Test
     void toPhotonRequest_joinsMultiValueHeaders() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.GET)
-                .uri(URI.create("https://example.com/"))
-                .appendHeader("Accept", "text/html")
-                .appendHeader("Accept", "application/json")
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.GET)
+                        .uri(URI.create("https://example.com/"))
+                        .appendHeader("Accept", "text/html")
+                        .appendHeader("Accept", "application/json")
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -71,11 +70,12 @@ class SdkAdaptersTest {
     @Test
     void toPhotonRequest_extractsBody() {
         byte[] body = "{\"key\":\"value\"}".getBytes(StandardCharsets.UTF_8);
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.POST)
-                .uri(URI.create("https://example.com/"))
-                .contentStreamProvider(() -> new ByteArrayInputStream(body))
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://example.com/"))
+                        .contentStreamProvider(() -> new ByteArrayInputStream(body))
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -84,10 +84,11 @@ class SdkAdaptersTest {
 
     @Test
     void toPhotonRequest_emptyBodyWhenNoContent() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.GET)
-                .uri(URI.create("https://example.com/"))
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.GET)
+                        .uri(URI.create("https://example.com/"))
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -96,10 +97,11 @@ class SdkAdaptersTest {
 
     @Test
     void toPhotonRequest_extractsMetadataFromExecutionAttributes() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.POST)
-                .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                        .build();
 
         ExecutionAttributes attributes = new ExecutionAttributes();
         attributes.putAttribute(SdkExecutionAttribute.SERVICE_NAME, "DynamoDb");
@@ -113,10 +115,11 @@ class SdkAdaptersTest {
 
     @Test
     void toPhotonRequest_handlesNullExecutionAttributes() {
-        SdkHttpFullRequest sdkRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.GET)
-                .uri(URI.create("https://example.com/"))
-                .build();
+        SdkHttpFullRequest sdkRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.GET)
+                        .uri(URI.create("https://example.com/"))
+                        .build();
 
         PhotonRequest photonRequest = SdkAdapters.toPhotonRequest(sdkRequest, null);
 
@@ -197,13 +200,14 @@ class SdkAdaptersTest {
     @Test
     void roundTrip_preservesRequestData() {
         byte[] body = "{\"TableName\":\"Users\"}".getBytes(StandardCharsets.UTF_8);
-        SdkHttpFullRequest originalRequest = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.POST)
-                .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                .putHeader("Content-Type", "application/x-amz-json-1.0")
-                .putHeader("X-Amz-Target", "DynamoDB_20120810.GetItem")
-                .contentStreamProvider(() -> new ByteArrayInputStream(body))
-                .build();
+        SdkHttpFullRequest originalRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                        .putHeader("Content-Type", "application/x-amz-json-1.0")
+                        .putHeader("X-Amz-Target", "DynamoDB_20120810.GetItem")
+                        .contentStreamProvider(() -> new ByteArrayInputStream(body))
+                        .build();
 
         ExecutionAttributes attributes = new ExecutionAttributes();
         attributes.putAttribute(SdkExecutionAttribute.SERVICE_NAME, "DynamoDb");

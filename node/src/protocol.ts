@@ -1,6 +1,11 @@
 import { TextDecoder } from "node:util";
 
-import { PhotonError, PhotonProtocolError, PhotonRejectedError } from "./errors.js";
+import {
+  PhotonError,
+  PhotonOverridesRejected,
+  PhotonProtocolError,
+  PhotonRejectedError,
+} from "./errors.js";
 import { PhotonResponse, ResolvedConfig, type PhotonRequest } from "./models.js";
 import { RespError, type RespValue } from "./resp.js";
 
@@ -17,6 +22,8 @@ import { RespError, type RespValue } from "./resp.js";
 export const CONFIG_COMMAND = "photon.config";
 export const REQUEST_COMMAND = "photon.request";
 export const PUSH_KIND_RESPONSE = Buffer.from("photon.response", "ascii");
+/** RESP error code the proxy returns when it rejects the `photon.config` overrides. */
+export const CONFIG_INVALID_CODE = "CONFIG_INVALID";
 
 const MIN_STATUS = 100;
 const MAX_STATUS = 599;
@@ -239,6 +246,9 @@ function escapeNonAscii(value: string): string {
  */
 export function parseConfigResponse(value: RespValue): ResolvedConfig {
   if (value instanceof RespError) {
+    if (value.code === CONFIG_INVALID_CODE) {
+      throw new PhotonOverridesRejected(`photon.config rejected: ${value.toString()}`);
+    }
     throw new PhotonError(`photon.config failed: ${value.toString()}`);
   }
   if (!Buffer.isBuffer(value)) {

@@ -1,16 +1,13 @@
 package software.amazon.photon.session;
 
+import java.util.function.Supplier;
 import software.amazon.elasticache.auth.ElastiCacheIamAuthTokenManager;
 import software.amazon.elasticache.auth.ToolkitInputException;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.exception.PhotonError;
 
-import java.util.function.Supplier;
-
-/**
- * Internal connector adapter for the toolkit's IAM token manager.
- */
+/** Internal connector adapter for the toolkit's IAM token manager. */
 final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoCloseable {
     private final ElastiCacheIamAuthTokenManager tokenManager;
 
@@ -21,8 +18,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     @Override
     public AuthCredentials get() {
         try {
-            ElastiCacheIamAuthTokenManager.Credentials credentials =
-                    tokenManager.getCredentials();
+            ElastiCacheIamAuthTokenManager.Credentials credentials = tokenManager.getCredentials();
             return new AuthCredentials(credentials.getUserId(), credentials.getToken());
         } catch (ToolkitInputException e) {
             throw new PhotonError(e.getMessage(), e);

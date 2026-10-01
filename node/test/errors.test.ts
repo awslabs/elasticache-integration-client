@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   PhotonCacheUnavailable,
   PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
@@ -15,6 +17,8 @@ import * as photon from "../src/index.js";
 const ERROR_TYPES = [
   PhotonError,
   PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionError,
   PhotonProtocolError,
   PhotonConnectionLost,

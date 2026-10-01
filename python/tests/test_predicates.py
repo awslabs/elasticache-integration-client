@@ -9,6 +9,7 @@ import json
 
 import pytest
 
+from photon.exceptions import PhotonConfigUnevaluable
 from photon.models import PhotonRequest, RequestMetadata
 from photon.predicates import (
     _CONTEXT_NAMES,
@@ -40,26 +41,30 @@ def test_compiles_the_all_reads_config_the_proxy_emits():
     assert len(predicates) == 1
 
 
-def test_missing_or_malformed_predicates_compile_to_empty():
+def test_missing_or_empty_predicates_compile_to_empty():
     assert compile_predicates(None) == []
     assert compile_predicates({}) == []
     assert compile_predicates({"predicates": []}) == []
-    assert compile_predicates({"predicates": "nope"}) == []
 
 
-def test_predicate_without_string_expr_is_dropped():
-    assert compile_predicates({"predicates": [{"vars": {"ops": ["GetItem"]}}]}) == []
+@pytest.mark.parametrize("value", ["nope", {"expr": "true"}, None])
+def test_predicates_that_are_not_a_list_raise(value):
+    with pytest.raises(PhotonConfigUnevaluable):
+        compile_predicates({"predicates": value})
 
 
-def test_uncompilable_expression_is_dropped_and_siblings_kept(caplog):
+def test_predicate_without_string_expr_raises():
+    with pytest.raises(PhotonConfigUnevaluable):
+        compile_predicates({"predicates": [{"vars": {"ops": ["GetItem"]}}]})
+
+
+def test_uncompilable_expression_raises():
     config = {"predicates": [
         {"expr": "this is not (valid CEL", "vars": {}},
         DEFAULT_RESOLVED_CONFIG["predicates"][0],
     ]}
-    with caplog.at_level("WARNING", logger="photon.predicates"):
-        predicates = compile_predicates(config)
-    assert len(predicates) == 1
-    assert "uncompilable" in caplog.text
+    with pytest.raises(PhotonConfigUnevaluable):
+        compile_predicates(config)
 
 
 # --- routing: all-reads (no allowlist) ----------------------------------------
@@ -204,9 +209,10 @@ def test_table_name_matched_exactly_without_normalization():
 
 # --- context integrity --------------------------------------------------------
 
-def test_non_object_predicate_entries_are_dropped():
+def test_non_object_predicate_entries_raise():
     config = {"predicates": ["nope", 42, None, [], DEFAULT_RESOLVED_CONFIG["predicates"][0]]}
-    assert len(compile_predicates(config)) == 1
+    with pytest.raises(PhotonConfigUnevaluable):
+        compile_predicates(config)
 
 
 def test_variable_may_not_shadow_a_context_name(caplog):

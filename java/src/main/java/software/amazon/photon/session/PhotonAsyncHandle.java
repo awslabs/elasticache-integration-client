@@ -1,13 +1,5 @@
 package software.amazon.photon.session;
 
-import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
-import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
-import software.amazon.photon.auth.AuthCredentials;
-import software.amazon.photon.auth.IamAuthTokenProvider;
-import software.amazon.photon.connection.PhotonConnector;
-import software.amazon.photon.exception.PhotonError;
-
-import javax.net.ssl.SSLContext;
 import java.io.Closeable;
 import java.security.NoSuchAlgorithmException;
 import java.util.Map;
@@ -19,12 +11,19 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
+import javax.net.ssl.SSLContext;
+import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
+import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
+import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenProvider;
+import software.amazon.photon.connection.PhotonConnector;
+import software.amazon.photon.exception.PhotonError;
 
 /**
  * Manages the attachment of Photon to an asynchronous AWS SDK client.
  *
- * <p>Lifecycle operations are serialized. Requests remain concurrent through
- * the asynchronous HTTP transport.
+ * <p>Lifecycle operations are serialized. Requests remain concurrent through the asynchronous HTTP
+ * transport.
  */
 public final class PhotonAsyncHandle implements Closeable {
 
@@ -37,51 +36,45 @@ public final class PhotonAsyncHandle implements Closeable {
     private final ManagedIamAuthProvider ownedAuthProvider;
     private State state = State.CREATED;
 
-    private PhotonAsyncHandle(PhotonSession session,
-                              SdkAsyncHttpClient originClient,
-                              boolean ownsOriginClient,
-                              Executor executor,
-                              ExecutorService ownedExecutor,
-                              int maxBufferedRequestBytes,
-                              int maxConcurrentBodyCollectors,
-                              ManagedIamAuthProvider ownedAuthProvider) {
+    private PhotonAsyncHandle(
+            PhotonSession session,
+            SdkAsyncHttpClient originClient,
+            boolean ownsOriginClient,
+            Executor executor,
+            ExecutorService ownedExecutor,
+            int maxBufferedRequestBytes,
+            int maxConcurrentBodyCollectors,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
-        this.interceptor = new PhotonAsyncInterceptor(
-                session,
-                originClient,
-                ownsOriginClient,
-                executor,
-                ownedExecutor,
-                maxBufferedRequestBytes,
-                maxConcurrentBodyCollectors);
+        this.interceptor =
+                new PhotonAsyncInterceptor(
+                        session,
+                        originClient,
+                        ownsOriginClient,
+                        executor,
+                        ownedExecutor,
+                        maxBufferedRequestBytes,
+                        maxConcurrentBodyCollectors);
         this.httpClient = interceptor.getHttpClient();
         this.ownedAuthProvider = ownedAuthProvider;
     }
 
-    /**
-     * Get the interceptor to install on the SDK client.
-     */
+    /** Get the interceptor to install on the SDK client. */
     public PhotonAsyncInterceptor getInterceptor() {
         return interceptor;
     }
 
-    /**
-     * Get the Photon-first asynchronous HTTP transport.
-     */
+    /** Get the Photon-first asynchronous HTTP transport. */
     public PhotonAsyncHttpClient getHttpClient() {
         return httpClient;
     }
 
-    /**
-     * Get the underlying Photon session.
-     */
+    /** Get the underlying Photon session. */
     public PhotonSession getSession() {
         return session;
     }
 
-    /**
-     * Open the Photon session.
-     */
+    /** Open the Photon session. */
     public synchronized void open() {
         if (state == State.OPEN) {
             throw new PhotonError("Handle already opened");
@@ -93,9 +86,7 @@ public final class PhotonAsyncHandle implements Closeable {
         state = State.OPEN;
     }
 
-    /**
-     * Close the Photon session and owned async resources. Idempotent.
-     */
+    /** Close the Photon session and owned async resources. Idempotent. */
     @Override
     public synchronized void close() {
         if (state == State.CLOSED) {
@@ -118,23 +109,17 @@ public final class PhotonAsyncHandle implements Closeable {
         }
     }
 
-    /**
-     * Check if the handle is open and ready.
-     */
+    /** Check if the handle is open and ready. */
     public synchronized boolean isOpen() {
         return state == State.OPEN && session.isOpen();
     }
 
-    /**
-     * Create a new async handle builder.
-     */
+    /** Create a new async handle builder. */
     public static Builder builder() {
         return new Builder();
     }
 
-    /**
-     * Builder for asynchronous Photon handles.
-     */
+    /** Builder for asynchronous Photon handles. */
     public static final class Builder {
         private String host;
         private int port = 6379;
@@ -146,13 +131,13 @@ public final class PhotonAsyncHandle implements Closeable {
         private int initializationTimeoutMs = 5000;
         private int requestTimeoutMs = 5000;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
+        private long stalenessDurationSeconds = PhotonSession.DEFAULT_STALENESS_DURATION_SECONDS;
         private SdkAsyncHttpClient originHttpClient;
         private Executor executor;
         private int maxBufferedRequestBytes = DEFAULT_MAX_BUFFERED_REQUEST_BYTES;
         private int maxConcurrentBodyCollectors = DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS;
 
-        private Builder() {
-        }
+        private Builder() {}
 
         public Builder host(String host) {
             this.host = host;
@@ -183,9 +168,7 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
-        /**
-         * Set an IAM provider whose auto-refresh manager is owned by this handle.
-         */
+        /** Set an IAM provider whose auto-refresh manager is owned by this handle. */
         public Builder authProvider(IamAuthTokenProvider authProvider) {
             this.iamAuthProvider = authProvider;
             this.authProvider = null;
@@ -218,9 +201,7 @@ public final class PhotonAsyncHandle implements Closeable {
             return this;
         }
 
-        /**
-         * Set reconnect and origin-fallback behavior.
-         */
+        /** Set reconnect and origin-fallback behavior. */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {
                 throw new NullPointerException("reconnectPolicy");
@@ -230,40 +211,40 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         /**
-         * Set a caller-managed asynchronous HTTP client for origin fallback.
+         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing. Past
+         * it the connection is dropped so a new one re-resolves the config. Defaults to one hour; must
+         * be a positive whole number of seconds.
          */
+        public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
+            this.stalenessDurationSeconds = stalenessDurationSeconds;
+            return this;
+        }
+
+        /** Set a caller-managed asynchronous HTTP client for origin fallback. */
         public Builder originHttpClient(SdkAsyncHttpClient originHttpClient) {
             this.originHttpClient = originHttpClient;
             return this;
         }
 
-        /**
-         * Set the caller-managed executor used for blocking Photon requests.
-         */
+        /** Set the caller-managed executor used for blocking Photon requests. */
         public Builder executor(Executor executor) {
             this.executor = executor;
             return this;
         }
 
-        /**
-         * Set the maximum async request body Photon buffers (default: 16 MiB).
-         */
+        /** Set the maximum async request body Photon buffers (default: 16 MiB). */
         public Builder maxBufferedRequestBytes(int maxBufferedRequestBytes) {
             this.maxBufferedRequestBytes = maxBufferedRequestBytes;
             return this;
         }
 
-        /**
-         * Set the maximum request bodies collected concurrently (default: 8).
-         */
+        /** Set the maximum request bodies collected concurrently (default: 8). */
         public Builder maxConcurrentBodyCollectors(int maxConcurrentBodyCollectors) {
             this.maxConcurrentBodyCollectors = maxConcurrentBodyCollectors;
             return this;
         }
 
-        /**
-         * Build the handle.
-         */
+        /** Build the handle. */
         public PhotonAsyncHandle build() {
             validateConfiguration();
 
@@ -275,10 +256,9 @@ public final class PhotonAsyncHandle implements Closeable {
             SdkAsyncHttpClient resolvedOriginClient = null;
             ExecutorService ownedExecutor = null;
             try {
-                PhotonSession session = createSession(
-                        resolveSslContext(), resolvedAuthProvider);
-                resolvedOriginClient = ownsOriginClient
-                        ? NettyNioAsyncHttpClient.create() : originHttpClient;
+                PhotonSession session = createSession(resolveSslContext(), resolvedAuthProvider);
+                resolvedOriginClient =
+                        ownsOriginClient ? NettyNioAsyncHttpClient.create() : originHttpClient;
                 ownedExecutor = executor == null ? createDefaultExecutor() : null;
                 Executor resolvedExecutor = executor == null ? ownedExecutor : executor;
 
@@ -332,16 +312,21 @@ public final class PhotonAsyncHandle implements Closeable {
         }
 
         private PhotonSession createSession(
-                SSLContext resolvedSslContext,
-                Supplier<AuthCredentials> resolvedAuthProvider) {
+                SSLContext resolvedSslContext, Supplier<AuthCredentials> resolvedAuthProvider) {
             return new PhotonSession(
-                    () -> new PhotonConnector(
-                            host, port, resolvedSslContext, connectTimeoutMs,
-                            initializationTimeoutMs, requestTimeoutMs,
-                            PhotonConnector.DEFAULT_MAX_PENDING),
+                    () ->
+                            new PhotonConnector(
+                                    host,
+                                    port,
+                                    resolvedSslContext,
+                                    connectTimeoutMs,
+                                    initializationTimeoutMs,
+                                    requestTimeoutMs,
+                                    PhotonConnector.DEFAULT_MAX_PENDING),
                     resolvedAuthProvider,
                     overrides,
-                    reconnectPolicy);
+                    reconnectPolicy,
+                    stalenessDurationSeconds);
         }
 
         private static ExecutorService createDefaultExecutor() {
@@ -366,8 +351,7 @@ public final class PhotonAsyncHandle implements Closeable {
 
         @Override
         public Thread newThread(Runnable runnable) {
-            Thread thread = new Thread(runnable,
-                    "photon-async-request-" + nextId.incrementAndGet());
+            Thread thread = new Thread(runnable, "photon-async-request-" + nextId.incrementAndGet());
             thread.setDaemon(true);
             return thread;
         }

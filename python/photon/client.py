@@ -5,6 +5,7 @@ from __future__ import annotations
 import boto3
 
 from photon.auth import build_cache_auth_provider
+from photon.config_policy import DEFAULT_STALENESS_DURATION, ConfigPolicy
 from photon.connection import PhotonConnector
 from photon.hooks import PhotonHandle
 from photon.reconnect_policy import ReconnectPolicy
@@ -15,7 +16,8 @@ def client(service: str, *, endpoint: str, cache_name: str,
            region_name: str | None = None, user_id: str | None = None,
            verify: bool = True, ca_certs: str | None = None,
            request_timeout: float = 5.0,
-           fallback_duration: int | None = None, **overrides):
+           fallback_duration: int | None = None,
+           staleness_duration: int = DEFAULT_STALENESS_DURATION, **overrides):
     """Create a boto3 client for ``service`` wired up with Photon.
 
     Returns the boto3 client (identical API). Calling ``close()`` on it disconnects
@@ -36,6 +38,9 @@ def client(service: str, *, endpoint: str, cache_name: str,
             negative value means indefinitely, so a cache outage never becomes an application
             outage. ``0`` means never — the first request after a connection is lost raises
             :class:`~photon.exceptions.PhotonCacheUnavailable`.
+        staleness_duration: How long, in seconds, the resolved config stays trusted while refreshes
+            are failing. Past it the connection is dropped so a new one re-resolves the config.
+            Defaults to one hour; must be a positive whole number of seconds.
         **overrides: Additional photon.config overrides.
 
     Example::
@@ -62,6 +67,7 @@ def client(service: str, *, endpoint: str, cache_name: str,
             connector_factory,
             overrides=overrides or None,
             policy=ReconnectPolicy(fallback_duration=fallback_duration),
+            config_policy=ConfigPolicy(staleness_duration=staleness_duration),
         )
         PhotonHandle(sdk_client, session)
     except BaseException:

@@ -10,12 +10,20 @@ This module builds the two Photon commands and interprets their replies:
 from __future__ import annotations
 
 import json
-from photon.exceptions import PhotonError, PhotonProtocolError, PhotonRejectedError
+from photon.exceptions import (
+    PhotonError,
+    PhotonOverridesRejected,
+    PhotonProtocolError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
 from photon.resp import RespError, RespPush, RespValue
 
 CONFIG_COMMAND = "photon.config"
 REQUEST_COMMAND = "photon.request"
+
+CONFIG_INVALID_CODE = "CONFIG_INVALID"
+"""RESP error code the proxy returns when it rejects the ``photon.config`` overrides."""
 
 PUSH_KIND_RESPONSE = b"photon.response"
 """Push kind for an out-of-band response. The only kind defined today."""
@@ -92,6 +100,8 @@ def parse_config_response(value: RespValue) -> ResolvedConfig:
     The reply is a JSON bulk string; a RESP-array shape is intentionally not supported.
     """
     if isinstance(value, RespError):
+        if value.code == CONFIG_INVALID_CODE:
+            raise PhotonOverridesRejected(f"photon.config rejected: {value}")
         raise PhotonError(f"photon.config failed: {value}")
     if not isinstance(value, bytes):
         raise PhotonError(

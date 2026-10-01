@@ -1,7 +1,11 @@
 package software.amazon.photon.session;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -10,24 +14,19 @@ import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for ConfigRefresher.
  *
  * <p>ConfigRefresher is a generic periodic-callback runner with no dependency on PhotonSession,
  * PhotonConnector, or any Photon protocol module, so these tests exercise it in isolation with a
- * plain counting callback. Most tests disable jitter and/or inject a fake {@code Waiter} so no
- * test depends on a real sleep; two exercise the real defaults end to end.
+ * plain counting callback. Most tests disable jitter and/or inject a fake {@code Waiter} so no test
+ * depends on a real sleep; two exercise the real defaults end to end.
  *
- * <p>Every refresher created here is registered for teardown so a failing assertion cannot leak
- * a refresher thread.
+ * <p>Every refresher created here is registered for teardown so a failing assertion cannot leak a
+ * refresher thread.
  */
 class ConfigRefresherTest {
 
@@ -90,8 +89,8 @@ class ConfigRefresherTest {
     void injectedWaiter_drivesAnExactCallbackCount() throws Exception {
         AtomicInteger count = new AtomicInteger();
         FakeWaiter waiter = new FakeWaiter(3);
-        ConfigRefresher refresher = track(new ConfigRefresher(
-                60, count::incrementAndGet, false, new Random(), waiter));
+        ConfigRefresher refresher =
+                track(new ConfigRefresher(60, count::incrementAndGet, false, new Random(), waiter));
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
 
@@ -102,7 +101,7 @@ class ConfigRefresherTest {
     @Test
     void stop_wakesAndTerminatesThreadPromptly() {
         // A 100-second interval: only an interruptible wait can make stop() return quickly.
-        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> { }));
+        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> {}));
         refresher.start();
 
         long startNanos = System.nanoTime();
@@ -117,21 +116,26 @@ class ConfigRefresherTest {
     void stop_interruptsAnInFlightCallback() throws Exception {
         CountDownLatch callbackStarted = new CountDownLatch(1);
         CountDownLatch callbackInterrupted = new CountDownLatch(1);
-        ConfigRefresher refresher = track(new ConfigRefresher(0.01, () -> {
-            callbackStarted.countDown();
-            try {
-                new CountDownLatch(1).await();
-            } catch (InterruptedException e) {
-                callbackInterrupted.countDown();
-                Thread.currentThread().interrupt();
-            }
-        }));
+        ConfigRefresher refresher =
+                track(
+                        new ConfigRefresher(
+                                0.01,
+                                () -> {
+                                    callbackStarted.countDown();
+                                    try {
+                                        new CountDownLatch(1).await();
+                                    } catch (InterruptedException e) {
+                                        callbackInterrupted.countDown();
+                                        Thread.currentThread().interrupt();
+                                    }
+                                }));
         refresher.start();
 
         assertTrue(callbackStarted.await(5, TimeUnit.SECONDS), "callback did not start");
         refresher.stop(1000);
 
-        assertTrue(callbackInterrupted.await(1, TimeUnit.SECONDS),
+        assertTrue(
+                callbackInterrupted.await(1, TimeUnit.SECONDS),
                 "stop() did not interrupt the active callback");
         assertFalse(refresher.thread().isAlive());
     }
@@ -140,10 +144,17 @@ class ConfigRefresherTest {
     void callbackFailure_doesNotStopLaterRefreshes() throws Exception {
         AtomicInteger invocations = new AtomicInteger();
         FakeWaiter waiter = new FakeWaiter(3);
-        ConfigRefresher refresher = track(new ConfigRefresher(60, () -> {
-            invocations.incrementAndGet();
-            throw new RuntimeException("refresh failed");
-        }, false, new Random(), waiter));
+        ConfigRefresher refresher =
+                track(
+                        new ConfigRefresher(
+                                60,
+                                () -> {
+                                    invocations.incrementAndGet();
+                                    throw new RuntimeException("refresh failed");
+                                },
+                                false,
+                                new Random(),
+                                waiter));
 
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
@@ -154,7 +165,7 @@ class ConfigRefresherTest {
 
     @Test
     void stop_isIdempotent() {
-        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> { }));
+        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> {}));
         refresher.start();
 
         refresher.stop();
@@ -166,14 +177,14 @@ class ConfigRefresherTest {
 
     @Test
     void stop_beforeStart_doesNotThrow() {
-        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> { }));
+        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> {}));
         refresher.stop();
         assertNull(refresher.thread());
     }
 
     @Test
     void thread_isDaemonAndNamed() {
-        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> { }));
+        ConfigRefresher refresher = track(new ConfigRefresher(100, () -> {}));
         refresher.start();
 
         assertNotNull(refresher.thread());
@@ -183,7 +194,7 @@ class ConfigRefresherTest {
 
     @Test
     void nextRefreshDelay_withJitterDisabled_isExact() {
-        ConfigRefresher refresher = new ConfigRefresher(10, () -> { }, false, new Random(), null);
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> {}, false, new Random(), null);
         for (int i = 0; i < 5; i++) {
             assertEquals(10.0, refresher.nextRefreshDelaySeconds());
         }
@@ -191,7 +202,7 @@ class ConfigRefresherTest {
 
     @Test
     void nextRefreshDelay_withJitter_staysWithinTwentyPercent() {
-        ConfigRefresher refresher = new ConfigRefresher(10, () -> { });
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> {});
         for (int i = 0; i < 500; i++) {
             double delay = refresher.nextRefreshDelaySeconds();
             assertTrue(delay >= 8.0 && delay <= 12.0, "delay out of ±20% bounds: " + delay);
@@ -202,8 +213,8 @@ class ConfigRefresherTest {
     void jitter_isRecalculatedEachCycle() throws Exception {
         // A seeded Random makes the per-cycle delays deterministic yet distinct.
         FakeWaiter waiter = new FakeWaiter(4);
-        ConfigRefresher refresher = track(new ConfigRefresher(
-                10, () -> { }, true, new Random(42), waiter));
+        ConfigRefresher refresher =
+                track(new ConfigRefresher(10, () -> {}, true, new Random(42), waiter));
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
 
@@ -212,7 +223,8 @@ class ConfigRefresherTest {
         for (double delay : timeouts) {
             assertTrue(delay >= 8.0 && delay <= 12.0, "delay out of ±20% bounds: " + delay);
         }
-        assertTrue(timeouts.stream().distinct().count() > 1,
+        assertTrue(
+                timeouts.stream().distinct().count() > 1,
                 "jitter was not recalculated across cycles: " + timeouts);
     }
 
@@ -220,7 +232,7 @@ class ConfigRefresherTest {
 
     @Test
     void setInterval_changesNextComputedDelay() {
-        ConfigRefresher refresher = new ConfigRefresher(10, () -> { }, false, new Random(), null);
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> {}, false, new Random(), null);
         assertEquals(10.0, refresher.nextRefreshDelaySeconds());
         refresher.setInterval(30);
         assertEquals(30.0, refresher.nextRefreshDelaySeconds());
@@ -228,7 +240,7 @@ class ConfigRefresherTest {
 
     @Test
     void setInterval_rejectsNonPositiveAndLeavesPreviousValueIntact() {
-        ConfigRefresher refresher = new ConfigRefresher(10, () -> { }, false, new Random(), null);
+        ConfigRefresher refresher = new ConfigRefresher(10, () -> {}, false, new Random(), null);
         assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(0));
         assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(-5));
         assertEquals(10.0, refresher.nextRefreshDelaySeconds());
@@ -239,7 +251,8 @@ class ConfigRefresherTest {
         // A delay already handed to the waiter before setInterval() must not change retroactively;
         // only delays computed afterward use the new interval.
         FakeWaiter waiter = new FakeWaiter(2);
-        ConfigRefresher refresher = track(new ConfigRefresher(10, () -> { }, false, new Random(), waiter));
+        ConfigRefresher refresher =
+                track(new ConfigRefresher(10, () -> {}, false, new Random(), waiter));
         refresher.setInterval(99); // before start(): every computed delay uses the new interval
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
@@ -253,8 +266,8 @@ class ConfigRefresherTest {
         // its setInterval call) runs, so only the delays computed afterward pick up the change.
         FakeWaiter waiter = new FakeWaiter(2);
         ConfigRefresher[] holder = new ConfigRefresher[1];
-        ConfigRefresher refresher = new ConfigRefresher(
-                10, () -> holder[0].setInterval(99), false, new Random(), waiter);
+        ConfigRefresher refresher =
+                new ConfigRefresher(10, () -> holder[0].setInterval(99), false, new Random(), waiter);
         holder[0] = refresher;
         track(refresher);
         refresher.start();
@@ -271,10 +284,13 @@ class ConfigRefresherTest {
         // dead connector: stop() must not try to join the thread it is running on.
         CountDownLatch stopped = new CountDownLatch(1);
         ConfigRefresher[] holder = new ConfigRefresher[1];
-        ConfigRefresher refresher = new ConfigRefresher(0.01, () -> {
-            holder[0].stop();
-            stopped.countDown();
-        });
+        ConfigRefresher refresher =
+                new ConfigRefresher(
+                        0.01,
+                        () -> {
+                            holder[0].stop();
+                            stopped.countDown();
+                        });
         holder[0] = refresher;
         track(refresher);
         refresher.start();

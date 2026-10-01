@@ -10,21 +10,28 @@ service itself — for as long as the fallback window allows.
 
 A :class:`~photon.refresh.Refresher` runs for as long as the session is open, so the config
 can be re-resolved on the live connection rather than only when a new one is built. A refresh that
-fails leaves the current config in place; recording failures and raising a staleness flag are not
-yet implemented.
+fails leaves the current config in place. Once the staleness window passes with no config confirmed
+by the server, the config is no longer trusted: the connection is dropped so a new one re-resolves
+it, and requests fall back meanwhile.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from collections.abc import Callable
 
+from photon.config_policy import ConfigPolicy
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionManager, ConnectionState
 from photon.exceptions import (
     PhotonCacheUnavailable,
     PhotonConfigError,
+    PhotonConfigUnevaluable,
+    PhotonConnectionError,
     PhotonError,
+    PhotonOverridesRejected,
     PhotonRejectedError,
 )
 from photon.models import PhotonRequest, PhotonResponse, ResolvedConfig
@@ -41,6 +48,13 @@ from photon.protocol import (
 logger = logging.getLogger(__name__)
 
 _PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR"
+
+
+def _config_failure_cause(exc: PhotonError) -> str:
+    """The cause of a config failure that cannot fix itself, worded the same on every path."""
+    if isinstance(exc, PhotonOverridesRejected):
+        return "the proxy rejected the overrides (CONFIG_INVALID)"
+    return "the config has a predicate this client cannot evaluate"
 
 
 def parse_endpoint(endpoint: str) -> tuple[str, int]:
@@ -75,6 +89,7 @@ class PhotonSession:
         overrides: dict | None = None,
         *,
         policy: ReconnectPolicy | None = None,
+        config_policy: ConfigPolicy | None = None,
     ) -> None:
         """Create a session and open its connection, so it is ready to serve requests.
 
@@ -84,6 +99,8 @@ class PhotonSession:
                 them and answers with the config the session then routes by.
             policy: Reconnect and fallback behavior; see
                 :class:`~photon.reconnect_policy.ReconnectPolicy`. ``None`` uses the defaults.
+            config_policy: How long the resolved config stays trusted while refreshes are failing;
+                see :class:`~photon.config_policy.ConfigPolicy`. ``None`` uses the defaults.
 
         Raises:
             PhotonError: The connection could not be opened; see
@@ -96,6 +113,9 @@ class PhotonSession:
         self._overrides = overrides or {}
         self._config = None
         self._predicates = None
+        self._config_policy = config_policy or ConfigPolicy()
+        self._config_deadline = 0.0
+        self._install_config_lock = threading.Lock()  # serializes checking a reply's connector and installing its config
         self._config_refresher: Refresher | None = None
         self._reauth_runner: Refresher | None = None
         self._connection_manager = ConnectionManager(
@@ -128,6 +148,11 @@ class PhotonSession:
     def state(self) -> ConnectionState:
         return self._connection_manager.state
 
+    @property
+    def config_stale(self) -> bool:
+        """Whether the config has gone unconfirmed long enough to stop trusting it."""
+        return time.monotonic() >= self._config_deadline
+
     def _configure(self, connector: PhotonConnector) -> None:
         """Handshake with a freshly connected connector and resolve its config, making it usable.
 
@@ -137,44 +162,76 @@ class PhotonSession:
         Nothing is installed unless the whole exchange succeeds, so a configure that fails
         half-way leaves the session routing by the config it was already using.
 
-        The connection manager owns the connector and closes it if this raises.
+        The connection manager owns the connector and closes it if this raises. A config failure
+        that cannot fix itself is logged at ERROR on every attempt.
         """
         connector.handshake()
         command, args = serialize_config(self._overrides)
-        config = parse_config_response(
-            connector.execute(command, *args, timeout=connector.config_timeout)
-        )
-        self._replace_config(config)
+        try:
+            config = parse_config_response(
+                connector.execute(command, *args, timeout=connector.config_timeout)
+            )
+            installed = self._replace_config(config, connector)
+        except (PhotonOverridesRejected, PhotonConfigUnevaluable) as exc:
+            logger.error(
+                "Configuring a connection failed: %s. The connection is closed and retried",
+                _config_failure_cause(exc), exc_info=True,
+            )
+            raise
+        if not installed:
+            raise PhotonConnectionError("connection closed before its config could be installed")
 
-    def _replace_config(self, config: ResolvedConfig) -> None:
+    def _replace_config(self, config: ResolvedConfig, source: PhotonConnector) -> bool:
         """Install a resolved config, the predicates compiled from it, and its refresh interval.
 
-        Called when a connection is configured and after each successful refresh, so both paths
-        install a new config the same way, and this is the only place either store is written.
+        Installs only while ``source`` (the connector the config came from) is still alive, under
+        ``_install_config_lock``, so a reply from a replaced connection is dropped rather than
+        overwriting its replacement's. Both stores are replaced outright, not mutated, and are not
+        updated atomically together, but nothing reads both.
 
-        Both stores are replaced outright rather than mutated, so a request reading ``_predicates``
-        from another thread sees either the previous list or the new one. The two stores are not
-        atomic together: a request can briefly see the new config beside the old predicates.
-        Nothing reads both.
+        Returns:
+            False if ``source`` had closed and nothing was installed.
         """
         predicates = compile_predicates(config.raw)
-        self._config, self._predicates = config, predicates
-        if self._config_refresher:
-            self._config_refresher.set_interval(config.refresh_interval)
+        with self._install_config_lock:
+            if not source.is_alive:
+                return False
+            self._config, self._predicates = config, predicates
+            if self._config_refresher:
+                self._config_refresher.set_interval(config.refresh_interval)
+            self._restart_staleness_window()
+        return True
+
+    def _confirm_config(self, source: PhotonConnector) -> bool:
+        """Restart the staleness window on an "unchanged" reply, under the same rule as an install.
+
+        Returns:
+            False if ``source`` had closed and the window was left as it was.
+        """
+        with self._install_config_lock:
+            if not source.is_alive:
+                return False
+            self._restart_staleness_window()
+        return True
+
+    def _restart_staleness_window(self) -> None:
+        """Restart the staleness window after any confirmation from the server.
+
+        Both a sent config and an empty "unchanged" reply prove the config in hand is current.
+        Called with ``_install_config_lock`` held.
+        """
+        self._config_deadline = time.monotonic() + self._config_policy.staleness_duration
 
     def _refresh_once(self) -> None:
-        """Send one ``photon.config`` refresh and apply the result.
+        """Send one no-argument ``photon.config`` refresh and apply the result.
 
-        Always the no-argument form: a connection is configured with the overrides before it is
-        published, so the server already has them. A RESP3 null reply means the config has not
-        changed and nothing happens; any other reply is installed by ``_replace_config``, which
-        also reschedules the refresher on the interval the new config carries.
+        The overrides were sent when the connection was configured, so the server already has them.
+        A null reply installs nothing; any other reply goes through ``_replace_config``. Either way
+        the server confirmed the config, restarting the staleness window. Nothing is sent while no
+        connection is available.
 
-        Nothing is sent while no connection is available, since the next connection resolves its
-        own config as it comes up.
-
-        A :class:`PhotonError` from any step is caught so it cannot escape the refresher thread
-        and kill it: the current config and schedule stay in place and the next tick retries.
+        A failed refresh keeps the current config until the staleness window passes, then drops
+        the connection so a new one re-resolves it. A successful refresh never drops.
         """
         connector = self._connection_manager.connector
         if not connector:
@@ -183,10 +240,30 @@ class PhotonSession:
         try:
             reply = connector.execute(command, *args, timeout=connector.config_timeout)
             if reply is None:
-                return
-            self._replace_config(parse_config_response(reply))
-        except PhotonError:
+                installed = self._confirm_config(connector)
+            else:
+                installed = self._replace_config(parse_config_response(reply), connector)
+        except PhotonError as exc:
+            self._refresh_failed(exc, connector)
+            return
+        if not installed:
+            logger.debug("Config refresh reply arrived after its connection closed; dropped")
+
+    def _refresh_failed(self, exc: PhotonError, connector: PhotonConnector) -> None:
+        """Log a failed refresh, and drop ``connector`` once the staleness window has passed."""
+        if isinstance(exc, (PhotonOverridesRejected, PhotonConfigUnevaluable)):
+            logger.error(
+                "Config refresh failed: %s. Keeping the last good config until the staleness "
+                "window drops the connection", _config_failure_cause(exc), exc_info=True,
+            )
+        else:
             logger.warning("Config refresh failed; keeping the current config", exc_info=True)
+        if self.config_stale:
+            logger.warning(
+                "No config confirmed for %ss; dropping the connection so a new one resolves it",
+                self._config_policy.staleness_duration,
+            )
+            self._connection_manager.invalidate_connection(connector)
 
     def _reauth_once(self) -> None:
         """Re-run AUTH on the live connector to refresh its FAS. Runs in the background.

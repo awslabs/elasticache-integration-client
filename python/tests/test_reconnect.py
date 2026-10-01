@@ -16,6 +16,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from photon import connection_manager
+from photon import session as session_module
+from photon.config_policy import ConfigPolicy
 from photon.connection import PhotonConnector
 from photon.connection_manager import ConnectionState
 from photon.exceptions import (
@@ -197,7 +199,8 @@ class _ReconnectRig:
     """
 
     def __init__(self, *, policy: ReconnectPolicy = FAST, config: dict | None = None,
-                 overrides: dict | None = None, **cache_kwargs) -> None:
+                 overrides: dict | None = None, config_policy: ConfigPolicy | None = None,
+                 **cache_kwargs) -> None:
         self.cache = MockCache(config=config, **cache_kwargs)
         self.cache.start()
         self.proxy = MockTcpProxy(self.cache.host, self.cache.port)
@@ -218,7 +221,8 @@ class _ReconnectRig:
             )
 
         self.factory = factory
-        self.session = PhotonSession(factory, overrides=overrides, policy=policy)
+        self.session = PhotonSession(factory, overrides=overrides, policy=policy,
+                                     config_policy=config_policy or ConfigPolicy())
 
     def close(self) -> None:
         self.session.close()
@@ -382,6 +386,29 @@ def test_disconnect_notification_starts_a_reconnect_without_any_request(rig):
 
     wait_for_reconnect(r, connection_id=2)
     assert r.cache.requests == [], "nothing was sent, so only the notification could have driven it"
+
+
+def test_a_stale_config_is_replaced_by_a_reconnect(rig, monkeypatch):
+    """A config left unconfirmed past its staleness window is fixed by replacing the connection.
+
+    The session drops a connection whose config it no longer trusts, which the manager cannot tell
+    from any other lost connection, so the ordinary reconnect rebuilds it — and bringing one up
+    resolves a config, which is what makes the drop a repair rather than only an interruption. The
+    clock is moved rather than waited out, so the window is reached instantly.
+    """
+    clock = _FakeClock()
+    monkeypatch.setattr(session_module, "time", clock)
+    r = rig(config_policy=ConfigPolicy(staleness_duration=1))
+    r.cache.no_arg_config_reply = {"version": "1.0"}  # no refresh_interval: the refresh fails
+
+    clock.advance(1)
+    assert r.session.config_stale
+
+    r.session._refresh_once()  # the refresh fails past the window, so the connection is dropped
+
+    wait_for_reconnect(r, connection_id=2)
+    assert not r.session.config_stale, "the replacement connection resolved a config as it came up"
+    assert r.session.request(get_item_request())
 
 
 def test_an_in_flight_request_raises_and_is_never_replayed(rig):
