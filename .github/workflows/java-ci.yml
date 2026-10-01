@@ -55,3 +55,13 @@ jobs:
             java/build/reports/tests/test/
             java/build/reports/jacoco/test/
           retention-days: 7
+
+      # Gradle runs on JDK 21 in every job, so the JARs are the same; upload them once.
+      - name: Upload JARs
+        if: matrix.java-version == 21
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-java
+          path: java/build/libs/
+          if-no-files-found: error
+          retention-days: 7
