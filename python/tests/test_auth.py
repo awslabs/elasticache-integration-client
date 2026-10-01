@@ -197,7 +197,7 @@ class TestBuildCacheAuthProvider:
             refresh_after=120,
         )
 
-    @patch.dict(os.environ, {"AWS_DEFAULT_REGION": "us-east-2"})
+    @patch.dict(os.environ, {"AWS_DEFAULT_REGION": "us-east-2"}, clear=True)
     def test_region_falls_back_through_toolkit(self):
         provider = build_cache_auth_provider(
             cache_name="my-cache",

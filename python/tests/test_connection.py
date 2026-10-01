@@ -268,6 +268,18 @@ class TestPhotonConnector:
 
         provider.refresh_auth.assert_called_once()
 
+    def test_non_auth_hello_rejection_does_not_refresh_managed_auth(self):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=RespError("NOPROTO", "unsupported protocol"))
+
+        with pytest.raises(PhotonConnectionError, match="NOPROTO") as excinfo:
+            conn.handshake()
+
+        assert not isinstance(excinfo.value, PhotonAuthError)
+        provider.refresh_auth.assert_not_called()
+
     @pytest.mark.parametrize(
         "reply",
         [

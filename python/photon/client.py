@@ -107,6 +107,7 @@ def client(
     configuration = client_configuration or PhotonClientConfiguration()
     boto3_session = boto3.Session(region_name=region_name)
     sdk_client = boto3_session.client(service)
+    resolved_region = boto3_session.region_name
     auth_provider = None
 
     try:
@@ -114,7 +115,7 @@ def client(
         auth_provider = build_cache_auth_provider(
             cache_name=cache_name,
             user_id=user_id,
-            region=region_name,
+            region=resolved_region,
             botocore_session=boto3_session._session,
             refresh_after=configuration.iam_refresh_after,
         )

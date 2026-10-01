@@ -24,6 +24,7 @@ def _patch_common(monkeypatch, sdk_client):
     """Run client() without a network: fake boto3 and the cache auth provider."""
     boto3_session = MagicMock()
     boto3_session.client.return_value = sdk_client
+    boto3_session.region_name = None
     boto3_stub = MagicMock()
     boto3_stub.Session.return_value = boto3_session
     auth_provider = MagicMock()
@@ -64,6 +65,7 @@ def test_client_returns_sdk_client_on_success(monkeypatch):
 def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
     sdk_client = MagicMock()
     boto3_session, auth_builder, _ = _patch_common(monkeypatch, sdk_client)
+    boto3_session.region_name = "us-east-1"
     monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: MagicMock())
     monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
 
@@ -83,6 +85,18 @@ def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
         botocore_session=boto3_session._session,
         refresh_after=120,
     )
+
+
+def test_client_uses_the_sdk_resolved_region_for_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    boto3_session, auth_builder, _ = _patch_common(monkeypatch, sdk_client)
+    boto3_session.region_name = "ap-southeast-2"
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="my-cache")
+
+    assert auth_builder.call_args.kwargs["region"] == "ap-southeast-2"
 
 
 def test_client_gives_session_ownership_of_managed_auth(monkeypatch):

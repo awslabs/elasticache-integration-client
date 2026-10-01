@@ -47,6 +47,7 @@ _CLOSE_TIMEOUT = 0.5  # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
 _DEFAULT_MAX_PENDING = 100
+_AUTH_REJECTION_CODES = frozenset({"WRONGPASS", "invalid-iam-credentials"})
 
 
 class _SocketReader:
@@ -447,7 +448,10 @@ class PhotonConnector:
         """
         if isinstance(reply, RespError):
             self.close()
-            raise PhotonAuthError(f"HELLO 3 rejected: {reply.code}")
+            error_type = (
+                PhotonAuthError if reply.code in _AUTH_REJECTION_CODES else PhotonConnectionError
+            )
+            raise error_type(f"HELLO 3 rejected: {reply.code}")
         if not isinstance(reply, dict):
             self.close()
             raise PhotonConnectionError(
