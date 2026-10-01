@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
+import { createServer as createTlsServer, type TLSSocket } from "node:tls";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -32,6 +33,47 @@ function startCache(options: ConstructorParameters<typeof MockCache>[0] = {}): P
   const cache = new MockCache(options);
   activeCaches.push(cache);
   return cache.start().then(() => cache);
+}
+
+/** Start a dual-stack TLS server that records the SNI each client sends. */
+async function startSniServer(): Promise<{
+  port: number;
+  servernames: Array<string | false>;
+  stop: () => Promise<void>;
+}> {
+  const servernames: Array<string | false> = [];
+  const sockets = new Set<TLSSocket>();
+  const server = createTlsServer(
+    {
+      cert: readFileSync(certPath),
+      key: readFileSync(new URL("./fixtures/tls/localhost.key", here)),
+    },
+    (socket) => {
+      servernames.push(socket.servername);
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "::", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("TLS test server did not bind");
+  }
+  return {
+    port: address.port,
+    servernames,
+    stop: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
 }
 
 function sourceFrom(chunks: Buffer[]): SocketChunkSource {
@@ -1122,6 +1164,37 @@ describe("PhotonConnector", () => {
 
     await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
     await connector.close();
+  });
+
+  it("sends SNI and verifies the certificate for a DNS host", async () => {
+    const server = await startSniServer();
+    const connector = new PhotonConnector("localhost", server.port, {
+      caCerts: readFileSync(certPath),
+    });
+
+    try {
+      await connector.connect();
+      await vi.waitFor(() => expect(server.servernames).toEqual(["localhost"]));
+    } finally {
+      await connector.close();
+      await server.stop();
+    }
+  });
+
+  it("omits SNI for an IPv6 host", async () => {
+    const server = await startSniServer();
+    // The fixture certificate has no ::1 SAN, so only the handshake and SNI are under test.
+    const connector = new PhotonConnector("::1", server.port, { insecureSkipVerify: true });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+
+    try {
+      await connector.connect();
+      await vi.waitFor(() => expect(server.servernames).toEqual([false]));
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+      await server.stop();
+    }
   });
 
   it("cleans up a TLS handshake timeout without an unhandled socket error", async () => {
