@@ -418,6 +418,30 @@ describe("PhotonSession", () => {
     }
   });
 
+  it("applies reconnect policy jitter to both background refresh schedules", async () => {
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation(((
+      callback: () => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      delays.push(delay ?? 0);
+      return realSetTimeout(callback, delay, ...args);
+    }) as typeof setTimeout);
+    const session = new PhotonSession(fakeConnector(), {}, { jitter: 0 });
+
+    try {
+      await session.open();
+
+      expect(delays).toContain(60_000);
+      expect(delays).toContain(900_000);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      await session.close();
+    }
+  });
+
   it("does not start a refresher when opening fails", async () => {
     const connector = fakeConnector({
       execute: vi.fn(async () => {

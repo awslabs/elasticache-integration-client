@@ -165,8 +165,10 @@ const dynamodb = await client("dynamodb", DynamoDBClient, {
 ```
 
 Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
-attempt including the capped tail. Closing or destroying the SDK client
-interrupts reconnect backoff and prevents further attempts.
+attempt including the capped tail. The same `reconnectPolicy.jitter` is applied
+to config-refresh and re-AUTH intervals for parity with the other clients;
+setting it to `0` disables jitter for all three schedules. Closing or destroying
+the SDK client interrupts reconnect backoff and prevents further attempts.
 
 AUTH normally uses `@aws/developer-toolkit-elasticache` to cache and
 automatically refresh short-lived IAM tokens from the SDK credential chain.

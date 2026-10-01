@@ -69,7 +69,7 @@ export interface ReconnectPolicyOptions {
   baseDelayMs?: number;
   /** Maximum reconnect delay before jitter. Defaults to 3,200. */
   maxDelayMs?: number;
-  /** Symmetric jitter ratio in `[0, 1)`. Defaults to 0.2. */
+  /** Symmetric jitter ratio for reconnect and background refresh delays. Defaults to 0.2. */
   jitter?: number;
 }
 
