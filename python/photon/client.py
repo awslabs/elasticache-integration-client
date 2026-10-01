@@ -34,6 +34,8 @@ class PhotonClientConfiguration:
         cache_policy_timeout: How long, in seconds, Photon may use a cache policy without
             confirmation from the cache. After this time, Photon reconnects to get a current policy.
             Defaults to 3600 seconds and must be a positive whole number.
+        iam_refresh_after: Seconds after token issuance when the toolkit begins background
+            refresh. When omitted, the toolkit default is used.
 
     Building the configuration raises :class:`~photon.exceptions.PhotonConfigError` for a value
     that is not usable.
@@ -43,6 +45,7 @@ class PhotonClientConfiguration:
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
+    iam_refresh_after: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -102,12 +105,18 @@ def client(
                                 cache_policy_overrides={"exclude_tables": ["audit-log"]}))
     """
     configuration = client_configuration or PhotonClientConfiguration()
-    sdk_client = boto3.Session(region_name=region_name).client(service)
+    boto3_session = boto3.Session(region_name=region_name)
+    sdk_client = boto3_session.client(service)
+    auth_provider = None
 
     try:
         host, port = parse_endpoint(endpoint)
         auth_provider = build_cache_auth_provider(
-            cache_name=cache_name, user_id=user_id, region=region_name
+            cache_name=cache_name,
+            user_id=user_id,
+            region=region_name,
+            botocore_session=boto3_session._session,
+            refresh_after=configuration.iam_refresh_after,
         )
 
         def connector_factory() -> PhotonConnector:
@@ -127,12 +136,18 @@ def client(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(fallback_duration=configuration.fallback_duration),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
+            close_callback=auth_provider.close,
         )
         PhotonHandle(sdk_client, session)
     except BaseException:
         # Bring-up failed (auth, the config handshake, or wiring). Close the boto3 client
         # we already created so its connection pool does not leak, then re-raise the original
         # error.
+        if auth_provider is not None:
+            try:
+                auth_provider.close()
+            except Exception:
+                pass
         try:
             sdk_client.close()
         except Exception:

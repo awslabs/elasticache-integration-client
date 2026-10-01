@@ -90,6 +90,7 @@ class PhotonSession:
         *,
         policy: ReconnectPolicy | None = None,
         config_policy: ConfigPolicy | None = None,
+        close_callback: Callable[[], None] | None = None,
     ) -> None:
         """Create a session and open its connection, so it is ready to serve requests.
 
@@ -101,6 +102,7 @@ class PhotonSession:
                 :class:`~photon.reconnect_policy.ReconnectPolicy`. ``None`` uses the defaults.
             config_policy: How long the resolved config stays trusted while refreshes are failing;
                 see :class:`~photon.config_policy.ConfigPolicy`. ``None`` uses the defaults.
+            close_callback: Optional owned-resource cleanup run once when the session closes.
 
         Raises:
             PhotonError: The connection could not be opened; see
@@ -121,9 +123,11 @@ class PhotonSession:
         )  # serializes checking a reply's connector and installing its config
         self._config_refresher: Refresher | None = None
         self._reauth_runner: Refresher | None = None
+        self._close_callback = close_callback
+        self._close_callback_called = False
         self._connection_manager = ConnectionManager(connector_factory, self._configure, policy)
-        self._connection_manager.init_connection()
         try:
+            self._connection_manager.init_connection()
             self._config_refresher = Refresher(
                 self._config.refresh_interval,
                 self._refresh_once,
@@ -142,7 +146,10 @@ class PhotonSession:
             )
             self._reauth_runner.start()
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                pass  # preserve the initialization failure
             raise
 
     @property
@@ -328,7 +335,13 @@ class PhotonSession:
             self._reauth_runner.stop()
         if self._config_refresher:
             self._config_refresher.stop()
-        self._connection_manager.close()
+        try:
+            self._connection_manager.close()
+        finally:
+            if not self._close_callback_called:
+                self._close_callback_called = True
+                if self._close_callback:
+                    self._close_callback()
 
     @property
     def is_open(self) -> bool:

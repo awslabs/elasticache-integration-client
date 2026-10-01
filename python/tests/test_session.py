@@ -112,6 +112,21 @@ def test_a_failed_configure_closes_everything(failing_step):
     connector.close.assert_called_once_with()
 
 
+def test_failed_initialization_releases_owned_resource():
+    connector = mock_connector()
+    connector.handshake.side_effect = PhotonConnectionError("rejected")
+    close_callback = mock.Mock()
+
+    with pytest.raises(PhotonConnectionError, match="rejected"):
+        PhotonSession(
+            lambda: connector,
+            policy=ReconnectPolicy(connect_attempts=1),
+            close_callback=close_callback,
+        )
+
+    close_callback.assert_called_once()
+
+
 def test_policy_none_uses_the_default_policy():
     """Passing ``policy=None`` explicitly behaves like omitting it."""
     connector = mock_connector()
@@ -697,6 +712,17 @@ def test_close_delegates_to_connector():
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
+
+
+def test_close_releases_owned_resource_once():
+    connector = mock_connector()
+    close_callback = mock.Mock()
+    session = PhotonSession(lambda: connector, close_callback=close_callback)
+
+    session.close()
+    session.close()
+
+    close_callback.assert_called_once()
 
 
 def test_is_open_tracks_lifecycle():

@@ -26,13 +26,16 @@ def _patch_common(monkeypatch, sdk_client):
     boto3_session.client.return_value = sdk_client
     boto3_stub = MagicMock()
     boto3_stub.Session.return_value = boto3_session
+    auth_provider = MagicMock()
+    auth_builder = MagicMock(return_value=auth_provider)
     monkeypatch.setattr(client_mod, "boto3", boto3_stub)
-    monkeypatch.setattr(client_mod, "build_cache_auth_provider", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(client_mod, "build_cache_auth_provider", auth_builder)
+    return boto3_session, auth_builder, auth_provider
 
 
 def test_client_closes_sdk_client_when_session_bringup_fails(monkeypatch):
     sdk_client = MagicMock()
-    _patch_common(monkeypatch, sdk_client)
+    _, _, auth_provider = _patch_common(monkeypatch, sdk_client)
 
     def boom(*args, **kwargs):
         raise PhotonError("bring-up failed")
@@ -43,6 +46,7 @@ def test_client_closes_sdk_client_when_session_bringup_fails(monkeypatch):
         client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c")
 
     sdk_client.close.assert_called_once()
+    auth_provider.close.assert_called_once()
 
 
 def test_client_returns_sdk_client_on_success(monkeypatch):
@@ -55,6 +59,43 @@ def test_client_returns_sdk_client_on_success(monkeypatch):
 
     assert result is sdk_client
     sdk_client.close.assert_not_called()
+
+
+def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    boto3_session, auth_builder, _ = _patch_common(monkeypatch, sdk_client)
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client(
+        "dynamodb",
+        endpoint="cache:6379",
+        cache_name="My-Cache",
+        region_name="us-east-1",
+        user_id="IAM-User",
+        iam_refresh_after=120,
+    )
+
+    auth_builder.assert_called_once_with(
+        cache_name="My-Cache",
+        user_id="IAM-User",
+        region="us-east-1",
+        botocore_session=boto3_session._session,
+        refresh_after=120,
+    )
+
+
+def test_client_gives_session_ownership_of_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    _, _, auth_provider = _patch_common(monkeypatch, sdk_client)
+    built = {}
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c")
+
+    built["close_callback"]()
+    auth_provider.close.assert_called_once()
 
 
 @pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])

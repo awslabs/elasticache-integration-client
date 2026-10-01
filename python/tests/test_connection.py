@@ -254,6 +254,20 @@ class TestPhotonConnector:
         assert code in str(excinfo.value)
         assert conn._closed
 
+    def test_hello_rejection_force_refreshes_managed_auth(self):
+        """A rejected cached token is replaced before the bounded connect retry."""
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(
+            return_value=RespError("invalid-iam-credentials", "credentials rejected")
+        )
+
+        with pytest.raises(PhotonAuthError, match="invalid-iam-credentials"):
+            conn.handshake()
+
+        provider.refresh_auth.assert_called_once()
+
     @pytest.mark.parametrize(
         "reply",
         [
@@ -280,6 +294,17 @@ class TestPhotonConnector:
         with pytest.raises(PhotonAuthError):
             conn._verify_auth_reply(RespError("WRONGPASS", "bad token"))
         assert not conn._closed
+
+    def test_reauth_rejection_force_refreshes_managed_auth(self):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=RespError("WRONGPASS", "bad token"))
+
+        with pytest.raises(PhotonAuthError, match="WRONGPASS"):
+            conn.authenticate()
+
+        provider.refresh_auth.assert_called_once()
 
     @pytest.mark.parametrize(
         "reply",

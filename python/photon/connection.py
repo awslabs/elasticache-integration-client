@@ -431,7 +431,11 @@ class PhotonConnector:
             # answering, would otherwise surface as a bare lost connection.
             self.close()
             raise PhotonConnectionError("HELLO 3 failed: connection lost") from exc
-        self._verify_hello_reply(reply)
+        try:
+            self._verify_hello_reply(reply)
+        except PhotonAuthError:
+            self._refresh_auth_after_rejection()
+            raise
 
     def _verify_hello_reply(self, reply: RespValue) -> None:
         """Require a map reporting ``proto`` 3; an error reply or any other shape closes the
@@ -443,7 +447,7 @@ class PhotonConnector:
         """
         if isinstance(reply, RespError):
             self.close()
-            raise PhotonConnectionError(f"HELLO 3 rejected: {reply.code}")
+            raise PhotonAuthError(f"HELLO 3 rejected: {reply.code}")
         if not isinstance(reply, dict):
             self.close()
             raise PhotonConnectionError(
@@ -474,7 +478,22 @@ class PhotonConnector:
             logger.warning("AUTH command timed out - closing connection")
             self.close()
             raise PhotonConnectionError("IAM AUTH timed out — connection closed") from exc
-        self._verify_auth_reply(reply)
+        try:
+            self._verify_auth_reply(reply)
+        except PhotonAuthError:
+            self._refresh_auth_after_rejection()
+            raise
+
+    def _refresh_auth_after_rejection(self) -> None:
+        """Best-effort forced refresh for toolkit-managed providers."""
+        refresh = getattr(self._auth_provider, "refresh_auth", None)
+        if refresh is None:
+            return
+        try:
+            refresh()
+        except Exception:
+            # Preserve the cache's rejection. The next retry can attempt refresh again.
+            pass
 
     def _verify_auth_reply(self, reply: RespValue) -> None:
         """Validate a re-AUTH reply. Raises PhotonAuthError on rejection or unexpected shape."""
