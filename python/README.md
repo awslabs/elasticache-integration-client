@@ -18,7 +18,8 @@ how to run the unit vs. end-to-end tests.
 
 Python publication is driven by annotated Git tags. Stable releases use
 `vMAJOR.MINOR.PATCH`; release candidates use `vMAJOR.MINOR.PATCH-rc.N`, which maps to the
-PEP 440 version `MAJOR.MINOR.PATCHrcN`.
+PEP 440 version `MAJOR.MINOR.PATCHrcN`. A release tag applies to every language client: Node,
+Python, and Java release together and their package metadata must use the same version.
 
 Before tagging, update the version in `pyproject.toml`; `photon.__version__` reads that installed
 distribution metadata. The `Python Release` workflow rejects any tag that does not match the

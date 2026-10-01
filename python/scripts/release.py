@@ -2,7 +2,6 @@
 """Resolve and validate Python release metadata."""
 
 import argparse
-import tomllib
 from pathlib import Path
 
 from packaging.version import Version
@@ -12,6 +11,8 @@ PYTHON_ROOT = Path(__file__).resolve().parents[1]
 
 
 def project_metadata(pyproject: Path = PYTHON_ROOT / "pyproject.toml") -> tuple[str, str]:
+    import tomllib
+
     with pyproject.open("rb") as file:
         project = tomllib.load(file)["project"]
     return project["name"], project["version"]
