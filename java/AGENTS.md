@@ -175,9 +175,10 @@ at `SEVERE` on every occurrence.
 - Do not commit generated `build/`, `.gradle/` contents, or IDE project files.
 - Release publishing is configured by `release.gradle.kts` and enabled only
   with `-PreleasePublishing`, so normal Java 8 builds do not load the
-  JDK-11+ publishing plugin. The tag-triggered workflow validates unsigned
-  artifacts before its protected `release` environment signs and publishes
-  them. Manual workflow dispatches perform the full validation as a
-  non-publishing dry run.
+  JDK-11+ publishing plugin. The tag-triggered workflow builds and smoke-tests
+  artifacts before publish-step-scoped credentials sign and publish them from
+  the protected `release` environment. Publication, propagation verification,
+  and GitHub release creation are separate jobs. Manual workflow dispatches
+  perform the full validation as a non-publishing dry run.
 
 Keep changes small and reviewable.

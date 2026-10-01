@@ -103,6 +103,7 @@ tasks.withType<JavaCompile>().configureEach {
 tasks.jar {
     dependsOn(buildIamToolkit)
 
+    // TODO(#49): Stop bundling these classes once the toolkit is on Maven Central.
     // The IAM toolkit is sourced rather than published, so include its classes
     // in the distributable JAR. Its AWS SDK dependencies remain normal POM
     // dependencies declared above.

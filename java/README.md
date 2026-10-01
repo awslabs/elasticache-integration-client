@@ -226,20 +226,21 @@ Java releases are built from annotated `vMAJOR.MINOR.PATCH` or
 `build.gradle.kts`.
 
 The `Java Release` workflow tests Java 8, 11, 17, and 21, builds the main,
-sources, and Javadocs JARs once, validates their POM and contents, and runs
-clean Gradle and Maven consumer smoke tests. It records SHA-256 checksums
-before the approval-protected `release` environment signs and publishes
-byte-for-byte matching artifacts to Maven Central.
+sources, and Javadocs JARs once, checks their contents, and runs clean Gradle
+and Maven consumer smoke tests before the approval-protected `release`
+environment signs and publishes them to Maven Central.
 
 Configure these secrets on the `release` GitHub environment:
 
 - `MAVEN_CENTRAL_USERNAME`
 - `MAVEN_CENTRAL_PASSWORD`
-- `MAVEN_SIGNING_KEY` (ASCII-armored or base64-encoded private PGP key)
+- `MAVEN_SIGNING_KEY` (ASCII-armored private PGP key)
 - `MAVEN_SIGNING_PASSWORD`
 
 After Maven Central propagation, the workflow resolves the published version
-from clean consumers and attaches the validated unsigned artifacts and
-checksums to the GitHub release. A manual workflow run performs the same test,
-packaging, artifact validation, and consumer-smoke stages without entering the
-release environment or publishing to Maven Central.
+from clean consumers and attaches the published JARs and POM to the GitHub
+release. Publication, propagation verification, and GitHub release creation
+are separate jobs so post-publish failures can be retried without attempting
+to republish an existing version. A manual workflow run performs the same test,
+packaging, and consumer-smoke stages without entering the release environment
+or publishing to Maven Central.
