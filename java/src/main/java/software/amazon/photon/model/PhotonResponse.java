@@ -5,9 +5,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
-/**
- * Represents an HTTP response received through Photon.
- */
+/** Represents an HTTP response received through Photon. */
 public class PhotonResponse {
 
     private final int statusCode;

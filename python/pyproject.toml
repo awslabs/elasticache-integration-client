@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "photon"
 version = "0.0.1"
 description = "Photon client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
+readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
@@ -19,6 +20,12 @@ test = [
     "pytest>=7",
     "pytest-cov>=4",
     "cryptography>=42",  # used by tests/mock.py to mint a self-signed cert for the TLS e2e
+]
+dev = [
+    "ruff==0.16.9",
+    "mypy==2.3.1",
+    "build==1.6.1",
+    "twine==7.0.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -37,3 +44,18 @@ branch = true
 
 [tool.coverage.report]
 show_missing = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["photon"]
+
+[[tool.mypy.overrides]]
+module = ["boto3", "boto3.*", "botocore", "botocore.*", "celpy", "celpy.*", "urllib3", "urllib3.*"]
+ignore_missing_imports = true

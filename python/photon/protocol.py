@@ -168,6 +168,8 @@ def parse_request_response(value: RespValue) -> PhotonResponse:
             f"headers={type(headers_raw).__name__}, body={type(body_raw).__name__}"
         )
     try:
+        if not isinstance(status_raw, (int, str, bytes)):
+            raise TypeError(f"status is {type(status_raw).__name__}")
         status = int(status_raw)
     except (TypeError, ValueError) as exc:
         raise PhotonProtocolError(f"Invalid status code: {status_raw!r}") from exc

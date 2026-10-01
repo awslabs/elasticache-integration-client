@@ -12,12 +12,20 @@ from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 
 
-def client(service: str, *, endpoint: str, cache_name: str,
-           region_name: str | None = None, user_id: str | None = None,
-           verify: bool = True, ca_certs: str | None = None,
-           request_timeout: float = 5.0,
-           fallback_duration: int | None = None,
-           staleness_duration: int = DEFAULT_STALENESS_DURATION, **overrides):
+def client(
+    service: str,
+    *,
+    endpoint: str,
+    cache_name: str,
+    region_name: str | None = None,
+    user_id: str | None = None,
+    verify: bool = True,
+    ca_certs: str | None = None,
+    request_timeout: float = 5.0,
+    fallback_duration: int | None = None,
+    staleness_duration: int = DEFAULT_STALENESS_DURATION,
+    **overrides,
+):
     """Create a boto3 client for ``service`` wired up with Photon.
 
     Returns the boto3 client (identical API). Calling ``close()`` on it disconnects
@@ -57,9 +65,14 @@ def client(service: str, *, endpoint: str, cache_name: str,
         )
 
         def connector_factory() -> PhotonConnector:
-            return PhotonConnector(host, port, verify=verify, ca_certs=ca_certs,
-                                   auth_provider=auth_provider,
-                                   request_timeout=request_timeout)
+            return PhotonConnector(
+                host,
+                port,
+                verify=verify,
+                ca_certs=ca_certs,
+                auth_provider=auth_provider,
+                request_timeout=request_timeout,
+            )
 
         # The session connects (HELLO 3 handshake + photon.config exchange) before the hook is installed,
         # so the first intercepted request already has a ready session.

@@ -5,9 +5,7 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
-/**
- * Represents an HTTP request to be sent through Photon.
- */
+/** Represents an HTTP request to be sent through Photon. */
 public class PhotonRequest {
 
     private final String method;
@@ -16,7 +14,12 @@ public class PhotonRequest {
     private final byte[] body;
     private final RequestMetadata metadata;
 
-    public PhotonRequest(String method, String url, Map<String, String> headers, byte[] body, RequestMetadata metadata) {
+    public PhotonRequest(
+            String method,
+            String url,
+            Map<String, String> headers,
+            byte[] body,
+            RequestMetadata metadata) {
         this.method = Objects.requireNonNull(method, "method must not be null");
         this.url = Objects.requireNonNull(url, "url must not be null");
         this.headers = headers != null ? headers : Collections.emptyMap();
@@ -24,7 +27,8 @@ public class PhotonRequest {
         this.metadata = metadata != null ? metadata : new RequestMetadata(null, null);
     }
 
-    public PhotonRequest(String method, String url, Map<String, String> headers, RequestMetadata metadata) {
+    public PhotonRequest(
+            String method, String url, Map<String, String> headers, RequestMetadata metadata) {
         this(method, url, headers, new byte[0], metadata);
     }
 

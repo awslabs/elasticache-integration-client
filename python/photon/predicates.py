@@ -107,7 +107,9 @@ def compile_predicates(raw_config: dict | None) -> list[CompiledPredicate]:
         try:
             program = env.program(env.compile(expr))
         except celpy.CELParseError as exc:
-            raise PhotonConfigUnevaluable(f"Predicate expression cannot be compiled: {expr!r}") from exc
+            raise PhotonConfigUnevaluable(
+                f"Predicate expression cannot be compiled: {expr!r}"
+            ) from exc
         variables = entry.get("vars")
         compiled.append(
             CompiledPredicate(program, variables if isinstance(variables, dict) else {})

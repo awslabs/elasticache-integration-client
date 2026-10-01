@@ -210,7 +210,7 @@ describe("PhotonSession", () => {
           ? Buffer.from(
               '{"version":"v1","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
             )
-          : new RespError("PHOTON_AUTH_ERROR", "missing FAS"),
+          : new RespError("AUTH_ERROR", "missing FAS"),
       ),
       close,
     });

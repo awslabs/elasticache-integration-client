@@ -12,7 +12,7 @@ not been sent to Photon use origin fallback until the configured fallback
 window expires. After a request is sent, indeterminate failures fall back only
 when the connection drops and the operation is in the shared replay-safe
 catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `PHOTON_AUTH_ERROR` closes the
+SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
 stale connection and passes the rejected request through while reconnecting.
 Other RESP errors, failures for non-idempotent operations, malformed responses,
 an expired fallback window, and shutdown are surfaced without starting an
@@ -208,17 +208,28 @@ The release JAR bundles the sourced toolkit classes because that toolkit is not
 yet independently available from Maven Central. Its AWS SDK dependencies remain
 ordinary transitive dependencies in the generated Photon POM.
 
+Gradle runs on JDK 21 because Error Prone 2.50 requires JDK 21 and
+Gradle 8.14 cannot run on JDK 25. The compiler emits Java 8 bytecode
+(`options.release = 8`). Tests run on Java 8, 11, 17, and 21. To run them on
+another installed JDK, pass `-PtestJavaVersion=<n>`, for example
+`./gradlew test -PtestJavaVersion=8`.
+
+`./gradlew build` also runs Spotless with google-java-format
+(`./gradlew spotlessApply` fixes formatting), writes JaCoCo reports to
+`build/reports/jacoco/test/`, builds the sources and Javadoc JARs, and checks
+the JAR contents.
+
 ## Releasing
 
 Java releases are built from annotated `vMAJOR.MINOR.PATCH` or
 `vMAJOR.MINOR.PATCH-rc.N` tags. The tag version must match `version` in
 `build.gradle.kts`.
 
-The `Java Release` workflow tests Java 8, 11, and 17, builds the main, sources,
-and Javadocs JARs once, validates their POM and contents, and runs clean Gradle
-and Maven consumer smoke tests. It records SHA-256 checksums before the
-approval-protected `release` environment signs and publishes byte-for-byte
-matching artifacts to Maven Central.
+The `Java Release` workflow tests Java 8, 11, 17, and 21, builds the main,
+sources, and Javadocs JARs once, validates their POM and contents, and runs
+clean Gradle and Maven consumer smoke tests. It records SHA-256 checksums
+before the approval-protected `release` environment signs and publishes
+byte-for-byte matching artifacts to Maven Central.
 
 Configure these secrets on the `release` GitHub environment:
 

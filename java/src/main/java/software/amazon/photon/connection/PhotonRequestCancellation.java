@@ -1,25 +1,21 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.PhotonError;
-
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import software.amazon.photon.exception.PhotonError;
 
 /**
  * Internal cancellation signal for one in-flight Photon request.
  *
- * <p>Cancellation completes the caller's future but does not remove its FIFO
- * slot. The reader must still consume and discard the corresponding response
- * before resolving later requests.
+ * <p>Cancellation completes the caller's future but does not remove its FIFO slot. The reader must
+ * still consume and discard the corresponding response before resolving later requests.
  */
 public final class PhotonRequestCancellation {
 
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private final AtomicReference<Runnable> action = new AtomicReference<>();
 
-    /**
-     * Cancel the request. Idempotent.
-     */
+    /** Cancel the request. Idempotent. */
     public void cancel() {
         if (!cancelled.compareAndSet(false, true)) {
             return;
@@ -30,9 +26,7 @@ public final class PhotonRequestCancellation {
         }
     }
 
-    /**
-     * Return whether cancellation has been requested.
-     */
+    /** Return whether cancellation has been requested. */
     public boolean isCancelled() {
         return cancelled.get();
     }
@@ -50,9 +44,7 @@ public final class PhotonRequestCancellation {
         action.compareAndSet(cancellationAction, null);
     }
 
-    /**
-     * Signals that an individual Photon request was canceled.
-     */
+    /** Signals that an individual Photon request was canceled. */
     public static final class CancelledException extends PhotonError {
         public CancelledException() {
             super("Photon request was cancelled");

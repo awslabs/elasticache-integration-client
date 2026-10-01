@@ -1,21 +1,44 @@
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 
 plugins {
     `java-library`
+    jacoco
+    id("com.diffplug.spotless") version "8.10.3"
+    id("net.ltgt.errorprone") version "5.1.1"
 }
 
 group = "software.amazon.photon"
 version = "0.0.1"
 
+val releasePublishing = providers.gradleProperty("releasePublishing").isPresent
+
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
+    if (!releasePublishing) {
+        withSourcesJar()
+        withJavadocJar()
+    }
 }
 
 repositories {
     mavenCentral()
+}
+
+spotless {
+    java {
+        target("src/**/*.java")
+        importOrder()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+        googleJavaFormat("1.22.0").reflowLongStrings()
+        leadingSpacesToTabs(2)
+        leadingTabsToSpaces(4)
+    }
 }
 
 sourceSets {
@@ -60,9 +83,12 @@ dependencies {
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
 
+    errorprone("com.google.errorprone:error_prone_core:2.50.0")
+
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
 
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
@@ -106,16 +132,73 @@ tasks.withType<AbstractArchiveTask>().configureEach {
     isReproducibleFileOrder = true
 }
 
+// Gradle itself runs on JDK 21. Pass -PtestJavaVersion=<n> to run the tests on another
+// installed JDK, which is how CI covers every supported Java version.
+val testJavaVersion = providers.gradleProperty("testJavaVersion")
+
 tasks.test {
     useJUnitPlatform()
-
-    if (JavaVersion.current().isJava9Compatible) {
-        // Required for MockTlsServer's reflective certificate generation on Java 17+.
-        jvmArgs(
-            "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
-            "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
-        )
+    if (testJavaVersion.isPresent) {
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(testJavaVersion.get().toInt()))
+        })
     }
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
+if (releasePublishing) {
+    if (!JavaVersion.current().isJava11Compatible) {
+        throw GradleException("Release publishing requires JDK 11 or newer")
+    }
+    apply(from = "release.gradle.kts")
+}
+
+val sourcesJarTaskName = "sourcesJar"
+val javadocJarTaskName = if (releasePublishing) "plainJavadocJar" else "javadocJar"
+
+val verifyJars by tasks.registering {
+    description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
+    dependsOn(tasks.jar, sourcesJarTaskName, javadocJarTaskName)
+    inputs.file(tasks.jar.flatMap { it.archiveFile })
+    inputs.file(providers.provider {
+        tasks.named<AbstractArchiveTask>(sourcesJarTaskName).get().archiveFile.get().asFile
+    })
+    inputs.file(providers.provider {
+        tasks.named<AbstractArchiveTask>(javadocJarTaskName).get().archiveFile.get().asFile
+    })
+    doLast {
+        val jars = mapOf(
+            tasks.jar.get().archiveFile.get().asFile to listOf(
+                "software/amazon/photon/session/PhotonClient.class",
+                "software/amazon/elasticache/auth/ElastiCacheIamAuthTokenProvider.class",
+                "idempotent-operations.json",
+                "META-INF/LICENSE",
+                "META-INF/NOTICE"
+            ),
+            tasks.named<AbstractArchiveTask>(sourcesJarTaskName).get().archiveFile.get().asFile to
+                listOf("software/amazon/photon/session/PhotonClient.java"),
+            tasks.named<AbstractArchiveTask>(javadocJarTaskName).get().archiveFile.get().asFile to
+                listOf("index.html")
+        )
+        jars.forEach { (jarFile, expected) ->
+            ZipFile(jarFile).use { zip ->
+                expected.forEach { entry ->
+                    check(zip.getEntry(entry) != null) { "${jarFile.name} is missing $entry" }
+                }
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(verifyJars)
 }
 
 tasks.register("printVersion") {
@@ -123,11 +206,4 @@ tasks.register("printVersion") {
     doLast {
         println(project.version)
     }
-}
-
-if (providers.gradleProperty("releasePublishing").isPresent) {
-    if (!JavaVersion.current().isJava11Compatible) {
-        throw GradleException("Release publishing requires JDK 11 or newer")
-    }
-    apply(from = "release.gradle.kts")
 }

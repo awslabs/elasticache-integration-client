@@ -15,35 +15,32 @@ import dev.cel.parser.CelStandardMacro;
 import dev.cel.runtime.CelEvaluationException;
 import dev.cel.runtime.CelRuntime;
 import dev.cel.runtime.CelRuntimeFactory;
-import software.amazon.photon.exception.PhotonConfigUnevaluable;
-import software.amazon.photon.model.PhotonRequest;
-import software.amazon.photon.model.RequestMetadata;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import software.amazon.photon.exception.PhotonConfigUnevaluable;
+import software.amazon.photon.model.PhotonRequest;
+import software.amazon.photon.model.RequestMetadata;
 
 /**
  * Compiles and evaluates the CEL routing predicates returned by {@code photon.config}.
  *
- * <p>An evaluation failure, or a body that is not a JSON object, counts as no match. An
- * entry that cannot be compiled is different: it taints the whole config, which is rejected
- * rather than caching by the entries that did compile.
+ * <p>An evaluation failure, or a body that is not a JSON object, counts as no match. An entry that
+ * cannot be compiled is different: it taints the whole config, which is rejected rather than
+ * caching by the entries that did compile.
  */
 public final class PredicateEvaluator {
 
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper()
-            .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
+    private static final ObjectMapper OBJECT_MAPPER =
+            new ObjectMapper().enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
     private static final TypeReference<Map<String, Object>> MAP_TYPE =
             new TypeReference<Map<String, Object>>() {};
-    private static final Map<String, CelType> CONTEXT_VARIABLE_TYPES =
-            contextVariableTypes();
+    private static final Map<String, CelType> CONTEXT_VARIABLE_TYPES = contextVariableTypes();
     private static final Object INVALID_JSON_VALUE = new Object();
-    private static final CelRuntime CEL_RUNTIME =
-            CelRuntimeFactory.plannerRuntimeBuilder().build();
+    private static final CelRuntime CEL_RUNTIME = CelRuntimeFactory.plannerRuntimeBuilder().build();
 
     private final List<CompiledPredicate> predicates;
 
@@ -54,13 +51,13 @@ public final class PredicateEvaluator {
     /**
      * Compile the ordered predicate entries in a resolved config.
      *
-     * <p>A missing {@code predicates} key compiles to an empty evaluator, so every request
-     * passes through.
+     * <p>A missing {@code predicates} key compiles to an empty evaluator, so every request passes
+     * through.
      *
-     * @throws PhotonConfigUnevaluable {@code predicates} is present but not a list, an entry is
-     *     not an object, has no string {@code expr}, or has an expression this client cannot
-     *     compile. Caching by the entries that happened to
-     *     compile would route a different set of requests than the proxy resolved.
+     * @throws PhotonConfigUnevaluable {@code predicates} is present but not a list, an entry is not
+     *     an object, has no string {@code expr}, or has an expression this client cannot compile.
+     *     Caching by the entries that happened to compile would route a different set of requests
+     *     than the proxy resolved.
      */
     public static PredicateEvaluator compile(Map<String, Object> rawConfig) {
         if (rawConfig == null || !rawConfig.containsKey("predicates")) {
@@ -80,9 +77,7 @@ public final class PredicateEvaluator {
         return new PredicateEvaluator(compiled);
     }
 
-    /**
-     * Return true when the first compiled predicate matches the request.
-     */
+    /** Return true when the first compiled predicate matches the request. */
     public boolean shouldRouteToPhoton(PhotonRequest request) {
         if (predicates.isEmpty()) {
             return false;
@@ -124,15 +119,16 @@ public final class PredicateEvaluator {
         }
     }
 
-    private static CompiledPredicate compileOne(
-            String expression, Map<String, Object> variables)
+    private static CompiledPredicate compileOne(String expression, Map<String, Object> variables)
             throws CelValidationException, CelEvaluationException {
-        CelCompilerBuilder builder = CelCompilerFactory.standardCelCompilerBuilder()
-                .setStandardMacros(CelStandardMacro.STANDARD_MACROS);
+        CelCompilerBuilder builder =
+                CelCompilerFactory.standardCelCompilerBuilder()
+                        .setStandardMacros(CelStandardMacro.STANDARD_MACROS);
         for (Map.Entry<String, CelType> contextVariable : CONTEXT_VARIABLE_TYPES.entrySet()) {
-            CelType type = variables.containsKey(contextVariable.getKey())
-                    ? SimpleType.DYN
-                    : contextVariable.getValue();
+            CelType type =
+                    variables.containsKey(contextVariable.getKey())
+                            ? SimpleType.DYN
+                            : contextVariable.getValue();
             builder.addVar(contextVariable.getKey(), type);
         }
         for (String name : variables.keySet()) {

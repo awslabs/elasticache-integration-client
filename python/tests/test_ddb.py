@@ -57,8 +57,9 @@ def cache(monkeypatch):
 
 def test_get_item(cache):
     """get_item is served by the mock cache, and the request arrives there exactly as sent."""
-    ddb = photon.client("dynamodb", region_name="us-east-1",
-                        endpoint=cache.endpoint, cache_name="test-cache")
+    ddb = photon.client(
+        "dynamodb", region_name="us-east-1", endpoint=cache.endpoint, cache_name="test-cache"
+    )
 
     result = ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
     assert result["ResponseMetadata"]["HTTPStatusCode"] == 200
@@ -88,8 +89,9 @@ def test_get_item(cache):
 
 def test_connection_reuse(cache):
     """Two calls on one client reuse one connection: one config handshake, two requests."""
-    ddb = photon.client("dynamodb", region_name="us-east-1",
-                        endpoint=cache.endpoint, cache_name="test-cache")
+    ddb = photon.client(
+        "dynamodb", region_name="us-east-1", endpoint=cache.endpoint, cache_name="test-cache"
+    )
 
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
@@ -101,8 +103,9 @@ def test_connection_reuse(cache):
 
 def test_close_lifecycle(cache):
     """close() disconnects Photon (nothing reaches the cache afterwards) and is idempotent."""
-    ddb = photon.client("dynamodb", region_name="us-east-1",
-                        endpoint=cache.endpoint, cache_name="test-cache")
+    ddb = photon.client(
+        "dynamodb", region_name="us-east-1", endpoint=cache.endpoint, cache_name="test-cache"
+    )
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})  # served by the cache
     requests_before = len(cache.requests)
 

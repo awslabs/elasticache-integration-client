@@ -67,7 +67,7 @@ class PhotonCacheUnavailable(ConnectionClosedError):
     #: botocore transport error carries and what identifies the call that was refused.
     fmt = (
         'Photon has no connection to the cache, so this request to "{endpoint_url}" could not be '
-        'served from it.'
+        "served from it."
     )
 
 

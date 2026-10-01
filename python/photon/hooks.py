@@ -12,7 +12,7 @@ Where Photon hooks into the boto3 client event lifecycle
     3. provide-client-params
     4. before-call
     5. request-created
-    6. before-send   <=== PHOTON HANDLER     
+    6. before-send   <=== PHOTON HANDLER
     7. needs-retry
     8. after-call
     9. after-call-error
@@ -36,7 +36,6 @@ from photon.exceptions import (
     PhotonConnectionLost,
     PhotonError,
     PhotonOriginError,
-    PhotonProtocolError,
     PhotonRejectedError,
     PhotonTimeoutError,
 )
@@ -46,7 +45,7 @@ from photon.session import PhotonSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
 from botocore.client import BaseClient
-from botocore.exceptions import ReadTimeoutError
+from botocore.exceptions import ConnectionClosedError, ReadTimeoutError
 from urllib3.response import HTTPResponse as Urllib3Response
 
 _BEFORE_SEND = "before-send"
@@ -87,8 +86,7 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
     # header values arrive from botocore as bytes; convert them to strings
     try:
         headers = {
-            k: v.decode() if isinstance(v, bytes) else v
-            for k, v in (request.headers or {}).items()
+            k: v.decode() if isinstance(v, bytes) else v for k, v in (request.headers or {}).items()
         }
     except UnicodeDecodeError as exc:
         raise PhotonError("Undecodable header value in prepared request") from exc
@@ -105,8 +103,9 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
 def _photon_to_aws_response(url: str, response: PhotonResponse) -> AWSResponse:
     """Adapt a PhotonResponse into a botocore ``AWSResponse`` that short-circuits the SDK call."""
     # wrap body so botocore can read it as a stream
-    raw = Urllib3Response(body=BytesIO(response.body), status=response.status_code,
-                          preload_content=False)
+    raw = Urllib3Response(
+        body=BytesIO(response.body), status=response.status_code, preload_content=False
+    )
     return AWSResponse(
         url=url,
         status_code=response.status_code,
@@ -142,13 +141,13 @@ class PhotonHandle:
         Returning None tells botocore no handler served the request, so it sends the original
         request down the pipeline. The session declines before sending when no predicate matched or
         no cache connection is available within the fallback window, which is safe for every
-        operation. After sending, direct fallback is limited to replay-safe operations whose
-        Photon connection has dropped. A healthy-connection ORIGIN_ERROR becomes SDK-retryable
-        only for a replay-safe operation; other RESP errors remain terminal. Non-Photon exceptions
-        propagate.
+        operation. After sending, a timeout or lost connection becomes SDK-retryable only for a
+        replay-safe operation, so the retry goes through the cache again. A healthy-connection
+        ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation; other RESP errors
+        remain terminal. Non-Photon exceptions propagate.
         """
         try:
-            http_request = _aws_to_photon_request(request, kwargs.get("event_name"))
+            http_request = _aws_to_photon_request(request, kwargs.get("event_name", ""))
         except PhotonError:
             logger.warning(
                 "Photon could not adapt the request; passing through to the service",
@@ -170,40 +169,20 @@ class PhotonHandle:
                 http_request.metadata.service, http_request.metadata.operation
             )
             if isinstance(exc, PhotonRejectedError):
-                if (
-                    exc.code == _ORIGIN_ERROR
-                    and self._session.is_connection_healthy
-                    and idempotent
-                ):
+                if exc.code == _ORIGIN_ERROR and self._session.is_connection_healthy and idempotent:
                     raise PhotonOriginError(endpoint_url=request.url) from exc
                 raise
             if (
-                self._session.is_open
-                and not self._session.is_connection_healthy
-                and idempotent
-                and isinstance(
+                isinstance(
                     exc,
                     (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
                 )
+                and self._session.is_open
+                and idempotent
             ):
-                logger.warning(
-                    "Photon fallback is safe for %s; passing through to the service",
-                    http_request.metadata.operation,
-                    exc_info=True,
-                )
-                return None
-            if isinstance(
-                exc,
-                (PhotonTimeoutError, PhotonConnectionLost, PhotonConnectionError),
-            ):
-                # A deferred timeout has no FIFO slot and leaves the connector healthy. FIFO
-                # timeouts and connection loss close it and enter the fallback branch above.
-                if (
-                    isinstance(exc, PhotonTimeoutError)
-                    and self._session.is_open
-                    and self._session.is_connection_healthy
-                    and idempotent
-                ):
+                # Let the SDK retry. The retry goes through the cache again, waits briefly for a
+                # reconnect, and goes to the service only if the cache is still down.
+                if isinstance(exc, PhotonTimeoutError):
                     raise ReadTimeoutError(endpoint_url=request.url) from exc
-                raise
+                raise ConnectionClosedError(endpoint_url=request.url) from exc
             raise

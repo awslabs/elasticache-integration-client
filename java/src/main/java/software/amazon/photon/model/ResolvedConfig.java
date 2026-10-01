@@ -3,9 +3,7 @@ package software.amazon.photon.model;
 import java.util.Map;
 import java.util.Objects;
 
-/**
- * Configuration resolved from the Photon server.
- */
+/** Configuration resolved from the Photon server. */
 public class ResolvedConfig {
 
     private final String version;
