@@ -18,8 +18,8 @@ This package currently ports the Python implementation's:
   bounded response frames, a single `maxPending` bound covering both
   positional/FIFO and deferred requests, bounded send backpressure,
   differentiated connect/request/initialization timeouts, idempotent close,
-  and injected AUTH credentials;
-- a session that performs connect, AUTH, and the `photon.config` handshake,
+  and an authenticated `HELLO 3` handshake;
+- a session that performs connect, `HELLO 3 AUTH`, and the `photon.config` exchange,
   reconnects failed transports in the background, periodically refreshes the
   config on the interval the cache returns, and controls safe origin fallback
   with a per-outage window;
@@ -85,7 +85,7 @@ try {
 }
 ```
 
-The factory completes IAM authentication and the `photon.config` handshake
+The factory completes the authenticated `HELLO 3` and `photon.config` handshakes
 before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
@@ -109,7 +109,7 @@ Client creation retries the initial connection a bounded number of times and
 still fails loudly if no attempt completes. After a live connection is lost,
 Photon reconnects in the background until it succeeds or the client is
 destroyed. Idle socket loss starts recovery without waiting for a request.
-Every replacement resolves fresh AUTH credentials, repeats `photon.config`, and
+Every replacement resolves fresh credentials, repeats `HELLO 3 AUTH` and `photon.config`, and
 recompiles the resolved predicates.
 
 While there is no connection, a routed request has not been sent to Photon and
@@ -167,11 +167,11 @@ Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
 attempt including the capped tail. Closing or destroying the SDK client
 interrupts reconnect backoff and prevents further attempts.
 
-AUTH normally uses `@aws/developer-toolkit-elasticache` to cache and
+The `HELLO 3 AUTH` handshake normally uses `@aws/developer-toolkit-elasticache` to cache and
 automatically refresh short-lived IAM tokens from the SDK credential chain.
 The toolkit validates cache names and user IDs, normalizes them to lowercase
 before signing, and refreshes the cached token in the background. If Photon
-receives an AUTH rejection, it invalidates that token so the next connection
+receives a handshake rejection, it invalidates that token so the next connection
 attempt uses a newly signed one. Destroying the SDK client stops background
 token refresh. A caller that already holds a token, or that authenticates
 against a local or test endpoint, supplies `connectorOptions.authProvider`
