@@ -34,10 +34,18 @@ export class RespPush {
   constructor(readonly items: RespValue[]) {}
 }
 
-// A decoded RESP value: integer, bigint, simple string, bulk string, array, error, push, or null.
-// Safe RESP integers remain numbers; larger integer frames use bigint.
+// A decoded RESP value: integer, bigint, simple string, bulk string, array, map, error, push,
+// or null. Safe RESP integers remain numbers; larger integer frames use bigint.
 export type RespValue =
-  number | bigint | string | Buffer | RespValue[] | RespError | RespPush | null;
+  | number
+  | bigint
+  | string
+  | Buffer
+  | RespValue[]
+  | Map<RespValue, RespValue>
+  | RespError
+  | RespPush
+  | null;
 
 type Decoder = (data: Buffer, header: Buffer, afterHeader: number) => [RespValue, number];
 
@@ -182,6 +190,24 @@ function decodePush(data: Buffer, header: Buffer, afterHeader: number): [RespVal
   return [new RespPush(items), position];
 }
 
+/** Decode a `%` map. Keys and values may each be any RESP value. */
+function decodeMap(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+  const count = parseLength(header, "map length");
+  if (count < 0) {
+    throw new PhotonProtocolError(`Malformed RESP map length: ${header.toString()}`);
+  }
+
+  const entries = new Map<RespValue, RespValue>();
+  let position = afterHeader;
+  for (let index = 0; index < count; index += 1) {
+    const [key, afterKey] = decodeResp(data, position);
+    const [value, afterValue] = decodeResp(data, afterKey);
+    entries.set(key, value);
+    position = afterValue;
+  }
+  return [entries, position];
+}
+
 // Prefix -> decoder dispatch.
 const DECODERS: Record<string, Decoder> = {
   "+": decodeSimpleString,
@@ -191,6 +217,7 @@ const DECODERS: Record<string, Decoder> = {
   _: decodeNull,
   "*": decodeArray,
   ">": decodePush,
+  "%": decodeMap,
 };
 
 /** Decode a single RESP3 value beginning at `start`. */
@@ -199,7 +226,7 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
     throw new IncompleteFrame("empty buffer");
   }
 
-  // Read the type prefix (+ - : $ * >)
+  // Read the type prefix (+ - : $ * > %)
   const prefix = data.subarray(start, start + 1).toString("ascii");
   // Find the end of the header line ("$3", ":42", "+OK", ...)
   const lineEnd = data.indexOf(CRLF, start + 1);

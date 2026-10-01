@@ -3,9 +3,7 @@ package software.amazon.photon.resp;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * RESP3 array value.
- */
+/** RESP3 array value. */
 public class RespArray implements RespValue {
 
     private final List<RespValue> elements;

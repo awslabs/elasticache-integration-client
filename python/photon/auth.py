@@ -85,7 +85,7 @@ def generate_iam_auth_token(
             region_name=region,
         )
 
-        token = url[len("http://"):] if url.startswith("http://") else url
+        token = url[len("http://") :] if url.startswith("http://") else url
         logger.debug("Generated IAM auth token for cache=%s user=%s", cache_name, user_id)
         return token
 

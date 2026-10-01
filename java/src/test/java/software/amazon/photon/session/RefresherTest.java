@@ -1,7 +1,11 @@
 package software.amazon.photon.session;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -10,24 +14,19 @@ import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Unit tests for Refresher.
  *
  * <p>Refresher is a generic periodic-callback runner with no dependency on PhotonSession,
  * PhotonConnector, or any Photon protocol module, so these tests exercise it in isolation with a
- * plain counting callback. Most tests disable jitter and/or inject a fake {@code Waiter} so no
- * test depends on a real sleep; two exercise the real defaults end to end.
+ * plain counting callback. Most tests disable jitter and/or inject a fake {@code Waiter} so no test
+ * depends on a real sleep; two exercise the real defaults end to end.
  *
- * <p>Every refresher created here is registered for teardown so a failing assertion cannot leak
- * a refresher thread.
+ * <p>Every refresher created here is registered for teardown so a failing assertion cannot leak a
+ * refresher thread.
  */
 class RefresherTest {
 
@@ -90,8 +89,8 @@ class RefresherTest {
     void injectedWaiter_drivesAnExactCallbackCount() throws Exception {
         AtomicInteger count = new AtomicInteger();
         FakeWaiter waiter = new FakeWaiter(3);
-        Refresher refresher = track(new Refresher(
-                60, count::incrementAndGet, false, new Random(), waiter));
+        Refresher refresher =
+                track(new Refresher(60, count::incrementAndGet, false, new Random(), waiter));
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
 
@@ -102,7 +101,7 @@ class RefresherTest {
     @Test
     void stop_wakesAndTerminatesThreadPromptly() {
         // A 100-second interval: only an interruptible wait can make stop() return quickly.
-        Refresher refresher = track(new Refresher(100, () -> { }));
+        Refresher refresher = track(new Refresher(100, () -> {}));
         refresher.start();
 
         long startNanos = System.nanoTime();
@@ -117,21 +116,26 @@ class RefresherTest {
     void stop_interruptsAnInFlightCallback() throws Exception {
         CountDownLatch callbackStarted = new CountDownLatch(1);
         CountDownLatch callbackInterrupted = new CountDownLatch(1);
-        Refresher refresher = track(new Refresher(0.01, () -> {
-            callbackStarted.countDown();
-            try {
-                new CountDownLatch(1).await();
-            } catch (InterruptedException e) {
-                callbackInterrupted.countDown();
-                Thread.currentThread().interrupt();
-            }
-        }));
+        Refresher refresher =
+                track(
+                        new Refresher(
+                                0.01,
+                                () -> {
+                                    callbackStarted.countDown();
+                                    try {
+                                        new CountDownLatch(1).await();
+                                    } catch (InterruptedException e) {
+                                        callbackInterrupted.countDown();
+                                        Thread.currentThread().interrupt();
+                                    }
+                                }));
         refresher.start();
 
         assertTrue(callbackStarted.await(5, TimeUnit.SECONDS), "callback did not start");
         refresher.stop(1000);
 
-        assertTrue(callbackInterrupted.await(1, TimeUnit.SECONDS),
+        assertTrue(
+                callbackInterrupted.await(1, TimeUnit.SECONDS),
                 "stop() did not interrupt the active callback");
         assertFalse(refresher.thread().isAlive());
     }
@@ -140,10 +144,17 @@ class RefresherTest {
     void callbackFailure_doesNotStopLaterRefreshes() throws Exception {
         AtomicInteger invocations = new AtomicInteger();
         FakeWaiter waiter = new FakeWaiter(3);
-        Refresher refresher = track(new Refresher(60, () -> {
-            invocations.incrementAndGet();
-            throw new RuntimeException("refresh failed");
-        }, false, new Random(), waiter));
+        Refresher refresher =
+                track(
+                        new Refresher(
+                                60,
+                                () -> {
+                                    invocations.incrementAndGet();
+                                    throw new RuntimeException("refresh failed");
+                                },
+                                false,
+                                new Random(),
+                                waiter));
 
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
@@ -156,18 +167,20 @@ class RefresherTest {
     void callbackFailure_usesBackoffAndSuccessRestoresSteadyInterval() throws Exception {
         AtomicInteger invocations = new AtomicInteger();
         FakeWaiter waiter = new FakeWaiter(3);
-        Refresher refresher = track(new Refresher(
-                100,
-                () -> {
-                    if (invocations.incrementAndGet() <= 2) {
-                        throw new RuntimeException("refresh failed");
-                    }
-                },
-                "photon-reauth",
-                0,
-                failures -> (double) failures,
-                new Random(),
-                waiter));
+        Refresher refresher =
+                track(
+                        new Refresher(
+                                100,
+                                () -> {
+                                    if (invocations.incrementAndGet() <= 2) {
+                                        throw new RuntimeException("refresh failed");
+                                    }
+                                },
+                                "photon-reauth",
+                                0,
+                                failures -> (double) failures,
+                                new Random(),
+                                waiter));
 
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
@@ -177,7 +190,7 @@ class RefresherTest {
 
     @Test
     void stop_isIdempotent() {
-        Refresher refresher = track(new Refresher(100, () -> { }));
+        Refresher refresher = track(new Refresher(100, () -> {}));
         refresher.start();
 
         refresher.stop();
@@ -189,14 +202,14 @@ class RefresherTest {
 
     @Test
     void stop_beforeStart_doesNotThrow() {
-        Refresher refresher = track(new Refresher(100, () -> { }));
+        Refresher refresher = track(new Refresher(100, () -> {}));
         refresher.stop();
         assertNull(refresher.thread());
     }
 
     @Test
     void thread_isDaemonAndNamed() {
-        Refresher refresher = track(new Refresher(100, () -> { }));
+        Refresher refresher = track(new Refresher(100, () -> {}));
         refresher.start();
 
         assertNotNull(refresher.thread());
@@ -206,7 +219,7 @@ class RefresherTest {
 
     @Test
     void nextRefreshDelay_withJitterDisabled_isExact() {
-        Refresher refresher = new Refresher(10, () -> { }, false, new Random(), null);
+        Refresher refresher = new Refresher(10, () -> {}, false, new Random(), null);
         for (int i = 0; i < 5; i++) {
             assertEquals(10.0, refresher.nextRefreshDelaySeconds());
         }
@@ -214,7 +227,7 @@ class RefresherTest {
 
     @Test
     void nextRefreshDelay_withJitter_staysWithinTwentyPercent() {
-        Refresher refresher = new Refresher(10, () -> { });
+        Refresher refresher = new Refresher(10, () -> {});
         for (int i = 0; i < 500; i++) {
             double delay = refresher.nextRefreshDelaySeconds();
             assertTrue(delay >= 8.0 && delay <= 12.0, "delay out of ±20% bounds: " + delay);
@@ -225,8 +238,7 @@ class RefresherTest {
     void jitter_isRecalculatedEachCycle() throws Exception {
         // A seeded Random makes the per-cycle delays deterministic yet distinct.
         FakeWaiter waiter = new FakeWaiter(4);
-        Refresher refresher = track(new Refresher(
-                10, () -> { }, true, new Random(42), waiter));
+        Refresher refresher = track(new Refresher(10, () -> {}, true, new Random(42), waiter));
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
 
@@ -235,7 +247,8 @@ class RefresherTest {
         for (double delay : timeouts) {
             assertTrue(delay >= 8.0 && delay <= 12.0, "delay out of ±20% bounds: " + delay);
         }
-        assertTrue(timeouts.stream().distinct().count() > 1,
+        assertTrue(
+                timeouts.stream().distinct().count() > 1,
                 "jitter was not recalculated across cycles: " + timeouts);
     }
 
@@ -243,7 +256,7 @@ class RefresherTest {
 
     @Test
     void setInterval_changesNextComputedDelay() {
-        Refresher refresher = new Refresher(10, () -> { }, false, new Random(), null);
+        Refresher refresher = new Refresher(10, () -> {}, false, new Random(), null);
         assertEquals(10.0, refresher.nextRefreshDelaySeconds());
         refresher.setInterval(30);
         assertEquals(30.0, refresher.nextRefreshDelaySeconds());
@@ -251,7 +264,7 @@ class RefresherTest {
 
     @Test
     void setInterval_rejectsNonPositiveAndLeavesPreviousValueIntact() {
-        Refresher refresher = new Refresher(10, () -> { }, false, new Random(), null);
+        Refresher refresher = new Refresher(10, () -> {}, false, new Random(), null);
         assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(0));
         assertThrows(IllegalArgumentException.class, () -> refresher.setInterval(-5));
         assertEquals(10.0, refresher.nextRefreshDelaySeconds());
@@ -262,7 +275,7 @@ class RefresherTest {
         // A delay already handed to the waiter before setInterval() must not change retroactively;
         // only delays computed afterward use the new interval.
         FakeWaiter waiter = new FakeWaiter(2);
-        Refresher refresher = track(new Refresher(10, () -> { }, false, new Random(), waiter));
+        Refresher refresher = track(new Refresher(10, () -> {}, false, new Random(), waiter));
         refresher.setInterval(99); // before start(): every computed delay uses the new interval
         refresher.start();
         refresher.thread().join(TimeUnit.SECONDS.toMillis(5));
@@ -276,8 +289,8 @@ class RefresherTest {
         // its setInterval call) runs, so only the delays computed afterward pick up the change.
         FakeWaiter waiter = new FakeWaiter(2);
         Refresher[] holder = new Refresher[1];
-        Refresher refresher = new Refresher(
-                10, () -> holder[0].setInterval(99), false, new Random(), waiter);
+        Refresher refresher =
+                new Refresher(10, () -> holder[0].setInterval(99), false, new Random(), waiter);
         holder[0] = refresher;
         track(refresher);
         refresher.start();
@@ -294,10 +307,13 @@ class RefresherTest {
         // dead connector: stop() must not try to join the thread it is running on.
         CountDownLatch stopped = new CountDownLatch(1);
         Refresher[] holder = new Refresher[1];
-        Refresher refresher = new Refresher(0.01, () -> {
-            holder[0].stop();
-            stopped.countDown();
-        });
+        Refresher refresher =
+                new Refresher(
+                        0.01,
+                        () -> {
+                            holder[0].stop();
+                            stopped.countDown();
+                        });
         holder[0] = refresher;
         track(refresher);
         refresher.start();

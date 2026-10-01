@@ -5,9 +5,9 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Reconnect and origin-fallback settings for a Photon session.
  *
- * <p>Initial connection attempts are bounded. After an established connection
- * is lost, reconnect attempts continue until one succeeds or the session is
- * closed. The same backoff schedule is used when background AUTH refresh fails.
+ * <p>Initial connection attempts are bounded. After an established connection is lost, reconnect
+ * attempts continue until one succeeds or the session is closed. The same backoff schedule is used
+ * when background AUTH refresh fails.
  */
 public final class ReconnectPolicy {
 
@@ -83,14 +83,12 @@ public final class ReconnectPolicy {
     long delayFor(long attempt) {
         long delay = baseDelayMs;
         for (long i = 1; i < attempt && delay < maxDelayMs; i++) {
-            delay = Math.min(maxDelayMs,
-                    delay > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : delay * 2);
+            delay = Math.min(maxDelayMs, delay > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : delay * 2);
         }
         if (jitterFactor == 0) {
             return delay;
         }
-        double multiplier = ThreadLocalRandom.current().nextDouble(
-                1 - jitterFactor, 1 + jitterFactor);
+        double multiplier = ThreadLocalRandom.current().nextDouble(1 - jitterFactor, 1 + jitterFactor);
         return Math.max(1, Math.round(delay * multiplier));
     }
 
@@ -103,14 +101,13 @@ public final class ReconnectPolicy {
         private long maxDelayMs = DEFAULT_MAX_DELAY_MS;
         private double jitterFactor = DEFAULT_JITTER_FACTOR;
 
-        private Builder() {
-        }
+        private Builder() {}
 
         /**
          * Set how long requests may use origin fallback while reconnecting.
          *
-         * <p>A negative value allows fallback indefinitely, zero disables
-         * fallback, and a positive value allows fallback for that many seconds.
+         * <p>A negative value allows fallback indefinitely, zero disables fallback, and a positive
+         * value allows fallback for that many seconds.
          */
         public Builder fallbackDurationSeconds(long fallbackDurationSeconds) {
             this.fallbackDurationSeconds = fallbackDurationSeconds;

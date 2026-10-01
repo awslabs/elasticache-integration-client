@@ -1,8 +1,12 @@
+import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.Exec
 
 plugins {
     java
+    jacoco
+    id("com.diffplug.spotless") version "8.10.3"
+    id("net.ltgt.errorprone") version "5.1.1"
 }
 
 group = "software.amazon.photon"
@@ -11,10 +15,25 @@ version = "0.0.1"
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
+    withSourcesJar()
+    withJavadocJar()
 }
 
 repositories {
     mavenCentral()
+}
+
+spotless {
+    java {
+        target("src/**/*.java")
+        importOrder()
+        removeUnusedImports()
+        trimTrailingWhitespace()
+        endWithNewline()
+        googleJavaFormat("1.22.0").reflowLongStrings()
+        leadingSpacesToTabs(2)
+        leadingTabsToSpaces(4)
+    }
 }
 
 sourceSets {
@@ -59,9 +78,12 @@ dependencies {
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
 
+    errorprone("com.google.errorprone:error_prone_core:2.50.0")
+
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
 
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
@@ -73,14 +95,50 @@ tasks.withType<JavaCompile>().configureEach {
     }
 }
 
+// Gradle itself runs on JDK 21. Pass -PtestJavaVersion=<n> to run the tests on another
+// installed JDK, which is how CI covers every supported Java version.
+val testJavaVersion = providers.gradleProperty("testJavaVersion")
+
 tasks.test {
     useJUnitPlatform()
-
-    if (JavaVersion.current().isJava9Compatible) {
-        // Required for MockTlsServer's reflective certificate generation on Java 17+.
-        jvmArgs(
-            "--add-opens", "java.base/sun.security.x509=ALL-UNNAMED",
-            "--add-opens", "java.base/sun.security.util=ALL-UNNAMED"
-        )
+    if (testJavaVersion.isPresent) {
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(testJavaVersion.get().toInt()))
+        })
     }
+    finalizedBy(tasks.jacocoTestReport)
+}
+
+tasks.jacocoTestReport {
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
+// TODO(#52): add POM generation and validation once the IAM toolkit is published (#49).
+// The vendored toolkit is a files(...) dependency, so it is not inside the main JAR and a
+// generated POM would not declare it.
+val verifyJars by tasks.registering {
+    description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
+    val jars = mapOf(
+        tasks.jar to listOf("software/amazon/photon/session/PhotonClient.class", "idempotent-operations.json"),
+        tasks.named<Jar>("sourcesJar") to listOf("software/amazon/photon/session/PhotonClient.java"),
+        tasks.named<Jar>("javadocJar") to listOf("index.html")
+    )
+    jars.keys.forEach { inputs.file(it.flatMap { jar -> jar.archiveFile }) }
+    doLast {
+        jars.forEach { (jarTask, expected) ->
+            val jarFile = jarTask.get().archiveFile.get().asFile
+            ZipFile(jarFile).use { zip ->
+                expected.forEach { entry ->
+                    check(zip.getEntry(entry) != null) { "${jarFile.name} is missing $entry" }
+                }
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(verifyJars)
 }

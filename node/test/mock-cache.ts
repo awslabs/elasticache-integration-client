@@ -46,6 +46,14 @@ function _array(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`*${values.length}`), CRLF, ...values]);
 }
 
+function _map(entries: Array<[Buffer, Buffer]>): Buffer {
+  return Buffer.concat([
+    Buffer.from(`%${entries.length}`),
+    CRLF,
+    ...entries.flatMap(([key, value]) => [key, value]),
+  ]);
+}
+
 function _push(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`>${values.length}`), CRLF, ...values]);
 }
@@ -121,14 +129,14 @@ export interface ReceivedRequest {
 export interface MockCacheOptions {
   config?: Record<string, unknown>;
   tls?: boolean;
-  authResponse?: Reply;
+  helloResponse?: Reply;
   responseStatus?: number;
   responseHeaders?: string;
   responseBody?: Buffer;
   response?: Reply;
   responseFn?: ReplyFactory;
   failure?: Failure;
-  failureCommand?: string; // which command triggers `failure` (e.g. "auth")
+  failureCommand?: string; // which command triggers `failure` (e.g. "hello")
   failureAfterReply?: boolean; // reply normally first, then apply `failure`
   // reply for a no-arg photon.config; undefined = RESP3 null ("unchanged"). Mutable between cycles.
   noArgConfigReply?: Record<string, unknown>;
@@ -140,7 +148,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 /** A fake Photon cache server. */
 export class MockCache {
   /**
-   * Accepts any AUTH, serves a canned config, and answers each `photon.request`
+   * Accepts credentials on `HELLO 3 AUTH`, serves a canned config, and answers each
+   * `photon.request`
    * with `responseFn(request)`, a fixed `response`, or the default built from
    * `responseStatus`/`responseHeaders`/`responseBody`.
    *
@@ -148,7 +157,7 @@ export class MockCache {
    * `requests`). `failure: "hang"` never replies; `failure: "drop"` closes the
    * connection instead of replying. `failureAfterReply` sends the normal reply
    * first and then misbehaves. `failureCommand` selects the command that
-   * triggers it (default `photon.request`; use `"auth"` to break the handshake).
+   * triggers it (default `photon.request`; use `"hello"` to break the handshake).
    *
    * Plaintext by default; `tls: true` serves TLS using the checked-in fixtures.
    */
@@ -177,7 +186,7 @@ export class MockCache {
 
   // Contract-engine state.
   private config: Record<string, unknown>;
-  private readonly authResponse?: Reply;
+  private readonly helloResponse?: Reply;
   private readonly response?: Reply;
   private readonly responseFn?: ReplyFactory;
   private readonly failure?: Failure;
@@ -193,7 +202,7 @@ export class MockCache {
     // (notably the required `refresh_interval`) is filled in here.
     this.config = { version: "v1", refresh_interval: 60, predicates: [], ...options.config };
     this.tls = options.tls ?? false;
-    this.authResponse = options.authResponse;
+    this.helloResponse = options.helloResponse;
     this.responseStatus = options.responseStatus ?? 200;
     this.responseHeaders = options.responseHeaders ?? "content-type:application/x-amz-json-1.0";
     this.responseBody = options.responseBody ?? Buffer.from('{"Item": {}}');
@@ -243,9 +252,33 @@ export class MockCache {
     const name = command[0]?.toString("utf8").toLowerCase() ?? "";
     const args = command.slice(1);
 
-    if (name === "auth") {
+    if (name === "hello") {
       this.photonCommandLog.push(name);
-      return this.authResponse?.toBytes() ?? Buffer.concat([Buffer.from("+OK"), CRLF]);
+      if (this.helloResponse !== undefined) return this.helloResponse.toBytes();
+      if (
+        args.length < 1 ||
+        (args[0]!.toString("ascii") !== "2" && args[0]!.toString("ascii") !== "3")
+      ) {
+        return _error("NOPROTO", "unsupported protocol version");
+      }
+      const auth = args.slice(1);
+      if (
+        auth.length !== 0 &&
+        (auth.length !== 3 || auth[0]!.toString("ascii").toUpperCase() !== "AUTH")
+      ) {
+        return _error("ERR", "syntax error");
+      }
+      const protocol = Number(args[0]!.toString("ascii"));
+      const fields: Array<[Buffer, Buffer]> = [
+        [_bulk(Buffer.from("server")), _bulk(Buffer.from("valkey"))],
+        [_bulk(Buffer.from("version")), _bulk(Buffer.from("8.0.0"))],
+        [_bulk(Buffer.from("proto")), _int(protocol)],
+        [_bulk(Buffer.from("id")), _int(1)],
+        [_bulk(Buffer.from("mode")), _bulk(Buffer.from("cluster"))],
+        [_bulk(Buffer.from("role")), _bulk(Buffer.from("primary"))],
+        [_bulk(Buffer.from("modules")), _array([])],
+      ];
+      return protocol === 3 ? _map(fields) : _array(fields.flat());
     }
     if (name === CONFIG_COMMAND) {
       this.photonCommandLog.push(name);

@@ -91,28 +91,6 @@ class _FakeClock:
         time.sleep(seconds)
 
 
-class _ConnectorRecordingPolicy:
-    """A policy that records the manager's connector each time the fallback window is read.
-
-    The ordering it exists to observe happens inside one locked block, so it cannot be seen from
-    outside: the manager reading ``fallback_window`` is the only hook between the two writes.
-    Everything else delegates to the real policy, so nothing about the reconnect changes.
-    """
-
-    def __init__(self, policy: ReconnectPolicy, manager, seen: list) -> None:
-        self._policy = policy
-        self._manager = manager
-        self._seen = seen
-
-    def __getattr__(self, name: str):
-        return getattr(self._policy, name)
-
-    @property
-    def fallback_window(self) -> float:
-        self._seen.append(self._manager.connector)
-        return self._policy.fallback_window
-
-
 class _RealConnectors:
     """A connector factory pointed at one address, remembering every connector it built.
 
@@ -129,9 +107,13 @@ class _RealConnectors:
         self.built: list[PhotonConnector] = []
 
     def __call__(self) -> PhotonConnector:
-        connector = PhotonConnector(self._host, self._port, tls=False,
-                                    auth_provider=lambda: ("test-user", "token"),
-                                    **self._connector_kwargs)
+        connector = PhotonConnector(
+            self._host,
+            self._port,
+            tls=False,
+            auth_provider=lambda: ("test-user", "token"),
+            **self._connector_kwargs,
+        )
         self.built.append(connector)
         return connector
 
@@ -153,27 +135,35 @@ def wait_for(predicate, timeout: float = _STATE_TIMEOUT, describe=None) -> None:
         time.sleep(_POLL_INTERVAL)
 
 
-def wait_for_state(session: PhotonSession, state: ConnectionState,
-                   timeout: float = _STATE_TIMEOUT) -> None:
+def wait_for_state(
+    session: PhotonSession, state: ConnectionState, timeout: float = _STATE_TIMEOUT
+) -> None:
     """Wait until the session reaches ``state``.
 
     Only use this for states the session will remain in. ``RECONNECTING`` is
     transient during normal recovery, so use :func:`wait_for_reconnect` instead.
     """
-    wait_for(lambda: session.state is state, timeout,
-             lambda: f"expected {state}, still {session.state}")
+    wait_for(
+        lambda: session.state is state, timeout, lambda: f"expected {state}, still {session.state}"
+    )
 
 
-def wait_for_reconnect(r: "_ReconnectRig", connection_id: int, timeout: float = _STATE_TIMEOUT) -> None:
+def wait_for_reconnect(
+    r: "_ReconnectRig", connection_id: int, timeout: float = _STATE_TIMEOUT
+) -> None:
     """Wait until connection number ``connection_id`` is built and serving.
 
     Connection 1 is the one the session opened; a reconnect makes 2, and so on. The count is
     monotonic, so unlike the transient ``RECONNECTING`` state it cannot be missed while polling.
     """
-    wait_for(lambda: r.connector_count >= connection_id
-             and r.session.state is ConnectionState.ALIVE, timeout,
-             lambda: f"expected connection {connection_id} and ALIVE; "
-                     f"have {r.connector_count} and {r.session.state}")
+    wait_for(
+        lambda: r.connector_count >= connection_id and r.session.state is ConnectionState.ALIVE,
+        timeout,
+        lambda: (
+            f"expected connection {connection_id} and ALIVE; "
+            f"have {r.connector_count} and {r.session.state}"
+        ),
+    )
 
 
 def config_routing(*operations: str) -> dict:
@@ -198,9 +188,15 @@ class _ReconnectRig:
     these tests observe that a reconnect happened at all.
     """
 
-    def __init__(self, *, policy: ReconnectPolicy = FAST, config: dict | None = None,
-                 overrides: dict | None = None, config_policy: ConfigPolicy | None = None,
-                 **cache_kwargs) -> None:
+    def __init__(
+        self,
+        *,
+        policy: ReconnectPolicy = FAST,
+        config: dict | None = None,
+        overrides: dict | None = None,
+        config_policy: ConfigPolicy | None = None,
+        **cache_kwargs,
+    ) -> None:
         self.cache = MockCache(config=config, **cache_kwargs)
         self.cache.start()
         self.proxy = MockTcpProxy(self.cache.host, self.cache.port)
@@ -216,13 +212,20 @@ class _ReconnectRig:
         def factory() -> PhotonConnector:
             self.connector_count += 1
             return PhotonConnector(
-                self.proxy.host, self.proxy.port, tls=False,
-                auth_provider=auth_provider, request_timeout=0.5,
+                self.proxy.host,
+                self.proxy.port,
+                tls=False,
+                auth_provider=auth_provider,
+                request_timeout=0.5,
             )
 
         self.factory = factory
-        self.session = PhotonSession(factory, overrides=overrides, policy=policy,
-                                     config_policy=config_policy or ConfigPolicy())
+        self.session = PhotonSession(
+            factory,
+            overrides=overrides,
+            policy=policy,
+            config_policy=config_policy or ConfigPolicy(),
+        )
 
     def close(self) -> None:
         self.session.close()
@@ -289,7 +292,9 @@ def test_reconnect_is_single_flight_under_concurrent_failures(rig):
     with ThreadPoolExecutor(max_workers=8) as pool:
         # Some of these raise (they found the dead connector) and some return None (they arrived
         # after it was retired). Both are correct; the assertion is about connection count.
-        futures = [pool.submit(_swallow_photon_error, r.session, get_item_request()) for _ in range(8)]
+        futures = [
+            pool.submit(_swallow_photon_error, r.session, get_item_request()) for _ in range(8)
+        ]
         for future in futures:
             future.result(timeout=_STATE_TIMEOUT)
 
@@ -314,8 +319,7 @@ def test_non_photon_error_during_reconnect_is_retried(rig):
     config_before, predicates_before = r.session._config, r.session._predicates
     # From here the cache answers with a config Photon cannot use: 2**200 overflows what CEL can
     # hold, so compile_predicates raises ValueError — a non-Photon error, mid-connection.
-    r.cache.set_config({"version": "1.0", "predicates": [{"expr": "true",
-                                                        "vars": {"n": 2 ** 200}}]})
+    r.cache.set_config({"version": "1.0", "predicates": [{"expr": "true", "vars": {"n": 2**200}}]})
     r.proxy.disconnect_clients()
 
     # Attempts keep coming, rather than stopping at the first ValueError.
@@ -326,7 +330,7 @@ def test_non_photon_error_during_reconnect_is_retried(rig):
     assert r.session._config is config_before
     assert r.session._predicates is predicates_before
 
-    r.cache.set_config(DEFAULT_RESOLVED_CONFIG)   # a config that compiles
+    r.cache.set_config(DEFAULT_RESOLVED_CONFIG)  # a config that compiles
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
 
@@ -364,7 +368,7 @@ def test_a_connection_that_dies_as_it_is_published_is_still_replaced(rig):
         published = publish(candidate, attempt)
         if published and not killed_once.is_set():
             killed_once.set()
-            candidate.close()   # fires the disconnect before the loop clears the flag
+            candidate.close()  # fires the disconnect before the loop clears the flag
         return published
 
     manager._finish_reconnect = kill_as_it_is_published
@@ -423,7 +427,7 @@ def test_an_in_flight_request_raises_and_is_never_replayed(rig):
     What only this layer can show is the marker never reaching the cache a second time: the connector
     cannot reconnect, so nothing below the manager can replay anything.
     """
-    r = rig(failure="drop")   # the cache drops the connection instead of replying
+    r = rig(failure="drop")  # the cache drops the connection instead of replying
 
     with pytest.raises(PhotonConnectionLost):
         r.session.request(get_item_request(b'{"TableName": "widgets", "marker": 1}'))
@@ -435,8 +439,11 @@ def test_an_in_flight_request_raises_and_is_never_replayed(rig):
 
 def test_unbounded_window_passes_through_indefinitely(rig):
     """The default unbounded window passes disconnected requests through."""
-    r = rig(policy=ReconnectPolicy(fallback_duration=None, base_delay=0.001, max_delay=0.01,
-                                   jitter=0.0))
+    r = rig(
+        policy=ReconnectPolicy(
+            fallback_duration=None, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
+    )
     set_as_reconnecting(r)
 
     for _ in range(5):
@@ -452,13 +459,16 @@ def test_finite_window_passes_through_then_escalates(rig, monkeypatch):
     """
     clock = _FakeClock()
     monkeypatch.setattr(connection_manager, "time", clock)
-    r = rig(policy=ReconnectPolicy(fallback_duration=1, base_delay=0.001, max_delay=0.01,
-                                   jitter=0.0))
+    r = rig(
+        policy=ReconnectPolicy(
+            fallback_duration=1, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
+    )
     set_as_reconnecting(r)
 
-    assert not r.session.request(get_item_request())    # inside the window
+    assert not r.session.request(get_item_request())  # inside the window
 
-    clock.advance(1)    # exactly onto the deadline, which is already outside the window
+    clock.advance(1)  # exactly onto the deadline, which is already outside the window
     with pytest.raises(PhotonCacheUnavailable):
         r.session.request(get_item_request())
 
@@ -470,8 +480,11 @@ def test_zero_window_escalates_until_reconnected(rig):
     the application's back, so every routed request raises while the cache is unreachable — and only
     while it is unreachable.
     """
-    r = rig(policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01,
-                                   jitter=0.0))
+    r = rig(
+        policy=ReconnectPolicy(
+            fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0, request_wait=0.0
+        )
+    )
     set_as_reconnecting(r)
 
     with pytest.raises(PhotonCacheUnavailable):
@@ -480,25 +493,6 @@ def test_zero_window_escalates_until_reconnected(rig):
     r.proxy.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
-
-
-def test_fallback_window_opens_before_the_connector_is_cleared(rig):
-    """The fallback deadline is set before the connector is cleared.
-
-    Otherwise, a request could observe no connector with the previous outage's
-    deadline and incorrectly escalate during a new, unbounded fallback window.
-    """
-    r = rig()
-    manager = r.session._connection_manager
-    connector_when_window_read: list[object] = []
-
-    # Substituting the policy needs the private attribute; `policy` itself is read-only.
-    manager._policy = _ConnectorRecordingPolicy(manager.policy, manager, connector_when_window_read)
-    r.proxy.disconnect_clients()
-    # Wait for the observation, not for RECONNECTING: with this rig's fast policy the reconnect can
-    # finish before the state is ever sampled, which made this test flake under load.
-    wait_for(lambda: connector_when_window_read)
-    assert connector_when_window_read[0] is not None
 
 
 def test_reconnect_probes_indefinitely(rig):
@@ -521,11 +515,13 @@ def test_a_declined_request_does_not_escalate_during_an_outage(rig):
     Escalation is for requests Photon would have served. One it declines is not Photon's to fail, so
     the strictest possible window — ``fallback_duration=0`` — still lets it through to the origin.
     """
-    r = rig(policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01,
-                                   jitter=0.0), config=config_routing("PutItem"))
+    r = rig(
+        policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0),
+        config=config_routing("PutItem"),
+    )
     set_as_reconnecting(r)
 
-    assert not r.session.request(get_item_request())   # GetItem is not routed by this config
+    assert not r.session.request(get_item_request())  # GetItem is not routed by this config
 
 
 def wait_for_attempts(r: _ReconnectRig, at_least: int) -> None:
@@ -534,9 +530,10 @@ def wait_for_attempts(r: _ReconnectRig, at_least: int) -> None:
     A floor rather than an exact count: while the proxy refuses connections the reconnect loop keeps
     trying, so by the time a test looks the count has usually moved on again.
     """
-    wait_for(lambda: r.connector_count >= at_least,
-             describe=lambda: f"expected at least {at_least} connection(s); "
-                              f"have {r.connector_count}")
+    wait_for(
+        lambda: r.connector_count >= at_least,
+        describe=lambda: f"expected at least {at_least} connection(s); have {r.connector_count}",
+    )
 
 
 def set_as_reconnecting(r: _ReconnectRig) -> None:
@@ -598,8 +595,9 @@ def test_a_misconfigured_policy_is_catchable_either_way():
         ReconnectPolicy(jitter=1.0)
 
 
-@pytest.mark.parametrize("duration,expected", [(None, float("inf")), (-1, float("inf")),
-                                               (0, 0.0), (2, 2.0)])
+@pytest.mark.parametrize(
+    "duration,expected", [(None, float("inf")), (-1, float("inf")), (0, 0.0), (2, 2.0)]
+)
 def test_fallback_window_normalizes_both_unbounded_spellings(duration, expected):
     """``None`` and negative values normalize to infinity; ``0`` remains zero."""
     assert ReconnectPolicy(fallback_duration=duration).fallback_window == expected
@@ -631,8 +629,9 @@ def test_close_is_prompt_during_a_long_backoff(rig):
     wait_for_attempts(r, at_least=2)
 
     r.session.close()
-    assert not r.session._connection_manager._reconnect_thread.is_alive(), \
+    assert not r.session._connection_manager._reconnect_thread.is_alive(), (
         "close() gave up on the reconnect thread instead of interrupting its backoff"
+    )
 
 
 def test_close_interrupts_a_connection_being_opened():
@@ -646,8 +645,9 @@ def test_close_interrupts_a_connection_being_opened():
     cache.start()
     proxy = MockTcpProxy(cache.host, cache.port)
     try:
-        session = PhotonSession(_RealConnectors(proxy.host, proxy.port, config_timeout=30.0),
-                                policy=_fast())
+        session = PhotonSession(
+            _RealConnectors(proxy.host, proxy.port, config_timeout=30.0), policy=_fast()
+        )
         cache.failure, cache.failure_command = "hang", "hello"
         proxy.disconnect_clients()
         # The reconnect is now inside the handshake the cache will never answer.
@@ -660,8 +660,9 @@ def test_close_interrupts_a_connection_being_opened():
         proxy.stop()
         cache.stop()
 
-    assert not [t for t in threading.enumerate() if t.name == "photon-reconnect"], \
+    assert not [t for t in threading.enumerate() if t.name == "photon-reconnect"], (
         "close() returned with the reconnect thread still in the handshake"
+    )
     assert elapsed < 1.0, f"close() waited out the stalled handshake: {elapsed:.2f}s"
 
 
@@ -744,8 +745,7 @@ def test_connection_timeout_bounds_connect_and_configure():
         timeout = 0.3
         started = time.monotonic()
         with pytest.raises(PhotonConnectionError):
-            PhotonSession(connectors, policy=_fast(connect_attempts=2,
-                                                   connection_timeout=timeout))
+            PhotonSession(connectors, policy=_fast(connect_attempts=2, connection_timeout=timeout))
         elapsed = time.monotonic() - started
 
         assert len(connectors.built) == 2

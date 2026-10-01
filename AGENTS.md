@@ -33,7 +33,8 @@ Run commands from the client directory they apply to:
   and `npm run verify` for the complete local gate. Use `npm run pack:smoke`
   when changing package metadata, exports, builds, or published contents.
 - Java: use focused Gradle tests when appropriate and `./gradlew build` for the
-  complete local gate.
+  complete local gate. Gradle must run on JDK 21. Use `./gradlew spotlessApply`
+  to fix formatting.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
 - Before reporting completion, state which validation commands actually ran and

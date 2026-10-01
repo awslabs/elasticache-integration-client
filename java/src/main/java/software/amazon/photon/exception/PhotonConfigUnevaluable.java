@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * The resolved config carried a predicate this client cannot evaluate.
- */
+/** The resolved config carried a predicate this client cannot evaluate. */
 public class PhotonConfigUnevaluable extends PhotonError {
 
     public PhotonConfigUnevaluable(String message) {

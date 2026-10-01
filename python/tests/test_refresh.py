@@ -179,8 +179,9 @@ def test_a_failed_tick_uses_backoff_then_resets_to_interval_on_success():
         if isinstance(result, Exception):
             raise result
 
-    refresher = Refresher(100, refresh_once, jitter=0.0,
-                          failure_delay=lambda failures: float(failures))
+    refresher = Refresher(
+        100, refresh_once, jitter=0.0, failure_delay=lambda failures: float(failures)
+    )
     timeouts = []
     state = {"n": 0}
 

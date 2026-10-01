@@ -18,8 +18,8 @@ This package currently ports the Python implementation's:
   bounded response frames, a single `maxPending` bound covering both
   positional/FIFO and deferred requests, bounded send backpressure,
   differentiated connect/request/initialization timeouts, idempotent close,
-  and injected AUTH credentials;
-- a session that performs connect, AUTH, and the `photon.config` handshake,
+  and an authenticated `HELLO 3` handshake;
+- a session that performs connect, `HELLO 3 AUTH`, and the `photon.config` exchange,
   reconnects failed transports in the background, periodically refreshes the
   config on the interval the cache returns, and controls safe origin fallback
   with a per-outage window;
@@ -39,7 +39,7 @@ connection-fatal. The middleware sends requests with no matching predicate
 directly to origin and has a narrow origin fallback for cataloged idempotent
 requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
 returned to the SDK as retryable for a cataloged operation.
-`PHOTON_AUTH_ERROR` closes the stale connection, starts background recovery, and
+`AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. Other RESP errors, malformed
 responses, and failures for non-idempotent operations propagate without origin
 fallback.
@@ -85,7 +85,7 @@ try {
 }
 ```
 
-The factory completes IAM authentication and the `photon.config` handshake
+The factory completes the authenticated `HELLO 3` and `photon.config` handshakes
 before installing middleware and returning the ordinary SDK client. Wrapped AWS
 requests are fully serialized and signed by the SDK before Photon intercepts
 them. Photon strips volatile SigV4 headers only from its copied request model;
@@ -109,7 +109,7 @@ Client creation retries the initial connection a bounded number of times and
 still fails loudly if no attempt completes. After a live connection is lost,
 Photon reconnects in the background until it succeeds or the client is
 destroyed. Idle socket loss starts recovery without waiting for a request.
-Every replacement resolves fresh AUTH credentials, repeats `photon.config`, and
+Every replacement resolves fresh credentials, repeats `HELLO 3 AUTH` and `photon.config`, and
 recompiles the resolved predicates.
 
 While there is no connection, a routed request has not been sent to Photon and
@@ -167,11 +167,11 @@ Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
 attempt including the capped tail. Closing or destroying the SDK client
 interrupts reconnect backoff and prevents further attempts.
 
-AUTH normally uses `@aws/developer-toolkit-elasticache` to cache and
+The `HELLO 3 AUTH` handshake normally uses `@aws/developer-toolkit-elasticache` to cache and
 automatically refresh short-lived IAM tokens from the SDK credential chain.
 The toolkit validates cache names and user IDs, normalizes them to lowercase
 before signing, and refreshes the cached token in the background. If Photon
-receives an AUTH rejection, it invalidates that token so the next connection
+receives a handshake rejection, it invalidates that token so the next connection
 attempt uses a newly signed one. Destroying the SDK client stops background
 token refresh. A caller that already holds a token, or that authenticates
 against a local or test endpoint, supplies `connectorOptions.authProvider`
@@ -215,5 +215,11 @@ Until the ElastiCache toolkit is published to npm, it is pinned as a Git
 submodule. Initialize it after cloning with
 `git submodule update --init --recursive`.
 
-The package builds ESM and CommonJS outputs, emits TypeScript declarations, and
-does not publish as part of this prototype.
+The package builds ESM and CommonJS outputs and emits TypeScript declarations.
+Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
+release workflow. It validates the tag against `package.json`, tests and
+inspects one tarball, then publishes that exact artifact through the protected
+`release` environment using npm trusted publishing. Release candidates use the
+`next` npm distribution tag; stable releases use `latest`. A manual workflow
+run performs the same validation and uploads the tarball and checksum without
+entering the release environment or publishing to npm.

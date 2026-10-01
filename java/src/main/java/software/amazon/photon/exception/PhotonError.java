@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * Base exception for all Photon errors.
- */
+/** Base exception for all Photon errors. */
 public class PhotonError extends RuntimeException {
 
     public PhotonError(String message) {
