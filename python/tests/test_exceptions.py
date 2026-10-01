@@ -7,6 +7,8 @@ from botocore.exceptions import ConnectionClosedError
 from photon.exceptions import (
     PhotonCacheUnavailable,
     PhotonConfigError,
+    PhotonOverridesRejected,
+    PhotonConfigUnevaluable,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
@@ -18,6 +20,8 @@ from photon.exceptions import (
 
 _SUBCLASSES = [
     PhotonConfigError,
+    PhotonOverridesRejected,
+    PhotonConfigUnevaluable,
     PhotonConnectionError,
     PhotonProtocolError,
     PhotonRejectedError,
@@ -28,10 +32,12 @@ _SUBCLASSES = [
 
 # --- Taxonomy: every failure mode is catchable as PhotonError ------------------
 
+
 @pytest.mark.parametrize("cls", _SUBCLASSES)
 def test_taxonomy_subclasses_photon_error(cls):
     """Every failure-mode class is a subclass of PhotonError."""
     assert issubclass(cls, PhotonError)
+
 
 def test_cache_unavailable_is_a_botocore_error_not_a_photon_error():
     """PhotonCacheUnavailable sits outside the PhotonError tree, on purpose.
@@ -59,6 +65,7 @@ def test_origin_error_is_retryable_without_claiming_the_sdk_connection_closed():
 
 
 # --- Public API surface -------------------------------------------------------
+
 
 def test_public_api_surface():
     """Verify that only the intended application-facing API is exported.

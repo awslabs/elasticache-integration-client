@@ -30,8 +30,7 @@ def derive_version(tag: str) -> str:
     match = TAG_PATTERN.fullmatch(tag)
     if match is None:
         raise ValueError(
-            f"invalid release tag {tag!r}; expected vMAJOR.MINOR.PATCH or "
-            "vMAJOR.MINOR.PATCH-rc.N"
+            f"invalid release tag {tag!r}; expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-rc.N"
         )
 
     version = f"{match['major']}.{match['minor']}.{match['patch']}"
@@ -53,8 +52,10 @@ def module_version(init_file: Path = PYTHON_ROOT / "photon" / "__init__.py") -> 
     for statement in tree.body:
         if not isinstance(statement, ast.Assign):
             continue
-        if any(isinstance(target, ast.Name) and target.id == "__version__"
-               for target in statement.targets):
+        if any(
+            isinstance(target, ast.Name) and target.id == "__version__"
+            for target in statement.targets
+        ):
             value = ast.literal_eval(statement.value)
             if isinstance(value, str):
                 return value
@@ -66,8 +67,7 @@ def validated_version(tag: str) -> str:
     metadata_version = current_version()
     if metadata_version != version:
         raise ValueError(
-            f"tag {tag!r} maps to {version!r}, but package metadata has "
-            f"{metadata_version!r}"
+            f"tag {tag!r} maps to {version!r}, but package metadata has {metadata_version!r}"
         )
     return version
 
@@ -101,9 +101,7 @@ def archive_details(path: Path) -> tuple[set[str], bytes]:
         with tarfile.open(path, mode="r:gz") as archive:
             names = set(archive.getnames())
             metadata_files = [
-                name
-                for name in names
-                if name.endswith("/PKG-INFO") and name.count("/") == 1
+                name for name in names if name.endswith("/PKG-INFO") and name.count("/") == 1
             ]
             if len(metadata_files) != 1:
                 raise ValueError(f"{path} must contain exactly one sdist PKG-INFO file")
@@ -141,13 +139,11 @@ def inspect_distributions(
         metadata = BytesParser().parsebytes(metadata_bytes)
         if canonical_name(metadata["Name"]) != canonical_name(expected_name):
             raise ValueError(
-                f"{distribution} has project name {metadata['Name']!r}, "
-                f"expected {expected_name!r}"
+                f"{distribution} has project name {metadata['Name']!r}, expected {expected_name!r}"
             )
         if metadata["Version"] != expected_version:
             raise ValueError(
-                f"{distribution} has version {metadata['Version']!r}, "
-                f"expected {expected_version!r}"
+                f"{distribution} has version {metadata['Version']!r}, expected {expected_version!r}"
             )
 
         required_suffixes = (
@@ -177,8 +173,7 @@ def smoke_test(expected_version: str) -> None:
 
     if photon.__version__ != expected_version:
         raise ValueError(
-            f"installed photon version is {photon.__version__!r}, "
-            f"expected {expected_version!r}"
+            f"installed photon version is {photon.__version__!r}, expected {expected_version!r}"
         )
     for public_name in (
         "client",

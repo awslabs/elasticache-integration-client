@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { PhotonError, PhotonProtocolError, PhotonRejectedError } from "../src/errors.js";
+import {
+  PhotonError,
+  PhotonOverridesRejected,
+  PhotonProtocolError,
+  PhotonRejectedError,
+} from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import {
   CONFIG_COMMAND,
@@ -118,6 +123,15 @@ describe("Photon protocol", () => {
     Buffer.from("[1,2,3]"),
   ])("rejects malformed config response %#", (value) => {
     expect(() => parseConfigResponse(value as never)).toThrow(PhotonError);
+  });
+
+  it("maps a CONFIG_INVALID reply to PhotonOverridesRejected", () => {
+    expect(() =>
+      parseConfigResponse(new RespError("CONFIG_INVALID", "table does not exist")),
+    ).toThrow(PhotonOverridesRejected);
+    expect(() => parseConfigResponse(new RespError("ERR", "nope"))).not.toThrow(
+      PhotonOverridesRejected,
+    );
   });
 
   it("serializes a request into the five protocol arguments", () => {

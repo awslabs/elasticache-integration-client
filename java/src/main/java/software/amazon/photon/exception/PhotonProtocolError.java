@@ -1,8 +1,6 @@
 package software.amazon.photon.exception;
 
-/**
- * Malformed RESP frame - garbage data received.
- */
+/** Malformed RESP frame - garbage data received. */
 public class PhotonProtocolError extends PhotonError {
 
     public PhotonProtocolError(String message) {

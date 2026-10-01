@@ -7,6 +7,8 @@
 cd python
 pip install -e '.[test]'   # runtime deps: boto3, botocore
 python -m pytest           # see tests/README.md for details
+pip install -e '.[dev]'    # pinned ruff, mypy, build, twine
+ruff format --check . && ruff check . && mypy
 ```
 
 Runtime requires Python ≥ 3.10. See [`tests/README.md`](tests/README.md) for the test layout and
@@ -68,22 +70,33 @@ When there is no live cache connection, the request has not been sent and can sa
 for any operation while the fallback window remains open. After a request is sent, origin fallback
 is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
 While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
-cataloged operation. `PHOTON_AUTH_ERROR` closes the stale connection and passes the rejected
+cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
 request through while reconnection obtains fresh authentication. Other RESP errors, malformed
 replies, and failures for non-idempotent operations propagate without origin fallback.
 
+## Config staleness
+
+The resolved config is re-fetched periodically on the live connection. A refresh that fails changes
+nothing: the last config the server confirmed stays in force and the next refresh retries. Both a
+config the server sends and an empty "nothing has changed" reply count as confirmation, as does each
+new connection resolving its own.
+
+That tolerance is bounded by `staleness_duration`, one hour by default. A refresh that fails past
+it means the config can no longer be trusted, so Photon drops the connection, and bringing up the
+replacement resolves a config, which is what makes the drop a repair. A refresh that loses its
+connection reconnects at once. Requests fall back meanwhile,
+under the `fallback_duration` rules above.
+
 ## Next steps:
 
-- **Observability.** Reconnection logs but emits no metrics, so under the default
-  `fallback_duration` a cache outage has no symptom other than the origin service's bill.
+- **Observability.** Reconnection and config staleness are logged but emit no metrics, so under the
+  default `fallback_duration` a cache outage has no symptom other than the origin service's bill.
 - **Detecting a silently dead peer.** A peer that vanishes without closing the socket is noticed only
   when the next request times out. Closing that gap needs a periodic health check.
 - **IAM authentication hardening.** The connector performs IAM-token session auth at connect time
   (SigV4-presigned `elasticache:connect` token — POC). Follow-ups: validation against a real
   cache, periodic re-`AUTH` (which also prevents the 12-hour IAM disconnect), and the origin-call
   (FAS) token. Re-`AUTH` recovers by recycling the connection, which now exists.
-- **Config refresh failures.** A failed refresh is only logged. A follow-up records failures and
-  raises a staleness flag once the config has gone unrefreshed for too long.
 - **Asynchronous / out-of-band responses.** Only the synchronous reply is handled. A follow-up
   handles the out-of-band response (request-id followed by a later push) so a slow cache miss does
   not block pipelined hits.

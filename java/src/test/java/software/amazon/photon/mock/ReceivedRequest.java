@@ -1,11 +1,8 @@
 package software.amazon.photon.mock;
 
 import java.util.List;
-import java.util.Objects;
 
-/**
- * Represents a request as received and parsed by the mock cache.
- */
+/** Represents a request as received and parsed by the mock cache. */
 public class ReceivedRequest {
 
     private final String method;
@@ -17,8 +14,15 @@ public class ReceivedRequest {
     private final String nttl;
     private final List<byte[]> rawArgs;
 
-    public ReceivedRequest(String method, String url, String headers, byte[] body,
-                           String metadata, String ttl, String nttl, List<byte[]> rawArgs) {
+    public ReceivedRequest(
+            String method,
+            String url,
+            String headers,
+            byte[] body,
+            String metadata,
+            String ttl,
+            String nttl,
+            List<byte[]> rawArgs) {
         this.method = method;
         this.url = url;
         this.headers = headers;

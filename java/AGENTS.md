@@ -26,7 +26,13 @@
 
 ## Validation
 
-- Use `./gradlew build` for the complete local gate (compile, test, check).
+- Use `./gradlew build` for the complete local gate: compile with Error Prone,
+  Spotless check, tests, JaCoCo reports, Javadoc, and the JAR contents check.
+  Gradle must run on JDK 21.
+- Run `./gradlew spotlessApply` to format `src/` with google-java-format.
+- Run tests on another JDK with `./gradlew test -PtestJavaVersion=<8|11|17|21>`.
+  The JDK must be installed locally, or listed in
+  `-Porg.gradle.java.installations.paths=<paths>`.
 - Run focused tests first when appropriate:
   `./gradlew test --tests "ClassName"` or
   `./gradlew test --tests "ClassName.methodName"`.
@@ -39,8 +45,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 8 source and bytecode compatibility; CI also validates JDK 11 and
-  JDK 17. Do not use language or library APIs introduced after Java 8.
+- Target Java 8 source and bytecode compatibility; CI runs the tests on JDK 8,
+  11, 17, and 21. Do not use language or library APIs introduced after Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
@@ -138,11 +144,17 @@ an explicit empty map, is resent), and applies the result. A RESP3 null reply
 means the server's config is unchanged, so nothing is applied or rescheduled;
 otherwise the reply is parsed, its predicates compiled, and both published
 together as one immutable snapshot, with the refresher's interval updated to
-match. A refresh failure (`PhotonError`) is logged and leaves the current
-config, predicates, and interval as last-known-good. If it kills the connector,
-the normal reconnect loop obtains a fresh connection and config; periodic ticks
-do nothing while reconnecting, and stale replies from replaced connectors are
-discarded.
+match. A refresh failure (`PhotonError`) that kills the connector starts the
+normal reconnect loop, which obtains a fresh connection and config; periodic
+ticks do nothing while reconnecting, and stale replies from replaced connectors
+are discarded. Any other refresh failure is logged and leaves the current
+config, predicates, and interval as last-known-good. Every config reply, null
+reply, open, and reconnect restarts the staleness window. A refresh that fails
+after `stalenessDurationSeconds` (default 3600) have passed without
+confirmation drops the connector into the normal reconnect and origin-fallback
+path. `PhotonOverridesRejected` (`CONFIG_INVALID`) and `PhotonConfigUnevaluable` 
+(a predicate that cannot be compiled, which rejects the whole config) are logged 
+at `SEVERE` on every occurrence.
 
 ## Security and test boundaries
 
@@ -154,8 +166,9 @@ discarded.
   Maven. Keep token validation and signing in that library; Photon owns only
   the adapter, TLS connection, and AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
-- Test TLS certificates under `src/test/` are localhost-only fixtures and must
-  not be used for production.
+- `MockTlsServer` generates a self-signed `CN=localhost` certificate at test
+  time with BouncyCastle (test scope only). It is a localhost-only fixture and
+  must not be used for production.
 
 ## Generated and build files
 

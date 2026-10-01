@@ -2,7 +2,12 @@ import { buildCacheAuthProvider } from "./auth.js";
 import { PhotonConnector, type PhotonConnectorOptions } from "./connection.js";
 import { PhotonConfigError, PhotonError } from "./errors.js";
 import { PhotonHandle, type PhotonCompatibleClient } from "./middleware.js";
-import { parseEndpoint, PhotonSession, type ReconnectPolicyOptions } from "./session.js";
+import {
+  DEFAULT_STALENESS_DURATION_MS,
+  parseEndpoint,
+  PhotonSession,
+  type ReconnectPolicyOptions,
+} from "./session.js";
 
 export interface PhotonClientOptions<TConfig extends object> {
   /** Cache endpoint as host:port. */
@@ -33,6 +38,12 @@ export interface PhotonClientOptions<TConfig extends object> {
   reconnectPolicy?: ReconnectPolicyOptions;
   /** Overrides sent by the photon.config handshake. */
   overrides?: Readonly<Record<string, unknown>>;
+  /**
+   * How long, in seconds, the resolved config stays trusted while refreshes are failing. Past it
+   * the connection is dropped so a new one re-resolves the config. Defaults to one hour; must be a
+   * positive whole number of seconds.
+   */
+  stalenessDuration?: number;
 }
 
 interface InitializeOptions {
@@ -44,6 +55,21 @@ interface InitializeOptions {
   fallbackDuration?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
   overrides: Readonly<Record<string, unknown>>;
+  stalenessDurationMs: number;
+}
+
+/**
+ * Validate and convert the public seconds-based staleness window to milliseconds.
+ *
+ * Runs before transport initialization so a bad value fails fast instead of after a connection
+ * and IAM authentication have already succeeded.
+ */
+function stalenessDurationMs(seconds: number | undefined): number {
+  if (seconds === undefined) return DEFAULT_STALENESS_DURATION_MS;
+  if (!Number.isSafeInteger(seconds * 1_000) || !Number.isInteger(seconds) || seconds <= 0) {
+    throw new PhotonConfigError("stalenessDuration must be a positive whole number of seconds");
+  }
+  return seconds * 1_000;
 }
 
 /**
@@ -87,6 +113,7 @@ async function initialize<TClient extends PhotonCompatibleClient>(
     ...(options.fallbackDuration === undefined
       ? {}
       : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
+    stalenessDurationMs: options.stalenessDurationMs,
   };
   const session = new PhotonSession(connectorFactory, options.overrides, reconnectPolicy);
   try {
@@ -140,7 +167,9 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
     fallbackDuration,
     reconnectPolicy,
     overrides = {},
+    stalenessDuration,
   } = options;
+  const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
   const sdkClient = new ClientCtor({
     ...clientConfig,
     ...(region === undefined ? {} : { region }),
@@ -156,6 +185,7 @@ export async function client<TConfig extends object, TClient extends PhotonCompa
       ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
       ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
       overrides,
+      stalenessDurationMs: resolvedStalenessDurationMs,
     });
   } catch (error) {
     try {

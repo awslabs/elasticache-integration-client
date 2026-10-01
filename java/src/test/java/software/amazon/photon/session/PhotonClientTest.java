@@ -1,10 +1,25 @@
 package software.amazon.photon.session;
 
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.io.ByteArrayInputStream;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
@@ -26,22 +41,6 @@ import software.amazon.photon.mock.MockTlsServer;
 import software.amazon.photon.mock.ReceivedRequest;
 import software.amazon.photon.mock.Reply;
 
-import javax.net.ssl.SSLContext;
-import java.io.ByteArrayInputStream;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-
-import static org.junit.jupiter.api.Assertions.*;
-
 class PhotonClientTest {
 
     private static final String TEST_USER = "test-user";
@@ -52,11 +51,14 @@ class PhotonClientTest {
     private SSLContext clientSslContext;
 
     // Common SDK client configuration for tests - fake credentials since we intercept requests
-    private final Consumer<DynamoDbClientBuilder> sdkConfig = b -> b
-            .region(Region.US_EAST_1)
-            .credentialsProvider(StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
-            .endpointOverride(URI.create("http://localhost:8080"));
+    private final Consumer<DynamoDbClientBuilder> sdkConfig =
+            b ->
+                    b.region(Region.US_EAST_1)
+                            .credentialsProvider(
+                                    StaticCredentialsProvider.create(
+                                            AwsBasicCredentials.create(
+                                                    "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
+                            .endpointOverride(URI.create("http://localhost:8080"));
 
     @BeforeEach
     void setUp() throws Exception {
@@ -77,13 +79,14 @@ class PhotonClientTest {
         DynamoDbClientBuilder origin = DynamoDbClient.builder();
         sdkConfig.accept(origin);
 
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(origin)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(origin)
+                        .build()) {
+
             assertNotNull(result.client());
             assertNotNull(result.handle());
             assertTrue(result.handle().isOpen());
@@ -92,14 +95,15 @@ class PhotonClientTest {
 
     @Test
     void builder_withHostAndPort_buildsSuccessfully() {
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .host("localhost")
-                .port(server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .host("localhost")
+                        .port(server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
+
             assertNotNull(result.client());
             assertTrue(result.handle().isOpen());
         }
@@ -108,23 +112,27 @@ class PhotonClientTest {
     @Test
     void clientOperation_isServedByPhotonWithoutContactingOrigin() {
         configureListTablesPredicate();
-        cache.setReply(Reply.ok(
-                200,
-                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
+        cache.setReply(
+                Reply.ok(
+                        200,
+                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                        "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
 
-        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
-                .region(Region.US_EAST_1)
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("access-key", "secret-key")))
-                .endpointOverride(URI.create("http://127.0.0.1:1"));
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig =
+                b ->
+                        b.region(Region.US_EAST_1)
+                                .credentialsProvider(
+                                        StaticCredentialsProvider.create(
+                                                AwsBasicCredentials.create("access-key", "secret-key")))
+                                .endpointOverride(URI.create("http://127.0.0.1:1"));
 
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), unreachableOriginConfig)
-                .build()) {
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), unreachableOriginConfig)
+                        .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -140,33 +148,37 @@ class PhotonClientTest {
     void clientOperation_reusesCapturedRequestForSdkRetry() {
         configureListTablesPredicate();
         AtomicInteger attempt = new AtomicInteger();
-        cache.setReplyFunction(request -> {
-            if (attempt.getAndIncrement() == 0) {
-                return Reply.ok(
-                        500,
-                        mapOf(
-                                "content-type", "application/x-amz-json-1.0",
-                                "x-amzn-errortype", "InternalServerError"),
-                        "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
-            }
-            return Reply.ok(
-                    200,
-                    Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                    "{\"TableNames\":[]}");
-        });
+        cache.setReplyFunction(
+                request -> {
+                    if (attempt.getAndIncrement() == 0) {
+                        return Reply.ok(
+                                500,
+                                mapOf(
+                                        "content-type", "application/x-amz-json-1.0",
+                                        "x-amzn-errortype", "InternalServerError"),
+                                "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
+                    }
+                    return Reply.ok(
+                            200,
+                            Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                            "{\"TableNames\":[]}");
+                });
 
-        Consumer<DynamoDbClientBuilder> unreachableOriginConfig = b -> b
-                .region(Region.US_EAST_1)
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create("access-key", "secret-key")))
-                .endpointOverride(URI.create("http://127.0.0.1:1"));
+        Consumer<DynamoDbClientBuilder> unreachableOriginConfig =
+                b ->
+                        b.region(Region.US_EAST_1)
+                                .credentialsProvider(
+                                        StaticCredentialsProvider.create(
+                                                AwsBasicCredentials.create("access-key", "secret-key")))
+                                .endpointOverride(URI.create("http://127.0.0.1:1"));
 
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), unreachableOriginConfig)
-                .build()) {
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), unreachableOriginConfig)
+                        .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -175,75 +187,80 @@ class PhotonClientTest {
 
     @Test
     void builder_withEndpointAndHost_throwsPhotonError() {
-        PhotonClient.Builder builder = PhotonClient.builder()
-                .endpoint("cache.example.com:6379")
-                .host("other-host")
-                .authCredentials(TEST_USER, TEST_TOKEN);
+        PhotonClient.Builder builder =
+                PhotonClient.builder()
+                        .endpoint("cache.example.com:6379")
+                        .host("other-host")
+                        .authCredentials(TEST_USER, TEST_TOKEN);
 
-        assertThrows(PhotonError.class, () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+        assertThrows(
+                PhotonError.class, () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
     }
 
     @Test
     void builder_withoutEndpointOrHost_throwsPhotonError() {
-        PhotonClient.Builder builder = PhotonClient.builder()
-                .authCredentials(TEST_USER, TEST_TOKEN);
+        PhotonClient.Builder builder = PhotonClient.builder().authCredentials(TEST_USER, TEST_TOKEN);
 
-        PhotonError error = assertThrows(PhotonError.class, 
-                () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+        PhotonError error =
+                assertThrows(
+                        PhotonError.class, () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
         assertTrue(error.getMessage().contains("endpoint or host is required"));
     }
 
     @Test
     void builder_withoutAuthProvider_throwsPhotonError() {
-        PhotonClient.Builder builder = PhotonClient.builder()
-                .endpoint("cache.example.com:6379");
+        PhotonClient.Builder builder = PhotonClient.builder().endpoint("cache.example.com:6379");
 
-        PhotonError error = assertThrows(PhotonError.class, 
-                () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+        PhotonError error =
+                assertThrows(
+                        PhotonError.class, () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
         assertTrue(error.getMessage().contains("authProvider is required"));
     }
 
     @Test
     void builder_withStaticAuthToken_usesTokenProvider() {
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, "my-static-token")
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, "my-static-token")
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
+
             assertTrue(result.handle().isOpen());
         }
     }
 
     @Test
     void result_close_closesBothHandleAndClient() {
-        PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build();
+        PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build();
 
         assertTrue(result.handle().isOpen());
-        
+
         result.close();
-        
+
         assertFalse(result.handle().isOpen());
     }
 
     @Test
     void result_close_isIdempotent() {
-        PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build();
+        PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build();
 
         result.close();
         result.close(); // Should not throw
-        
+
         assertFalse(result.handle().isOpen());
     }
 
@@ -253,14 +270,17 @@ class PhotonClientTest {
         server.close(); // Stop the server so connection fails
         RecordingOriginClient origin = new RecordingOriginClient();
 
-        assertThrows(PhotonError.class, () -> PhotonClient.builder()
-                .endpoint("localhost:" + photonPort)
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .connectTimeoutMs(100)
-                .originHttpClient(origin)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build());
+        assertThrows(
+                PhotonError.class,
+                () ->
+                        PhotonClient.builder()
+                                .endpoint("localhost:" + photonPort)
+                                .authCredentials(TEST_USER, TEST_TOKEN)
+                                .sslContext(clientSslContext)
+                                .connectTimeoutMs(100)
+                                .originHttpClient(origin)
+                                .origin(DynamoDbClient.builder(), sdkConfig)
+                                .build());
 
         assertNull(origin.request.get());
         assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
@@ -272,14 +292,15 @@ class PhotonClientTest {
         cache.setFailureCommand("photon.request");
         RecordingOriginClient origin = new RecordingOriginClient();
 
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .requestTimeoutMs(100)
-                .originHttpClient(origin)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .requestTimeoutMs(100)
+                        .originHttpClient(origin)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
 
@@ -290,33 +311,38 @@ class PhotonClientTest {
     @Test
     void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
         configureListTablesPredicate();
-        cache.setReply(Reply.ok(
-                200,
-                Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                "{\"TableNames\":[\"reconnected\"]}"));
+        cache.setReply(
+                Reply.ok(
+                        200,
+                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                        "{\"TableNames\":[\"reconnected\"]}"));
         AtomicInteger credentialsCallCount = new AtomicInteger();
         RecordingOriginClient origin = new RecordingOriginClient();
 
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
-             PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                     .endpoint("localhost:" + proxy.getPort())
-                     .authProvider(() -> new AuthCredentials(
-                             TEST_USER, "token-" + credentialsCallCount.incrementAndGet()))
-                     .sslContext(clientSslContext)
-                     .originHttpClient(origin)
-                     .reconnectPolicy(ReconnectPolicy.builder()
-                             .fallbackDurationSeconds(-1)
-                             .baseDelayMs(1)
-                             .maxDelayMs(2)
-                             .jitterFactor(0)
-                             .build())
-                     .origin(DynamoDbClient.builder(), sdkConfig)
-                     .build()) {
+                PhotonClient.Result<DynamoDbClient> result =
+                        PhotonClient.builder()
+                                .endpoint("localhost:" + proxy.getPort())
+                                .authProvider(
+                                        () ->
+                                                new AuthCredentials(
+                                                        TEST_USER, "token-" + credentialsCallCount.incrementAndGet()))
+                                .sslContext(clientSslContext)
+                                .originHttpClient(origin)
+                                .reconnectPolicy(
+                                        ReconnectPolicy.builder()
+                                                .fallbackDurationSeconds(-1)
+                                                .baseDelayMs(1)
+                                                .maxDelayMs(2)
+                                                .jitterFactor(0)
+                                                .build())
+                                .origin(DynamoDbClient.builder(), sdkConfig)
+                                .build()) {
             proxy.disconnectClients();
 
             awaitRecovered(result.handle().getSession(), credentialsCallCount);
-            assertEquals(Collections.singletonList("reconnected"),
-                    result.client().listTables().tableNames());
+            assertEquals(
+                    Collections.singletonList("reconnected"), result.client().listTables().tableNames());
             assertEquals(2, credentialsCallCount.get());
             assertEquals(2, proxy.getAcceptedConnections());
         }
@@ -324,30 +350,32 @@ class PhotonClientTest {
 
     @Test
     void builder_withOverrides_passesToSession() {
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .overrides(Collections.singletonMap("ttl", 300))
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .overrides(Collections.singletonMap("ttl", 300))
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
+
             assertNotNull(result.handle().getSession().getConfig());
         }
     }
 
     @Test
     void builder_withTimeouts_appliesTimeouts() {
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .connectTimeoutMs(1000)
-                .initializationTimeoutMs(2000)
-                .requestTimeoutMs(2000)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .connectTimeoutMs(1000)
+                        .initializationTimeoutMs(2000)
+                        .requestTimeoutMs(2000)
+                        .sslContext(clientSslContext)
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
+
             assertTrue(result.handle().isOpen());
         }
     }
@@ -357,31 +385,36 @@ class PhotonClientTest {
         configureListTablesPredicate();
         // Track if our custom interceptor was installed
         AtomicBoolean customInterceptorCalled = new AtomicBoolean(false);
-        
-        ExecutionInterceptor customInterceptor = new ExecutionInterceptor() {
-            @Override
-            public void beforeExecution(Context.BeforeExecution context, ExecutionAttributes attrs) {
-                customInterceptorCalled.set(true);
-            }
-        };
-        
+
+        ExecutionInterceptor customInterceptor =
+                new ExecutionInterceptor() {
+                    @Override
+                    public void beforeExecution(Context.BeforeExecution context, ExecutionAttributes attrs) {
+                        customInterceptorCalled.set(true);
+                    }
+                };
+
         // Create SDK config with custom interceptor and timeout
-        ClientOverrideConfiguration sdkOverride = ClientOverrideConfiguration.builder()
-                .addExecutionInterceptor(customInterceptor)
-                .apiCallTimeout(Duration.ofSeconds(30))
-                .build();
-        
+        ClientOverrideConfiguration sdkOverride =
+                ClientOverrideConfiguration.builder()
+                        .addExecutionInterceptor(customInterceptor)
+                        .apiCallTimeout(Duration.ofSeconds(30))
+                        .build();
+
         // Use sdkConfigurer to set override configuration - Photon should merge with it
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                .origin(DynamoDbClient.builder(), b -> {
-                    sdkConfig.accept(b);  // Apply base config (region, creds, endpoint)
-                    b.overrideConfiguration(sdkOverride);  // Add our custom override config
-                })
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        .origin(
+                                DynamoDbClient.builder(),
+                                b -> {
+                                    sdkConfig.accept(b); // Apply base config (region, creds, endpoint)
+                                    b.overrideConfiguration(sdkOverride); // Add our custom override config
+                                })
+                        .build()) {
+
             assertTrue(result.handle().isOpen());
             result.client().listTables();
             assertTrue(customInterceptorCalled.get());
@@ -392,14 +425,15 @@ class PhotonClientTest {
     void builder_withoutSdkOverrideConfiguration_usesDefaultConfig() {
         // This just verifies that when no sdkOverrideConfiguration is set,
         // the build still works (using only the Photon interceptor)
-        try (PhotonClient.Result<DynamoDbClient> result = PhotonClient.builder()
-                .endpoint("localhost:" + server.getPort())
-                .authCredentials(TEST_USER, TEST_TOKEN)
-                .sslContext(clientSslContext)
-                // No sdkOverrideConfiguration set
-                .origin(DynamoDbClient.builder(), sdkConfig)
-                .build()) {
-            
+        try (PhotonClient.Result<DynamoDbClient> result =
+                PhotonClient.builder()
+                        .endpoint("localhost:" + server.getPort())
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .sslContext(clientSslContext)
+                        // No sdkOverrideConfiguration set
+                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .build()) {
+
             assertTrue(result.handle().isOpen());
         }
     }
@@ -415,18 +449,20 @@ class PhotonClientTest {
                 @Override
                 public HttpExecuteResponse call() {
                     return HttpExecuteResponse.builder()
-                            .response(SdkHttpFullResponse.builder()
-                                    .statusCode(200)
-                                    .putHeader("content-type", "application/x-amz-json-1.0")
-                                    .build())
-                            .responseBody(AbortableInputStream.create(new ByteArrayInputStream(
-                                    "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8))))
+                            .response(
+                                    SdkHttpFullResponse.builder()
+                                            .statusCode(200)
+                                            .putHeader("content-type", "application/x-amz-json-1.0")
+                                            .build())
+                            .responseBody(
+                                    AbortableInputStream.create(
+                                            new ByteArrayInputStream(
+                                                    "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8))))
                             .build();
                 }
 
                 @Override
-                public void abort() {
-                }
+                public void abort() {}
             };
         }
 
@@ -437,16 +473,16 @@ class PhotonClientTest {
     }
 
     private void configureListTablesPredicate() {
-        cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,"
-                + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
-                + "&& operation == 'ListTables'\",\"vars\":{}}]}");
+        cache.setConfigJson(
+                "{\"version\":\"1.0\",\"refresh_interval\":60,"
+                        + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
+                        + "&& operation == 'ListTables'\",\"vars\":{}}]}");
     }
 
     private static void awaitRecovered(PhotonSession session, AtomicInteger credentialsCallCount)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while ((credentialsCallCount.get() < 2
-                || session.getState() != PhotonSession.State.OPEN)
+        while ((credentialsCallCount.get() < 2 || session.getState() != PhotonSession.State.OPEN)
                 && System.nanoTime() < deadline) {
             Thread.sleep(1);
         }
@@ -454,8 +490,7 @@ class PhotonClientTest {
         assertEquals(PhotonSession.State.OPEN, session.getState());
     }
 
-    private static Map<String, String> mapOf(String key1, String value1,
-                                             String key2, String value2) {
+    private static Map<String, String> mapOf(String key1, String value1, String key2, String value2) {
         Map<String, String> values = new HashMap<>();
         values.put(key1, value1);
         values.put(key2, value2);

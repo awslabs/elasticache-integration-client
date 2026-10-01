@@ -1,0 +1,2 @@
+# The tests need fixtures the sdist does not carry (tests/mock.py), so leave them out.
+prune tests

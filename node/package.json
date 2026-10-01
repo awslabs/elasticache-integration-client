@@ -3,6 +3,7 @@
   "version": "0.0.1",
   "description": "TypeScript parity prototype for the Photon Node.js client.",
   "license": "Apache-2.0",
+  "sideEffects": false,
   "engines": {
     "node": ">=22"
   },
@@ -12,9 +13,14 @@
   "types": "./dist/esm/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/esm/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.js"
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
     }
   },
   "files": [
@@ -22,8 +28,8 @@
     "README.md",
     "LICENSE"
   ],
-  "bundledDependencies": [
-    "@aws/developer-toolkit-elasticache"
+  "workspaces": [
+    "vendor/developer-toolkit-elasticache-package"
   ],
   "scripts": {
     "generate:idempotency": "node scripts/generate-idempotency.mjs",
@@ -42,6 +48,7 @@
     "verify": "npm run check:idempotency && npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "0.18.5",
     "@aws-sdk/client-dynamodb": "^3.1101.0",
     "@aws-sdk/nested-clients": "^3.997.41",
     "@eslint/js": "10.0.1",
@@ -49,6 +56,7 @@
     "@vitest/coverage-v8": "4.1.10",
     "eslint": "10.7.0",
     "prettier": "3.9.6",
+    "publint": "0.3.24",
     "typescript": "6.0.3",
     "typescript-eslint": "8.62.1",
     "vitest": "4.1.10"
@@ -56,11 +64,14 @@
   "dependencies": {
     "@aws-sdk/core": "^3.977.1",
     "@aws-sdk/credential-providers": "^3.1096.0",
-    "@aws/developer-toolkit-elasticache": "file:vendor/developer-toolkit-elasticache-package",
+    "@aws/developer-toolkit-elasticache": "0.1.0-dev.0",
     "@marcbachmann/cel-js": "^8.0.0",
     "@smithy/core": "^3.31.0",
     "@smithy/hash-node": "^4.2.7",
     "@smithy/signature-v4": "^5.6.11",
     "@smithy/types": "^4.16.1"
-  }
+  },
+  "bundleDependencies": [
+    "@aws/developer-toolkit-elasticache"
+  ]
 }

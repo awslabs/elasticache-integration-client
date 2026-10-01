@@ -42,8 +42,8 @@ logger = logging.getLogger(__name__)
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 5.0
-_DEFAULT_CONFIG_TIMEOUT = 2.0   # init-phase commands: HELLO and photon.config
-_CLOSE_TIMEOUT = 0.5            # how long close() waits for the I/O thread to stop
+_DEFAULT_CONFIG_TIMEOUT = 2.0  # init-phase commands: HELLO and photon.config
+_CLOSE_TIMEOUT = 0.5  # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
 _DEFAULT_MAX_PENDING = 100
@@ -146,6 +146,7 @@ class _PendingRequests:
         if request_id and self.resolve_async(request_id, exc):
             return True
         return future.done()  # True if the future was settled while we were timing out
+
     def fail_all(self, exc: BaseException) -> None:
         """Fail every waiting future — FIFO and async alike — with ``exc`` and clear both."""
         with self._pending_requests_lock:
@@ -205,7 +206,7 @@ class _LoopThread:
         self._main_task = asyncio.current_task()
 
     def refuse_calls(self) -> None:
-        """Put the loop out of reach of other threads, before it closes. """
+        """Put the loop out of reach of other threads, before it closes."""
         self._loop = None
         self._main_task = None
 
@@ -229,7 +230,7 @@ class _LoopThread:
             pass
 
     def join(self, timeout: float) -> bool:
-        """Wait up to ``timeout`` for the thread to exit, then forget it either way. """
+        """Wait up to ``timeout`` for the thread to exit, then forget it either way."""
         thread, self._thread = self._thread, None
         if not thread:
             return True
@@ -303,7 +304,9 @@ class PhotonConnector:
             if self._closed:
                 raise PhotonConnectionError("connector closed during connect")
             if self._io_loop_thread.thread:
-                raise PhotonConnectionError("connect() already called; PhotonConnector is single-use")
+                raise PhotonConnectionError(
+                    "connect() already called; PhotonConnector is single-use"
+                )
             self._io_loop_thread.start_thread(self._io_thread_main, conn_ready)
 
         # The I/O thread always sets conn_ready, on success and on failure.
@@ -312,12 +315,16 @@ class PhotonConnector:
             conn_ready.result(timeout=self._connect_timeout)
         except FuturesTimeout as exc:
             self.close()
-            raise PhotonConnectionError(f"Timed out connecting to {self._host}:{self._port}") from exc
+            raise PhotonConnectionError(
+                f"Timed out connecting to {self._host}:{self._port}"
+            ) from exc
         except ssl.SSLError as exc:
             # Ahead of OSError, which ssl.SSLError subclasses: a rejected certificate must not
             # report as an unreachable cache.
             self.close()
-            raise PhotonConnectionError(f"TLS handshake failed to {self._host}:{self._port}") from exc
+            raise PhotonConnectionError(
+                f"TLS handshake failed to {self._host}:{self._port}"
+            ) from exc
         except OSError as exc:
             # DNS or TCP failure from the dial.
             self.close()
@@ -335,7 +342,7 @@ class PhotonConnector:
         if not exc:
             return
         # Nobody above can handle this. Give it to a caller still inside connect().
-        if not conn_ready.done():      # never set, so connect() is still waiting
+        if not conn_ready.done():  # never set, so connect() is still waiting
             conn_ready.set_exception(exc)
         elif isinstance(exc, (asyncio.CancelledError, PhotonError)):
             logger.debug("photon connector I/O loop ended", exc_info=exc)
@@ -362,15 +369,13 @@ class PhotonConnector:
                 # close() is the only thing that cancels us. Report it as a closed
                 # connector: asyncio raises a different CancelledError class than
                 # concurrent.futures, so connect() would not recognise the original.
-                conn_ready.set_exception(
-                    PhotonConnectionError("connector closed during connect")
-                )
+                conn_ready.set_exception(PhotonConnectionError("connector closed during connect"))
                 raise
             except BaseException as exc:
                 # connect() turns the type into a message, so pass it on as it is.
                 conn_ready.set_exception(exc)
                 return
-            conn_ready.set_result(None)   # no value to pass; connect() just needs the wait to end
+            conn_ready.set_result(None)  # no value to pass; connect() just needs the wait to end
             await self._reader_loop()
         finally:
             self._release_conn()
@@ -380,7 +385,9 @@ class PhotonConnector:
         the connection for its whole life.
         """
         stream_reader, writer = await asyncio.open_connection(
-            self._host, self._port, ssl=self._build_ssl_context(),
+            self._host,
+            self._port,
+            ssl=self._build_ssl_context(),
         )
 
         with self._state_lock:
@@ -408,8 +415,14 @@ class PhotonConnector:
             raise PhotonConnectionError("PhotonConnector requires an auth provider to handshake")
         user_id, token = self._auth_provider()
         try:
-            reply = self.execute("HELLO", b"3", b"AUTH", user_id.encode(), token.encode(),
-                                 timeout=self.config_timeout)
+            reply = self.execute(
+                "HELLO",
+                b"3",
+                b"AUTH",
+                user_id.encode(),
+                token.encode(),
+                timeout=self.config_timeout,
+            )
         except PhotonTimeoutError as exc:
             self.close()
             raise PhotonConnectionError("HELLO 3 timed out — connection closed") from exc
@@ -434,11 +447,13 @@ class PhotonConnector:
         if not isinstance(reply, dict):
             self.close()
             raise PhotonConnectionError(
-                f"HELLO 3 failed: expected a map reply, got {type(reply).__name__}")
+                f"HELLO 3 failed: expected a map reply, got {type(reply).__name__}"
+            )
         if reply.get(b"proto") != _RESP3_PROTO:
             self.close()
             raise PhotonConnectionError(
-                f"HELLO 3 failed: reply did not report proto {_RESP3_PROTO}")
+                f"HELLO 3 failed: reply did not report proto {_RESP3_PROTO}"
+            )
 
     def authenticate(self) -> None:
         """Re-authenticate the live connection with a fresh token, using a plain ``AUTH``.
@@ -452,8 +467,9 @@ class PhotonConnector:
             return
         user_id, token = self._auth_provider()
         try:
-            reply = self.execute("AUTH", user_id.encode(), token.encode(),
-                                 timeout=self.config_timeout)
+            reply = self.execute(
+                "AUTH", user_id.encode(), token.encode(), timeout=self.config_timeout
+            )
         except PhotonTimeoutError as exc:
             logger.warning("AUTH command timed out - closing connection")
             self.close()
@@ -467,7 +483,8 @@ class PhotonConnector:
         if reply != OK:
             self.close()
             raise PhotonAuthError(
-                f"IAM AUTH failed: unexpected reply of type {type(reply).__name__}")
+                f"IAM AUTH failed: unexpected reply of type {type(reply).__name__}"
+            )
 
     def _build_ssl_context(self) -> ssl.SSLContext | None:
         """TLS policy for the connection: TLS 1.2+, hostname check, required verification."""
@@ -613,7 +630,10 @@ class PhotonConnector:
         try:
             while not self._closed:
                 # Block until one complete RESP frame has arrived off the socket.
-                value = await self._reader.read_frame()
+                reader = self._reader
+                if reader is None:  # released; _release_conn has already failed the callers
+                    break
+                value = await reader.read_frame()
                 if isinstance(value, RespPush):
                     # Out-of-band frame: a deferred request's response, matched by id.
                     self._handle_push(value)

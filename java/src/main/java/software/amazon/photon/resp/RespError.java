@@ -2,9 +2,7 @@ package software.amazon.photon.resp;
 
 import java.util.Objects;
 
-/**
- * RESP3 error value.
- */
+/** RESP3 error value. */
 public class RespError implements RespValue {
 
     private final String code;

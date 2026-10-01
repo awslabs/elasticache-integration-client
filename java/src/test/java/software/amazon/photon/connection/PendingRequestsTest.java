@@ -1,12 +1,6 @@
 package software.amazon.photon.connection;
 
-import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonProtocolError;
-import software.amazon.photon.exception.PhotonTimeoutError;
-import software.amazon.photon.resp.RespSimpleString;
-import software.amazon.photon.resp.RespValue;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -17,12 +11,15 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.Test;
+import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonTimeoutError;
+import software.amazon.photon.resp.RespSimpleString;
+import software.amazon.photon.resp.RespValue;
 
-import static org.junit.jupiter.api.Assertions.*;
-
-/**
- * Unit tests for PendingRequests.
- */
+/** Unit tests for PendingRequests. */
 class PendingRequestsTest {
 
     @Test
@@ -98,8 +95,7 @@ class PendingRequestsTest {
         pending.moveNextToAsyncResponses("42");
         assertThrows(PhotonError.class, pending::registerNewRequest);
 
-        RespValue deferredValue =
-                new RespSimpleString("deferred".getBytes(StandardCharsets.UTF_8));
+        RespValue deferredValue = new RespSimpleString("deferred".getBytes(StandardCharsets.UTF_8));
         assertTrue(pending.resolveAsync("42", deferredValue));
         assertEquals(deferredValue, deferred.join());
 
@@ -111,15 +107,13 @@ class PendingRequestsTest {
     @Test
     void moveNextToAsyncResponses_rejectsEmptyFifoAndDuplicateIdWithoutMutation() {
         PendingRequests pending = new PendingRequests();
-        assertThrows(PhotonProtocolError.class,
-                () -> pending.moveNextToAsyncResponses("42"));
+        assertThrows(PhotonProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
 
         CompletableFuture<RespValue> first = pending.registerNewRequest();
         pending.moveNextToAsyncResponses("42");
         CompletableFuture<RespValue> second = pending.registerNewRequest();
 
-        assertThrows(PhotonProtocolError.class,
-                () -> pending.moveNextToAsyncResponses("42"));
+        assertThrows(PhotonProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
         RespValue value = new RespSimpleString("second".getBytes(StandardCharsets.UTF_8));
         assertTrue(pending.resolveOldestRequest(value));
         assertEquals(value, second.join());
@@ -134,8 +128,7 @@ class PendingRequestsTest {
         CompletableFuture<RespValue> cancelled = pending.registerNewRequest();
         pending.cancel(cancelled, new PhotonRequestCancellation.CancelledException());
 
-        assertThrows(PhotonProtocolError.class,
-                () -> pending.moveNextToAsyncResponses("42"));
+        assertThrows(PhotonProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
         assertEquals(1, pending.size());
 
         RespValue value = new RespSimpleString("active".getBytes(StandardCharsets.UTF_8));
@@ -150,12 +143,15 @@ class PendingRequestsTest {
 
         assertFalse(pending.removeFromAsync(future));
         pending.moveNextToAsyncResponses(Long.toString(Long.MAX_VALUE));
-        assertFalse(pending.resolveAsync("unknown",
-                new RespSimpleString("ignored".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(
+                pending.resolveAsync(
+                        "unknown", new RespSimpleString("ignored".getBytes(StandardCharsets.UTF_8))));
         assertTrue(pending.removeFromAsync(future));
         assertFalse(pending.removeFromAsync(future));
-        assertFalse(pending.resolveAsync(Long.toString(Long.MAX_VALUE),
-                new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(
+                pending.resolveAsync(
+                        Long.toString(Long.MAX_VALUE),
+                        new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertFalse(future.isDone());
     }
 
@@ -167,12 +163,12 @@ class PendingRequestsTest {
 
         PhotonTimeoutError timeout = new PhotonTimeoutError("timed out");
 
-        assertEquals(PendingRequests.TimeoutDisposition.ASYNC_REMOVED,
-                pending.onTimeout(future, timeout));
+        assertEquals(
+                PendingRequests.TimeoutDisposition.ASYNC_REMOVED, pending.onTimeout(future, timeout));
         assertFalse(pending.isClosed());
         assertFalse(future.isDone());
-        assertFalse(pending.resolveAsync("42",
-                new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(
+                pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertNotNull(pending.registerNewRequest());
     }
 
@@ -182,24 +178,22 @@ class PendingRequestsTest {
         CompletableFuture<RespValue> future = pending.registerNewRequest();
         PhotonTimeoutError timeout = new PhotonTimeoutError("timed out");
 
-        assertEquals(PendingRequests.TimeoutDisposition.FATAL,
-                pending.onTimeout(future, timeout));
+        assertEquals(PendingRequests.TimeoutDisposition.FATAL, pending.onTimeout(future, timeout));
 
         assertTrue(pending.isClosed());
         assertEquals(timeout, assertThrows(ExecutionException.class, future::get).getCause());
-        assertThrows(PhotonProtocolError.class,
-                () -> pending.moveNextToAsyncResponses("42"));
+        assertThrows(PhotonProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
     }
 
     @Test
     void timeoutDisposition_completedFutureDoesNotClosePending() {
         PendingRequests pending = new PendingRequests();
         CompletableFuture<RespValue> future = pending.registerNewRequest();
-        RespValue response =
-                new RespSimpleString("complete".getBytes(StandardCharsets.UTF_8));
+        RespValue response = new RespSimpleString("complete".getBytes(StandardCharsets.UTF_8));
         pending.resolveOldestRequest(response);
 
-        assertEquals(PendingRequests.TimeoutDisposition.COMPLETED,
+        assertEquals(
+                PendingRequests.TimeoutDisposition.COMPLETED,
                 pending.onTimeout(future, new PhotonTimeoutError("timed out")));
         assertFalse(pending.isClosed());
         assertEquals(response, future.join());
@@ -215,12 +209,11 @@ class PendingRequestsTest {
         pending.cancel(future, cancellation);
 
         assertEquals(1, pending.size());
-        assertEquals(cancellation,
-                assertThrows(ExecutionException.class, future::get).getCause());
+        assertEquals(cancellation, assertThrows(ExecutionException.class, future::get).getCause());
         pending.moveNextToAsyncResponses("42");
         assertEquals(0, pending.size());
-        assertFalse(pending.resolveAsync("42",
-                new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(
+                pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertFalse(pending.isClosed());
     }
 
@@ -234,10 +227,9 @@ class PendingRequestsTest {
 
         pending.cancel(future, cancellation);
 
-        assertEquals(cancellation,
-                assertThrows(ExecutionException.class, future::get).getCause());
-        assertFalse(pending.resolveAsync("42",
-                new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(cancellation, assertThrows(ExecutionException.class, future::get).getCause());
+        assertFalse(
+                pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertFalse(pending.isClosed());
         assertNotNull(pending.registerNewRequest());
     }
@@ -273,8 +265,8 @@ class PendingRequestsTest {
 
         assertEquals(cause, assertThrows(ExecutionException.class, deferred::get).getCause());
         assertEquals(cause, assertThrows(ExecutionException.class, fifo::get).getCause());
-        assertFalse(pending.resolveAsync("-1",
-                new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertFalse(
+                pending.resolveAsync("-1", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
     }
 
     @Test
@@ -363,43 +355,46 @@ class PendingRequestsTest {
 
         // Producers: register futures
         for (int p = 0; p < numProducers; p++) {
-            executor.submit(() -> {
-                try {
-                    startLatch.await();
-                    for (int i = 0; i < numPerProducer; i++) {
-                        CompletableFuture<RespValue> f = pending.registerNewRequest();
-                        synchronized (futuresLock) {
-                            allFutures.add(f);
+            executor.submit(
+                    () -> {
+                        try {
+                            startLatch.await();
+                            for (int i = 0; i < numPerProducer; i++) {
+                                CompletableFuture<RespValue> f = pending.registerNewRequest();
+                                synchronized (futuresLock) {
+                                    allFutures.add(f);
+                                }
+                            }
+                        } catch (Exception e) {
+                            // ignore
+                        } finally {
+                            doneLatch.countDown();
                         }
-                    }
-                } catch (Exception e) {
-                    // ignore
-                } finally {
-                    doneLatch.countDown();
-                }
-            });
+                    });
         }
 
         // Consumer: resolve futures
-        executor.submit(() -> {
-            try {
-                startLatch.await();
-                int resolved = 0;
-                int maxAttempts = numProducers * numPerProducer * 10;
-                while (resolved < numProducers * numPerProducer && maxAttempts-- > 0) {
-                    RespValue v = new RespSimpleString(("val" + resolved).getBytes(StandardCharsets.UTF_8));
-                    if (pending.resolveOldestRequest(v)) {
-                        resolved++;
-                    } else {
-                        Thread.sleep(1);
+        executor.submit(
+                () -> {
+                    try {
+                        startLatch.await();
+                        int resolved = 0;
+                        int maxAttempts = numProducers * numPerProducer * 10;
+                        while (resolved < numProducers * numPerProducer && maxAttempts-- > 0) {
+                            RespValue v =
+                                    new RespSimpleString(("val" + resolved).getBytes(StandardCharsets.UTF_8));
+                            if (pending.resolveOldestRequest(v)) {
+                                resolved++;
+                            } else {
+                                Thread.sleep(1);
+                            }
+                        }
+                    } catch (Exception e) {
+                        // ignore
+                    } finally {
+                        doneLatch.countDown();
                     }
-                }
-            } catch (Exception e) {
-                // ignore
-            } finally {
-                doneLatch.countDown();
-            }
-        });
+                });
 
         startLatch.countDown();
         assertTrue(doneLatch.await(10, TimeUnit.SECONDS));

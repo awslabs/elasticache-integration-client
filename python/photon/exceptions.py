@@ -1,7 +1,7 @@
 """Error taxonomy for the Photon client.
 
-``PhotonError`` is the base for every connector failure; the subclasses name the distinct failure
-modes the transport layer raises.
+``PhotonError`` is the base for everything that can fail on the way to the cache; the subclasses name
+the distinct failure modes — the transport's, and the two the config exchange contributes.
 
 Two errors deliberately sit outside that tree: :class:`PhotonCacheUnavailable` and
 :class:`PhotonOriginError` subclass botocore's retryable ``ConnectionClosedError`` so the SDK
@@ -22,6 +22,14 @@ class PhotonConfigError(PhotonError, ValueError):
     rather than a runtime failure. Also a ``ValueError``, which is what bad arguments raise in
     Python, so either name catches it.
     """
+
+
+class PhotonOverridesRejected(PhotonError):
+    """The proxy rejected the ``photon.config`` overrides (``CONFIG_INVALID``)."""
+
+
+class PhotonConfigUnevaluable(PhotonError):
+    """The resolved config carried a predicate this client cannot evaluate."""
 
 
 class PhotonConnectionError(PhotonError):
@@ -59,7 +67,7 @@ class PhotonCacheUnavailable(ConnectionClosedError):
     #: botocore transport error carries and what identifies the call that was refused.
     fmt = (
         'Photon has no connection to the cache, so this request to "{endpoint_url}" could not be '
-        'served from it.'
+        "served from it."
     )
 
 

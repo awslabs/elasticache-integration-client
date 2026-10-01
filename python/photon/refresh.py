@@ -82,7 +82,11 @@ class Refresher:
                     failures,
                     exc_info=True,
                 )
-                delay = self._failure_delay(failures) if self._failure_delay else self._next_refresh_delay()
+                delay = (
+                    self._failure_delay(failures)
+                    if self._failure_delay
+                    else self._next_refresh_delay()
+                )
             else:
                 failures = 0
                 delay = self._next_refresh_delay()

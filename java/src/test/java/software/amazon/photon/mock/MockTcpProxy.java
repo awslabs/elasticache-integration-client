@@ -14,9 +14,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Controllable TCP pass-through used to exercise TLS connection recovery.
- */
+/** Controllable TCP pass-through used to exercise TLS connection recovery. */
 public final class MockTcpProxy implements Closeable {
 
     private final String targetHost;
