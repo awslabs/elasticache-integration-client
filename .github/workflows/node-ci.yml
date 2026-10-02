@@ -51,5 +51,7 @@ jobs:
         with:
           name: package-node
           path: node/.artifacts/*.tgz
+          # upload-artifact skips files under dot directories like .artifacts by default.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
