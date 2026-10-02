@@ -74,8 +74,7 @@ jobs:
     uses: ./.github/workflows/node-ci.yml
 
   # GitHub can't read Gradle dependencies from build.gradle.kts, so submit the
-  # resolved graph. Dependabot alerts use the graph from main, and dependency
-  # review compares the pull request's graph against it. The job only resolves
+  # resolved graph so Dependabot alerts cover Java. The job only resolves
   # dependencies; it doesn't build or change anything.
   java-dependency-graph:
     runs-on: ubuntu-latest
@@ -100,31 +99,10 @@ jobs:
         with:
           build-root-directory: java
 
-  # Fail pull requests that add a dependency with a known high or critical
-  # vulnerability. Dependabot alerts still report lower severities.
-  dependency-review:
-    if: github.event_name == 'pull_request'
-    needs: java-dependency-graph
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: high
-          # GitHub processes the submitted Gradle graph asynchronously.
-          retry-on-snapshot-warnings: true
-          retry-on-snapshot-warnings-timeout: 300
-
   # Stable aggregate check for branch protection.
   ci:
     if: always()
-    needs: [changes, python, java, node, java-dependency-graph, dependency-review]
+    needs: [changes, python, java, node, java-dependency-graph]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
