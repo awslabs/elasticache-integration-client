@@ -15,7 +15,7 @@
 - `scripts/`: build, cleanup, and package smoke-test tooling.
 - `src/index.ts`: public package export boundary.
 - `src/predicates.ts`: compiled CEL request-routing predicates.
-- `.github/workflows/node-ci.yml`: CI validation on Node.js 22 and 24.
+- `.github/workflows/node-ci.yml`: CI validation on Node.js 22, 24, and 26.
 
 ## Validation
 
@@ -171,7 +171,8 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
 - Do not commit generated `dist/`, `coverage/`, `.artifacts/`, or `.omx/`
   contents.
 - `npm run pack:smoke` verifies the tarball contains both ESM and CommonJS
-  entrypoints and excludes source, tests, cache artifacts, and private keys.
+  entrypoints and excludes source, tests, cache artifacts, and private keys. It
+  also runs publint and `@arethetypeswrong/cli` against the tarball.
 - `.github/workflows/node-release.yml` validates annotated release tags, builds
   one npm tarball, and publishes that exact artifact through the protected
   `release` environment. Manual dispatches are non-publishing dry runs. Keep npm

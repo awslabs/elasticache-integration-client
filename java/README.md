@@ -19,13 +19,14 @@ override configuration remain in the normal SDK pipeline.
 IAM token generation and refresh are provided by the Amazon ElastiCache
 developer toolkit. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
-SigV4 signing contract. Photon periodically repeats `AUTH` on each live
-connection using the manager's latest token. A rejected refresh is retried with
-reconnect backoff while the connection keeps serving with its last valid
-authentication state. A timed-out or malformed AUTH reply drops the connection
-for FIFO safety and starts normal recovery. Photon sends tokens only in
-TLS-protected `AUTH` exchanges; origin request signing remains owned by the AWS
-SDK.
+SigV4 signing contract. Photon sends the resulting bearer token only in the
+TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
+before the connection becomes usable. Photon then periodically repeats plain
+`AUTH` on each live connection using the manager's latest token. A rejected
+refresh is retried with reconnect backoff while the connection keeps serving
+with its last valid authentication state. A timed-out or malformed AUTH reply
+drops the connection for FIFO safety and starts normal recovery. Origin request
+signing remains owned by the AWS SDK.
 
 ## Request routing
 
@@ -125,8 +126,8 @@ try (PhotonClient.AsyncResult<DynamoDbAsyncClient> result = PhotonClient.builder
 }
 ```
 
-`buildAsync` performs the Photon connection, authentication, and configuration
-handshake before returning. DynamoDB operations are asynchronous and do not
+`buildAsync` performs the Photon connection, RESP3/authentication handshake, and
+configuration exchange before returning. DynamoDB operations are asynchronous and do not
 block SDK event-loop threads while waiting for Photon.
 
 The default asynchronous origin transport is the SDK Netty HTTP client. Use
@@ -158,8 +159,8 @@ Configure a custom refresh point with
 
 Photon asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.
-If Photon rejects cached IAM credentials during `AUTH`, the failed connection
-is discarded, the manager force-refreshes the token with newly resolved AWS
+If Photon rejects cached IAM credentials during `HELLO 3 AUTH`, the failed
+connection is discarded, the manager force-refreshes the token with newly resolved AWS
 credentials, and the existing bounded connect or reconnect policy opens the
 next connection with the replacement token. Persistent IAM configuration
 errors still surface after the configured connection-attempt limit.
@@ -172,11 +173,11 @@ remain caller-owned.
 Sync and async clients share the same recovery behavior. A disconnect starts
 one background reconnect loop immediately, even while the client is idle. Each
 attempt creates a new TLS connection, resolves fresh credentials, repeats
-`AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
+`HELLO 3 AUTH` and `photon.config`, and uses capped exponential backoff with jitter.
 Reconnect attempts continue until one succeeds or the session closes.
 
 Initial startup remains bounded: by default Photon makes three attempts, and
-each complete connect, authentication, and configuration attempt is limited to
+each complete connect, HELLO/authentication, and configuration attempt is limited to
 five seconds.
 
 While reconnecting, cache-eligible requests may use the signed origin fallback.

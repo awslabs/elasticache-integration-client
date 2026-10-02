@@ -101,7 +101,7 @@ public class PhotonHandle implements Closeable {
     }
 
     /**
-     * Open the Photon session (connect, authenticate, config handshake).
+     * Open the Photon session (connect, HELLO/authenticate, config exchange).
      *
      * <p>This must be called before using the SDK client.
      *
@@ -223,7 +223,7 @@ public class PhotonHandle implements Closeable {
             return this;
         }
 
-        /** Set the AUTH and configuration handshake timeout in milliseconds (default: 5000). */
+        /** Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000). */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
             return this;

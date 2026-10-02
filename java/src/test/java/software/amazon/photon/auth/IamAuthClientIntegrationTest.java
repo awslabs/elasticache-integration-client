@@ -107,15 +107,14 @@ class IamAuthClientIntegrationTest {
         assertFalse(attempts.get(1).getToken().contains(FIRST_ACCESS_KEY));
         assertFalse(attempts.get(0).getToken().equals(attempts.get(1).getToken()));
         assertEquals(
-                Arrays.asList("AUTH", "PHOTON.CONFIG", "AUTH", "PHOTON.CONFIG"),
+                Arrays.asList("HELLO", "PHOTON.CONFIG", "HELLO", "PHOTON.CONFIG"),
                 cache.getReceivedCommands());
     }
 
     @Test
-    void nonOkSimpleAuthReplyDoesNotForceTokenRefresh() {
+    void nonMapHelloReplyDoesNotForceTokenRefresh() {
         AtomicInteger credentialCalls = new AtomicInteger();
-        cache.setAuthReplyFunction(
-                (userId, token) -> new RespSimpleString("NOT-OK".getBytes(StandardCharsets.UTF_8)));
+        cache.setHelloReply(new RespSimpleString("NOT-OK".getBytes(StandardCharsets.UTF_8)));
         Supplier<AuthCredentials> authProvider =
                 authProvider(
                         () -> {
@@ -141,7 +140,7 @@ class IamAuthClientIntegrationTest {
         assertTrue(
                 cache.getAuthAttempts().stream()
                         .allMatch(attempt -> attempt.getToken().contains(FIRST_ACCESS_KEY)));
-        assertAuthOnly(cache.getReceivedCommands());
+        assertHelloOnly(cache.getReceivedCommands());
     }
 
     @Test
@@ -227,7 +226,7 @@ class IamAuthClientIntegrationTest {
         assertEquals(2, attempts.size());
         assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
         assertTrue(attempts.get(1).getToken().contains(ROTATED_ACCESS_KEY));
-        assertEquals(Arrays.asList("AUTH", "AUTH", "PHOTON.CONFIG"), cache.getReceivedCommands());
+        assertEquals(Arrays.asList("HELLO", "HELLO", "PHOTON.CONFIG"), cache.getReceivedCommands());
     }
 
     @Test
@@ -347,12 +346,12 @@ class IamAuthClientIntegrationTest {
                                                         builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
                                         .build());
 
-        assertTrue(error.getMessage().contains("AUTH failed"));
+        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertFalse(cache.getAuthAttempts().isEmpty());
         assertTrue(
                 cache.getAuthAttempts().stream()
                         .allMatch(attempt -> attempt.getToken().contains("AKIAINVALIDCREDENTIAL")));
-        assertAuthOnly(cache.getReceivedCommands());
+        assertHelloOnly(cache.getReceivedCommands());
     }
 
     @Test
@@ -374,12 +373,12 @@ class IamAuthClientIntegrationTest {
                                                         builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
                                         .build());
 
-        assertTrue(error.getMessage().contains("AUTH failed"));
+        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertEquals("expired-token", cache.getAuthAttempts().get(0).getToken());
         assertTrue(
                 cache.getAuthAttempts().stream()
                         .allMatch(attempt -> "expired-token".equals(attempt.getToken())));
-        assertAuthOnly(cache.getReceivedCommands());
+        assertHelloOnly(cache.getReceivedCommands());
     }
 
     private static IamAuthTokenProvider authProvider(AwsCredentialsProvider credentialsProvider) {
@@ -391,9 +390,9 @@ class IamAuthClientIntegrationTest {
                 .build();
     }
 
-    private static void assertAuthOnly(List<String> commands) {
+    private static void assertHelloOnly(List<String> commands) {
         assertFalse(commands.isEmpty());
-        assertTrue(commands.stream().allMatch("AUTH"::equals));
+        assertTrue(commands.stream().allMatch("HELLO"::equals));
     }
 
     private void awaitReconnect(PhotonSession session, int expectedAuthAttempts)

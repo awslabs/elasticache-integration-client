@@ -36,19 +36,23 @@ import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.ResolvedConfig;
 import software.amazon.photon.protocol.PhotonProtocol;
 import software.amazon.photon.protocol.SerializedCommand;
+import software.amazon.photon.resp.RespBulkString;
 import software.amazon.photon.resp.RespCodec;
 import software.amazon.photon.resp.RespError;
+import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespMap;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
 /**
  * A thread-safe connection to the Photon cache with concurrent request support.
  *
- * <p>Handles TLS setup, AUTH, the {@code photon.config} handshake, and {@code photon.request}
- * command execution. Multiple threads can safely call {@link #request(PhotonRequest)} concurrently
- * — responses are correlated via FIFO position or deferred request ID.
+ * <p>Handles TLS setup, the {@code HELLO 3 AUTH} handshake, the {@code photon.config} exchange, and
+ * {@code photon.request} command execution. Multiple threads can safely call {@link
+ * #request(PhotonRequest)} concurrently — responses are correlated via FIFO position or deferred
+ * request ID.
  *
- * <p>Lifecycle: {@code connect()} → {@code authenticate(String, String)} → {@code
+ * <p>Lifecycle: {@code connect()} → {@code handshake(String, String)} → {@code
  * configureAndStartReader()} → {@code request()} (repeated) → {@code close()}.
  *
  * <p>For simpler use, {@link #connectAndAuthenticate(String, String)} and {@link
@@ -84,6 +88,9 @@ public class PhotonConnector implements Closeable {
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
+    private static final int RESP3_PROTOCOL_VERSION = 3;
+    private static final RespBulkString HELLO_PROTO_KEY =
+            new RespBulkString("proto".getBytes(StandardCharsets.UTF_8));
     private static final ScheduledThreadPoolExecutor TIMEOUT_EXECUTOR = createTimeoutExecutor();
 
     private static ScheduledThreadPoolExecutor createTimeoutExecutor() {
@@ -189,7 +196,7 @@ public class PhotonConnector implements Closeable {
      * @param port the cache port
      * @param sslContext the SSL context
      * @param connectTimeoutMs TCP connection timeout in milliseconds
-     * @param initializationTimeoutMs TLS, AUTH, and config timeout in milliseconds
+     * @param initializationTimeoutMs TLS, HELLO, and config timeout in milliseconds
      * @param requestTimeoutMs total timeout for each Photon request attempt
      * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
      */
@@ -215,14 +222,14 @@ public class PhotonConnector implements Closeable {
     }
 
     // =========================================================================
-    // Lifecycle: connect → authenticate → configure → request → close
+    // Lifecycle: connect → handshake → configure → request → close
     // =========================================================================
 
     /**
      * Establish the TCP + TLS connection.
      *
      * <p>After this returns, the socket is connected and TLS handshake is complete, but no Photon
-     * protocol handshake has occurred. Call {@link #authenticate(String, String)} next.
+     * protocol handshake has occurred. Call {@link #handshake(String, String)} next.
      *
      * @throws PhotonConnectionError if the connection fails
      */
@@ -318,50 +325,62 @@ public class PhotonConnector implements Closeable {
     }
 
     /**
-     * Authenticate with the cache using AUTH command.
+     * Negotiate RESP3 and authenticate with {@code HELLO 3 AUTH <user> <token>}.
      *
      * <p>Must be called after {@link #connect()} and before any requests. The reader thread is not
      * started yet, so this uses synchronous reads.
      *
-     * @param userId the user ID for AUTH (e.g., "default.iam-user")
-     * @param authToken the AUTH token/password
-     * @throws PhotonConnectionError if AUTH fails
+     * @param userId the user ID for inline AUTH (e.g., "default.iam-user")
+     * @param authToken the inline AUTH token/password
+     * @throws PhotonConnectionError if HELLO is rejected, lost, times out, or does not confirm RESP3
      */
-    public void authenticate(String userId, String authToken) {
+    public void handshake(String userId, String authToken) {
         ensureConnectedNotDead();
         if (readerThread != null) {
             throw new IllegalStateException(
-                    "Reader already started - authenticate must be called before configureAndStartReader");
+                    "Reader already started - handshake must be called before configureAndStartReader");
         }
 
         try {
-            byte[] authCmd =
+            byte[] helloCmd =
                     RespCodec.encodeCommand(
-                            "AUTH",
+                            "HELLO",
+                            "3".getBytes(StandardCharsets.UTF_8),
+                            "AUTH".getBytes(StandardCharsets.UTF_8),
                             userId.getBytes(StandardCharsets.UTF_8),
                             authToken.getBytes(StandardCharsets.UTF_8));
-            sendRawDirect(authCmd);
-            RespValue authReply = reader.readFrame();
-
-            // Expect +OK
-            if (authReply instanceof RespError) {
-                markDead();
-                throw new PhotonAuthenticationError("AUTH failed: " + authReply);
-            }
-            if (!(authReply instanceof RespSimpleString)) {
-                markDead();
-                throw new PhotonConnectionError("AUTH failed: unexpected response type: " + authReply);
-            }
-            String ok = new String(((RespSimpleString) authReply).getValue(), StandardCharsets.UTF_8);
-            if (!"OK".equals(ok)) {
-                markDead();
-                throw new PhotonConnectionError("AUTH failed: " + ok);
-            }
+            sendRawDirect(helloCmd);
+            verifyHelloReply(reader.readFrame());
+        } catch (PhotonTimeoutError e) {
+            markDead();
+            throw new PhotonConnectionError("HELLO 3 timed out - connection closed", e);
+        } catch (PhotonConnectionLost e) {
+            markDead();
+            throw new PhotonConnectionError("HELLO 3 failed: connection lost", e);
         } catch (PhotonConnectionError e) {
             throw e;
         } catch (Exception e) {
             markDead();
-            throw new PhotonConnectionError("AUTH handshake failed", e);
+            throw new PhotonConnectionError("HELLO 3 handshake failed", e);
+        }
+    }
+
+    private void verifyHelloReply(RespValue reply) {
+        if (reply instanceof RespError) {
+            markDead();
+            throw new PhotonAuthenticationError("HELLO 3 rejected: " + ((RespError) reply).getCode());
+        }
+        if (!(reply instanceof RespMap)) {
+            markDead();
+            throw new PhotonConnectionError(
+                    "HELLO 3 failed: expected a map reply, got " + reply.getClass().getSimpleName());
+        }
+        RespValue proto = ((RespMap) reply).getEntries().get(HELLO_PROTO_KEY);
+        if (!(proto instanceof RespInteger)
+                || ((RespInteger) proto).getValue() != RESP3_PROTOCOL_VERSION) {
+            markDead();
+            throw new PhotonConnectionError(
+                    "HELLO 3 failed: reply did not report proto " + RESP3_PROTOCOL_VERSION);
         }
     }
 
@@ -460,10 +479,10 @@ public class PhotonConnector implements Closeable {
     }
 
     /**
-     * Convenience: connect, authenticate, configure, and start reader in one call.
+     * Convenience: connect, negotiate RESP3 with inline authentication, configure, and start reader.
      *
-     * @param userId the user ID for AUTH (e.g., "default.iam-user")
-     * @param authToken the AUTH token/password
+     * @param userId the user ID for inline AUTH (e.g., "default.iam-user")
+     * @param authToken the inline AUTH token/password
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
@@ -471,16 +490,16 @@ public class PhotonConnector implements Closeable {
     public ResolvedConfig connectAndAuthenticate(
             String userId, String authToken, Map<String, Object> overrides) {
         connect();
-        authenticate(userId, authToken);
+        handshake(userId, authToken);
         return configureAndStartReader(overrides);
     }
 
     /**
-     * Convenience: connect, authenticate with credentials provider, configure, and start reader.
+     * Convenience: connect, handshake with credentials provider, configure, and start reader.
      *
      * <p>The provider is called after TLS connect to get fresh credentials.
      *
-     * @param authProvider supplies the AUTH credentials (called after TLS connect)
+     * @param authProvider supplies the inline AUTH credentials (called after TLS connect)
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws PhotonConnectionError if any step fails
@@ -495,16 +514,16 @@ public class PhotonConnector implements Closeable {
             markDead();
             throw new PhotonConnectionError("Auth provider failed", e);
         }
-        authenticate(creds.getUserId(), creds.getToken());
+        handshake(creds.getUserId(), creds.getToken());
         return configureAndStartReader(overrides);
     }
 
-    /** Convenience: connect and authenticate with empty config overrides. */
+    /** Convenience: connect and handshake with empty config overrides. */
     public ResolvedConfig connectAndAuthenticate(String userId, String authToken) {
         return connectAndAuthenticate(userId, authToken, Collections.emptyMap());
     }
 
-    /** Convenience: connect and authenticate with provider and empty config overrides. */
+    /** Convenience: connect and handshake with provider and empty config overrides. */
     public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider) {
         return connectAndAuthenticate(authProvider, Collections.emptyMap());
     }

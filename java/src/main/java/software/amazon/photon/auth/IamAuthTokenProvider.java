@@ -65,7 +65,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      * <p>Each call resolves credentials and mints a new token. The toolkit owns the token validity
      * contract.
      *
-     * @return the user ID and token for AUTH
+     * @return the user ID and token for the {@code HELLO 3 AUTH} handshake
      */
     @Override
     public AuthCredentials get() {

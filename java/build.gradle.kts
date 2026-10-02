@@ -116,6 +116,26 @@ tasks.jacocoTestReport {
     }
 }
 
+// Rounded down to the nearest 5 from the 2026-10-01 baseline (line 85.9%, branch 72.8%).
+tasks.jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                minimum = "0.85".toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                minimum = "0.70".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
 // TODO(#52): add POM generation and validation once the IAM toolkit is published (#49).
 // The vendored toolkit is a files(...) dependency, so it is not inside the main JAR and a
 // generated POM would not declare it.
