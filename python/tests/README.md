@@ -26,11 +26,14 @@ From `python/`:
 python -m pytest                       # run the whole suite (coverage is reported automatically)
 python -m pytest -q                    # quieter output
 python -m pytest --no-cov              # skip coverage for a faster inner loop
-python -m pytest tests/test_protocol.py              # one file
-python -m pytest tests/test_connection.py            # connector unit + integration tests
+python -m pytest --no-cov tests/test_protocol.py              # one file
+python -m pytest --no-cov tests/test_connection.py            # connector unit + integration tests
 ```
 
-Coverage (`--cov=photon --cov-report=term-missing`) is enabled by default via `pyproject.toml`.
+Coverage (`--cov=photon --cov-report=term-missing`) is enabled by default via `pyproject.toml`,
+and the run fails if combined line and branch coverage drops below `fail_under` in
+`[tool.coverage.report]`. A subset of the suite never reaches that floor, so pass `--no-cov`
+when running individual files.
 
 ### Fast loop vs. end-to-end
 

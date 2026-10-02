@@ -1,5 +1,27 @@
 package software.amazon.photon.session;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.ByteArrayOutputStream;
+import java.net.URI;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
@@ -21,30 +43,6 @@ import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
-
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.net.URI;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.Collections;
-import java.util.Optional;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
-import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-
-import static org.junit.jupiter.api.Assertions.assertArrayEquals;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonAsyncHttpClientTest {
 
@@ -123,16 +121,13 @@ class PhotonAsyncHttpClientTest {
     @Test
     void executorRejectionFallsBackToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
-        Executor rejectingExecutor = command -> {
-            throw new RejectedExecutionException("at capacity");
-        };
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new ImmediateSession(),
-                preparedContext(),
-                origin,
-                false,
-                rejectingExecutor,
-                null);
+        Executor rejectingExecutor =
+                command -> {
+                    throw new RejectedExecutionException("at capacity");
+                };
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new ImmediateSession(), preparedContext(), origin, false, rejectingExecutor, null);
 
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
@@ -143,16 +138,11 @@ class PhotonAsyncHttpClientTest {
     @Test
     void predicateDeclineReplaysBufferedBodyToOrigin() throws Exception {
         RecordingBodyOrigin origin = new RecordingBodyOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new DecliningSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new DecliningSession(), preparedContext(), origin, false, Runnable::run, null);
 
-        client.execute(executeRequest(
-                new TrackingPublisher("declined", 8L))).get(2, TimeUnit.SECONDS);
+        client.execute(executeRequest(new TrackingPublisher("declined", 8L))).get(2, TimeUnit.SECONDS);
 
         assertArrayEquals("declined".getBytes(StandardCharsets.UTF_8), origin.body);
         client.close();
@@ -181,13 +171,9 @@ class PhotonAsyncHttpClientTest {
     void cancellationWhileCollectingBodyCancelsSubscription() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         BlockingPublisher body = new BlockingPublisher();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new ImmediateSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new ImmediateSession(), preparedContext(), origin, false, Runnable::run, null);
 
         CompletableFuture<Void> request = client.execute(executeRequest(body));
         assertTrue(body.subscribed.await(2, TimeUnit.SECONDS));
@@ -203,13 +189,9 @@ class PhotonAsyncHttpClientTest {
     @Test
     void cancellationDuringOriginFallbackCancelsOriginFuture() throws Exception {
         BlockingOrigin origin = new BlockingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new DroppedConnectionSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new DroppedConnectionSession(), preparedContext(), origin, false, Runnable::run, null);
 
         CompletableFuture<Void> request = client.execute(executeRequest());
         assertTrue(origin.started.await(2, TimeUnit.SECONDS));
@@ -224,13 +206,9 @@ class PhotonAsyncHttpClientTest {
     @Test
     void droppedIdempotentTransportFailureDelegatesToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new DroppedTimeoutSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new DroppedTimeoutSession(), preparedContext(), origin, false, Runnable::run, null);
 
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
@@ -241,17 +219,19 @@ class PhotonAsyncHttpClientTest {
     @Test
     void nonIdempotentTransportFailureDoesNotContactOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new TimeoutSession(),
-                preparedContext("UpdateItem"),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new TimeoutSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
 
-        ExecutionException failure = assertThrows(
-                ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof PhotonTimeoutError);
         assertEquals(0, origin.executeCount.get());
@@ -261,17 +241,19 @@ class PhotonAsyncHttpClientTest {
     @Test
     void malformedResponseDoesNotRetryOrContactOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new ProtocolFailureSession(),
-                preparedContext("GetItem"),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new ProtocolFailureSession(),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
 
-        ExecutionException failure = assertThrows(
-                ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof PhotonProtocolError);
         assertEquals(0, origin.executeCount.get());
@@ -281,17 +263,14 @@ class PhotonAsyncHttpClientTest {
     @Test
     void nonOriginRejectionDoesNotContactOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new RejectedSession(),
-                preparedContext("GetItem"),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new RejectedSession(), preparedContext("GetItem"), origin, false, Runnable::run, null);
 
-        ExecutionException failure = assertThrows(
-                ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof PhotonRejectedError);
         assertEquals(0, origin.executeCount.get());
@@ -301,17 +280,19 @@ class PhotonAsyncHttpClientTest {
     @Test
     void idempotentOriginErrorIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new OriginErrorSession(),
-                preparedContext("GetItem"),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new OriginErrorSession(),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
 
-        ExecutionException failure = assertThrows(
-                ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof RetryableException);
         assertTrue(failure.getCause().getCause() instanceof PhotonRejectedError);
@@ -322,17 +303,19 @@ class PhotonAsyncHttpClientTest {
     @Test
     void nonIdempotentOriginErrorIsNonRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new OriginErrorSession(),
-                preparedContext("UpdateItem"),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new OriginErrorSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
 
-        ExecutionException failure = assertThrows(
-                ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof PhotonRejectedError);
         assertEquals(0, origin.executeCount.get());
@@ -342,16 +325,12 @@ class PhotonAsyncHttpClientTest {
     @Test
     void expiredFallbackWindowDoesNotContactOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new CacheUnavailableSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new CacheUnavailableSession(), preparedContext(), origin, false, Runnable::run, null);
 
-        assertThrows(ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        assertThrows(
+                ExecutionException.class, () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -359,16 +338,12 @@ class PhotonAsyncHttpClientTest {
     @Test
     void shutdownFailureDoesNotStartIdempotentFallback() {
         RecordingOrigin origin = new RecordingOrigin();
-        PhotonAsyncHttpClient client = new PhotonAsyncHttpClient(
-                new ClosedFailureSession(),
-                preparedContext(),
-                origin,
-                false,
-                Runnable::run,
-                null);
+        PhotonAsyncHttpClient client =
+                new PhotonAsyncHttpClient(
+                        new ClosedFailureSession(), preparedContext(), origin, false, Runnable::run, null);
 
-        assertThrows(ExecutionException.class,
-                () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        assertThrows(
+                ExecutionException.class, () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -378,8 +353,9 @@ class PhotonAsyncHttpClientTest {
         ImmediateSession session = new ImmediateSession();
         RecordingOrigin callerManaged = new RecordingOrigin();
         ExecutorService callerExecutor = Executors.newSingleThreadExecutor();
-        PhotonAsyncHttpClient callerManagedClient = new PhotonAsyncHttpClient(
-                session, preparedContext(), callerManaged, false, callerExecutor, null);
+        PhotonAsyncHttpClient callerManagedClient =
+                new PhotonAsyncHttpClient(
+                        session, preparedContext(), callerManaged, false, callerExecutor, null);
 
         callerManagedClient.close();
         callerManagedClient.close();
@@ -390,8 +366,9 @@ class PhotonAsyncHttpClientTest {
 
         RecordingOrigin owned = new RecordingOrigin();
         ExecutorService ownedExecutor = Executors.newSingleThreadExecutor();
-        PhotonAsyncHttpClient ownedClient = new PhotonAsyncHttpClient(
-                session, preparedContext(), owned, true, ownedExecutor, ownedExecutor);
+        PhotonAsyncHttpClient ownedClient =
+                new PhotonAsyncHttpClient(
+                        session, preparedContext(), owned, true, ownedExecutor, ownedExecutor);
 
         ownedClient.close();
         ownedClient.close();
@@ -420,10 +397,11 @@ class PhotonAsyncHttpClientTest {
         context.prepareAttempt(attributes);
     }
 
-    private static PhotonAsyncHttpClient limitedClient(SdkAsyncHttpClient origin,
-                                                       PhotonRequestContext context,
-                                                       int maxBodyBytes,
-                                                       int maxCollectors) {
+    private static PhotonAsyncHttpClient limitedClient(
+            SdkAsyncHttpClient origin,
+            PhotonRequestContext context,
+            int maxBodyBytes,
+            int maxCollectors) {
         return new PhotonAsyncHttpClient(
                 new ImmediateSession(),
                 context,
@@ -453,10 +431,11 @@ class PhotonAsyncHttpClientTest {
 
     private static AsyncExecuteRequest executeRequest(SdkHttpContentPublisher body) {
         return AsyncExecuteRequest.builder()
-                .request(SdkHttpFullRequest.builder()
-                        .method(SdkHttpMethod.POST)
-                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                        .build())
+                .request(
+                        SdkHttpFullRequest.builder()
+                                .method(SdkHttpMethod.POST)
+                                .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                                .build())
                 .requestContentPublisher(body)
                 .responseHandler(new NoopResponseHandler())
                 .build();
@@ -636,8 +615,7 @@ class PhotonAsyncHttpClientTest {
         }
 
         @Override
-        public void close() {
-        }
+        public void close() {}
     }
 
     private static final class RecordingBodyOrigin implements SdkAsyncHttpClient {
@@ -646,38 +624,40 @@ class PhotonAsyncHttpClientTest {
         @Override
         public CompletableFuture<Void> execute(AsyncExecuteRequest request) {
             CompletableFuture<Void> result = new CompletableFuture<>();
-            request.requestContentPublisher().subscribe(new Subscriber<ByteBuffer>() {
-                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            request
+                    .requestContentPublisher()
+                    .subscribe(
+                            new Subscriber<ByteBuffer>() {
+                                private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
 
-                @Override
-                public void onSubscribe(Subscription subscription) {
-                    subscription.request(Long.MAX_VALUE);
-                }
+                                @Override
+                                public void onSubscribe(Subscription subscription) {
+                                    subscription.request(Long.MAX_VALUE);
+                                }
 
-                @Override
-                public void onNext(ByteBuffer value) {
-                    byte[] chunk = new byte[value.remaining()];
-                    value.get(chunk);
-                    bytes.write(chunk, 0, chunk.length);
-                }
+                                @Override
+                                public void onNext(ByteBuffer value) {
+                                    byte[] chunk = new byte[value.remaining()];
+                                    value.get(chunk);
+                                    bytes.write(chunk, 0, chunk.length);
+                                }
 
-                @Override
-                public void onError(Throwable failure) {
-                    result.completeExceptionally(failure);
-                }
+                                @Override
+                                public void onError(Throwable failure) {
+                                    result.completeExceptionally(failure);
+                                }
 
-                @Override
-                public void onComplete() {
-                    body = bytes.toByteArray();
-                    result.complete(null);
-                }
-            });
+                                @Override
+                                public void onComplete() {
+                                    body = bytes.toByteArray();
+                                    result.complete(null);
+                                }
+                            });
             return result;
         }
 
         @Override
-        public void close() {
-        }
+        public void close() {}
     }
 
     private static final class TrackingPublisher implements SdkHttpContentPublisher {
@@ -700,36 +680,37 @@ class PhotonAsyncHttpClientTest {
         @Override
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
             int subscriptionNumber = subscribeCount.incrementAndGet();
-            subscriber.onSubscribe(new Subscription() {
-                private boolean emitted;
-                private boolean completed;
+            subscriber.onSubscribe(
+                    new Subscription() {
+                        private boolean emitted;
+                        private boolean completed;
 
-                @Override
-                public void request(long count) {
-                    if (completed) {
-                        return;
-                    }
-                    if (subscriptionNumber == 1) {
-                        collectorDemand.set(count);
-                    }
-                    if (!emitted) {
-                        emitted = true;
-                        subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
-                    }
-                    if (!completed) {
-                        completed = true;
-                        subscriber.onComplete();
-                    }
-                }
+                        @Override
+                        public void request(long count) {
+                            if (completed) {
+                                return;
+                            }
+                            if (subscriptionNumber == 1) {
+                                collectorDemand.set(count);
+                            }
+                            if (!emitted) {
+                                emitted = true;
+                                subscriber.onNext(ByteBuffer.wrap(body).asReadOnlyBuffer());
+                            }
+                            if (!completed) {
+                                completed = true;
+                                subscriber.onComplete();
+                            }
+                        }
 
-                @Override
-                public void cancel() {
-                    if (!completed) {
-                        completed = true;
-                        cancelCount.incrementAndGet();
-                    }
-                }
-            });
+                        @Override
+                        public void cancel() {
+                            if (!completed) {
+                                completed = true;
+                                cancelCount.incrementAndGet();
+                            }
+                        }
+                    });
         }
     }
 
@@ -744,17 +725,18 @@ class PhotonAsyncHttpClientTest {
 
         @Override
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
-            subscriber.onSubscribe(new Subscription() {
-                @Override
-                public void request(long count) {
-                    subscribed.countDown();
-                }
+            subscriber.onSubscribe(
+                    new Subscription() {
+                        @Override
+                        public void request(long count) {
+                            subscribed.countDown();
+                        }
 
-                @Override
-                public void cancel() {
-                    cancelled.countDown();
-                }
-            });
+                        @Override
+                        public void cancel() {
+                            cancelled.countDown();
+                        }
+                    });
         }
     }
 
@@ -766,36 +748,34 @@ class PhotonAsyncHttpClientTest {
 
         @Override
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
-            subscriber.onSubscribe(new Subscription() {
-                private boolean completed;
+            subscriber.onSubscribe(
+                    new Subscription() {
+                        private boolean completed;
 
-                @Override
-                public void request(long count) {
-                    if (!completed) {
-                        completed = true;
-                        subscriber.onComplete();
-                    }
-                }
+                        @Override
+                        public void request(long count) {
+                            if (!completed) {
+                                completed = true;
+                                subscriber.onComplete();
+                            }
+                        }
 
-                @Override
-                public void cancel() {
-                    completed = true;
-                }
-            });
+                        @Override
+                        public void cancel() {
+                            completed = true;
+                        }
+                    });
         }
     }
 
     private static final class NoopResponseHandler implements SdkAsyncHttpResponseHandler {
         @Override
-        public void onHeaders(software.amazon.awssdk.http.SdkHttpResponse response) {
-        }
+        public void onHeaders(software.amazon.awssdk.http.SdkHttpResponse response) {}
 
         @Override
-        public void onStream(org.reactivestreams.Publisher<ByteBuffer> publisher) {
-        }
+        public void onStream(org.reactivestreams.Publisher<ByteBuffer> publisher) {}
 
         @Override
-        public void onError(Throwable failure) {
-        }
+        public void onError(Throwable failure) {}
     }
 }

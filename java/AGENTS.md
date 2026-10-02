@@ -26,7 +26,13 @@
 
 ## Validation
 
-- Use `./gradlew build` for the complete local gate (compile, test, check).
+- Use `./gradlew build` for the complete local gate: compile with Error Prone,
+  Spotless check, tests, JaCoCo reports, Javadoc, and the JAR contents check.
+  Gradle must run on JDK 21.
+- Run `./gradlew spotlessApply` to format `src/` with google-java-format.
+- Run tests on another JDK with `./gradlew test -PtestJavaVersion=<8|11|17|21>`.
+  The JDK must be installed locally, or listed in
+  `-Porg.gradle.java.installations.paths=<paths>`.
 - Run focused tests first when appropriate:
   `./gradlew test --tests "ClassName"` or
   `./gradlew test --tests "ClassName.methodName"`.
@@ -39,8 +45,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 8 source and bytecode compatibility; CI also validates JDK 11 and
-  JDK 17. Do not use language or library APIs introduced after Java 8.
+- Target Java 8 source and bytecode compatibility; CI runs the tests on JDK 8,
+  11, 17, and 21. Do not use language or library APIs introduced after Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
@@ -80,13 +86,13 @@ require the corresponding tests, README, and build checks to change with it.
   whole connection for FIFO/send/write timeouts; deferred request-ID timeouts
   may fail only that request and drop a later push for the removed ID.
 - **Session lifecycle:** flag changes that permit requests before
-  `connect → authenticate → photon.config`, use after close, or duplicate
+  `connect → HELLO 3 AUTH → photon.config`, use after close, or duplicate
   teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
   and idempotent `close()`.
 - **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after AUTH failure, disabled
+  provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to AUTH, and keep
+  credentials for each fresh 15-minute token, confine tokens to the HELLO AUTH trailer, and keep
   verified TLS with hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
@@ -158,10 +164,11 @@ at `SEVERE` on every occurrence.
   other secret material.
 - The Java IAM toolkit is pinned under `vendor/` and built by Gradle through
   Maven. Keep token validation and signing in that library; Photon owns only
-  the adapter, TLS connection, and AUTH lifecycle.
+  the adapter, TLS connection, and HELLO/AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
-- Test TLS certificates under `src/test/` are localhost-only fixtures and must
-  not be used for production.
+- `MockTlsServer` generates a self-signed `CN=localhost` certificate at test
+  time with BouncyCastle (test scope only). It is a localhost-only fixture and
+  must not be used for production.
 
 ## Generated and build files
 

@@ -62,7 +62,7 @@ interface InitializeOptions {
  * Validate and convert the public seconds-based staleness window to milliseconds.
  *
  * Runs before transport initialization so a bad value fails fast instead of after a connection
- * and IAM authentication have already succeeded.
+ * and the authenticated RESP3 handshake has already succeeded.
  */
 function stalenessDurationMs(seconds: number | undefined): number {
   if (seconds === undefined) return DEFAULT_STALENESS_DURATION_MS;
@@ -75,7 +75,7 @@ function stalenessDurationMs(seconds: number | undefined): number {
 /**
  * Bring up a PhotonSession for an SDK client and install interception.
  *
- * The session completes IAM authentication and the photon.config handshake
+ * The session completes the authenticated HELLO 3 and photon.config handshakes
  * before middleware is installed, so the first intercepted request sees a
  * ready session.
  */

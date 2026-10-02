@@ -52,7 +52,7 @@ function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnecto
   return {
     isReady: true,
     connect: vi.fn(async () => undefined),
-    authenticate: vi.fn(async () => undefined),
+    handshake: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string) =>
       command === "photon.config"
         ? Buffer.from('{"refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}')

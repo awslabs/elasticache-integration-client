@@ -3,9 +3,7 @@ package software.amazon.photon.resp;
 import java.util.List;
 import java.util.Objects;
 
-/**
- * RESP3 push value.
- */
+/** RESP3 push value. */
 public class RespPush implements RespValue {
 
     private final List<RespValue> elements;

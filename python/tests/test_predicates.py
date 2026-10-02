@@ -36,6 +36,7 @@ def _get_item(table="Users"):
 
 # --- compilation --------------------------------------------------------------
 
+
 def test_compiles_the_all_reads_config_the_proxy_emits():
     predicates = compile_predicates(DEFAULT_RESOLVED_CONFIG)
     assert len(predicates) == 1
@@ -59,15 +60,18 @@ def test_predicate_without_string_expr_raises():
 
 
 def test_uncompilable_expression_raises():
-    config = {"predicates": [
-        {"expr": "this is not (valid CEL", "vars": {}},
-        DEFAULT_RESOLVED_CONFIG["predicates"][0],
-    ]}
+    config = {
+        "predicates": [
+            {"expr": "this is not (valid CEL", "vars": {}},
+            DEFAULT_RESOLVED_CONFIG["predicates"][0],
+        ]
+    }
     with pytest.raises(PhotonConfigUnevaluable):
         compile_predicates(config)
 
 
 # --- routing: all-reads (no allowlist) ----------------------------------------
+
 
 def test_routes_a_listed_operation():
     predicates = compile_predicates(DEFAULT_RESOLVED_CONFIG)
@@ -100,6 +104,7 @@ def test_empty_predicate_set_routes_nothing():
 
 # --- routing: table allowlist -------------------------------------------------
 
+
 def test_routes_only_allowlisted_tables():
     predicates = compile_predicates(table_allowlist_config("Users"))
     assert should_route_to_photon(predicates, _get_item("Users")) is True
@@ -115,16 +120,28 @@ def test_missing_table_name_does_not_route():
 def test_single_table_writes_route_by_table_name(operation):
     """Writes share the TableName body shape with the single-item reads."""
     predicates = compile_predicates(table_allowlist_config("Users"))
-    assert should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Users"}')) is True
-    assert should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Orders"}')) is False
+    assert (
+        should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Users"}'))
+        is True
+    )
+    assert (
+        should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Orders"}'))
+        is False
+    )
 
 
 @pytest.mark.parametrize("operation", ["GetItem", "Query", "Scan"])
 def test_single_table_reads_route_by_table_name(operation):
     """GetItem, Query and Scan all match on body.TableName under an allowlist."""
     predicates = compile_predicates(table_allowlist_config("Users"))
-    assert should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Users"}')) is True
-    assert should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Orders"}')) is False
+    assert (
+        should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Users"}'))
+        is True
+    )
+    assert (
+        should_route_to_photon(predicates, _request(operation, body=b'{"TableName":"Orders"}'))
+        is False
+    )
 
 
 def test_batch_write_routes_by_request_items():
@@ -154,28 +171,45 @@ def test_batch_routes_only_when_every_table_is_allowlisted():
 def test_empty_request_items_does_not_route():
     """The size(...) > 0 guard: an empty batch names nothing to allowlist."""
     predicates = compile_predicates(table_allowlist_config("Users"))
-    assert should_route_to_photon(predicates, _request("BatchGetItem", body=b'{"RequestItems":{}}')) is False
+    assert (
+        should_route_to_photon(predicates, _request("BatchGetItem", body=b'{"RequestItems":{}}'))
+        is False
+    )
 
 
 # --- routing: transactions ----------------------------------------------------
 
+
 def test_transact_get_routes_only_when_every_table_is_allowlisted():
     predicates = compile_predicates(table_allowlist_config("Users", "Sessions"))
-    both = json.dumps({"TransactItems": [
-        {"Get": {"TableName": "Users", "Key": {}}},
-        {"Get": {"TableName": "Sessions", "Key": {}}},
-    ]}).encode()
-    mixed = json.dumps({"TransactItems": [
-        {"Get": {"TableName": "Users", "Key": {}}},
-        {"Get": {"TableName": "Orders", "Key": {}}},
-    ]}).encode()
+    both = json.dumps(
+        {
+            "TransactItems": [
+                {"Get": {"TableName": "Users", "Key": {}}},
+                {"Get": {"TableName": "Sessions", "Key": {}}},
+            ]
+        }
+    ).encode()
+    mixed = json.dumps(
+        {
+            "TransactItems": [
+                {"Get": {"TableName": "Users", "Key": {}}},
+                {"Get": {"TableName": "Orders", "Key": {}}},
+            ]
+        }
+    ).encode()
     assert should_route_to_photon(predicates, _request("TransactGetItems", body=both)) is True
     assert should_route_to_photon(predicates, _request("TransactGetItems", body=mixed)) is False
 
 
 def test_empty_transact_items_does_not_route():
     predicates = compile_predicates(table_allowlist_config("Users"))
-    assert should_route_to_photon(predicates, _request("TransactGetItems", body=b'{"TransactItems":[]}')) is False
+    assert (
+        should_route_to_photon(
+            predicates, _request("TransactGetItems", body=b'{"TransactItems":[]}')
+        )
+        is False
+    )
 
 
 def test_transact_get_routes_under_the_all_reads_predicate():
@@ -185,6 +219,7 @@ def test_transact_get_routes_under_the_all_reads_predicate():
 
 
 # --- body parsing / fail-safe -------------------------------------------------
+
 
 @pytest.mark.parametrize("body", [b"", b"not json", b'["TableName"]', b"null", object()])
 def test_uninspectable_body_does_not_route(body):
@@ -199,8 +234,6 @@ def test_a_large_body_is_still_inspected():
     assert should_route_to_photon(predicates, _request(body=body)) is True
 
 
-
-
 def test_table_name_matched_exactly_without_normalization():
     predicates = compile_predicates(table_allowlist_config("Users"))
     arn = "arn:aws:dynamodb:us-east-1:123456789012:table/Users"
@@ -208,6 +241,7 @@ def test_table_name_matched_exactly_without_normalization():
 
 
 # --- context integrity --------------------------------------------------------
+
 
 def test_non_object_predicate_entries_raise():
     config = {"predicates": ["nope", 42, None, [], DEFAULT_RESOLVED_CONFIG["predicates"][0]]}
@@ -217,10 +251,14 @@ def test_non_object_predicate_entries_raise():
 
 def test_variable_may_not_shadow_a_context_name(caplog):
     # A variable named `service` must not make a non-DynamoDB request match a dynamodb predicate.
-    config = {"predicates": [{
-        "expr": "service == 'dynamodb' && operation in ops",
-        "vars": {"ops": ["GetItem"], "service": "s3"},
-    }]}
+    config = {
+        "predicates": [
+            {
+                "expr": "service == 'dynamodb' && operation in ops",
+                "vars": {"ops": ["GetItem"], "service": "s3"},
+            }
+        ]
+    }
     with caplog.at_level("WARNING", logger="photon.predicates"):
         predicates = compile_predicates(config)
     assert "reserved context name" in caplog.text
@@ -232,12 +270,6 @@ def test_variable_may_not_shadow_a_context_name(caplog):
 def test_context_names_match_the_reserved_set():
     # Guards against a new context field being added without reserving its name.
     assert set(_build_context(_get_item())) == _CONTEXT_NAMES
-
-
-
-
-
-
 
 
 @pytest.mark.parametrize("expr", ["'yes'", "1", "['GetItem']", "{'a': 1}"])

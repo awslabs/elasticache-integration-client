@@ -4,9 +4,7 @@ import software.amazon.awssdk.core.interceptor.ExecutionAttribute;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.photon.model.PhotonRequest;
 
-/**
- * Per-client, per-attempt handoff between an SDK interceptor and HTTP transport.
- */
+/** Per-client, per-attempt handoff between an SDK interceptor and HTTP transport. */
 final class PhotonRequestContext {
 
     private static final ExecutionAttribute<PhotonRequest> PHOTON_REQUEST =

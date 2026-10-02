@@ -135,7 +135,7 @@ describe("public client", () => {
         expect(request.headers["x-amz-date"]).toBeDefined();
         expect(request.headers["x-amz-security-token"]).toBeDefined();
       }
-      expect(cache.photonCommandLog).toEqual(["auth", "photon.config"]);
+      expect(cache.photonCommandLog).toEqual(["hello", "photon.config"]);
       expect(cache.requests).toHaveLength(0);
       expect(originRequests).toHaveLength(2);
       for (const request of originRequests) {
@@ -238,7 +238,7 @@ describe("public DynamoDB client", () => {
         expect(request.headers["x-amz-security-token"]).toBeDefined();
       }
       expect(cache.photonCommandLog).toEqual([
-        "auth",
+        "hello",
         "photon.config",
         "photon.request",
         "photon.request",

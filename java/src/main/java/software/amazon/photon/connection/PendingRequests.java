@@ -1,10 +1,5 @@
 package software.amazon.photon.connection;
 
-import software.amazon.photon.exception.PhotonConnectionLost;
-import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonProtocolError;
-import software.amazon.photon.resp.RespValue;
-
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedList;
@@ -13,21 +8,26 @@ import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import software.amazon.photon.exception.PhotonConnectionLost;
+import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.resp.RespValue;
 
 /**
  * Thread-safe home for FIFO and request-ID-correlated pending futures.
  *
- * <p>Ordinary replies are resolved in FIFO order. Deferred replies move their
- * future into an ID map until a matching push arrives:
+ * <p>Ordinary replies are resolved in FIFO order. Deferred replies move their future into an ID map
+ * until a matching push arrives:
+ *
  * <ol>
- *   <li>Callers register a future before sending (via {@link #registerNewRequest()})</li>
- *   <li>The reader thread resolves futures in order (via {@link #resolveOldestRequest(RespValue)})</li>
- *   <li>Deferred requests are promoted and later resolved by request ID</li>
+ *   <li>Callers register a future before sending (via {@link #registerNewRequest()})
+ *   <li>The reader thread resolves futures in order (via {@link #resolveOldestRequest(RespValue)})
+ *   <li>Deferred requests are promoted and later resolved by request ID
  * </ol>
  *
- * <p>All operations are thread-safe. Requests awaiting either a positional FIFO
- * reply or a deferred by-ID reply together count against a configurable maximum,
- * so moving a request to ID-based tracking does not free additional capacity.
+ * <p>All operations are thread-safe. Requests awaiting either a positional FIFO reply or a deferred
+ * by-ID reply together count against a configurable maximum, so moving a request to ID-based
+ * tracking does not free additional capacity.
  */
 public class PendingRequests {
 
@@ -53,16 +53,13 @@ public class PendingRequests {
         private final CompletableFuture<RespValue> future;
         private final boolean deferredResponseAllowed;
 
-        private PendingRequest(CompletableFuture<RespValue> future,
-                               boolean deferredResponseAllowed) {
+        private PendingRequest(CompletableFuture<RespValue> future, boolean deferredResponseAllowed) {
             this.future = future;
             this.deferredResponseAllowed = deferredResponseAllowed;
         }
     }
 
-    /**
-     * Create a pending requests queue with default max size.
-     */
+    /** Create a pending requests queue with default max size. */
     public PendingRequests() {
         this(DEFAULT_MAX_PENDING);
     }
@@ -70,8 +67,8 @@ public class PendingRequests {
     /**
      * Create a pending requests queue with a custom max size.
      *
-     * @param maxPending maximum number of requests awaiting either a FIFO or a
-     *                   deferred reply (must be positive)
+     * @param maxPending maximum number of requests awaiting either a FIFO or a deferred reply (must
+     *     be positive)
      */
     public PendingRequests(int maxPending) {
         if (maxPending <= 0) {
@@ -83,9 +80,8 @@ public class PendingRequests {
     /**
      * Register a new pending request and return its future.
      *
-     * <p>The caller must send the request immediately after registering to
-     * maintain FIFO correlation. This should be called while holding the
-     * send lock.
+     * <p>The caller must send the request immediately after registering to maintain FIFO correlation.
+     * This should be called while holding the send lock.
      *
      * @return a future that will be completed when the response arrives
      * @throws PhotonConnectionLost if the queue is closed
@@ -98,8 +94,8 @@ public class PendingRequests {
     /**
      * Register a new pending request with an explicit deferred-response policy.
      *
-     * <p>Only Photon request calls accept a request-ID reply. Raw commands
-     * remain FIFO-correlated and return arbitrary RESP simple strings directly.
+     * <p>Only Photon request calls accept a request-ID reply. Raw commands remain FIFO-correlated and
+     * return arbitrary RESP simple strings directly.
      */
     CompletableFuture<RespValue> registerNewRequest(boolean deferredResponseAllowed) {
         lock.lock();
@@ -145,8 +141,8 @@ public class PendingRequests {
      * Move the oldest FIFO request into request-ID-based tracking.
      *
      * @param requestId deferred response request ID
-     * @return true when the FIFO request was consumed as a deferred response,
-     *         false when the request expects an ordinary FIFO response
+     * @return true when the FIFO request was consumed as a deferred response, false when the request
+     *     expects an ordinary FIFO response
      * @throws PhotonProtocolError if no FIFO request exists or the ID is already active
      */
     public boolean moveNextToAsyncResponses(String requestId) {
@@ -210,9 +206,9 @@ public class PendingRequests {
     /**
      * Handle an already-detected response timeout and update pending state atomically.
      *
-     * <p>Async requests are removed without closing the tracker. FIFO timeouts fail all
-     * pending requests and are fatal. A request completed concurrently is reported as
-     * {@link TimeoutDisposition#COMPLETED}.
+     * <p>Async requests are removed without closing the tracker. FIFO timeouts fail all pending
+     * requests and are fatal. A request completed concurrently is reported as {@link
+     * TimeoutDisposition#COMPLETED}.
      */
     TimeoutDisposition onTimeout(CompletableFuture<RespValue> future, Throwable cause) {
         lock.lock();
@@ -230,9 +226,7 @@ public class PendingRequests {
         }
     }
 
-    /**
-     * Cancel one request while retaining its FIFO slot until its reply is consumed.
-     */
+    /** Cancel one request while retaining its FIFO slot until its reply is consumed. */
     void cancel(CompletableFuture<RespValue> future, Throwable cause) {
         lock.lock();
         try {
@@ -246,8 +240,8 @@ public class PendingRequests {
     /**
      * Fail all pending requests with the given exception and mark closed.
      *
-     * <p>Called when the connection dies (timeout, EOF, error). After this,
-     * no new requests can be registered.
+     * <p>Called when the connection dies (timeout, EOF, error). After this, no new requests can be
+     * registered.
      *
      * @param cause the exception to fail pending requests with
      */
@@ -266,8 +260,7 @@ public class PendingRequests {
      * <p>The caller must hold {@code lock}.
      */
     private boolean removeFromAsyncLocked(CompletableFuture<RespValue> future) {
-        Iterator<Map.Entry<String, PendingRequest>> iterator =
-                asyncResponses.entrySet().iterator();
+        Iterator<Map.Entry<String, PendingRequest>> iterator = asyncResponses.entrySet().iterator();
         while (iterator.hasNext()) {
             if (iterator.next().getValue().future == future) {
                 iterator.remove();
@@ -294,9 +287,7 @@ public class PendingRequests {
         asyncResponses.clear();
     }
 
-    /**
-     * Get the current number of requests awaiting FIFO replies.
-     */
+    /** Get the current number of requests awaiting FIFO replies. */
     public int size() {
         lock.lock();
         try {
@@ -306,9 +297,7 @@ public class PendingRequests {
         }
     }
 
-    /**
-     * Check if the queue is closed.
-     */
+    /** Check if the queue is closed. */
     public boolean isClosed() {
         return closed;
     }

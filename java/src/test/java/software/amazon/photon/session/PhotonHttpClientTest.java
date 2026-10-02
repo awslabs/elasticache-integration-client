@@ -1,5 +1,21 @@
 package software.amazon.photon.session;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.net.URI;
+import java.util.Collections;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.http.AbortableInputStream;
@@ -20,23 +36,6 @@ import software.amazon.photon.exception.PhotonTimeoutError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
-
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.net.URI;
-import java.util.Collections;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PhotonHttpClientTest {
 
@@ -74,8 +73,8 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
 
-        PhotonTimeoutError failure = assertThrows(PhotonTimeoutError.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonTimeoutError failure =
+                assertThrows(PhotonTimeoutError.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
@@ -88,8 +87,9 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "GetItem");
 
-        PhotonConnectionLost failure = assertThrows(PhotonConnectionLost.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonConnectionLost failure =
+                assertThrows(
+                        PhotonConnectionLost.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
@@ -103,8 +103,9 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "GetItem");
 
-        PhotonProtocolError failure = assertThrows(PhotonProtocolError.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonProtocolError failure =
+                assertThrows(
+                        PhotonProtocolError.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
@@ -118,8 +119,9 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "GetItem");
 
-        PhotonRejectedError failure = assertThrows(PhotonRejectedError.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonRejectedError failure =
+                assertThrows(
+                        PhotonRejectedError.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
@@ -132,8 +134,8 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "GetItem");
 
-        IOException failure = assertThrows(IOException.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        IOException failure =
+                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure.getCause());
         assertEquals(0, origin.prepareCount.get());
@@ -146,8 +148,9 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false, "UpdateItem");
 
-        PhotonRejectedError failure = assertThrows(PhotonRejectedError.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonRejectedError failure =
+                assertThrows(
+                        PhotonRejectedError.class, () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
@@ -173,9 +176,9 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
 
-        PhotonConnectionLost failure = assertThrows(
-                PhotonConnectionLost.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        PhotonConnectionLost failure =
+                assertThrows(
+                        PhotonConnectionLost.class, () -> client.prepareRequest(signedRequest()).call());
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
     }
@@ -202,8 +205,7 @@ class PhotonHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         PhotonHttpClient client = newClient(session, origin, false);
 
-        assertThrows(IllegalStateException.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        assertThrows(IllegalStateException.class, () -> client.prepareRequest(signedRequest()).call());
         assertEquals(0, origin.prepareCount.get());
     }
 
@@ -232,15 +234,17 @@ class PhotonHttpClientTest {
         ExecutableHttpRequest request = client.prepareRequest(signedRequest());
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
-        Thread caller = new Thread(() -> {
-            try {
-                request.call();
-            } catch (Throwable throwable) {
-                failure.set(throwable);
-            } finally {
-                context.clear();
-            }
-        });
+        Thread caller =
+                new Thread(
+                        () -> {
+                            try {
+                                request.call();
+                            } catch (Throwable throwable) {
+                                failure.set(throwable);
+                            } finally {
+                                context.clear();
+                            }
+                        });
         caller.start();
         assertTrue(session.requestStarted.await(2, TimeUnit.SECONDS));
 
@@ -265,15 +269,17 @@ class PhotonHttpClientTest {
         ExecutableHttpRequest request = client.prepareRequest(signedRequest());
         AtomicReference<Throwable> failure = new AtomicReference<>();
 
-        Thread caller = new Thread(() -> {
-            try {
-                request.call();
-            } catch (Throwable throwable) {
-                failure.set(throwable);
-            } finally {
-                context.clear();
-            }
-        });
+        Thread caller =
+                new Thread(
+                        () -> {
+                            try {
+                                request.call();
+                            } catch (Throwable throwable) {
+                                failure.set(throwable);
+                            } finally {
+                                context.clear();
+                            }
+                        });
         caller.start();
         assertTrue(origin.callStarted.await(2, TimeUnit.SECONDS));
 
@@ -301,13 +307,13 @@ class PhotonHttpClientTest {
         assertEquals(1, owned.closeCount.get());
     }
 
-    private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
-                                               boolean ownsOrigin) {
+    private static PhotonHttpClient newClient(
+            PhotonSession session, SdkHttpClient origin, boolean ownsOrigin) {
         return newClient(session, origin, ownsOrigin, "ListTables");
     }
 
-    private static PhotonHttpClient newClient(PhotonSession session, SdkHttpClient origin,
-                                               boolean ownsOrigin, String operation) {
+    private static PhotonHttpClient newClient(
+            PhotonSession session, SdkHttpClient origin, boolean ownsOrigin, String operation) {
         PhotonRequestContext context = new PhotonRequestContext();
         prepare(context, operation);
         return new PhotonHttpClient(session, context, origin, ownsOrigin);
@@ -337,11 +343,12 @@ class PhotonHttpClientTest {
     }
 
     private static HttpExecuteRequest signedRequest() {
-        SdkHttpFullRequest request = SdkHttpFullRequest.builder()
-                .method(SdkHttpMethod.POST)
-                .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                .putHeader("Authorization", "signed-value")
-                .build();
+        SdkHttpFullRequest request =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                        .putHeader("Authorization", "signed-value")
+                        .build();
         return HttpExecuteRequest.builder().request(request).build();
     }
 
@@ -412,8 +419,7 @@ class PhotonHttpClientTest {
                     }
                     return HttpExecuteResponse.builder()
                             .response(SdkHttpFullResponse.builder().statusCode(201).build())
-                            .responseBody(AbortableInputStream.create(
-                                    new ByteArrayInputStream(new byte[0])))
+                            .responseBody(AbortableInputStream.create(new ByteArrayInputStream(new byte[0])))
                             .build();
                 }
 

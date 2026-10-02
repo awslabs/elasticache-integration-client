@@ -85,8 +85,7 @@ def test_client_passes_the_staleness_window_to_the_session(monkeypatch, kwargs, 
     which the policy would reject — and the caller's own value when set."""
     _patch_common(monkeypatch, MagicMock())
     built: dict = {}
-    monkeypatch.setattr(client_mod, "PhotonSession",
-                        lambda *a, **k: built.update(k) or MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
     monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
 
     client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", **kwargs)
@@ -102,7 +101,6 @@ def test_client_rejects_an_unusable_staleness_window(monkeypatch, bad):
     _patch_common(monkeypatch, sdk_client)
 
     with pytest.raises(PhotonConfigError):
-        client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c",
-                          staleness_duration=bad)
+        client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", staleness_duration=bad)
 
     sdk_client.close.assert_called_once()

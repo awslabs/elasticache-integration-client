@@ -1,5 +1,14 @@
 package software.amazon.photon.connection;
 
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.net.SocketTimeoutException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
 import software.amazon.photon.exception.PhotonTimeoutError;
@@ -12,26 +21,15 @@ import software.amazon.photon.resp.RespPush;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.SocketTimeoutException;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
-import java.util.List;
-
 /**
  * Reads RESP frames and resolves pending futures by FIFO position or request ID.
  *
- * <p>This class manages the read buffer and frame decoding. It runs in a
- * dedicated reader thread (or can be used synchronously for single-threaded
- * connections). Complete frames are routed as positional replies, deferred
- * request IDs, or response pushes.
+ * <p>This class manages the read buffer and frame decoding. It runs in a dedicated reader thread
+ * (or can be used synchronously for single-threaded connections). Complete frames are routed as
+ * positional replies, deferred request IDs, or response pushes.
  *
- * <p>On any error (timeout, EOF, protocol error), it fails all pending
- * requests and signals the connection to close.
+ * <p>On any error (timeout, EOF, protocol error), it fails all pending requests and signals the
+ * connection to close.
  */
 public class SocketReader {
 
@@ -53,8 +51,8 @@ public class SocketReader {
      * Create a socket reader.
      *
      * @param inputStream the socket input stream
-     * @param pending     the pending requests queue to resolve
-     * @param onDeath     callback when the reader dies (for connection cleanup)
+     * @param pending the pending requests queue to resolve
+     * @param onDeath callback when the reader dies (for connection cleanup)
      */
     public SocketReader(InputStream inputStream, PendingRequests pending, Runnable onDeath) {
         this(inputStream, pending, onDeath, DEFAULT_MAX_RESPONSE_SIZE);
@@ -63,13 +61,13 @@ public class SocketReader {
     /**
      * Create a socket reader with custom max response size.
      *
-     * @param inputStream     the socket input stream
-     * @param pending         the pending requests queue to resolve
-     * @param onDeath         callback when the reader dies
+     * @param inputStream the socket input stream
+     * @param pending the pending requests queue to resolve
+     * @param onDeath callback when the reader dies
      * @param maxResponseSize maximum response size in bytes
      */
-    public SocketReader(InputStream inputStream, PendingRequests pending,
-                        Runnable onDeath, int maxResponseSize) {
+    public SocketReader(
+            InputStream inputStream, PendingRequests pending, Runnable onDeath, int maxResponseSize) {
         this.inputStream = inputStream;
         this.pending = pending;
         this.onDeath = onDeath;
@@ -79,9 +77,8 @@ public class SocketReader {
     /**
      * Run the reader loop. This blocks until the connection dies.
      *
-     * <p>Call this from a dedicated thread. On exit (normal or exceptional),
-     * the onDeath callback is invoked first (to set dead=true), then all
-     * pending requests are failed.
+     * <p>Call this from a dedicated thread. On exit (normal or exceptional), the onDeath callback is
+     * invoked first (to set dead=true), then all pending requests are failed.
      */
     public void runLoop() {
         try {
@@ -107,8 +104,7 @@ public class SocketReader {
     /**
      * Read a single RESP frame (blocking) and resolve the next pending future.
      *
-     * <p>This can be called in a loop by a reader thread, or once per request
-     * for synchronous use.
+     * <p>This can be called in a loop by a reader thread, or once per request for synchronous use.
      *
      * @throws PhotonTimeoutError if the read times out
      * @throws PhotonConnectionLost if the socket closes or fails
@@ -121,8 +117,7 @@ public class SocketReader {
             return;
         }
         if (value instanceof RespSimpleString) {
-            String text = decodeStrictUtf8(
-                    ((RespSimpleString) value).getValue(), "async response ID");
+            String text = decodeStrictUtf8(((RespSimpleString) value).getValue(), "async response ID");
             if (!"OK".equals(text) && pending.moveNextToAsyncResponses(text)) {
                 return;
             }
@@ -137,12 +132,10 @@ public class SocketReader {
     /**
      * Route a RESP3 push frame.
      *
-     * <p>A {@code photon.response} push carries three elements: the push kind,
-     * the deferred request ID, and the response value for that request. The
-     * push kind may arrive as a bulk or simple string. An unrecognized push
-     * kind is fatal protocol corruption: a client that does not understand a
-     * push has no request to correlate it with, so the stream can no longer
-     * be trusted.
+     * <p>A {@code photon.response} push carries three elements: the push kind, the deferred request
+     * ID, and the response value for that request. The push kind may arrive as a bulk or simple
+     * string. An unrecognized push kind is fatal protocol corruption: a client that does not
+     * understand a push has no request to correlate it with, so the stream can no longer be trusted.
      */
     private void handlePush(RespPush push) {
         List<RespValue> elements = push.getElements();
@@ -161,28 +154,34 @@ public class SocketReader {
             throw new PhotonProtocolError("Unknown RESP push kind: " + kind);
         }
         if (elements.size() != 3) {
-            throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
-                    + " push payload: expected 3 elements but got " + elements.size());
+            throw new PhotonProtocolError(
+                    "Malformed "
+                            + PhotonProtocol.PUSH_KIND_RESPONSE
+                            + " push payload: expected 3 elements but got "
+                            + elements.size());
         }
         if (!(elements.get(1) instanceof RespBulkString)) {
-            throw new PhotonProtocolError("Malformed " + PhotonProtocol.PUSH_KIND_RESPONSE
-                    + " push request ID: expected a bulk string");
+            throw new PhotonProtocolError(
+                    "Malformed "
+                            + PhotonProtocol.PUSH_KIND_RESPONSE
+                            + " push request ID: expected a bulk string");
         }
 
-        String requestId = decodeStrictUtf8(
-                ((RespBulkString) elements.get(1)).getValue(), "push request ID");
+        String requestId =
+                decodeStrictUtf8(((RespBulkString) elements.get(1)).getValue(), "push request ID");
         pending.resolveAsync(requestId, elements.get(2));
     }
 
     /**
      * Strictly decode UTF-8, rejecting malformed or unmappable bytes.
      *
-     * <p>A looser or lossy decoding could mis-correlate a deferred response
-     * with a different in-flight request.
+     * <p>A looser or lossy decoding could mis-correlate a deferred response with a different
+     * in-flight request.
      */
     private static String decodeStrictUtf8(byte[] value, String field) {
         try {
-            return StandardCharsets.UTF_8.newDecoder()
+            return StandardCharsets.UTF_8
+                    .newDecoder()
                     .onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT)
                     .decode(ByteBuffer.wrap(value))
@@ -236,16 +235,15 @@ public class SocketReader {
             }
 
             if (buffer.size() + bytesRead > maxResponseSize) {
-                throw new PhotonProtocolError("Response exceeded maximum size of " + maxResponseSize + " bytes");
+                throw new PhotonProtocolError(
+                        "Response exceeded maximum size of " + maxResponseSize + " bytes");
             }
 
             buffer.write(readBuf, 0, bytesRead);
         }
     }
 
-    /**
-     * Compact the buffer by removing already-consumed bytes.
-     */
+    /** Compact the buffer by removing already-consumed bytes. */
     private void compactBuffer() {
         byte[] data = buffer.toByteArray();
         buffer.reset();
@@ -253,9 +251,7 @@ public class SocketReader {
         consumedOffset = 0;
     }
 
-    /**
-     * Clear the buffer. Used when resetting state.
-     */
+    /** Clear the buffer. Used when resetting state. */
     public void reset() {
         buffer.reset();
         consumedOffset = 0;

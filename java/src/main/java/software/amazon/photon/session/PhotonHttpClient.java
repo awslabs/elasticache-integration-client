@@ -1,29 +1,27 @@
 package software.amazon.photon.session;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.http.ExecutableHttpRequest;
 import software.amazon.awssdk.http.HttpExecuteRequest;
 import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
-import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
-
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Synchronous SDK HTTP transport that attempts Photon before the origin service.
  *
- * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to
- * Photon. Predicate declines delegate to the origin before Photon sees the
- * request. After sending, direct fallback is limited to replay-safe operations
- * whose Photon connection has dropped; retryable healthy-connection failures
- * are returned to the SDK.
+ * <p>The unsigned request captured by {@link PhotonInterceptor} is sent to Photon. Predicate
+ * declines delegate to the origin before Photon sees the request. After sending, direct fallback is
+ * limited to replay-safe operations whose Photon connection has dropped; retryable
+ * healthy-connection failures are returned to the SDK.
  */
 public final class PhotonHttpClient implements SdkHttpClient {
 
@@ -35,8 +33,11 @@ public final class PhotonHttpClient implements SdkHttpClient {
     private final boolean ownsOriginClient;
     private final AtomicBoolean closed = new AtomicBoolean();
 
-    PhotonHttpClient(PhotonSession session, PhotonRequestContext requestContext,
-                     SdkHttpClient originClient, boolean ownsOriginClient) {
+    PhotonHttpClient(
+            PhotonSession session,
+            PhotonRequestContext requestContext,
+            SdkHttpClient originClient,
+            boolean ownsOriginClient) {
         this.session = session;
         this.requestContext = requestContext;
         this.originClient = originClient;
@@ -47,8 +48,10 @@ public final class PhotonHttpClient implements SdkHttpClient {
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
         PhotonRequest capturedRequest = requestContext.takeAttempt();
         return new ExecutableHttpRequest() {
-            private final AtomicReference<ExecutableHttpRequest> activeOriginRequest = new AtomicReference<>();
-            private final AtomicReference<PhotonRequestCancellation> activePhotonRequest = new AtomicReference<>();
+            private final AtomicReference<ExecutableHttpRequest> activeOriginRequest =
+                    new AtomicReference<>();
+            private final AtomicReference<PhotonRequestCancellation> activePhotonRequest =
+                    new AtomicReference<>();
             private final AtomicBoolean aborted = new AtomicBoolean();
 
             @Override
@@ -76,10 +79,8 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     if (aborted.get()) {
                         throw new IOException("Request was aborted", photonFailure);
                     }
-                    if (!PhotonFallbackPolicy.shouldFallback(
-                            session, capturedRequest, photonFailure)) {
-                        if (PhotonFallbackPolicy.shouldRetry(
-                                session, capturedRequest, photonFailure)) {
+                    if (!PhotonFallbackPolicy.shouldFallback(session, capturedRequest, photonFailure)) {
+                        if (PhotonFallbackPolicy.shouldRetry(session, capturedRequest, photonFailure)) {
                             throw new IOException("Photon request failed", photonFailure);
                         }
                         throw photonFailure;
@@ -96,8 +97,7 @@ public final class PhotonHttpClient implements SdkHttpClient {
                     return callOrigin();
                 }
                 SdkHttpFullResponse sdkResponse = SdkAdapters.toSdkResponse(photonResponse);
-                HttpExecuteResponse.Builder response = HttpExecuteResponse.builder()
-                        .response(sdkResponse);
+                HttpExecuteResponse.Builder response = HttpExecuteResponse.builder().response(sdkResponse);
                 byte[] body = photonResponse.getBody();
                 if (body != null && body.length > 0) {
                     response.responseBody(AbortableInputStream.create(new ByteArrayInputStream(body)));

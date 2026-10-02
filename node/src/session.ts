@@ -41,7 +41,7 @@ import {
 import { PredicateEvaluator } from "./predicates.js";
 import { Refresher } from "./refresh.js";
 
-const PHOTON_AUTH_ERROR = "PHOTON_AUTH_ERROR";
+const AUTH_ERROR = "AUTH_ERROR";
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 const DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
@@ -61,7 +61,7 @@ export interface ReconnectPolicyOptions {
   fallbackDurationMs?: number | null;
   /** Maximum attempts while initially opening the session. Defaults to 3. */
   connectAttempts?: number;
-  /** Overall timeout for each initial connect, AUTH, and config attempt. */
+  /** Overall timeout for each initial connect, HELLO, and config attempt. */
   connectionTimeoutMs?: number;
   /** How often a live connection obtains fresh credentials and runs AUTH again. */
   authRefreshIntervalMs?: number;
@@ -482,7 +482,7 @@ export class PhotonSession {
     try {
       return parseRequestResponse(await currentConnector.execute(command, ...args));
     } catch (error) {
-      if (error instanceof PhotonRejectedError && error.code === PHOTON_AUTH_ERROR) {
+      if (error instanceof PhotonRejectedError && error.code === AUTH_ERROR) {
         this.handleDisconnect(currentConnector);
         return undefined;
       }
@@ -542,7 +542,7 @@ export class PhotonSession {
     connector: PhotonConnector,
   ): Promise<{ config: ResolvedConfig; evaluator: PredicateEvaluator }> {
     await connector.connect();
-    await connector.authenticate();
+    await connector.handshake();
     const [command, args] = serializeConfig(this.overrides);
     const reply = await connector.execute(command, ...args);
     try {

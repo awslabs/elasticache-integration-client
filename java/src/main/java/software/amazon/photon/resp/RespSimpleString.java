@@ -2,9 +2,7 @@ package software.amazon.photon.resp;
 
 import java.util.Arrays;
 
-/**
- * RESP3 simple string value (returned as bytes).
- */
+/** RESP3 simple string value (returned as bytes). */
 public class RespSimpleString implements RespValue {
 
     private final byte[] value;
