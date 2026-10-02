@@ -178,18 +178,7 @@ class PhotonSessionTest {
     @Test
     void reauthenticateOnce_rejectionForceRefreshesManagedToken() {
         AtomicInteger credentialCalls = new AtomicInteger();
-        ManagedIamAuthProvider authProvider =
-                new ManagedIamAuthProvider(
-                        IamAuthTokenProvider.builder()
-                                .cacheName("test-cache")
-                                .userId("test-user")
-                                .region(Region.US_EAST_1)
-                                .credentialsProvider(
-                                        () ->
-                                                AwsBasicCredentials.create(
-                                                        "access-key-" + credentialCalls.incrementAndGet(), "secret-key"))
-                                .refreshAfter(Duration.ofMinutes(10))
-                                .build());
+        ManagedIamAuthProvider authProvider = managedAuthProvider(credentialCalls);
         TestConnector connector =
                 new TestConnector() {
                     @Override
@@ -214,13 +203,55 @@ class PhotonSessionTest {
     }
 
     @Test
-    void reconnectPolicy_rejectsNonPositiveAuthRefreshInterval() {
+    void reauthenticateOnce_deadConnectorDoesNotForceRefreshManagedToken() {
+        AtomicInteger credentialCalls = new AtomicInteger();
+        ManagedIamAuthProvider authProvider = managedAuthProvider(credentialCalls);
+        TestConnector connector =
+                new TestConnector() {
+                    @Override
+                    public void reauthenticate(String userId, String authToken) {
+                        fail();
+                        throw new PhotonAuthenticationError("Unexpected AUTH reply");
+                    }
+                };
+        PhotonSession session = new PhotonSession(() -> connector, authProvider, null, fastPolicy());
+        try {
+            session.open();
+
+            assertThrows(PhotonAuthenticationError.class, session::reauthenticateOnce);
+
+            assertEquals(
+                    1,
+                    credentialCalls.get(),
+                    "a dead connection must not invalidate otherwise reusable credentials");
+        } finally {
+            session.close();
+            authProvider.close();
+        }
+    }
+
+    @Test
+    void reconnectPolicy_rejectsNonPositiveAuthRefreshIntervalMs() {
         assertThrows(
                 IllegalArgumentException.class,
-                () -> ReconnectPolicy.builder().authRefreshIntervalSeconds(0).build());
+                () -> ReconnectPolicy.builder().authRefreshIntervalMs(0).build());
         assertThrows(
                 IllegalArgumentException.class,
-                () -> ReconnectPolicy.builder().authRefreshIntervalSeconds(-1).build());
+                () -> ReconnectPolicy.builder().authRefreshIntervalMs(-1).build());
+    }
+
+    private static ManagedIamAuthProvider managedAuthProvider(AtomicInteger credentialCalls) {
+        return new ManagedIamAuthProvider(
+                IamAuthTokenProvider.builder()
+                        .cacheName("test-cache")
+                        .userId("test-user")
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(
+                                () ->
+                                        AwsBasicCredentials.create(
+                                                "access-key-" + credentialCalls.incrementAndGet(), "secret-key"))
+                        .refreshAfter(Duration.ofMinutes(10))
+                        .build());
     }
 
     // === Refresher lifecycle tests ===

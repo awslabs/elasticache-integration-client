@@ -322,7 +322,7 @@ public class PhotonSession implements Closeable {
                                 null);
                 nextReauthRefresher =
                         createRefresher(
-                                (double) reconnectPolicy.getAuthRefreshIntervalSeconds(),
+                                reconnectPolicy.getAuthRefreshIntervalMs() / 1000.0,
                                 this::reauthenticateOnce,
                                 "photon-reauth",
                                 failures -> reconnectPolicy.delayFor(failures) / 1000.0);
@@ -545,7 +545,9 @@ public class PhotonSession implements Closeable {
         try {
             active.reauthenticate(credentials.getUserId(), credentials.getToken());
         } catch (PhotonAuthenticationError authFailure) {
-            forceRefreshAfterRejection(authFailure);
+            if (!active.isDead()) {
+                forceRefreshAfterRejection(authFailure);
+            }
             throw authFailure;
         }
     }

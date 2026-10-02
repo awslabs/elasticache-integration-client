@@ -197,12 +197,15 @@ Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
         .fallbackDurationSeconds(30)
         .connectAttempts(3)
         .connectionTimeoutMs(5_000)
-        .authRefreshIntervalSeconds(900)
+        .authRefreshIntervalMs(900_000)
         .baseDelayMs(100)
         .maxDelayMs(3_200)
         .jitterFactor(0.2)
         .build())
 ```
+
+`jitterFactor` applies to reconnect delays, config refresh, and re-AUTH.
+Set it to `0` to disable jitter for all three schedules.
 
 Photon requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `photon.response` RESP3 push. Deferred

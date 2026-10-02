@@ -54,12 +54,24 @@ class Refresher {
     private volatile Thread thread;
 
     Refresher(double intervalSeconds, Runnable refreshOnce) {
-        this(intervalSeconds, refreshOnce, "photon-refresher", 0.2, null);
+        this(
+                intervalSeconds,
+                refreshOnce,
+                "photon-refresher",
+                ReconnectPolicy.DEFAULT_JITTER_FACTOR,
+                null);
     }
 
     Refresher(
             double intervalSeconds, Runnable refreshOnce, boolean jitter, Random random, Waiter waiter) {
-        this(intervalSeconds, refreshOnce, "photon-refresher", jitter ? 0.2 : 0, null, random, waiter);
+        this(
+                intervalSeconds,
+                refreshOnce,
+                "photon-refresher",
+                jitter ? ReconnectPolicy.DEFAULT_JITTER_FACTOR : 0,
+                null,
+                random,
+                waiter);
     }
 
     /**
