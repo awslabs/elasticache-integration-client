@@ -105,7 +105,6 @@ export class Refresher {
    * gets freshly computed jitter and refreshes never overlap.
    */
   private schedule(delayMs = this.nextDelayMs()): void {
-    this.validateDelay(delayMs);
     const timer = setTimeout(() => {
       this.timer = undefined;
       if (this.stopped) return;
@@ -123,14 +122,11 @@ export class Refresher {
       await this.refreshOnce();
       this.consecutiveFailures = 0;
     } catch (error) {
-      this.consecutiveFailures++;
       const message =
-        `Photon background task ${this.name} failed (${this.consecutiveFailures} in a row); ` +
+        `Photon background task ${this.name} failed (${++this.consecutiveFailures} in a row); ` +
         "retrying. The cache keeps serving meanwhile.";
       if (this.consecutiveFailures === 1 || this.consecutiveFailures % 100 === 0) {
         console.warn(message, error);
-      } else {
-        console.debug(message, error);
       }
       nextDelayMs = this.failureDelayMs?.(this.consecutiveFailures);
     }
@@ -141,13 +137,5 @@ export class Refresher {
     const intervalMs = this.intervalSeconds * 1000;
     if (this.jitter === 0) return intervalMs;
     return intervalMs * (1 + this.jitter * (2 * this.random() - 1));
-  }
-
-  private validateDelay(delayMs: number): void {
-    if (!Number.isFinite(delayMs) || delayMs <= 0 || delayMs > MAX_TIMEOUT_MS) {
-      throw new PhotonError(
-        `Invalid refresher delay: must be greater than zero and at most ${MAX_TIMEOUT_MS}, got ${delayMs}`,
-      );
-    }
   }
 }

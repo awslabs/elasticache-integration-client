@@ -588,6 +588,8 @@ export class PhotonSession {
     if (this.disconnected.has(connector) || connector.isDead) {
       throw new PhotonConnectionError("Connection closed during initialization");
     }
+    // Refreshers belong to the published connection. A replacement has just authenticated
+    // through HELLO, so publishing it intentionally resets both schedules and failure counts.
     const configRefresher = new Refresher(
       initialized.config.refreshInterval,
       () => this.refreshOnce(),
@@ -602,14 +604,6 @@ export class PhotonSession {
         failureDelayMs: (failures) => this.delayFor(failures),
       },
     );
-    try {
-      configRefresher.start();
-      reauthRefresher.start();
-    } catch (error) {
-      reauthRefresher.stop();
-      configRefresher.stop();
-      throw error;
-    }
     this.reauthRefresher?.stop();
     this.configRefresher?.stop();
     this._config = initialized.config;
@@ -619,6 +613,8 @@ export class PhotonSession {
     this.configConfirmed();
     this.configRefresher = configRefresher;
     this.reauthRefresher = reauthRefresher;
+    configRefresher.start();
+    reauthRefresher.start();
   }
 
   /** Obtain fresh credentials and run plain AUTH on the live connector. */

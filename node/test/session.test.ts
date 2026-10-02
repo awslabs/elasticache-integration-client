@@ -1174,10 +1174,12 @@ describe("PhotonSession", () => {
     );
     expect(
       () => new PhotonSession(() => connector, {}, { authRefreshIntervalMs: 2_000_000_000 }),
-    ).toThrow(PhotonConfigError);
-    expect(
-      () => new PhotonSession(() => connector, {}, { authRefreshIntervalMs: 2_000_000_000 }),
-    ).toThrow("after jitter is applied");
+    ).toThrow(
+      expect.objectContaining({
+        name: "PhotonConfigError",
+        message: expect.stringContaining("after jitter is applied"),
+      }),
+    );
     expect(
       () =>
         new PhotonSession(() => connector, {}, { authRefreshIntervalMs: 2_000_000_000, jitter: 0 }),

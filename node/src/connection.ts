@@ -27,7 +27,7 @@ import {
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
 const DEFAULT_REQUEST_TIMEOUT = 5_000;
-const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO and photon.config.
+const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO, AUTH and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
@@ -906,9 +906,13 @@ export class PhotonConnector {
     if (reply === "OK") return;
 
     this.markDead(new PhotonConnectionLost("unexpected AUTH reply"));
-    throw new PhotonAuthError(
-      `IAM AUTH failed: unexpected reply of type ${this.authReplyType(reply)}`,
-    );
+    let replyType: string;
+    if (reply === null) replyType = "null";
+    else if (Buffer.isBuffer(reply)) replyType = "Buffer";
+    else if (Array.isArray(reply)) replyType = "Array";
+    else if (typeof reply === "object") replyType = reply.constructor.name;
+    else replyType = typeof reply;
+    throw new PhotonAuthError(`IAM AUTH failed: unexpected reply of type ${replyType}`);
   }
 
   private async authCredentials(): Promise<[string, string]> {
@@ -919,14 +923,6 @@ export class PhotonConnector {
     } catch (error) {
       throw new PhotonError("AUTH provider failed", { cause: error });
     }
-  }
-
-  private authReplyType(reply: RespValue): string {
-    if (reply === null) return "null";
-    if (Buffer.isBuffer(reply)) return "Buffer";
-    if (Array.isArray(reply)) return "Array";
-    if (typeof reply === "object") return reply.constructor.name;
-    return typeof reply;
   }
 
   private async waitForResponse(response: Promise<RespValue>, timeout: number): Promise<RespValue> {

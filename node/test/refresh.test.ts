@@ -97,7 +97,6 @@ describe("Refresher", () => {
 
   it("swallows a throwing callback, logs it, and keeps refreshing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const refreshOnce = vi.fn(() => {
       throw new Error("refresh failed");
     });
@@ -108,7 +107,6 @@ describe("Refresher", () => {
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
     expect(warn).toHaveBeenCalledOnce();
-    expect(debug).toHaveBeenCalledTimes(2);
 
     refresher.stop();
   });
@@ -211,7 +209,6 @@ describe("Refresher", () => {
 
   it("swallows a rejected callback, logs it, and keeps refreshing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const refreshOnce = vi.fn(() => Promise.reject(new Error("refresh failed")));
     const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
@@ -220,7 +217,6 @@ describe("Refresher", () => {
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
     expect(warn).toHaveBeenCalledOnce();
-    expect(debug).toHaveBeenCalledTimes(2);
 
     refresher.stop();
   });
@@ -228,7 +224,6 @@ describe("Refresher", () => {
   it("uses failure backoff and restores the steady interval after success", async () => {
     const delays = trackDelays();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    const debug = vi.spyOn(console, "debug").mockImplementation(() => undefined);
     const outcomes = [new Error("one"), new Error("two"), undefined];
     const refreshOnce = vi.fn(() => {
       const outcome = outcomes.shift();
@@ -246,7 +241,6 @@ describe("Refresher", () => {
 
     expect(delays.slice(0, 4)).toEqual([100_000, 1_000, 2_000, 100_000]);
     expect(warn.mock.calls[0]?.[0]).toContain("photon-reauth");
-    expect(debug).toHaveBeenCalledOnce();
   });
 
   it("does not reschedule after stop during an in-flight callback", async () => {
