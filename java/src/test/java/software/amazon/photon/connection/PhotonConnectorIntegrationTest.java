@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.exception.PhotonAuthenticationError;
 import software.amazon.photon.exception.PhotonConnectionError;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonError;
@@ -46,13 +47,14 @@ import software.amazon.photon.resp.RespArray;
 import software.amazon.photon.resp.RespBulkString;
 import software.amazon.photon.resp.RespError;
 import software.amazon.photon.resp.RespInteger;
+import software.amazon.photon.resp.RespMap;
 import software.amazon.photon.resp.RespPush;
 import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
 /**
  * Integration tests for PhotonConnector against MockTlsServer. Exercises the full flow: TLS connect
- * → AUTH → photon.config → photon.request → response.
+ * → HELLO 3 AUTH → photon.config → photon.request → response.
  */
 class PhotonConnectorIntegrationTest {
 
@@ -99,12 +101,12 @@ class PhotonConnectorIntegrationTest {
         try {
             // Step 1: TCP + TLS
             conn.connect();
-            // Connection established but not authenticated
+            // Connection established but protocol/auth handshake not complete
             assertTrue(conn.isConnected());
             assertNull(conn.getConfig());
 
-            // Step 2: AUTH
-            conn.authenticate(TEST_USER, "my-auth-token");
+            // Step 2: HELLO 3 with inline AUTH
+            conn.handshake(TEST_USER, "my-auth-token");
             assertTrue(conn.isConnected());
             assertNull(conn.getConfig()); // Still no config until step 3
 
@@ -142,10 +144,18 @@ class PhotonConnectorIntegrationTest {
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connectAndAuthenticate(TEST_USER, "secret");
-            // The mock should have received AUTH and photon.config
+            // The mock should have received HELLO and photon.config, with no standalone AUTH.
             assertTrue(cache.getReceivedCommands().size() >= 2);
-            assertEquals("AUTH", cache.getReceivedCommands().get(0));
+            assertEquals("HELLO", cache.getReceivedCommands().get(0));
             assertEquals("PHOTON.CONFIG", cache.getReceivedCommands().get(1));
+            assertEquals(
+                    Arrays.asList(
+                            new RespBulkString("HELLO".getBytes(StandardCharsets.UTF_8)),
+                            new RespBulkString("3".getBytes(StandardCharsets.UTF_8)),
+                            new RespBulkString("AUTH".getBytes(StandardCharsets.UTF_8)),
+                            new RespBulkString(TEST_USER.getBytes(StandardCharsets.UTF_8)),
+                            new RespBulkString("secret".getBytes(StandardCharsets.UTF_8))),
+                    cache.getReceivedCommandFrames().get(0));
         } finally {
             conn.close();
         }
@@ -278,7 +288,7 @@ class PhotonConnectorIntegrationTest {
                 assertEquals(200, response.getStatusCode());
             }
 
-            // All 5 requests should be recorded (plus AUTH and config)
+            // All 5 requests should be recorded (plus HELLO and config)
             assertEquals(5, cache.getRequests().size());
         } finally {
             conn.close();
@@ -1180,9 +1190,9 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
-    void authenticate_beforeConnect_throwsPhotonConnectionLost() {
+    void handshake_beforeConnect_throwsPhotonConnectionLost() {
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
-        assertThrows(PhotonConnectionLost.class, () -> conn.authenticate(TEST_USER, TEST_TOKEN));
+        assertThrows(PhotonConnectionLost.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
     }
 
     @Test
@@ -1190,10 +1200,142 @@ class PhotonConnectorIntegrationTest {
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {
             conn.connect();
-            conn.authenticate(TEST_USER, TEST_TOKEN);
+            conn.handshake(TEST_USER, TEST_TOKEN);
             conn.configureAndStartReader(Collections.emptyMap());
             assertThrows(
                     IllegalStateException.class, () -> conn.configureAndStartReader(Collections.emptyMap()));
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_protocolRejected_closesConnectionWithoutExposingToken() {
+        cache.setHelloReply(new RespError("NOPROTO", "unsupported protocol version"));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("NOPROTO"));
+            assertFalse(error.getMessage().contains(TEST_TOKEN));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_inlineAuthRejected_closesConnectionWithoutExposingToken() {
+        cache.setAuthReplyFunction(
+                (userId, token) -> new RespError("WRONGPASS", "invalid username-password pair"));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonAuthenticationError error =
+                    assertThrows(
+                            PhotonAuthenticationError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("WRONGPASS"));
+            assertFalse(error.getMessage().contains(TEST_TOKEN));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_nonMapReply_closesConnection() {
+        cache.setHelloReply(new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("expected a map reply"));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_unconfirmedProtocol_closesConnection() {
+        Map<RespValue, RespValue> fields = new LinkedHashMap<>();
+        fields.put(new RespBulkString("proto".getBytes(StandardCharsets.UTF_8)), new RespInteger(2));
+        cache.setHelloReply(new RespMap(fields));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("did not report proto 3"));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_missingProtocol_closesConnection() {
+        cache.setHelloReply(new RespMap(Collections.emptyMap()));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("did not report proto 3"));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_timeout_closesConnectionAndWrapsTimeout() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("HELLO");
+        PhotonConnector conn =
+                new PhotonConnector(
+                        "localhost", server.getPort(), clientSslContext, 5_000, 100, 5_000, 100);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("HELLO 3 timed out"));
+            assertTrue(error.getCause() instanceof PhotonTimeoutError);
+            assertFalse(error.getMessage().contains(TEST_TOKEN));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void handshake_connectionDrop_closesConnectionAndWrapsLoss() {
+        cache.setFailureMode(MockCache.FailureMode.DROP);
+        cache.setFailureCommand("HELLO");
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connect();
+
+            PhotonConnectionError error =
+                    assertThrows(PhotonConnectionError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
+
+            assertTrue(error.getMessage().contains("connection lost"));
+            assertTrue(error.getCause() instanceof PhotonConnectionLost);
+            assertTrue(conn.isDead());
         } finally {
             conn.close();
         }

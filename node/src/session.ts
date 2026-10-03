@@ -61,7 +61,7 @@ export interface ReconnectPolicyOptions {
   fallbackDurationMs?: number | null;
   /** Maximum attempts while initially opening the session. Defaults to 3. */
   connectAttempts?: number;
-  /** Overall timeout for each initial connect, AUTH, and config attempt. */
+  /** Overall timeout for each initial connect, HELLO, and config attempt. */
   connectionTimeoutMs?: number;
   /** Initial reconnect delay in milliseconds. Defaults to 100. */
   baseDelayMs?: number;
@@ -521,7 +521,7 @@ export class PhotonSession {
     connector: PhotonConnector,
   ): Promise<{ config: ResolvedConfig; evaluator: PredicateEvaluator }> {
     await connector.connect();
-    await connector.authenticate();
+    await connector.handshake();
     const [command, args] = serializeConfig(this.overrides);
     const reply = await connector.execute(command, ...args);
     try {

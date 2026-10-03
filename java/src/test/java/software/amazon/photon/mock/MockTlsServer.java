@@ -12,6 +12,7 @@ import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.*;
 import org.bouncycastle.asn1.x500.X500Name;
@@ -180,6 +181,15 @@ public class MockTlsServer implements Closeable {
             out.write(headerBytes, 0, headerBytes.length);
             for (RespValue element : elements) {
                 encodeValue(out, element);
+            }
+        } else if (value instanceof RespMap) {
+            Map<RespValue, RespValue> entries = ((RespMap) value).getEntries();
+            String header = "%" + entries.size() + "\r\n";
+            byte[] headerBytes = header.getBytes(StandardCharsets.US_ASCII);
+            out.write(headerBytes, 0, headerBytes.length);
+            for (Map.Entry<RespValue, RespValue> entry : entries.entrySet()) {
+                encodeValue(out, entry.getKey());
+                encodeValue(out, entry.getValue());
             }
         } else if (value instanceof RespPush) {
             List<RespValue> elements = ((RespPush) value).getElements();

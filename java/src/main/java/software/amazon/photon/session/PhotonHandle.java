@@ -8,6 +8,7 @@ import javax.net.ssl.SSLContext;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.photon.auth.AuthCredentials;
+import software.amazon.photon.auth.IamAuthTokenProvider;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.exception.PhotonError;
 
@@ -21,7 +22,7 @@ import software.amazon.photon.exception.PhotonError;
  * build time, so this handle is used during construction:
  *
  * <pre>{@code
- * // Create the handle with an IamAuthTokenProvider
+ * // Photon creates and owns auto-refresh for a concrete IAM provider
  * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
  *     .cacheName("my-cache")
  *     .region(Region.US_EAST_1)
@@ -57,14 +58,19 @@ public class PhotonHandle implements Closeable {
     private final PhotonSession session;
     private final PhotonInterceptor interceptor;
     private final PhotonHttpClient httpClient;
+    private final ManagedIamAuthProvider ownedAuthProvider;
     private boolean opened = false;
     private boolean closed = false;
 
     private PhotonHandle(
-            PhotonSession session, SdkHttpClient originClient, boolean ownsOriginClient) {
+            PhotonSession session,
+            SdkHttpClient originClient,
+            boolean ownsOriginClient,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.interceptor = new PhotonInterceptor(session, originClient, ownsOriginClient);
         this.httpClient = interceptor.getHttpClient();
+        this.ownedAuthProvider = ownedAuthProvider;
     }
 
     /**
@@ -95,7 +101,7 @@ public class PhotonHandle implements Closeable {
     }
 
     /**
-     * Open the Photon session (connect, authenticate, config handshake).
+     * Open the Photon session (connect, HELLO/authenticate, config exchange).
      *
      * <p>This must be called before using the SDK client.
      *
@@ -122,7 +128,13 @@ public class PhotonHandle implements Closeable {
         try {
             session.close();
         } finally {
-            httpClient.close();
+            try {
+                httpClient.close();
+            } finally {
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
+                }
+            }
         }
     }
 
@@ -142,6 +154,7 @@ public class PhotonHandle implements Closeable {
         private int port = 6379;
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
+        private IamAuthTokenProvider iamAuthProvider;
         private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
@@ -170,15 +183,31 @@ public class PhotonHandle implements Closeable {
             return this;
         }
 
-        /** Set the auth provider (required). */
+        /**
+         * Set the auth provider (required).
+         *
+         * <p>Other caller-supplied providers remain caller-owned.
+         */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
+            if (authProvider instanceof IamAuthTokenProvider) {
+                return authProvider((IamAuthTokenProvider) authProvider);
+            }
             this.authProvider = authProvider;
+            this.iamAuthProvider = null;
+            return this;
+        }
+
+        /** Set an IAM provider whose auto-refresh manager is owned by this handle. */
+        public Builder authProvider(IamAuthTokenProvider authProvider) {
+            this.iamAuthProvider = authProvider;
+            this.authProvider = null;
             return this;
         }
 
         /** Set static auth credentials (convenience for non-IAM auth). */
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
+            this.iamAuthProvider = null;
             return this;
         }
 
@@ -194,7 +223,7 @@ public class PhotonHandle implements Closeable {
             return this;
         }
 
-        /** Set the AUTH and configuration handshake timeout in milliseconds (default: 5000). */
+        /** Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000). */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
             return this;
@@ -244,7 +273,7 @@ public class PhotonHandle implements Closeable {
             if (host == null || host.isEmpty()) {
                 throw new PhotonError("host is required");
             }
-            if (authProvider == null) {
+            if (authProvider == null && iamAuthProvider == null) {
                 throw new PhotonError("authProvider is required");
             }
 
@@ -257,29 +286,40 @@ public class PhotonHandle implements Closeable {
                 }
             }
 
-            SSLContext resolvedSsl = ssl;
-            PhotonSession session =
-                    new PhotonSession(
-                            () ->
-                                    new PhotonConnector(
-                                            host,
-                                            port,
-                                            resolvedSsl,
-                                            connectTimeoutMs,
-                                            initializationTimeoutMs,
-                                            requestTimeoutMs,
-                                            PhotonConnector.DEFAULT_MAX_PENDING),
-                            authProvider,
-                            overrides,
-                            reconnectPolicy,
-                            stalenessDurationSeconds);
-            SdkHttpClient origin = originHttpClient;
-            boolean ownsOrigin = false;
-            if (origin == null) {
-                origin = ApacheHttpClient.create();
-                ownsOrigin = true;
+            ManagedIamAuthProvider ownedAuthProvider =
+                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
+            Supplier<AuthCredentials> resolvedAuthProvider =
+                    ownedAuthProvider != null ? ownedAuthProvider : authProvider;
+            SdkHttpClient origin = null;
+            boolean ownsOrigin = originHttpClient == null;
+            try {
+                SSLContext resolvedSsl = ssl;
+                PhotonSession session =
+                        new PhotonSession(
+                                () ->
+                                        new PhotonConnector(
+                                                host,
+                                                port,
+                                                resolvedSsl,
+                                                connectTimeoutMs,
+                                                initializationTimeoutMs,
+                                                requestTimeoutMs,
+                                                PhotonConnector.DEFAULT_MAX_PENDING),
+                                resolvedAuthProvider,
+                                overrides,
+                                reconnectPolicy,
+                                stalenessDurationSeconds);
+                origin = ownsOrigin ? ApacheHttpClient.create() : originHttpClient;
+                return new PhotonHandle(session, origin, ownsOrigin, ownedAuthProvider);
+            } catch (RuntimeException failure) {
+                if (ownsOrigin && origin != null) {
+                    origin.close();
+                }
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
+                }
+                throw failure;
             }
-            return new PhotonHandle(session, origin, ownsOrigin);
         }
     }
 }

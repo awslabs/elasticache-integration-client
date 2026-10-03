@@ -14,6 +14,28 @@ ruff format --check . && ruff check . && mypy
 Runtime requires Python ≥ 3.10. See [`tests/README.md`](tests/README.md) for the test layout and
 how to run the unit vs. end-to-end tests.
 
+## Releases
+
+Python publication is driven by annotated Git tags. Stable releases use
+`vMAJOR.MINOR.PATCH`; release candidates use `vMAJOR.MINOR.PATCH-rc.N`, which maps to the
+PEP 440 version `MAJOR.MINOR.PATCHrcN`. A release tag applies to every language client: Node,
+Python, and Java release together and their package metadata must use the same version.
+
+Before tagging, update the version in `pyproject.toml`; `photon.__version__` reads that installed
+distribution metadata. The `Python Release` workflow rejects any tag that does not match the
+project version. It runs the reusable Python CI workflow, builds one wheel and one source
+distribution, and smoke tests the wheel on Python 3.10, 3.12, and 3.14 before waiting for approval
+from the protected `release` environment and publishing
+with PyPI trusted publishing and attestations. The workflow verifies the published version and
+attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
+
+The provisional PyPI distribution name is `photon-python`, while the import package remains
+`photon`; the public distribution name is pending the final naming decision. The PyPI project must
+configure `.github/workflows/python-release.yml` as its trusted publisher for the `release`
+environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
+packaging, artifact validation, and wheel smoke stages without entering the release environment or
+publishing to PyPI.
+
 ## Current state
 
 The library delivers the happy path: intercept → serialize → `photon.config` handshake →

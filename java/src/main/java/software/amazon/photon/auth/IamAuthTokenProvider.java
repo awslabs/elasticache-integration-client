@@ -2,11 +2,15 @@ package software.amazon.photon.auth;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
+import software.amazon.elasticache.auth.ElastiCacheIamAuthTokenManager;
+import software.amazon.elasticache.auth.ToolkitInputException;
+import software.amazon.photon.exception.PhotonError;
 
 /**
  * Supplies fresh IAM authentication credentials for Photon cache connections.
@@ -15,7 +19,9 @@ import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
  * anew so that rotated credentials (e.g., from STS or IMDS) are picked up automatically.
  *
  * <p>This provider implements {@code Supplier<AuthCredentials>} and can be used directly with
- * {@link software.amazon.photon.connection.PhotonConnector}.
+ * {@link software.amazon.photon.connection.PhotonConnector}. When passed directly to {@code
+ * PhotonClient}, {@code PhotonHandle}, or {@code PhotonAsyncHandle}, including through a {@code
+ * Supplier} reference, Photon creates and owns an auto-refreshing manager from this configuration.
  *
  * <p>Usage:
  *
@@ -38,18 +44,28 @@ import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
 
     private final IamAuthTokenGenerator generator;
+    private final AwsCredentialsProvider credentialsProvider;
+    private final Duration refreshAfter;
+    private final Consumer<String> onTokenChanged;
 
-    private IamAuthTokenProvider(IamAuthTokenGenerator generator) {
+    private IamAuthTokenProvider(
+            IamAuthTokenGenerator generator,
+            AwsCredentialsProvider credentialsProvider,
+            Duration refreshAfter,
+            Consumer<String> onTokenChanged) {
         this.generator = generator;
+        this.credentialsProvider = credentialsProvider;
+        this.refreshAfter = refreshAfter;
+        this.onTokenChanged = onTokenChanged;
     }
 
     /**
      * Generate fresh authentication credentials.
      *
-     * <p>Each call resolves credentials and mints a new token. The token is valid for 15 minutes but
-     * should be used immediately.
+     * <p>Each call resolves credentials and mints a new token. The toolkit owns the token validity
+     * contract.
      *
-     * @return the user ID and token for AUTH
+     * @return the user ID and token for the {@code HELLO 3 AUTH} handshake
      */
     @Override
     public AuthCredentials get() {
@@ -70,6 +86,34 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
     /** Get the region. */
     public Region getRegion() {
         return generator.getRegion();
+    }
+
+    /**
+     * Create an independent toolkit auto-refresh manager from this provider's configuration.
+     *
+     * <p>Photon clients and handles call this automatically when this provider is passed to {@code
+     * authProvider(...)}.
+     */
+    public ElastiCacheIamAuthTokenManager newTokenManager() {
+        ElastiCacheIamAuthTokenManager.Builder managerBuilder =
+                ElastiCacheIamAuthTokenManager.builder()
+                        .serverlessCacheName(getCacheName())
+                        .userId(getUserId())
+                        .region(getRegion())
+                        .credentialsProvider(credentialsProvider);
+        if (refreshAfter != null) {
+            managerBuilder.refreshAfter(refreshAfter);
+        }
+        if (onTokenChanged != null) {
+            managerBuilder.onTokenChanged(onTokenChanged);
+        }
+        try {
+            return managerBuilder.build();
+        } catch (ToolkitInputException e) {
+            throw new PhotonError(e.getMessage(), e);
+        } catch (RuntimeException e) {
+            throw new PhotonError("Failed to initialize IAM token auto-refresh", e);
+        }
     }
 
     /**
@@ -136,6 +180,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         private Region region;
         private AwsCredentialsProvider credentialsProvider;
         private Duration expiresIn;
+        private Duration refreshAfter;
+        private Consumer<String> onTokenChanged;
 
         private Builder() {}
 
@@ -182,13 +228,33 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         /**
          * Set the token expiration duration.
          *
-         * <p>Retained for source compatibility. The ElastiCache toolkit fixes token lifetime at 15
-         * minutes, so any other value is rejected.
+         * <p>Retained for source compatibility. The ElastiCache toolkit owns the token lifetime, so
+         * unsupported values are rejected. See the <a
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
          */
         public Builder expiresIn(Duration expiresIn) {
             this.expiresIn = expiresIn;
+            return this;
+        }
+
+        /**
+         * Set how long after issuance Photon-managed tokens refresh.
+         *
+         * <p>The accepted range, default, retry behavior, and safety margin are defined by the <a
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
+         */
+        public Builder refreshAfter(Duration refreshAfter) {
+            this.refreshAfter = refreshAfter;
+            return this;
+        }
+
+        /** Set a callback invoked after a Photon-managed token is installed. */
+        public Builder onTokenChanged(Consumer<String> onTokenChanged) {
+            this.onTokenChanged = onTokenChanged;
             return this;
         }
 
@@ -221,7 +287,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
                 generatorBuilder.expiresIn(expiresIn);
             }
 
-            return new IamAuthTokenProvider(generatorBuilder.build());
+            return new IamAuthTokenProvider(
+                    generatorBuilder.build(), creds, refreshAfter, onTokenChanged);
         }
     }
 }

@@ -9,8 +9,10 @@ permissions:
 jobs:
   verify:
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [22, 24]
+        # Minimum supported (engines), current LTS, and current release.
+        node-version: [22, 24, 26]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -31,5 +33,25 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test
+      - run: npm test -- --reporter=default --reporter=junit --outputFile.junit=test-results.xml
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results-node-${{ matrix.node-version }}
+          path: |
+            node/test-results.xml
+            node/coverage/
+          retention-days: 7
       - run: npm run pack:smoke
+      # The tarball is the same on every Node.js version, so upload it once.
+      - name: Upload package
+        if: matrix.node-version == 24
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-node
+          path: node/.artifacts/*.tgz
+          # upload-artifact skips files under dot directories like .artifacts by default.
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7

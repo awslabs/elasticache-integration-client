@@ -21,7 +21,7 @@ function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnecto
   return {
     isReady: true,
     connect: vi.fn(async () => undefined),
-    authenticate: vi.fn(async () => undefined),
+    handshake: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string, ...args: Buffer[]) => {
       if (command !== "photon.config") {
         return [200, Buffer.from("content-type:application/json"), Buffer.from("ok")];
@@ -42,7 +42,7 @@ function controlledConnector(
   options: {
     predicate?: string;
     connect?: () => Promise<void>;
-    authenticate?: () => Promise<void>;
+    handshake?: () => Promise<void>;
     config?: () => Promise<unknown>;
     request?: () => Promise<unknown>;
   } = {},
@@ -60,8 +60,8 @@ function controlledConnector(
       await options.connect?.();
       dead = false;
     }),
-    authenticate: vi.fn(async () => {
-      await options.authenticate?.();
+    handshake: vi.fn(async () => {
+      await options.handshake?.();
     }),
     execute: vi.fn(async (command: string) => {
       if (command === "photon.config") {
@@ -144,7 +144,7 @@ describe("PhotonSession", () => {
     await session.open();
 
     expect(connector.connect).toHaveBeenCalledOnce();
-    expect(connector.authenticate).toHaveBeenCalledOnce();
+    expect(connector.handshake).toHaveBeenCalledOnce();
     expect(connector.execute).toHaveBeenCalledWith("photon.config", Buffer.from('{"ttl":300}'));
     expect(session.config).toEqual(expect.any(ResolvedConfig));
     expect(session.config.raw).toEqual({
@@ -154,19 +154,15 @@ describe("PhotonSession", () => {
     });
     const connectOrder = (connector.connect as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
-    const authenticateOrder = (connector.authenticate as ReturnType<typeof vi.fn>).mock
+    const handshakeOrder = (connector.handshake as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
     const executeOrder = (connector.execute as ReturnType<typeof vi.fn>).mock
       .invocationCallOrder[0];
-    if (
-      connectOrder === undefined ||
-      authenticateOrder === undefined ||
-      executeOrder === undefined
-    ) {
+    if (connectOrder === undefined || handshakeOrder === undefined || executeOrder === undefined) {
       throw new Error("expected lifecycle methods to be called");
     }
-    expect(connectOrder).toBeLessThan(authenticateOrder);
-    expect(authenticateOrder).toBeLessThan(executeOrder);
+    expect(connectOrder).toBeLessThan(handshakeOrder);
+    expect(handshakeOrder).toBeLessThan(executeOrder);
     await session.close();
   });
 
@@ -273,7 +269,7 @@ describe("PhotonSession", () => {
     await session.close();
   });
 
-  it.each(["connect", "authenticate", "config"])(
+  it.each(["connect", "handshake", "config"])(
     "closes and rethrows when %s fails",
     async (failure) => {
       const original = new Error(failure);
@@ -281,8 +277,8 @@ describe("PhotonSession", () => {
         connect: vi.fn(async () => {
           if (failure === "connect") throw original;
         }),
-        authenticate: vi.fn(async () => {
-          if (failure === "authenticate") throw original;
+        handshake: vi.fn(async () => {
+          if (failure === "handshake") throw original;
         }),
         execute: vi.fn(async () => {
           if (failure === "config") throw original;
@@ -303,7 +299,7 @@ describe("PhotonSession", () => {
     });
     const connector = fakeConnector({
       connect: vi.fn(),
-      authenticate: vi.fn(),
+      handshake: vi.fn(),
       execute: vi.fn(() => config),
     });
     const session = new PhotonSession(connector);
@@ -440,7 +436,7 @@ describe("PhotonSession", () => {
     expect(session.isOpen).toBe(true);
     expect(stop).toHaveBeenCalledOnce();
     expect(initial.connector.close).toHaveBeenCalledOnce();
-    expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+    expect(replacement.connector.handshake).toHaveBeenCalledOnce();
     expect(factory).toHaveBeenCalledTimes(2);
     await session.close();
   });
@@ -628,8 +624,8 @@ describe("PhotonSession", () => {
     expect(session.connectionState).toBe("closed");
   });
 
-  it("bounds the complete initial connect, AUTH, and config attempt", async () => {
-    const cache = new MockCache({ failure: "hang", failureCommand: "auth" });
+  it("bounds the complete initial connect, HELLO, and config attempt", async () => {
+    const cache = new MockCache({ failure: "hang", failureCommand: "hello" });
     await cache.start();
     const connectors: PhotonConnector[] = [];
     const session = new PhotonSession(
@@ -706,7 +702,7 @@ describe("PhotonSession", () => {
       }),
     );
     expect(initial.connector.execute).toHaveBeenCalledTimes(2);
-    expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+    expect(replacement.connector.handshake).toHaveBeenCalledOnce();
     expect(factory).toHaveBeenCalledTimes(2);
     await session.close();
   });
@@ -1022,13 +1018,13 @@ describe("PhotonSession", () => {
     }
   });
 
-  it.each(["authenticate", "config"] as const)(
+  it.each(["handshake", "config"] as const)(
     "times out reconnect when %s hangs and allows shutdown",
     async (failure) => {
       const initial = controlledConnector();
       const never = () => new Promise<never>(() => undefined);
       const replacement = controlledConnector({
-        ...(failure === "authenticate" ? { authenticate: never } : { config: never }),
+        ...(failure === "handshake" ? { handshake: never } : { config: never }),
       });
       const factory = vi
         .fn<() => PhotonConnector>()
@@ -1048,8 +1044,8 @@ describe("PhotonSession", () => {
       initial.fail();
 
       await vi.waitFor(() => {
-        if (failure === "authenticate") {
-          expect(replacement.connector.authenticate).toHaveBeenCalledOnce();
+        if (failure === "handshake") {
+          expect(replacement.connector.handshake).toHaveBeenCalledOnce();
         } else {
           expect(replacement.connector.execute).toHaveBeenCalledWith(
             "photon.config",

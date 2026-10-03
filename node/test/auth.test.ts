@@ -191,11 +191,19 @@ describe("IamAuthTokenProvider", () => {
       tls: false,
       authProvider: provider,
     });
-    const execute = vi.spyOn(connector, "execute").mockResolvedValue("OK");
+    const execute = vi
+      .spyOn(connector, "execute")
+      .mockResolvedValue(new Map([[Buffer.from("proto"), 3]]));
 
-    await connector.authenticate();
+    await connector.handshake();
 
-    expect(execute).toHaveBeenCalledWith("AUTH", Buffer.from("my-user"), expect.any(Buffer));
+    expect(execute).toHaveBeenCalledWith(
+      "HELLO",
+      Buffer.from("3"),
+      Buffer.from("AUTH"),
+      Buffer.from("my-user"),
+      expect.any(Buffer),
+    );
   });
 });
 

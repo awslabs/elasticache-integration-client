@@ -18,6 +18,7 @@ import java.util.logging.Logger;
 import software.amazon.photon.auth.AuthCredentials;
 import software.amazon.photon.connection.PhotonConnector;
 import software.amazon.photon.connection.PhotonRequestCancellation;
+import software.amazon.photon.exception.PhotonAuthenticationError;
 import software.amazon.photon.exception.PhotonCacheUnavailable;
 import software.amazon.photon.exception.PhotonConfigUnevaluable;
 import software.amazon.photon.exception.PhotonConnectionError;
@@ -38,8 +39,8 @@ import software.amazon.photon.resp.RespValue;
  *
  * <p>Initial connection is bounded by {@link ReconnectPolicy#getConnectAttempts()} and {@link
  * ReconnectPolicy#getConnectionTimeoutMs()}. Once open, an idle or in-flight disconnect starts one
- * background reconnect loop. The loop obtains fresh credentials, repeats {@code AUTH} and {@code
- * photon.config}, and keeps trying until it succeeds or the session closes.
+ * background reconnect loop. The loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and
+ * {@code photon.config}, and keeps trying until it succeeds or the session closes.
  *
  * <p>While no connector is available, matching requests use origin fallback until the configured
  * fallback duration expires. After a request is admitted to Photon, the HTTP adapters allow direct
@@ -224,10 +225,10 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Open the session: connect, authenticate, perform the config handshake, compile the resolved
-     * predicates, then start the config refresher.
+     * Open the session: connect, negotiate RESP3 and authenticate, perform the config exchange,
+     * compile the resolved predicates, then start the config refresher.
      *
-     * <p>Connect/authenticate/config failures are retried with a new connector and fresh credentials.
+     * <p>Connect/handshake/config failures are retried with a new connector and fresh credentials.
      * Once a connector is live, refresher construction and startup are local session setup rather
      * than connectivity, so a failure there closes the connector and fails immediately instead of
      * repeating a successful handshake. The session becomes {@code OPEN} only once the refresher has
@@ -624,7 +625,12 @@ public class PhotonSession implements Closeable {
         if (credentials == null) {
             throw new PhotonConnectionError("Auth provider returned null credentials");
         }
-        next.authenticate(credentials.getUserId(), credentials.getToken());
+        try {
+            next.handshake(credentials.getUserId(), credentials.getToken());
+        } catch (PhotonAuthenticationError authFailure) {
+            forceRefreshAfterRejection(authFailure);
+            throw authFailure;
+        }
         try {
             ResolvedConfig nextConfig = next.configureAndStartReader(overrides);
             return new ConnectionSnapshot(nextConfig, PredicateEvaluator.compile(nextConfig.getRaw()));
@@ -640,6 +646,17 @@ public class PhotonSession implements Closeable {
                         e);
             }
             throw e;
+        }
+    }
+
+    private void forceRefreshAfterRejection(PhotonAuthenticationError authFailure) {
+        if (!(authProvider instanceof ManagedIamAuthProvider)) {
+            return;
+        }
+        try {
+            ((ManagedIamAuthProvider) authProvider).refresh();
+        } catch (RuntimeException refreshFailure) {
+            authFailure.addSuppressed(refreshFailure);
         }
     }
 

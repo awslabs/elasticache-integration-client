@@ -164,6 +164,26 @@ if (releasePublishing) {
 val sourcesJarTaskName = "sourcesJar"
 val javadocJarTaskName = if (releasePublishing) "plainJavadocJar" else "javadocJar"
 
+// Rounded down to the nearest 5 from the 2026-10-01 baseline (line 85.9%, branch 72.8%).
+tasks.jacocoTestCoverageVerification {
+    violationRules {
+        rule {
+            limit {
+                counter = "LINE"
+                minimum = "0.85".toBigDecimal()
+            }
+            limit {
+                counter = "BRANCH"
+                minimum = "0.70".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
 val verifyJars by tasks.registering {
     description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
     dependsOn(tasks.jar, sourcesJarTaskName, javadocJarTaskName)

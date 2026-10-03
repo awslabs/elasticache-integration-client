@@ -86,8 +86,10 @@ public final class IamAuthTokenGenerator {
     /**
      * Generate a fresh IAM auth token.
      *
-     * <p>The toolkit resolves credentials and signs a new 15-minute token on every call so rotated
-     * credentials are picked up automatically.
+     * <p>The toolkit resolves credentials and signs a new token on every call so rotated credentials
+     * are picked up automatically. See the <a
+     * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+     * toolkit token manager documentation</a> for its validity contract.
      *
      * @return the signed token string (presigned URL with scheme stripped)
      * @throws PhotonError if credential resolution or signing fails
@@ -190,8 +192,10 @@ public final class IamAuthTokenGenerator {
         /**
          * Set the token expiration duration.
          *
-         * <p>Retained for source compatibility. The ElastiCache toolkit fixes token lifetime at 15
-         * minutes, so any other value is rejected.
+         * <p>Retained for source compatibility. The ElastiCache toolkit owns the token lifetime, so
+         * unsupported values are rejected. See the <a
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
          */

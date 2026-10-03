@@ -6,7 +6,7 @@ import java.util.Objects;
  * Credentials for Photon cache authentication: a user ID and token pair.
  *
  * <p>Used by {@link IamAuthTokenProvider} to return both the user ID and the generated IAM auth
- * token for the AUTH command.
+ * token for the {@code HELLO 3 AUTH} handshake.
  */
 public final class AuthCredentials {
 
@@ -16,7 +16,7 @@ public final class AuthCredentials {
     /**
      * Create authentication credentials.
      *
-     * @param userId the user ID for AUTH (e.g., "default" or an IAM user)
+     * @param userId the user ID for inline AUTH (e.g., "default" or an IAM user)
      * @param token the authentication token (password or IAM presigned token)
      */
     public AuthCredentials(String userId, String token) {

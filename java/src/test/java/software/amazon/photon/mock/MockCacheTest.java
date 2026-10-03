@@ -164,6 +164,60 @@ class MockCacheTest {
         assertTrue(((RespError) response).getMessage().contains("exactly 2 arguments"));
     }
 
+    // === HELLO ===
+
+    @Test
+    void handleHello3_withInlineAuthReturnsMapAndRecordsCredentials() {
+        RespValue response =
+                cache.handle(
+                        Arrays.asList(bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user"), bs("password123")));
+
+        assertTrue(response instanceof RespMap);
+        RespValue proto = ((RespMap) response).getEntries().get(bs("proto"));
+        assertEquals(new RespInteger(3), proto);
+        assertEquals("iam-user", cache.getAuthAttempts().get(0).getUserId());
+        assertEquals("password123", cache.getAuthAttempts().get(0).getToken());
+    }
+
+    @Test
+    void handleHello2_returnsResp2Array() {
+        RespValue response = cache.handle(Arrays.asList(bs("HELLO"), bs("2")));
+
+        assertEquals(
+                new RespArray(
+                        Arrays.asList(
+                                bs("server"),
+                                bs("valkey"),
+                                bs("version"),
+                                bs("8.0.0"),
+                                bs("proto"),
+                                new RespInteger(2),
+                                bs("id"),
+                                new RespInteger(1),
+                                bs("mode"),
+                                bs("cluster"),
+                                bs("role"),
+                                bs("primary"),
+                                bs("modules"),
+                                new RespArray(Collections.emptyList()))),
+                response);
+    }
+
+    @Test
+    void handleHello_rejectsUnsupportedProtocol() {
+        RespValue response = cache.handle(Arrays.asList(bs("HELLO"), bs("4")));
+
+        assertEquals("NOPROTO", ((RespError) response).getCode());
+    }
+
+    @Test
+    void handleHello_rejectsMalformedAuthTrailer() {
+        RespValue response =
+                cache.handle(Arrays.asList(bs("HELLO"), bs("3"), bs("AUTH"), bs("iam-user")));
+
+        assertEquals("ERR", ((RespError) response).getCode());
+    }
+
     // === Reply configuration ===
 
     @Test
