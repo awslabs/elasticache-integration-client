@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PhotonAuthError,
   PhotonCacheUnavailable,
   PhotonConfigError,
   PhotonOverridesRejected,
@@ -16,6 +17,7 @@ import * as photon from "../src/index.js";
 
 const ERROR_TYPES = [
   PhotonError,
+  PhotonAuthError,
   PhotonConfigError,
   PhotonOverridesRejected,
   PhotonConfigUnevaluable,

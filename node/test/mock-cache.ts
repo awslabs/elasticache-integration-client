@@ -130,6 +130,7 @@ export interface MockCacheOptions {
   config?: Record<string, unknown>;
   tls?: boolean;
   helloResponse?: Reply;
+  authResponse?: Reply;
   responseStatus?: number;
   responseHeaders?: string;
   responseBody?: Buffer;
@@ -186,6 +187,7 @@ export class MockCache {
 
   // Contract-engine state.
   private config: Record<string, unknown>;
+  private authResponse?: Reply;
   private readonly helloResponse?: Reply;
   private readonly response?: Reply;
   private readonly responseFn?: ReplyFactory;
@@ -203,6 +205,7 @@ export class MockCache {
     this.config = { version: "v1", refresh_interval: 60, predicates: [], ...options.config };
     this.tls = options.tls ?? false;
     this.helloResponse = options.helloResponse;
+    this.authResponse = options.authResponse;
     this.responseStatus = options.responseStatus ?? 200;
     this.responseHeaders = options.responseHeaders ?? "content-type:application/x-amz-json-1.0";
     this.responseBody = options.responseBody ?? Buffer.from('{"Item": {}}');
@@ -238,6 +241,11 @@ export class MockCache {
   /** Change the config returned by subsequent connection handshakes. */
   setConfig(config: Record<string, unknown>): void {
     this.config = config;
+  }
+
+  /** Change the AUTH reply used by subsequent attempts. */
+  setAuthResponse(reply?: Reply): void {
+    this.authResponse = reply;
   }
 
   /**
@@ -279,6 +287,11 @@ export class MockCache {
         [_bulk(Buffer.from("modules")), _array([])],
       ];
       return protocol === 3 ? _map(fields) : _array(fields.flat());
+    }
+    if (name === "auth") {
+      this.photonCommandLog.push(name);
+      if (args.length !== 2) return _error("ERR", `wrong number of arguments for AUTH`);
+      return this.authResponse?.toBytes() ?? _simple(Buffer.from("OK"));
     }
     if (name === CONFIG_COMMAND) {
       this.photonCommandLog.push(name);

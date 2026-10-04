@@ -24,8 +24,12 @@ developer toolkit. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
 SigV4 signing contract. Photon sends the resulting bearer token only in the
 TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
-before the connection becomes usable; origin request signing remains owned by
-the AWS SDK.
+before the connection becomes usable. Photon then periodically repeats plain
+`AUTH` on each live connection using the manager's latest token. A rejected
+refresh is retried with reconnect backoff while the connection keeps serving
+with its last valid authentication state. A timed-out or malformed AUTH reply
+drops the connection for FIFO safety and starts normal recovery. Origin request
+signing remains owned by the AWS SDK.
 
 ## Request routing
 
@@ -196,11 +200,15 @@ Configure recovery on `PhotonClient`, `PhotonHandle`, or `PhotonAsyncHandle`:
         .fallbackDurationSeconds(30)
         .connectAttempts(3)
         .connectionTimeoutMs(5_000)
+        .authRefreshIntervalMs(900_000)
         .baseDelayMs(100)
         .maxDelayMs(3_200)
         .jitterFactor(0.2)
         .build())
 ```
+
+`jitterFactor` applies to reconnect delays, config refresh, and re-AUTH.
+Set it to `0` to disable jitter for all three schedules.
 
 Photon requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `photon.response` RESP3 push. Deferred

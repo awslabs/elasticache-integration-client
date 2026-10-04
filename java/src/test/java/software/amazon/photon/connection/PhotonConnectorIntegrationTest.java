@@ -1196,6 +1196,114 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
+    void reauthenticate_usesPlainAuthOnTheReadyConnection() {
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            conn.reauthenticate(TEST_USER, "fresh-token");
+
+            assertEquals(2, cache.getAuthAttempts().size());
+            assertEquals("fresh-token", cache.getAuthAttempts().get(1).getToken());
+            assertTrue(conn.isReady());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void reauthenticate_rejectionKeepsLastValidConnectionOpen() {
+        AtomicInteger attempts = new AtomicInteger();
+        cache.setAuthReplyFunction(
+                (userId, token) ->
+                        attempts.incrementAndGet() == 1
+                                ? new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8))
+                                : new RespError("WRONGPASS", "bad token"));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            PhotonAuthenticationError error =
+                    assertThrows(
+                            PhotonAuthenticationError.class,
+                            () -> conn.reauthenticate(TEST_USER, "rejected-token"));
+
+            assertTrue(error.getMessage().contains("WRONGPASS"));
+            assertTrue(conn.isReady());
+            assertEquals(
+                    200,
+                    conn.request(
+                                    new PhotonRequest(
+                                            "GET",
+                                            "https://example.com/",
+                                            Collections.emptyMap(),
+                                            new byte[0],
+                                            new RequestMetadata("dynamodb", "GetItem")))
+                            .getStatusCode());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void reauthenticate_unexpectedReplyClosesConnectionWithoutLoggingItsValue() {
+        AtomicInteger attempts = new AtomicInteger();
+        cache.setAuthReplyFunction(
+                (userId, token) ->
+                        attempts.incrementAndGet() == 1
+                                ? new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8))
+                                : new RespBulkString("secret-response".getBytes(StandardCharsets.UTF_8)));
+        PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            PhotonAuthenticationError error =
+                    assertThrows(
+                            PhotonAuthenticationError.class, () -> conn.reauthenticate(TEST_USER, "fresh-token"));
+
+            assertTrue(error.getMessage().contains("RespBulkString"));
+            assertFalse(error.getMessage().contains("secret-response"));
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void reauthenticate_timeoutUsesInitializationBudgetAndClosesConnection() {
+        PhotonConnector conn =
+                new PhotonConnector(
+                        "localhost",
+                        server.getPort(),
+                        clientSslContext,
+                        5000,
+                        200,
+                        5000,
+                        PhotonConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            cache.setFailureMode(MockCache.FailureMode.HANG);
+            cache.setFailureCommand("AUTH");
+
+            long startNanos = System.nanoTime();
+            PhotonConnectionError error =
+                    assertThrows(
+                            PhotonConnectionError.class, () -> conn.reauthenticate(TEST_USER, "fresh-token"));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+            assertTrue(error.getMessage().contains("timed out"));
+            assertTrue(
+                    elapsedMillis < 2000,
+                    "reauthenticate() took "
+                            + elapsedMillis
+                            + "ms; expected ~200ms (initializationTimeoutMs)");
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
     void configureAndStartReader_calledTwice_throwsIllegalState() {
         PhotonConnector conn = new PhotonConnector("localhost", server.getPort(), clientSslContext);
         try {

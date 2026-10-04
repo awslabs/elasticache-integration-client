@@ -10,12 +10,11 @@
  * to Photon. The middleware may pass predicate declines, disconnected requests,
  * and dropped-connection failures for idempotent operations through to origin.
  *
- * Each active connection owns a ConfigRefresher, which periodically re-issues
- * photon.config and swaps in the new config and predicates. A refresh that
- * fails keeps the last known-good state. Once the staleness window passes with
- * no config confirmed by the server, the config is no longer trusted: the
- * connection is dropped so a new one re-resolves it, and requests fall back
- * meanwhile.
+ * Each active connection owns background refreshers for resolved config and
+ * authentication. Config refresh failures keep the last known-good state.
+ * Once the staleness window passes with no config confirmed by the server, the
+ * config is no longer trusted: the connection is dropped so a new one
+ * re-resolves it, and requests fall back meanwhile.
  */
 import { performance } from "node:perf_hooks";
 
@@ -40,11 +39,12 @@ import {
   serializeRequest,
 } from "./protocol.js";
 import { PredicateEvaluator } from "./predicates.js";
-import { ConfigRefresher } from "./refresh.js";
+import { Refresher } from "./refresh.js";
 
 const AUTH_ERROR = "AUTH_ERROR";
 const DEFAULT_CONNECT_ATTEMPTS = 3;
 const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+const DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
 const DEFAULT_BASE_DELAY_MS = 100;
 const DEFAULT_MAX_DELAY_MS = 3_200;
 const DEFAULT_JITTER = 0.2;
@@ -63,11 +63,13 @@ export interface ReconnectPolicyOptions {
   connectAttempts?: number;
   /** Overall timeout for each initial connect, HELLO, and config attempt. */
   connectionTimeoutMs?: number;
+  /** How often a live connection obtains fresh credentials and runs AUTH again. */
+  authRefreshIntervalMs?: number;
   /** Initial reconnect delay in milliseconds. Defaults to 100. */
   baseDelayMs?: number;
   /** Maximum reconnect delay before jitter. Defaults to 3,200. */
   maxDelayMs?: number;
-  /** Symmetric jitter ratio in `[0, 1)`. Defaults to 0.2. */
+  /** Symmetric jitter ratio for reconnect and background refresh delays. Defaults to 0.2. */
   jitter?: number;
 }
 
@@ -98,6 +100,7 @@ interface ReconnectPolicy {
   fallbackWindowMs: number;
   connectAttempts: number;
   connectionTimeoutMs: number;
+  authRefreshIntervalMs: number;
   baseDelayMs: number;
   maxDelayMs: number;
   jitter: number;
@@ -118,6 +121,16 @@ function timerDelay(value: number, name: string): number {
     );
   }
   return value;
+}
+
+function jitteredTimerInterval(value: number, name: string, jitter: number): number {
+  const interval = timerDelay(value, name);
+  if (interval * (1 + jitter) > MAX_TIMER_DELAY_MS) {
+    throw new PhotonConfigError(
+      `${name} must remain at most ${MAX_TIMER_DELAY_MS} after jitter is applied`,
+    );
+  }
+  return interval;
 }
 
 function positiveInteger(value: number, name: string): number {
@@ -159,6 +172,11 @@ function resolveReconnectPolicy(
     connectionTimeoutMs: timerDelay(
       options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
       "connectionTimeoutMs",
+    ),
+    authRefreshIntervalMs: jitteredTimerInterval(
+      options?.authRefreshIntervalMs ?? DEFAULT_AUTH_REFRESH_INTERVAL_MS,
+      "authRefreshIntervalMs",
+      jitter,
     ),
     baseDelayMs,
     maxDelayMs,
@@ -210,7 +228,8 @@ function singleConnectorFactory(connector: PhotonConnector): PhotonConnectorFact
 export class PhotonSession {
   private _config: ResolvedConfig | undefined;
   private predicateEvaluator = PredicateEvaluator.compile(undefined);
-  private refresher: ConfigRefresher | undefined;
+  private configRefresher: Refresher | undefined;
+  private reauthRefresher: Refresher | undefined;
   private state: SessionState = "created";
   private connection: ConnectionState = "init";
   private readonly connectorFactory: PhotonConnectorFactory;
@@ -331,7 +350,7 @@ export class PhotonSession {
    */
   private async refreshOnce(): Promise<void> {
     const connector = this.connector;
-    const refresher = this.refresher;
+    const refresher = this.configRefresher;
     if (
       this.state !== "open" ||
       this.connection !== "alive" ||
@@ -365,7 +384,7 @@ export class PhotonSession {
       this.state !== "open" ||
       this.connection !== "alive" ||
       this.connector !== connector ||
-      this.refresher !== refresher
+      this.configRefresher !== refresher
     ) {
       return;
     }
@@ -403,13 +422,13 @@ export class PhotonSession {
   private refreshFailed(
     error: PhotonError,
     connector: PhotonConnector,
-    refresher: ConfigRefresher,
+    refresher: Refresher,
   ): void {
     if (
       this.state !== "open" ||
       this.connection !== "alive" ||
       this.connector !== connector ||
-      this.refresher !== refresher
+      this.configRefresher !== refresher
     ) {
       return;
     }
@@ -471,7 +490,7 @@ export class PhotonSession {
     }
   }
 
-  /** Stop refresh and close active and recovering connectors. Idempotent. */
+  /** Stop background refresh and close active and recovering connectors. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") {
       this.closeFactory();
@@ -479,7 +498,8 @@ export class PhotonSession {
     }
     this.state = "closed";
     this.connection = "closed";
-    this.refresher?.stop();
+    this.reauthRefresher?.stop();
+    this.configRefresher?.stop();
     this.recoveryAbort.abort();
     this.closeFactory();
     const active = this.connector;
@@ -497,7 +517,8 @@ export class PhotonSession {
     }
     this.state = "closed";
     this.connection = "closed";
-    this.refresher?.stop();
+    this.reauthRefresher?.stop();
+    this.configRefresher?.stop();
     this.recoveryAbort.abort();
     this.closeFactory();
     this.candidate?.destroy();
@@ -567,17 +588,47 @@ export class PhotonSession {
     if (this.disconnected.has(connector) || connector.isDead) {
       throw new PhotonConnectionError("Connection closed during initialization");
     }
-    const refresher = new ConfigRefresher(initialized.config.refreshInterval, () =>
-      this.refreshOnce(),
+    // Refreshers belong to the published connection. A replacement has just authenticated
+    // through HELLO, so publishing it intentionally resets both schedules and failure counts.
+    const configRefresher = new Refresher(
+      initialized.config.refreshInterval,
+      () => this.refreshOnce(),
+      { jitter: this.reconnectPolicy.jitter, name: "photon-refresher" },
     );
-    this.refresher?.stop();
+    const reauthRefresher = new Refresher(
+      this.reconnectPolicy.authRefreshIntervalMs / 1_000,
+      () => this.reauthenticateOnce(),
+      {
+        jitter: this.reconnectPolicy.jitter,
+        name: "photon-reauth",
+        failureDelayMs: (failures) => this.delayFor(failures),
+      },
+    );
+    this.reauthRefresher?.stop();
+    this.configRefresher?.stop();
     this._config = initialized.config;
     this.predicateEvaluator = initialized.evaluator;
     this.connector = connector;
     this.overridesSent = true;
     this.configConfirmed();
-    this.refresher = refresher;
-    refresher.start();
+    this.configRefresher = configRefresher;
+    this.reauthRefresher = reauthRefresher;
+    configRefresher.start();
+    reauthRefresher.start();
+  }
+
+  /** Obtain fresh credentials and run plain AUTH on the live connector. */
+  private async reauthenticateOnce(): Promise<void> {
+    const connector = this.connector;
+    if (
+      this.state !== "open" ||
+      this.connection !== "alive" ||
+      connector === undefined ||
+      this.reauthRefresher === undefined
+    ) {
+      return;
+    }
+    await connector.reauthenticate();
   }
 
   private handleDisconnect(connector: PhotonConnector): void {
@@ -587,9 +638,12 @@ export class PhotonSession {
     // Open the fallback window before clearing the connector so a request that
     // observes no connector always sees the current outage's deadline.
     this.fallbackDeadline = performance.now() + this.reconnectPolicy.fallbackWindowMs;
-    const refresher = this.refresher;
-    this.refresher = undefined;
-    refresher?.stop();
+    const configRefresher = this.configRefresher;
+    const reauthRefresher = this.reauthRefresher;
+    this.configRefresher = undefined;
+    this.reauthRefresher = undefined;
+    reauthRefresher?.stop();
+    configRefresher?.stop();
     this.connector = undefined;
     this.connection = "reconnecting";
     void connector.close().catch(() => undefined);

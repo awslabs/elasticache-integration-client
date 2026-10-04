@@ -92,8 +92,11 @@ require the corresponding tests, README, and build checks to change with it.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to the HELLO AUTH trailer, and keep
-  verified TLS with hostname checking as the default.
+  credentials for each fresh 15-minute token, periodically re-AUTH live
+  connections, keep the last valid state after an explicit rejection, invalidate
+  the stream after a timeout or malformed reply, confine tokens to the initial
+  HELLO AUTH trailer and subsequent AUTH commands, and keep verified TLS with
+  hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
   auth, session opening, and interceptor installation succeed, and clean up
@@ -137,7 +140,7 @@ mistake this contract for a review finding; intentional scope changes require
 README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
-Periodic config refresh is in scope: each `ConfigRefresher` tick sends
+Periodic config refresh is in scope: each config `Refresher` tick sends
 `photon.config`, using the zero-argument form once the session's overrides
 have been acknowledged by the server (an unacknowledged override map, including
 an explicit empty map, is resent), and applies the result. A RESP3 null reply
