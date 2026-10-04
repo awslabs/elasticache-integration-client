@@ -152,26 +152,32 @@ def test_client_passes_the_fallback_duration_to_the_session(monkeypatch):
     assert built["policy"].fallback_duration == 60
 
 
-def test_client_passes_overrides_to_the_session(monkeypatch):
+def test_client_passes_cache_policy_overrides_to_the_session(monkeypatch):
     _patch_common(monkeypatch, MagicMock())
     built: dict = {}
     monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
     monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
 
     overrides = {"exclude_tables": ["t"]}
-    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", overrides=overrides)
+    configuration = PhotonClientConfiguration(cache_policy_overrides=overrides)
+    client_mod.client(
+        "dynamodb", endpoint="cache:6379", cache_name="c", client_configuration=configuration
+    )
 
     assert built["overrides"] == overrides
 
 
-def test_client_copies_overrides_before_passing_them_to_the_session(monkeypatch):
+def test_client_copies_cache_policy_overrides_before_passing_them_to_the_session(monkeypatch):
     _patch_common(monkeypatch, MagicMock())
     built: dict = {}
     monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
     monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
 
     overrides = {"exclude_tables": ["t"]}
-    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", overrides=overrides)
+    configuration = PhotonClientConfiguration(cache_policy_overrides=overrides)
+    client_mod.client(
+        "dynamodb", endpoint="cache:6379", cache_name="c", client_configuration=configuration
+    )
     overrides["exclude_tables"] = ["other"]
 
     assert built["overrides"] == {"exclude_tables": ["t"]}

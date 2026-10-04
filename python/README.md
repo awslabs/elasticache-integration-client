@@ -47,9 +47,9 @@ Its per-request timeout defaults to 5 seconds and can be changed with the `reque
 
 ## Configuration
 
-Settings that change how Photon behaves go in one `photon.PhotonClientConfiguration`, passed as
-`client_configuration`. Every field has a default, so set only what you change. Overrides for the
-cache's `photon.config` go in their own `overrides` dict.
+Optional Photon settings go in one `photon.PhotonClientConfiguration`, passed as
+`client_configuration`. Every field has a default, so set only what you change. Cache policy
+settings are sent to the cache through `photon.config`.
 
 ```python
 ddb = photon.client(
@@ -59,8 +59,8 @@ ddb = photon.client(
     client_configuration=photon.PhotonClientConfiguration(
         request_timeout=2.0,
         fallback_duration=60,
+        cache_policy_overrides={"exclude_tables": ["audit-log"]},
     ),
-    overrides={"exclude_tables": ["audit-log"]},
 )
 ```
 
@@ -69,6 +69,7 @@ ddb = photon.client(
 | `request_timeout` | 5 s | How long to wait for each Photon request's reply. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `staleness_duration` | 3600 s | How long the resolved config stays trusted while refreshes fail (see below). |
+| `cache_policy_overrides` | `None` | Caching policy overrides sent to the cache through `photon.config`. |
 
 `client()` raises `PhotonConfigError` for a value that is not usable.
 
