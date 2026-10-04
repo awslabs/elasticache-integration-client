@@ -65,13 +65,13 @@ val buildIamToolkit by tasks.registering(Exec::class) {
 }
 
 dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.3")
     implementation("dev.cel:compiler:0.14.0")
     implementation("dev.cel:runtime:0.14.0")
     implementation(files(iamToolkitJar))
 
     // AWS SDK v2 for the sourced IAM toolkit and ExecutionInterceptor integration
-    api(platform("software.amazon.awssdk:bom:2.54.10"))
+    api(platform("software.amazon.awssdk:bom:2.55.6"))
     api("software.amazon.awssdk:auth")
     api("software.amazon.awssdk:regions")
     api("software.amazon.awssdk:sdk-core")
