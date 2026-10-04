@@ -17,7 +17,7 @@ from photon.session import PhotonSession, parse_endpoint
 
 @dataclass(frozen=True, kw_only=True)
 class PhotonClientConfiguration:
-    """How a Photon client behaves. Every field has a default, so pass only what you change.
+    """Configuration for a Photon client. All fields are optional and use defaults when omitted.
 
     Attributes:
         request_timeout: Maximum time, in seconds, to wait for each Photon request response.
@@ -33,14 +33,32 @@ class PhotonClientConfiguration:
         cache_policy_overrides: Optional caching policy overrides sent to the cache through
             ``photon.config``.
 
-    Values are checked by :func:`client`, which raises
-    :class:`~photon.exceptions.PhotonConfigError` for one that is not usable.
+    Building the configuration raises :class:`~photon.exceptions.PhotonConfigError` for a value
+    that is not usable.
     """
 
     request_timeout: float = 5.0
     fallback_duration: int | None = None
     staleness_duration: int = DEFAULT_STALENESS_DURATION
     cache_policy_overrides: dict | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.request_timeout, bool)
+            or not isinstance(self.request_timeout, (int, float))
+            or self.request_timeout <= 0
+        ):
+            raise PhotonConfigError("request_timeout must be a positive number of seconds")
+        if self.fallback_duration is not None and (
+            isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
+        ):
+            raise PhotonConfigError("fallback_duration must be a whole number of seconds or None")
+        if type(self.staleness_duration) is not int or self.staleness_duration <= 0:
+            raise PhotonConfigError("staleness_duration must be a positive whole number of seconds")
+        if self.cache_policy_overrides is not None and not isinstance(
+            self.cache_policy_overrides, dict
+        ):
+            raise PhotonConfigError("cache_policy_overrides must be a dict or None")
 
 
 def client(
@@ -82,12 +100,6 @@ def client(
     sdk_client = boto3.Session(region_name=region_name).client(service)
 
     try:
-        if (
-            isinstance(configuration.request_timeout, bool)
-            or not isinstance(configuration.request_timeout, (int, float))
-            or configuration.request_timeout <= 0
-        ):
-            raise PhotonConfigError("request_timeout must be a positive number of seconds")
         host, port = parse_endpoint(endpoint)
         auth_provider = build_cache_auth_provider(
             cache_name=cache_name, user_id=user_id, region=region_name

@@ -71,7 +71,7 @@ ddb = photon.client(
 | `staleness_duration` | 3600 s | How long the resolved config stays trusted while refreshes fail (see below). |
 | `cache_policy_overrides` | `None` | Caching policy overrides sent to the cache through `photon.config`. |
 
-`client()` raises `PhotonConfigError` for a value that is not usable.
+Building `PhotonClientConfiguration` raises `PhotonConfigError` for a value that is not usable.
 
 ## Reconnection and fallback
 

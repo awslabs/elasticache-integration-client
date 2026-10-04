@@ -101,41 +101,20 @@ def test_client_passes_the_staleness_window_to_the_session(monkeypatch, kwargs, 
     assert built["config_policy"].staleness_duration == expected
 
 
-@pytest.mark.parametrize("bad", [0, "600"])
-def test_client_rejects_an_unusable_staleness_window(monkeypatch, bad):
-    """The policy validates at construction, so a window that is not a positive whole number of
-    seconds fails the factory rather than surfacing later from a refresher thread."""
-    sdk_client = MagicMock()
-    _patch_common(monkeypatch, sdk_client)
-
-    with pytest.raises(PhotonConfigError):
-        client_mod.client(
-            "dynamodb",
-            endpoint="cache:6379",
-            cache_name="c",
-            client_configuration=PhotonClientConfiguration(staleness_duration=bad),
-        )
-
-    sdk_client.close.assert_called_once()
-
-
 @pytest.mark.parametrize(
     "field,bad",
-    [("request_timeout", 0), ("request_timeout", True), ("fallback_duration", 0.5)],
+    [
+        ("request_timeout", 0),
+        ("request_timeout", True),
+        ("fallback_duration", 0.5),
+        ("staleness_duration", 0),
+        ("staleness_duration", "600"),
+        ("cache_policy_overrides", []),
+    ],
 )
-def test_client_rejects_unusable_configuration_values(monkeypatch, field, bad):
-    sdk_client = MagicMock()
-    _patch_common(monkeypatch, sdk_client)
-
+def test_client_configuration_rejects_unusable_values(field, bad):
     with pytest.raises(PhotonConfigError):
-        client_mod.client(
-            "dynamodb",
-            endpoint="cache:6379",
-            cache_name="c",
-            client_configuration=PhotonClientConfiguration(**{field: bad}),
-        )
-
-    sdk_client.close.assert_called_once()
+        PhotonClientConfiguration(**{field: bad})
 
 
 def test_client_passes_the_fallback_duration_to_the_session(monkeypatch):
