@@ -101,12 +101,14 @@ require the corresponding tests, README, and package checks to change with it.
   propagating, and
   Photon-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after AUTH failure, TLS
-  verification that is off by default or off implicitly, or plaintext by
+  provider, stale IAM tokens, reusable connections after initial AUTH failure,
+  TLS verification that is off by default or off implicitly, or plaintext by
   default. Safe path: force-refresh credentials for each fresh scheme-free
-  15-minute token, confine tokens to AUTH, and keep verified TLS as the default;
-  plaintext (`tls: false`) and unverified TLS (`insecureSkipVerify`) are
-  explicit, opt-in local/test behavior.
+  15-minute token, periodically re-AUTH live connections, keep the last valid
+  state after an explicit refresh rejection, invalidate the stream after a
+  timeout or malformed reply, confine tokens to AUTH, and keep verified TLS as
+  the default; plaintext (`tls: false`) and unverified TLS
+  (`insecureSkipVerify`) are explicit, opt-in local/test behavior.
 - **Client readiness:** flag returning a partially initialized client or
   masking an initialization error with cleanup failures. Safe path: return
   only after auth, session opening, and middleware installation succeed, and

@@ -1,5 +1,5 @@
 /**
- * Tests for ConfigRefresher.
+ * Tests for Refresher.
  *
  * The refresher has no dependency on the session, connector, or protocol
  * modules, so it is exercised in isolation with a counting callback. Timing is
@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { PhotonError } from "../src/errors.js";
-import { ConfigRefresher } from "../src/refresh.js";
+import { Refresher } from "../src/refresh.js";
 
 /** Captured delays passed to setTimeout, in milliseconds. */
 function trackDelays(): number[] {
@@ -27,7 +27,7 @@ function trackDelays(): number[] {
 // Captured before the spy replaces the global so the spy can still schedule.
 let timerSetTimeout: typeof setTimeout;
 
-describe("ConfigRefresher", () => {
+describe("Refresher", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     timerSetTimeout = globalThis.setTimeout;
@@ -40,7 +40,7 @@ describe("ConfigRefresher", () => {
 
   it("invokes the callback once per interval, indefinitely", async () => {
     const refreshOnce = vi.fn();
-    const refresher = new ConfigRefresher(60, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(60, refreshOnce, { jitter: 0 });
 
     refresher.start();
     expect(refreshOnce).not.toHaveBeenCalled();
@@ -57,7 +57,7 @@ describe("ConfigRefresher", () => {
     const delays = trackDelays();
     const randomValues = [0, 0.5, 1];
     let index = 0;
-    const refresher = new ConfigRefresher(10, () => undefined, {
+    const refresher = new Refresher(10, () => undefined, {
       random: () => randomValues[index++ % randomValues.length]!,
     });
 
@@ -71,7 +71,7 @@ describe("ConfigRefresher", () => {
 
   it("keeps every jittered delay within the interval bounds", async () => {
     const delays = trackDelays();
-    const refresher = new ConfigRefresher(10, () => undefined);
+    const refresher = new Refresher(10, () => undefined);
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(500_000);
@@ -86,7 +86,7 @@ describe("ConfigRefresher", () => {
 
   it("uses the exact interval when jitter is disabled", async () => {
     const delays = trackDelays();
-    const refresher = new ConfigRefresher(10, () => undefined, { jitter: 0 });
+    const refresher = new Refresher(10, () => undefined, { jitter: 0 });
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(100_000);
@@ -100,20 +100,20 @@ describe("ConfigRefresher", () => {
     const refreshOnce = vi.fn(() => {
       throw new Error("refresh failed");
     });
-    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
     refresher.start();
     // An escaping throw would become an uncaughtException and kill the process.
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledOnce();
 
     refresher.stop();
   });
 
   it("stops promptly and idempotently before the first cycle", () => {
     const refreshOnce = vi.fn();
-    const refresher = new ConfigRefresher(3600, refreshOnce);
+    const refresher = new Refresher(3600, refreshOnce);
 
     refresher.start();
     refresher.stop();
@@ -124,7 +124,7 @@ describe("ConfigRefresher", () => {
   });
 
   it("does not reschedule when the callback stops the refresher", async () => {
-    const refresher: ConfigRefresher = new ConfigRefresher(
+    const refresher: Refresher = new Refresher(
       10,
       () => {
         refresher.stop();
@@ -141,7 +141,7 @@ describe("ConfigRefresher", () => {
   it("ignores start() after stop() and start() called twice", () => {
     const delays = trackDelays();
     const refreshOnce = vi.fn();
-    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
     refresher.start();
     refresher.start();
@@ -156,7 +156,7 @@ describe("ConfigRefresher", () => {
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects the invalid interval %s",
     (interval) => {
-      expect(() => new ConfigRefresher(interval, () => undefined)).toThrow(PhotonError);
+      expect(() => new Refresher(interval, () => undefined)).toThrow(PhotonError);
     },
   );
 
@@ -164,17 +164,17 @@ describe("ConfigRefresher", () => {
     // Node.js wraps a delay above 2^31-1 ms to ~1ms, which would hot-loop the refresher.
     const maxIntervalSeconds = Math.floor((2 ** 31 - 1) / 1000 / 1.2);
 
-    expect(() => new ConfigRefresher(maxIntervalSeconds, () => undefined)).not.toThrow();
-    expect(() => new ConfigRefresher(maxIntervalSeconds + 1, () => undefined)).toThrow(PhotonError);
+    expect(() => new Refresher(maxIntervalSeconds, () => undefined)).not.toThrow();
+    expect(() => new Refresher(maxIntervalSeconds + 1, () => undefined)).toThrow(PhotonError);
     // Jitter widens the largest delay, so a smaller interval is allowed without it.
     expect(
-      () => new ConfigRefresher(maxIntervalSeconds + 1, () => undefined, { jitter: 0 }),
+      () => new Refresher(maxIntervalSeconds + 1, () => undefined, { jitter: 0 }),
     ).not.toThrow();
   });
 
   it("never schedules a delay Node.js would wrap", () => {
     const delays = trackDelays();
-    const refresher = new ConfigRefresher(Math.floor((2 ** 31 - 1) / 1000 / 1.2), () => undefined, {
+    const refresher = new Refresher(Math.floor((2 ** 31 - 1) / 1000 / 1.2), () => undefined, {
       random: () => 1,
     });
 
@@ -195,7 +195,7 @@ describe("ConfigRefresher", () => {
       await new Promise((resolve) => setTimeout(resolve, 5_000));
       running -= 1;
     });
-    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(60_000);
@@ -210,15 +210,37 @@ describe("ConfigRefresher", () => {
   it("swallows a rejected callback, logs it, and keeps refreshing", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const refreshOnce = vi.fn(() => Promise.reject(new Error("refresh failed")));
-    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
     refresher.start();
     // An escaping rejection would become an unhandledRejection and kill the process.
     await expect(vi.advanceTimersByTimeAsync(30_000)).resolves.not.toThrow();
     expect(refreshOnce).toHaveBeenCalledTimes(3);
-    expect(warn).toHaveBeenCalledTimes(3);
+    expect(warn).toHaveBeenCalledOnce();
 
     refresher.stop();
+  });
+
+  it("uses failure backoff and restores the steady interval after success", async () => {
+    const delays = trackDelays();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const outcomes = [new Error("one"), new Error("two"), undefined];
+    const refreshOnce = vi.fn(() => {
+      const outcome = outcomes.shift();
+      if (outcome !== undefined) throw outcome;
+    });
+    const refresher = new Refresher(100, refreshOnce, {
+      jitter: 0,
+      name: "photon-reauth",
+      failureDelayMs: (failures) => failures * 1_000,
+    });
+
+    refresher.start();
+    await vi.advanceTimersByTimeAsync(103_000);
+    refresher.stop();
+
+    expect(delays.slice(0, 4)).toEqual([100_000, 1_000, 2_000, 100_000]);
+    expect(warn.mock.calls[0]?.[0]).toContain("photon-reauth");
   });
 
   it("does not reschedule after stop during an in-flight callback", async () => {
@@ -229,7 +251,7 @@ describe("ConfigRefresher", () => {
           finishRefresh = resolve;
         }),
     );
-    const refresher = new ConfigRefresher(10, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(10, refreshOnce, { jitter: 0 });
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -243,7 +265,7 @@ describe("ConfigRefresher", () => {
 
   it("applies a new interval from the next cycle onwards", async () => {
     const delays = trackDelays();
-    const refresher = new ConfigRefresher(10, () => undefined, { jitter: 0 });
+    const refresher = new Refresher(10, () => undefined, { jitter: 0 });
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(10_000);
@@ -259,7 +281,7 @@ describe("ConfigRefresher", () => {
     // Mirrors the production shape: the refresh callback itself calls setInterval() once it
     // learns the server's new interval, rather than a test calling it from outside a cycle.
     const delays = trackDelays();
-    const refresher: ConfigRefresher = new ConfigRefresher(
+    const refresher: Refresher = new Refresher(
       10,
       () => {
         refresher.setInterval(30);
@@ -277,7 +299,7 @@ describe("ConfigRefresher", () => {
   it("leaves a wait already in progress alone when the interval changes", async () => {
     const delays = trackDelays();
     const refreshOnce = vi.fn();
-    const refresher = new ConfigRefresher(100, refreshOnce, { jitter: 0 });
+    const refresher = new Refresher(100, refreshOnce, { jitter: 0 });
 
     refresher.start();
     await vi.advanceTimersByTimeAsync(50_000);
@@ -296,7 +318,7 @@ describe("ConfigRefresher", () => {
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects the invalid interval %s for setInterval",
     (interval) => {
-      const refresher = new ConfigRefresher(10, () => undefined);
+      const refresher = new Refresher(10, () => undefined);
 
       expect(() => refresher.setInterval(interval)).toThrow(PhotonError);
       refresher.stop();
@@ -305,7 +327,7 @@ describe("ConfigRefresher", () => {
 
   it("keeps the previous interval when setInterval rejects the new one", async () => {
     const delays = trackDelays();
-    const refresher = new ConfigRefresher(10, () => undefined, { jitter: 0 });
+    const refresher = new Refresher(10, () => undefined, { jitter: 0 });
 
     refresher.start();
     expect(() => refresher.setInterval(0)).toThrow(PhotonError);
@@ -316,13 +338,13 @@ describe("ConfigRefresher", () => {
   });
 
   it.each([-0.1, 1, 1.5, Number.NaN])("rejects the invalid jitter %s", (jitter) => {
-    expect(() => new ConfigRefresher(10, () => undefined, { jitter })).toThrow(PhotonError);
+    expect(() => new Refresher(10, () => undefined, { jitter })).toThrow(PhotonError);
   });
 });
 
-describe("ConfigRefresher with real timers", () => {
+describe("Refresher with real timers", () => {
   it("unrefs its timer so it cannot keep the process alive", () => {
-    const refresher = new ConfigRefresher(3600, () => undefined);
+    const refresher = new Refresher(3600, () => undefined);
     refresher.start();
 
     const timer = (refresher as unknown as { timer: NodeJS.Timeout }).timer;

@@ -156,6 +156,7 @@ const dynamodb = await client("dynamodb", DynamoDBClient, {
   reconnectPolicy: {
     connectAttempts: 3,
     connectionTimeoutMs: 5_000,
+    authRefreshIntervalMs: 900_000,
     baseDelayMs: 100,
     maxDelayMs: 3_200,
     jitter: 0.2,
@@ -164,15 +165,18 @@ const dynamodb = await client("dynamodb", DynamoDBClient, {
 ```
 
 Reconnect delay doubles to `maxDelayMs`, with symmetric jitter applied to every
-attempt including the capped tail. Closing or destroying the SDK client
-interrupts reconnect backoff and prevents further attempts.
+attempt including the capped tail. The same `reconnectPolicy.jitter` is applied
+to config-refresh and re-AUTH intervals for parity with the other clients;
+setting it to `0` disables jitter for all three schedules. Closing or destroying
+the SDK client interrupts reconnect backoff and prevents further attempts.
 
 The `HELLO 3 AUTH` handshake normally uses `@aws/developer-toolkit-elasticache` to cache and
 automatically refresh short-lived IAM tokens from the SDK credential chain.
 The toolkit validates cache names and user IDs, normalizes them to lowercase
 before signing, and refreshes the cached token in the background. If Photon
-receives a handshake rejection, it invalidates that token so the next connection
-attempt uses a newly signed one. Destroying the SDK client stops background
+rejects either the initial handshake or a background AUTH refresh, it invalidates
+that token so the next authentication attempt uses a newly signed one. Destroying
+the SDK client stops background
 token refresh. A caller that already holds a token, or that authenticates
 against a local or test endpoint, supplies `connectorOptions.authProvider`
 instead: it returns `[userId, token]` and replaces toolkit token management
@@ -188,6 +192,13 @@ SDK client also closes the manager and stops its timers. When
 `connectorOptions.authProvider` is supplied, Photon does not create or close
 that provider; the caller owns its lifecycle, matching Java's explicitly
 constructed `IamAuthTokenManager`.
+
+Photon repeats `AUTH` on each live connection on a jittered 15-minute base
+interval by default. A rejected refresh is retried with reconnect backoff while
+the connection keeps serving with its last valid authentication state. A
+timed-out or malformed AUTH reply drops the connection for FIFO safety and
+starts normal recovery. Configure the cadence with
+`reconnectPolicy.authRefreshIntervalMs`.
 
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when

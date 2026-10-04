@@ -1,8 +1,9 @@
 /**
- * ConfigRefresher: a generic periodic-callback runner used to drive config refresh.
+ * Refresher: a generic periodic-callback runner used to drive background tasks.
  *
  * The refresher knows nothing about Photon, sessions, or config. It invokes a
- * no-argument callback on a jittered interval until stopped. The timer is
+ * no-argument callback on a jittered interval until stopped. Callback failures
+ * may use a separate retry delay. The timer is
  * unref'd so a running refresher never keeps the Node.js process alive, and a
  * failing callback is swallowed so it can neither crash the host process nor
  * stop future cycles.
@@ -18,7 +19,7 @@ const DEFAULT_JITTER = 0.2;
  */
 const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
-export interface ConfigRefresherOptions {
+export interface RefresherOptions {
   /**
    * Fraction of the interval to jitter by, in [0, 1). A value of 0 disables
    * jitter and every delay is exactly the interval.
@@ -26,20 +27,27 @@ export interface ConfigRefresherOptions {
   jitter?: number;
   /** Random source in [0, 1), injectable so tests can pin the jitter factor. */
   random?: () => number;
+  /** Task name included in failure logs. */
+  name?: string;
+  /** Delay in milliseconds after a callback failure. Defaults to the steady interval. */
+  failureDelayMs?: (consecutiveFailures: number) => number;
 }
 
 /** Runs `refreshOnce` every `intervalSeconds` (+/- jitter) until stopped. */
-export class ConfigRefresher {
+export class Refresher {
   private readonly jitter: number;
   private readonly random: () => number;
+  private readonly name: string;
+  private readonly failureDelayMs: RefresherOptions["failureDelayMs"];
   private intervalSeconds: number;
   private timer: NodeJS.Timeout | undefined;
   private stopped = false;
+  private consecutiveFailures = 0;
 
   constructor(
     intervalSeconds: number,
     private readonly refreshOnce: () => void | Promise<void>,
-    options: ConfigRefresherOptions = {},
+    options: RefresherOptions = {},
   ) {
     this.jitter = options.jitter ?? DEFAULT_JITTER;
     if (!Number.isFinite(this.jitter) || this.jitter < 0 || this.jitter >= 1) {
@@ -48,6 +56,8 @@ export class ConfigRefresher {
     this.validateInterval(intervalSeconds);
     this.intervalSeconds = intervalSeconds;
     this.random = options.random ?? Math.random;
+    this.name = options.name ?? "photon-refresher";
+    this.failureDelayMs = options.failureDelayMs;
   }
 
   /**
@@ -94,12 +104,12 @@ export class ConfigRefresher {
    * Schedule one cycle, then reschedule once the cycle finishes so each delay
    * gets freshly computed jitter and refreshes never overlap.
    */
-  private schedule(): void {
+  private schedule(delayMs = this.nextDelayMs()): void {
     const timer = setTimeout(() => {
       this.timer = undefined;
       if (this.stopped) return;
       void this.runCycle();
-    }, this.nextDelayMs());
+    }, delayMs);
     // Node.js only; a timer object from a fake-timer implementation may not have it.
     timer.unref?.();
     this.timer = timer;
@@ -107,15 +117,20 @@ export class ConfigRefresher {
 
   /** Await one refresh, then schedule the next. Never rejects. */
   private async runCycle(): Promise<void> {
+    let nextDelayMs: number | undefined;
     try {
       await this.refreshOnce();
+      this.consecutiveFailures = 0;
     } catch (error) {
-      // A failed refresh keeps the previous config; the next cycle retries. An
-      // unhandled rejection here would surface as an unhandledRejection and can
-      // take down the host process, so it is logged and swallowed instead.
-      console.warn("Config refresh callback failed:", error);
+      const message =
+        `Photon background task ${this.name} failed (${++this.consecutiveFailures} in a row); ` +
+        "retrying. The cache keeps serving meanwhile.";
+      if (this.consecutiveFailures === 1 || this.consecutiveFailures % 100 === 0) {
+        console.warn(message, error);
+      }
+      nextDelayMs = this.failureDelayMs?.(this.consecutiveFailures);
     }
-    if (!this.stopped) this.schedule();
+    if (!this.stopped) this.schedule(nextDelayMs);
   }
 
   private nextDelayMs(): number {

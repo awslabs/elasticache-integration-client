@@ -766,6 +766,90 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("re-authenticates a ready connection with plain AUTH and fresh credentials", async () => {
+    const cache = await startCache();
+    const authProvider = vi
+      .fn<() => [string, string]>()
+      .mockReturnValueOnce(["test-user", "initial-token"])
+      .mockReturnValueOnce(["test-user", "fresh-token"]);
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    await connector.reauthenticate();
+
+    expect(cache.photonCommandLog).toEqual(["hello", "auth"]);
+    expect(cache.receivedCommands[1]).toEqual([
+      Buffer.from("AUTH"),
+      Buffer.from("test-user"),
+      Buffer.from("fresh-token"),
+    ]);
+    expect(connector.isReady).toBe(true);
+    await connector.close();
+  });
+
+  it("keeps the last valid connection open after a re-AUTH rejection", async () => {
+    const cache = await startCache();
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    cache.setAuthResponse(Reply.error("WRONGPASS", "bad token"));
+
+    await expect(connector.reauthenticate()).rejects.toThrow("IAM AUTH rejected: WRONGPASS");
+    expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
+    expect(connector.isReady).toBe(true);
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
+    await connector.close();
+  });
+
+  it("closes after an unexpected re-AUTH reply without exposing its value", async () => {
+    const cache = await startCache();
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    cache.setAuthResponse(new Reply(Buffer.from("$15\r\nsecret-response\r\n")));
+
+    const error = await connector.reauthenticate().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Buffer");
+    expect((error as Error).message).not.toContain("secret-response");
+    expect(connector.isDead).toBe(true);
+    expect(authProvider.refreshAuth).not.toHaveBeenCalled();
+    await connector.close();
+  });
+
+  it("uses the config timeout for re-AUTH and closes after a timeout", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "auth" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      configTimeout: 25,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    await expect(connector.reauthenticate()).rejects.toThrow("IAM AUTH timed out");
+    expect(connector.isDead).toBe(true);
+    await connector.close();
+  });
+
   it("requires an auth provider for the HELLO handshake", async () => {
     const connector = new PhotonConnector("host", 6379, { tls: false });
 

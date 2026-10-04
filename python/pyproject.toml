@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "photon"
+name = "photon-python"
 version = "0.0.1"
 description = "Photon client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
 readme = "README.md"
@@ -20,6 +20,7 @@ test = [
     "pytest>=7",
     "pytest-cov>=4",
     "cryptography>=42",  # used by tests/mock.py to mint a self-signed cert for the TLS e2e
+    "packaging>=24",
 ]
 dev = [
     "ruff==0.16.9",
