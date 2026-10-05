@@ -42,8 +42,8 @@ The library delivers the happy path: intercept → serialize → `photon.config`
 `photon.request` → return the cached response over a real TLS RESP3 connection, with
 session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connector**
 (`PhotonConnector`) — no Glide or other native dependency.
-Its per-request timeout defaults to 5 seconds and can be changed with the `request_timeout` field
-(see below).
+Its per-request timeout defaults to 5 seconds and can be changed with the
+`photon_request_timeout` field (see below).
 
 ## Configuration
 
@@ -57,7 +57,7 @@ ddb = photon.client(
     endpoint="my-cache:6379",
     cache_name="my-cache",
     client_configuration=photon.PhotonClientConfiguration(
-        request_timeout=2.0,
+        photon_request_timeout=2.0,
         fallback_duration=60,
         cache_policy_overrides={"exclude_tables": ["audit-log"]},
     ),
@@ -66,10 +66,10 @@ ddb = photon.client(
 
 | Field | Default | Meaning |
 |---|---|---|
-| `request_timeout` | 5 s | How long to wait for each Photon request's reply. |
+| `photon_request_timeout` | 5 s | How long to wait for each Photon request's reply. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
-| `staleness_duration` | 3600 s | How long the resolved config stays trusted while refreshes fail (see below). |
-| `cache_policy_overrides` | `None` | Caching policy overrides sent to the cache through `photon.config`. |
+| `cache_policy_overrides` | `None` | Settings that change what Photon caches, such as tables to exclude and cache entry lifetimes. |
+| `cache_policy_timeout` | 3600 s | How long Photon may use a cache policy without confirmation from the cache. |
 
 Building `PhotonClientConfiguration` raises `PhotonConfigError` for a value that is not usable.
 
@@ -106,18 +106,16 @@ cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rej
 request through while reconnection obtains fresh authentication. Other RESP errors, malformed
 replies, and failures for non-idempotent operations propagate without origin fallback.
 
-## Config staleness
+## Cache policy timeout
 
-The resolved config is re-fetched periodically on the live connection. A refresh that fails changes
-nothing: the last config the server confirmed stays in force and the next refresh retries. Both a
-config the server sends and an empty "nothing has changed" reply count as confirmation, as does each
-new connection resolving its own.
+Photon automatically confirms the resolved cache policy in the background through `photon.config`.
+A new policy replaces the current one. An unchanged reply confirms that the current policy is still
+valid. Both replies restart the timeout.
 
-That tolerance is bounded by the `staleness_duration` field, one hour by default. A refresh that
-fails past it means the config can no longer be trusted, so Photon drops the connection, and bringing
-up the replacement resolves a config, which is what makes the drop a repair. A refresh that loses its
-connection reconnects at once. Requests fall back meanwhile,
-under the `fallback_duration` rules above.
+If confirmation fails, Photon keeps using the last confirmed policy. That tolerance is bounded by
+`cache_policy_timeout`, one hour by default. After the timeout, the next failed confirmation drops
+the connection so a replacement can fetch a current policy. Requests follow the `fallback_duration`
+rules while the connection is being replaced.
 
 ## Next steps:
 

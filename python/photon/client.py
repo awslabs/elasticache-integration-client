@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from copy import deepcopy
 from dataclasses import dataclass
 
 import boto3
@@ -20,45 +22,48 @@ class PhotonClientConfiguration:
     """Configuration for a Photon client. All fields are optional and use defaults when omitted.
 
     Attributes:
-        request_timeout: Maximum time, in seconds, to wait for each Photon request response.
+        photon_request_timeout: Maximum time, in seconds, to wait for each Photon request response.
             Defaults to 5 seconds.
         fallback_duration: How long, in seconds, requests may be served directly by the origin
             service while Photon has no connection to the cache. ``None`` (the default) or any
             negative value means indefinitely, so a cache outage never becomes an application
             outage. ``0`` means never — the first request after a connection is lost raises
             :class:`~photon.exceptions.PhotonCacheUnavailable`.
-        staleness_duration: How long, in seconds, the resolved config stays trusted while refreshes
-            are failing. Past it the connection is dropped so a new one re-resolves the config.
-            Defaults to one hour; must be a positive whole number of seconds.
-        cache_policy_overrides: Optional caching policy overrides sent to the cache through
-            ``photon.config``.
+        cache_policy_overrides: Optional settings that change what Photon caches, such as tables to
+            exclude and cache entry lifetimes. Sent through the internal ``photon.config`` command.
+        cache_policy_timeout: How long, in seconds, Photon may use a cache policy without
+            confirmation from the cache. After this time, Photon reconnects to get a current policy.
+            Defaults to 3600 seconds and must be a positive whole number.
 
     Building the configuration raises :class:`~photon.exceptions.PhotonConfigError` for a value
     that is not usable.
     """
 
-    request_timeout: float = 5.0
+    photon_request_timeout: float = 5.0
     fallback_duration: int | None = None
-    staleness_duration: int = DEFAULT_STALENESS_DURATION
     cache_policy_overrides: dict | None = None
+    cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
 
     def __post_init__(self) -> None:
         if (
-            isinstance(self.request_timeout, bool)
-            or not isinstance(self.request_timeout, (int, float))
-            or self.request_timeout <= 0
+            isinstance(self.photon_request_timeout, bool)
+            or not isinstance(self.photon_request_timeout, (int, float))
+            or not math.isfinite(self.photon_request_timeout)
+            or self.photon_request_timeout <= 0
         ):
-            raise PhotonConfigError("request_timeout must be a positive number of seconds")
+            raise PhotonConfigError("photon_request_timeout must be a positive number of seconds")
         if self.fallback_duration is not None and (
             isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
         ):
             raise PhotonConfigError("fallback_duration must be a whole number of seconds or None")
-        if type(self.staleness_duration) is not int or self.staleness_duration <= 0:
-            raise PhotonConfigError("staleness_duration must be a positive whole number of seconds")
         if self.cache_policy_overrides is not None and not isinstance(
             self.cache_policy_overrides, dict
         ):
             raise PhotonConfigError("cache_policy_overrides must be a dict or None")
+        if type(self.cache_policy_timeout) is not int or self.cache_policy_timeout <= 0:
+            raise PhotonConfigError(
+                "cache_policy_timeout must be a positive whole number of seconds"
+            )
 
 
 def client(
@@ -112,20 +117,16 @@ def client(
                 verify=verify,
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
-                request_timeout=configuration.request_timeout,
+                request_timeout=configuration.photon_request_timeout,
             )
 
         # The session connects (HELLO 3 handshake + photon.config exchange) before the hook is installed,
         # so the first intercepted request already has a ready session.
         session = PhotonSession(
             connector_factory,
-            overrides=(
-                dict(configuration.cache_policy_overrides)
-                if configuration.cache_policy_overrides
-                else None
-            ),
+            overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(fallback_duration=configuration.fallback_duration),
-            config_policy=ConfigPolicy(staleness_duration=configuration.staleness_duration),
+            config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
         )
         PhotonHandle(sdk_client, session)
     except BaseException:

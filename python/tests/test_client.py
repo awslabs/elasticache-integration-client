@@ -58,7 +58,9 @@ def test_client_returns_sdk_client_on_success(monkeypatch):
 
 
 @pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])
-def test_client_passes_request_timeout_to_connector_factory(monkeypatch, requested, expected):
+def test_client_passes_photon_request_timeout_to_connector_factory(
+    monkeypatch, requested, expected
+):
     sdk_client = MagicMock()
     _patch_common(monkeypatch, sdk_client)
     connector_constructor = MagicMock(return_value=MagicMock())
@@ -74,7 +76,7 @@ def test_client_passes_request_timeout_to_connector_factory(monkeypatch, request
     kwargs = (
         {}
         if requested is None
-        else {"client_configuration": PhotonClientConfiguration(request_timeout=requested)}
+        else {"client_configuration": PhotonClientConfiguration(photon_request_timeout=requested)}
     )
     client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c", **kwargs)
 
@@ -85,12 +87,11 @@ def test_client_passes_request_timeout_to_connector_factory(monkeypatch, request
     "kwargs,expected",
     [
         ({}, DEFAULT_STALENESS_DURATION),
-        ({"client_configuration": PhotonClientConfiguration(staleness_duration=600)}, 600),
+        ({"client_configuration": PhotonClientConfiguration(cache_policy_timeout=600)}, 600),
     ],
 )
-def test_client_passes_the_staleness_window_to_the_session(monkeypatch, kwargs, expected):
-    """The window reaches the session's policy: the documented default when omitted — not None,
-    which the policy would reject — and the caller's own value when set."""
+def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwargs, expected):
+    """The public timeout reaches the internal policy, using the default when omitted."""
     _patch_common(monkeypatch, MagicMock())
     built: dict = {}
     monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
@@ -104,12 +105,14 @@ def test_client_passes_the_staleness_window_to_the_session(monkeypatch, kwargs, 
 @pytest.mark.parametrize(
     "field,bad",
     [
-        ("request_timeout", 0),
-        ("request_timeout", True),
+        ("photon_request_timeout", 0),
+        ("photon_request_timeout", True),
+        ("photon_request_timeout", float("nan")),
+        ("photon_request_timeout", float("inf")),
         ("fallback_duration", 0.5),
-        ("staleness_duration", 0),
-        ("staleness_duration", "600"),
         ("cache_policy_overrides", []),
+        ("cache_policy_timeout", 0),
+        ("cache_policy_timeout", "600"),
     ],
 )
 def test_client_configuration_rejects_unusable_values(field, bad):
@@ -157,7 +160,8 @@ def test_client_copies_cache_policy_overrides_before_passing_them_to_the_session
     client_mod.client(
         "dynamodb", endpoint="cache:6379", cache_name="c", client_configuration=configuration
     )
-    overrides["exclude_tables"] = ["other"]
+    overrides["exclude_tables"].append("other")
 
     assert built["overrides"] == {"exclude_tables": ["t"]}
     assert built["overrides"] is not overrides
+    assert built["overrides"]["exclude_tables"] is not overrides["exclude_tables"]
