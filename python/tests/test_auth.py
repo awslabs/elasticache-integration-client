@@ -1,4 +1,4 @@
-"""Tests for Photon's adapters around the ElastiCache IAM toolkit."""
+"""Tests for Photon's managed adapter around the ElastiCache IAM toolkit."""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from botocore.credentials import Credentials
 from botocore.session import Session as BotocoreSession
+from developer_toolkit_elasticache import ConfigurationError, InvalidParameterError
 
 from photon.auth import (
     DEFAULT_USER_ID,
-    IamAuthTokenProvider,
     ManagedIamAuthTokenProvider,
+    _to_photon_error,
     build_cache_auth_provider,
-    generate_iam_auth_token,
-    resolve_auth_params,
 )
 from photon.exceptions import PhotonError
 
@@ -37,106 +36,6 @@ def fake_session(*, access_keys=(FIRST_ACCESS_KEY,), region="us-east-1"):
     session.get_credentials.side_effect = credentials
     session.get_config_variable.side_effect = lambda name: region if name == "region" else None
     return session
-
-
-class TestResolveAuthParams:
-    def test_defaults_user_id(self):
-        _, user_id, _ = resolve_auth_params(cache_name="my-cache", region="us-west-2")
-        assert user_id == DEFAULT_USER_ID
-
-    @pytest.mark.parametrize("cache_name", [None, ""])
-    def test_rejects_missing_cache_name(self, cache_name):
-        with pytest.raises(PhotonError, match="cache_name is required"):
-            resolve_auth_params(cache_name=cache_name, region="us-east-1")
-
-    @pytest.mark.parametrize("region", [None, ""])
-    def test_rejects_missing_region(self, region):
-        with pytest.raises(PhotonError, match="region is required"):
-            resolve_auth_params(cache_name="my-cache", region=region)
-
-
-class TestGenerateIamAuthToken:
-    def test_uses_toolkit_format_validation_and_normalization(self):
-        token = generate_iam_auth_token(
-            cache_name="My-Cache",
-            user_id="IAM-User",
-            region="us-east-1",
-            botocore_session=fake_session(),
-        )
-
-        assert token.startswith("my-cache/")
-        assert "Action=connect" in token
-        assert "User=iam-user" in token
-        assert "ResourceType=ServerlessCache" in token
-        assert "X-Amz-Credential=" in token
-        assert "X-Amz-Signature=" in token
-        assert "X-Amz-Expires=900" in token
-        assert not token.startswith(("http://", "https://"))
-
-        with pytest.raises(PhotonError, match="serverless_cache_name"):
-            generate_iam_auth_token(
-                cache_name="bad/cache",
-                user_id="iam-user",
-                region="us-east-1",
-                botocore_session=fake_session(),
-            )
-
-    def test_raises_on_no_credentials(self):
-        session = fake_session(access_keys=())
-        session.get_credentials.side_effect = None
-        session.get_credentials.return_value = None
-
-        with pytest.raises(PhotonError, match="No AWS credentials"):
-            generate_iam_auth_token(
-                cache_name="my-cache",
-                user_id="my-user",
-                region="us-east-1",
-                botocore_session=session,
-            )
-
-    def test_wraps_unexpected_exceptions_without_details(self):
-        session = fake_session()
-        session.get_credentials.side_effect = RuntimeError("secret=credential-material")
-
-        error = pytest.raises(
-            PhotonError,
-            generate_iam_auth_token,
-            cache_name="my-cache",
-            user_id="my-user",
-            region="us-east-1",
-            botocore_session=session,
-        ).value
-        assert str(error) == "Failed to generate IAM auth token"
-        assert "credential-material" not in str(error)
-
-    def test_rejects_custom_expiry(self):
-        with pytest.raises(PhotonError, match="expires_in must be 900 seconds"):
-            generate_iam_auth_token(
-                cache_name="my-cache",
-                user_id="my-user",
-                region="us-east-1",
-                botocore_session=fake_session(),
-                expires_in=60,
-            )
-
-
-class TestIamAuthTokenProvider:
-    def test_returns_normalized_user_and_fresh_tokens(self):
-        session = fake_session(access_keys=(FIRST_ACCESS_KEY, ROTATED_ACCESS_KEY))
-        provider = IamAuthTokenProvider(
-            cache_name="My-Cache",
-            user_id="IAM-User",
-            region="us-east-1",
-            botocore_session=session,
-        )
-
-        first_user, first_token = provider()
-        second_user, second_token = provider()
-
-        assert first_user == second_user == "iam-user"
-        assert FIRST_ACCESS_KEY in first_token
-        assert ROTATED_ACCESS_KEY in second_token
-        assert session.get_credentials.call_count == 2
 
 
 class TestManagedIamAuthTokenProvider:
@@ -169,6 +68,7 @@ class TestManagedIamAuthTokenProvider:
             botocore_session=fake_session(),
         )
         provider.close()
+
         with pytest.raises(PhotonError, match="Failed to obtain refreshed IAM auth token"):
             provider()
 
@@ -176,8 +76,7 @@ class TestManagedIamAuthTokenProvider:
 class TestBuildCacheAuthProvider:
     @patch("photon.auth.ElastiCacheIAMAuthTokenManager")
     def test_passes_configuration_to_toolkit_manager(self, manager_class):
-        manager = MagicMock()
-        manager_class.return_value = manager
+        manager_class.return_value = MagicMock()
         session = fake_session()
 
         provider = build_cache_auth_provider(
@@ -185,7 +84,7 @@ class TestBuildCacheAuthProvider:
             user_id="IAM-User",
             region="eu-west-1",
             botocore_session=session,
-            refresh_after=120,
+            token_refresh_delay=120,
         )
 
         assert isinstance(provider, ManagedIamAuthTokenProvider)
@@ -204,7 +103,8 @@ class TestBuildCacheAuthProvider:
             botocore_session=fake_session(region="us-east-2"),
         )
         try:
-            _, token = provider()
+            user_id, token = provider()
+            assert user_id == DEFAULT_USER_ID
             assert "us-east-2" in token
         finally:
             provider.close()
@@ -219,5 +119,34 @@ class TestBuildCacheAuthProvider:
                 cache_name="my-cache",
                 region="us-east-1",
                 botocore_session=fake_session(),
-                refresh_after=880,
+                token_refresh_delay=880,
             )
+
+    @patch("photon.auth.ElastiCacheIAMAuthTokenManager")
+    def test_wraps_unexpected_constructor_errors_without_details(self, manager_class):
+        manager_class.side_effect = RuntimeError("secret=credential-material")
+
+        error = pytest.raises(
+            PhotonError,
+            build_cache_auth_provider,
+            cache_name="my-cache",
+            region="us-east-1",
+            botocore_session=fake_session(),
+        ).value
+
+        assert str(error) == "Failed to initialize IAM token auto-refresh"
+        assert "credential-material" not in str(error)
+
+
+@pytest.mark.parametrize(
+    "toolkit_error",
+    [
+        ConfigurationError("No AWS credentials found. Configure credentials via the environment."),
+        ConfigurationError("No AWS region found. Pass region explicitly, or configure AWS_REGION."),
+        InvalidParameterError(
+            "Invalid value for parameter 'serverless_cache_name': must match a pattern."
+        ),
+    ],
+)
+def test_toolkit_input_errors_keep_their_actionable_message(toolkit_error):
+    assert str(_to_photon_error(toolkit_error, "generic")) == str(toolkit_error)

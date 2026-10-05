@@ -75,7 +75,7 @@ def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
         cache_name="My-Cache",
         region_name="us-east-1",
         user_id="IAM-User",
-        iam_refresh_after=120,
+        client_configuration=PhotonClientConfiguration(iam_token_refresh_delay=120),
     )
 
     auth_builder.assert_called_once_with(
@@ -83,7 +83,7 @@ def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
         user_id="IAM-User",
         region="us-east-1",
         botocore_session=boto3_session._session,
-        refresh_after=120,
+        token_refresh_delay=120,
     )
 
 

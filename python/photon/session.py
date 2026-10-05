@@ -149,7 +149,10 @@ class PhotonSession:
             try:
                 self.close()
             except Exception:
-                pass  # preserve the initialization failure
+                logger.warning(
+                    "Photon session cleanup failed during initialization",
+                    exc_info=True,
+                )
             raise
 
     @property
@@ -331,11 +334,11 @@ class PhotonSession:
 
     def close(self) -> None:
         """Stop background work, then close the connection and all reconnect activity. Idempotent."""
-        if self._reauth_runner:
-            self._reauth_runner.stop()
-        if self._config_refresher:
-            self._config_refresher.stop()
         try:
+            if self._reauth_runner:
+                self._reauth_runner.stop()
+            if self._config_refresher:
+                self._config_refresher.stop()
             self._connection_manager.close()
         finally:
             if not self._close_callback_called:

@@ -144,17 +144,26 @@ jobs:
           import zipfile
 
           catalog = "photon/idempotent-operations.json"
-          modules = [
-              "developer_toolkit_elasticache/__init__.py",
-              "developer_toolkit_elasticache/LICENSE",
-              "developer_toolkit_elasticache/NOTICE",
-              "developer_toolkit_elasticache/token_generator.py",
-              "developer_toolkit_elasticache/token_manager.py",
+          photon_modules = [
               "photon/__init__.py",
               "photon/client.py",
               "photon/session.py",
               "photon/connection.py",
               "photon/idempotency.py",
+          ]
+          toolkit_modules = [
+              "developer_toolkit_elasticache/__init__.py",
+              "developer_toolkit_elasticache/LICENSE",
+              "developer_toolkit_elasticache/NOTICE",
+              "developer_toolkit_elasticache/token_generator.py",
+              "developer_toolkit_elasticache/token_manager.py",
+          ]
+          sdist_toolkit_modules = [
+              "vendor/developer-toolkit-elasticache/python/LICENSE",
+              "vendor/developer-toolkit-elasticache/python/NOTICE",
+              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/__init__.py",
+              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_generator.py",
+              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_manager.py",
           ]
           junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc")
 
@@ -167,8 +176,16 @@ jobs:
               wheel_names = archive.namelist()
 
           errors = []
+          required_by_archive = {
+              "sdist": [
+                  catalog,
+                  *photon_modules,
+                  *sdist_toolkit_modules,
+              ],
+              "wheel": [catalog, *photon_modules, *toolkit_modules],
+          }
           for label, names in (("sdist", sdist_names), ("wheel", wheel_names)):
-              for required in [catalog, *modules]:
+              for required in required_by_archive[label]:
                   if required not in names:
                       errors.append(f"{label} is missing {required}")
               for name in names:

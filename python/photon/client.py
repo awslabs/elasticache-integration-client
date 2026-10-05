@@ -34,8 +34,10 @@ class PhotonClientConfiguration:
         cache_policy_timeout: How long, in seconds, Photon may use a cache policy without
             confirmation from the cache. After this time, Photon reconnects to get a current policy.
             Defaults to 3600 seconds and must be a positive whole number.
-        iam_refresh_after: Seconds after token issuance when the toolkit begins background
-            refresh. When omitted, the toolkit default is used.
+        iam_token_refresh_delay: How long, in seconds, after a token is issued before the IAM
+            toolkit signs a replacement in the background, while callers keep using the current
+            token. Must be greater than 0 and less than 880. When omitted, the toolkit default of
+            300 seconds is used.
 
     Building the configuration raises :class:`~photon.exceptions.PhotonConfigError` for a value
     that is not usable.
@@ -45,7 +47,7 @@ class PhotonClientConfiguration:
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
-    iam_refresh_after: float | None = None
+    iam_token_refresh_delay: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -117,7 +119,7 @@ def client(
             user_id=user_id,
             region=resolved_region,
             botocore_session=boto3_session._session,
-            refresh_after=configuration.iam_refresh_after,
+            token_refresh_delay=configuration.iam_token_refresh_delay,
         )
 
         def connector_factory() -> PhotonConnector:

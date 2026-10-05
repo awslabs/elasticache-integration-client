@@ -408,8 +408,9 @@ class PhotonConnector:
         the connection to avoid FIFO desync.
 
         Raises:
-            PhotonConnectionError: If there is no auth provider, or the handshake is rejected
-                or times out.
+            PhotonAuthError: If the cache explicitly rejects the credentials.
+            PhotonConnectionError: If there is no auth provider, the protocol negotiation fails,
+                or the handshake times out.
             PhotonError: If the provider fails to generate a token.
         """
         if self._auth_provider is None:
@@ -485,7 +486,11 @@ class PhotonConnector:
         try:
             self._verify_auth_reply(reply)
         except PhotonAuthError:
-            self._refresh_auth_after_rejection()
+            # An explicit error reply is in-order and leaves the connection usable, so replace
+            # the rejected cached token. An unexpected reply closes for FIFO safety; refreshing
+            # credentials cannot repair that connection.
+            if self.is_alive:
+                self._refresh_auth_after_rejection()
             raise
 
     def _refresh_auth_after_rejection(self) -> None:
@@ -497,7 +502,10 @@ class PhotonConnector:
             refresh()
         except Exception:
             # Preserve the cache's rejection. The next retry can attempt refresh again.
-            pass
+            logger.warning(
+                "Failed to force-refresh IAM authentication after cache rejection",
+                exc_info=True,
+            )
 
     def _verify_auth_reply(self, reply: RespValue) -> None:
         """Validate a re-AUTH reply. Raises PhotonAuthError on rejection or unexpected shape."""

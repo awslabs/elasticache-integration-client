@@ -7,6 +7,7 @@ from botocore.hooks import first_non_none_response
 
 from photon import hooks
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonCacheUnavailable,
     PhotonConnectionError,
     PhotonConnectionLost,
@@ -197,6 +198,20 @@ def test_non_origin_rejection_is_non_retryable_and_does_not_fallback():
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
     with pytest.raises(PhotonRejectedError) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is rejection
+
+
+def test_auth_rejection_is_not_converted_to_a_connection_error():
+    sdk = MockClient()
+    session = mock_session()
+    rejection = PhotonAuthError("IAM AUTH rejected: WRONGPASS")
+    session.request.side_effect = rejection
+    hooks.PhotonHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+
+    with pytest.raises(PhotonAuthError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+
     assert exc_info.value is rejection
 
 

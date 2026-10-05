@@ -61,6 +61,7 @@ ddb = photon.client(
         photon_request_timeout=2.0,
         fallback_duration=60,
         cache_policy_overrides={"exclude_tables": ["audit-log"]},
+        iam_token_refresh_delay=300,
     ),
 )
 ```
@@ -71,6 +72,7 @@ ddb = photon.client(
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what Photon caches, such as tables to exclude and cache entry lifetimes. |
 | `cache_policy_timeout` | 3600 s | How long Photon may use a cache policy without confirmation from the cache. |
+| `iam_token_refresh_delay` | 300 s | When the IAM toolkit signs a replacement token in the background. |
 
 Building `PhotonClientConfiguration` raises `PhotonConfigError` for a value that is not usable.
 
@@ -81,11 +83,17 @@ The toolkit validates and lowercases cache names and user IDs, resolves fresh AW
 for every newly signed token, and owns the SigV4 signing contract. Photon sends the bearer token
 only in the TLS-protected `HELLO 3 AUTH` exchange; origin request signing remains owned by boto3.
 
-The `client()` factory creates a toolkit token manager. It caches the current token, refreshes it
-in the background, and force-refreshes after the cache rejects an authentication attempt.
-Closing the boto3 client closes Photon and stops toolkit refresh. Set `iam_refresh_after` to
-customize the refresh point; accepted values, retry behavior, and safety margins are defined by
-the toolkit.
+The `client()` factory creates a toolkit token manager. It caches the current token, signs a
+replacement in the background after 300 seconds by default, and force-refreshes when a live
+connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to customize that
+background signing point through `PhotonClientConfiguration`; it must be greater than 0 and less
+than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
+
+Independently, Photon sends `AUTH` on the live connection every 15 minutes to refresh the proxy's
+forward-access session. A rejected background `AUTH` leaves the existing connection alive on its
+previous authentication and is retried with backoff. Only a timeout or unexpected reply closes the
+connection for FIFO safety. Closing the boto3 client stops both Photon re-authentication and the
+toolkit's token refresh.
 
 ## Reconnection and fallback
 

@@ -5,6 +5,7 @@ import pytest
 from botocore.exceptions import ConnectionClosedError
 
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonCacheUnavailable,
     PhotonConfigError,
     PhotonOverridesRejected,
@@ -19,6 +20,7 @@ from photon.exceptions import (
 )
 
 _SUBCLASSES = [
+    PhotonAuthError,
     PhotonConfigError,
     PhotonOverridesRejected,
     PhotonConfigUnevaluable,
@@ -37,6 +39,11 @@ _SUBCLASSES = [
 def test_taxonomy_subclasses_photon_error(cls):
     """Every failure-mode class is a subclass of PhotonError."""
     assert issubclass(cls, PhotonError)
+
+
+def test_auth_rejection_is_not_a_connection_error():
+    """An in-order background AUTH rejection leaves the live connection usable."""
+    assert not issubclass(PhotonAuthError, PhotonConnectionError)
 
 
 def test_cache_unavailable_is_a_botocore_error_not_a_photon_error():
