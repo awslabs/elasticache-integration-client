@@ -123,9 +123,6 @@ def _decode_bulk_string(
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
         raise IncompleteFrame("bulk string body incomplete")
-    # bytes(), not a bytearray slice: the reader accumulates into a bytearray, and decoded
-    # values must stay bytes. A map key must be hashable and _decode_push isinstance-checks
-    # the kind against bytes, so a bytearray here breaks HELLO replies and pushes.
     return bytes(data[after_header:end]), end + 2
 
 
