@@ -1,8 +1,6 @@
 package software.amazon.photon.resp;
 
-/**
- * RESP3 null value (null bulk string or null array).
- */
+/** RESP3 null value (null bulk string or null array). */
 public class RespNull implements RespValue {
 
     public static final RespNull INSTANCE = new RespNull();

@@ -11,12 +11,12 @@
 
 - `src/main/java/software/amazon/photon/`: production Java modules organized by
   concern:
-  - `connection/`: TCP/TLS socket management, FIFO request correlation.
+  - `connection/`: TCP/TLS socket management, FIFO/request-ID correlation.
   - `session/`: PhotonSession, PhotonClient (SDK integration), PhotonInterceptor.
   - `protocol/`: Photon wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
-  - `auth/`: IAM authentication token generation.
+  - `auth/`: Photon adapters for the sourced ElastiCache IAM toolkit.
   - `model/`: PhotonRequest, PhotonResponse, metadata types.
   - `exception/`: Photon error hierarchy.
 - `src/test/java/software/amazon/photon/`: JUnit 5 tests organized by
@@ -26,7 +26,13 @@
 
 ## Validation
 
-- Use `./gradlew build` for the complete local gate (compile, test, check).
+- Use `./gradlew build` for the complete local gate: compile with Error Prone,
+  Spotless check, tests, JaCoCo reports, Javadoc, and the JAR contents check.
+  Gradle must run on JDK 21.
+- Run `./gradlew spotlessApply` to format `src/` with google-java-format.
+- Run tests on another JDK with `./gradlew test -PtestJavaVersion=<8|11|17|21>`.
+  The JDK must be installed locally, or listed in
+  `-Porg.gradle.java.installations.paths=<paths>`.
 - Run focused tests first when appropriate:
   `./gradlew test --tests "ClassName"` or
   `./gradlew test --tests "ClassName.methodName"`.
@@ -39,8 +45,8 @@
 
 - `README.md`, `build.gradle.kts`, tests, and CI are authoritative when this
   file becomes stale.
-- Target Java 8 compatibility. CI runs on Java 8, 11, and 17; do not use
-  records, sealed classes, pattern matching, or APIs newer than Java 8.
+- Target Java 8 source and bytecode compatibility; CI runs the tests on JDK 8,
+  11, 17, and 21. Do not use language or library APIs introduced after Java 8.
 - Preserve the package structure `software.amazon.photon.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
@@ -77,16 +83,20 @@ require the corresponding tests, README, and build checks to change with it.
 - **Connection safety:** flag changes that can mis-correlate FIFO replies or
   leave pending requests unresolved after peer loss, protocol failure, or close.
   Safe path: reject use before connect, register before writing, and reset the
-  whole connection on timeout so late replies cannot match later requests.
+  whole connection for FIFO/send/write timeouts; deferred request-ID timeouts
+  may fail only that request and drop a later push for the removed ID.
 - **Session lifecycle:** flag changes that permit requests before
-  `connect → authenticate → photon.config`, use after close, or duplicate
+  `connect → HELLO 3 AUTH → photon.config`, use after close, or duplicate
   teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
   and idempotent `close()`.
 - **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after AUTH failure, disabled
+  provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to AUTH, and keep
-  verified TLS with hostname checking as the default.
+  credentials for each fresh 15-minute token, periodically re-AUTH live
+  connections, keep the last valid state after an explicit rejection, invalidate
+  the stream after a timeout or malformed reply, confine tokens to the initial
+  HELLO AUTH trailer and subsequent AUTH commands, and keep verified TLS with
+  hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
   auth, session opening, and interceptor installation succeed, and clean up
@@ -117,11 +127,37 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Reconnection, circuit breaking, periodic config refresh, and out-of-band
-responses are currently out of scope.
-Do not introduce them silently or mistake their absence for a review finding;
-intentional scope changes require README, tests, and an explicit contract
-decision. Normal AWS SDK retry/deserialization behavior remains in scope.
+Failover to another Photon endpoint remains out of scope. CEL predicate routing,
+indefinite background reconnection with a bounded origin-fallback window,
+periodic config refresh, and deferred responses delivered by `photon.response`
+pushes are
+supported; other push kinds are fatal protocol corruption (raised as
+`PhotonProtocolError` and wrapped as `PhotonConnectionLost` by the reader
+loop), matching the Node and Python clients: a client that does not
+understand a push has no request to correlate it with, so the stream can no
+longer be trusted. Do not reintroduce silent ignoring of unknown push kinds or
+mistake this contract for a review finding; intentional scope changes require
+README, tests, and an explicit contract decision. Normal AWS SDK
+retry/deserialization behavior remains in scope.
+
+Periodic config refresh is in scope: each config `Refresher` tick sends
+`photon.config`, using the zero-argument form once the session's overrides
+have been acknowledged by the server (an unacknowledged override map, including
+an explicit empty map, is resent), and applies the result. A RESP3 null reply
+means the server's config is unchanged, so nothing is applied or rescheduled;
+otherwise the reply is parsed, its predicates compiled, and both published
+together as one immutable snapshot, with the refresher's interval updated to
+match. A refresh failure (`PhotonError`) that kills the connector starts the
+normal reconnect loop, which obtains a fresh connection and config; periodic
+ticks do nothing while reconnecting, and stale replies from replaced connectors
+are discarded. Any other refresh failure is logged and leaves the current
+config, predicates, and interval as last-known-good. Every config reply, null
+reply, open, and reconnect restarts the staleness window. A refresh that fails
+after `stalenessDurationSeconds` (default 3600) have passed without
+confirmation drops the connector into the normal reconnect and origin-fallback
+path. `PhotonOverridesRejected` (`CONFIG_INVALID`) and `PhotonConfigUnevaluable`
+(a predicate that cannot be compiled, which rejects the whole config) are logged
+at `SEVERE` on every occurrence.
 
 ## Security and test boundaries
 
@@ -129,14 +165,23 @@ decision. Normal AWS SDK retry/deserialization behavior remains in scope.
   local or test endpoints.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material.
+- The Java IAM toolkit is pinned under `vendor/` and built by Gradle through
+  Maven. Keep token validation and signing in that library; Photon owns only
+  the adapter, TLS connection, and HELLO/AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Photon endpoints.
-- Test TLS certificates under `src/test/` are localhost-only fixtures and must
-  not be used for production.
+- `MockTlsServer` generates a self-signed `CN=localhost` certificate at test
+  time with BouncyCastle (test scope only). It is a localhost-only fixture and
+  must not be used for production.
 
 ## Generated and build files
 
 - Do not commit generated `build/`, `.gradle/` contents, or IDE project files.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- Release publishing is configured by `release.gradle.kts` and enabled only
+  with `-PreleasePublishing`, so normal Java 8 builds do not load the
+  JDK-11+ publishing plugin. The tag-triggered workflow builds and smoke-tests
+  artifacts before publish-step-scoped credentials sign and publish them from
+  the protected `release` environment. Publication, propagation verification,
+  and GitHub release creation are separate jobs. Manual workflow dispatches
+  perform the full validation as a non-publishing dry run.
 
 Keep changes small and reviewable.

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
+import { createServer as createTlsServer, type TLSSocket } from "node:tls";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +17,7 @@ import {
   PhotonProtocolError,
   PhotonTimeoutError,
 } from "../src/errors.js";
+import { parseRequestResponse } from "../src/protocol.js";
 import { RespError } from "../src/resp.js";
 import { MockCache, Reply } from "./mock-cache.js";
 
@@ -33,12 +35,63 @@ function startCache(options: ConstructorParameters<typeof MockCache>[0] = {}): P
   return cache.start().then(() => cache);
 }
 
+/** Start a dual-stack TLS server that records the SNI each client sends. */
+async function startSniServer(): Promise<{
+  port: number;
+  servernames: Array<string | false>;
+  stop: () => Promise<void>;
+}> {
+  const servernames: Array<string | false> = [];
+  const sockets = new Set<TLSSocket>();
+  const server = createTlsServer(
+    {
+      cert: readFileSync(certPath),
+      key: readFileSync(new URL("./fixtures/tls/localhost.key", here)),
+    },
+    (socket) => {
+      servernames.push(socket.servername);
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "::", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    server.close();
+    throw new Error("TLS test server did not bind");
+  }
+  return {
+    port: address.port,
+    servernames,
+    stop: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
+}
+
 function sourceFrom(chunks: Buffer[]): SocketChunkSource {
   return {
     async *[Symbol.asyncIterator]() {
       for (const chunk of chunks) yield chunk;
     },
   };
+}
+
+function requestArgs(body: string): [Buffer, Buffer, Buffer, Buffer, Buffer] {
+  return [
+    Buffer.from("POST"),
+    Buffer.from("https://x/"),
+    Buffer.alloc(0),
+    Buffer.from(body),
+    Buffer.from("service=s&op=o"),
+  ];
 }
 
 describe("SocketReader", () => {
@@ -49,16 +102,23 @@ describe("SocketReader", () => {
       sourceFrom([first.subarray(0, 3), Buffer.concat([first.subarray(3), second])]),
     );
 
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("first"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("second"));
+    await expect(reader.readFrame()).resolves.toBe("first");
+    await expect(reader.readFrame()).resolves.toBe("second");
   });
 
   it("allows several small frames in one source chunk", async () => {
     const reader = new SocketReader(sourceFrom([Buffer.from("+one\r\n+two\r\n+three\r\n")]), 64, 8);
 
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("one"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("two"));
-    await expect(reader.readFrame()).resolves.toEqual(Buffer.from("three"));
+    await expect(reader.readFrame()).resolves.toBe("one");
+    await expect(reader.readFrame()).resolves.toBe("two");
+    await expect(reader.readFrame()).resolves.toBe("three");
+  });
+
+  it("decodes a RESP3 null frame", async () => {
+    const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
+
+    await expect(reader.readFrame()).resolves.toBeNull();
+    await expect(reader.readFrame()).resolves.toBe("next");
   });
 
   it("turns clean EOF into PhotonConnectionLost", async () => {
@@ -89,9 +149,9 @@ describe("PendingRequests", () => {
     pending.resolveOldestRequest(error);
     pending.resolveOldestRequest(Buffer.from("third"));
 
-    await expect(first).resolves.toEqual(Buffer.from("first"));
-    await expect(second).resolves.toBe(error);
-    await expect(third).resolves.toEqual(Buffer.from("third"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+    await expect(second.promise).resolves.toBe(error);
+    await expect(third.promise).resolves.toEqual(Buffer.from("third"));
   });
 
   it("fails every pending request", async () => {
@@ -101,8 +161,8 @@ describe("PendingRequests", () => {
 
     pending.failAll(new PhotonConnectionLost("connection closed"));
 
-    await expect(first).rejects.toBeInstanceOf(PhotonConnectionLost);
-    await expect(second).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(first.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(second.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
   });
 
   it("rejects registrations above the configured capacity", async () => {
@@ -112,12 +172,93 @@ describe("PendingRequests", () => {
     expect(() => pending.registerNewRequest()).toThrow("maximum pending requests");
 
     pending.resolveOldestRequest(Buffer.from("first"));
-    await expect(first).resolves.toEqual(Buffer.from("first"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
   });
 
   it("rejects invalid capacities", () => {
     expect(() => new PendingRequests(0)).toThrow("positive integer");
     expect(() => new PendingRequests(Number.POSITIVE_INFINITY)).toThrow("positive integer");
+  });
+
+  it("moves the oldest FIFO request into the async map", async () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
+
+    expect(pending.moveNextToAsyncResponses("42")).toBe(true);
+    pending.resolveOldestRequest(Buffer.from("second"));
+
+    await expect(second.promise).resolves.toEqual(Buffer.from("second"));
+    expect(pending.resolveAsync("42", Buffer.from("first"))).toBe(true);
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+  });
+
+  it("keeps FIFO-only requests out of the async map", async () => {
+    const pending = new PendingRequests();
+    const request = pending.registerNewRequest(false);
+
+    expect(pending.moveNextToAsyncResponses("42")).toBe(false);
+    pending.resolveOldestRequest("42");
+
+    await expect(request.promise).resolves.toBe("42");
+    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
+  });
+
+  it("rejects duplicate async ids and empty FIFO promotion", async () => {
+    const pending = new PendingRequests();
+    const fifoFuture = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    expect(() => pending.moveNextToAsyncResponses("42")).toThrow("without a pending FIFO request");
+
+    const deferredFuture = pending.registerNewRequest();
+    expect(() => pending.moveNextToAsyncResponses("42")).toThrow("duplicate async response id");
+    expect(pending.resolveAsync("missing", Buffer.from("ignored"))).toBe(false);
+    expect(deferredFuture.settled).toBe(false);
+
+    expect(pending.resolveAsync("42", Buffer.from("deferred"))).toBe(true);
+    pending.resolveOldestRequest(Buffer.from("positional"));
+    await expect(fifoFuture.promise).resolves.toEqual(Buffer.from("deferred"));
+    await expect(deferredFuture.promise).resolves.toEqual(Buffer.from("positional"));
+  });
+
+  it("removes only an async request by handle identity", () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+
+    expect(pending.removeFromAsync(first)).toBe(false);
+    pending.moveNextToAsyncResponses("42");
+    expect(pending.removeFromAsync(first)).toBe(true);
+    expect(pending.removeFromAsync(first)).toBe(false);
+  });
+
+  it("fails pending FIFO and async requests", async () => {
+    const pending = new PendingRequests();
+    const first = pending.registerNewRequest();
+    const second = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    pending.failAll(new PhotonConnectionLost("connection closed"));
+
+    await expect(first.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    await expect(second.promise).rejects.toBeInstanceOf(PhotonConnectionLost);
+    // The async map must be emptied too, so a late push cannot match a failed request.
+    expect(pending.resolveAsync("42", Buffer.from("late"))).toBe(false);
+    expect(pending.removeFromAsync(first)).toBe(false);
+  });
+
+  it("counts a deferred request against maxPending until it resolves", async () => {
+    const pending = new PendingRequests(1);
+    const first = pending.registerNewRequest();
+
+    pending.moveNextToAsyncResponses("42");
+    expect(() => pending.registerNewRequest()).toThrow("maximum pending requests");
+
+    pending.resolveAsync("42", Buffer.from("first"));
+    const second = pending.registerNewRequest();
+    pending.resolveOldestRequest(Buffer.from("second"));
+    await expect(first.promise).resolves.toEqual(Buffer.from("first"));
+    await expect(second.promise).resolves.toEqual(Buffer.from("second"));
   });
 });
 
@@ -132,9 +273,9 @@ describe("SocketReader limits", () => {
   });
 });
 
-describe("PhotonConnector authentication timeout", () => {
-  it("uses the dedicated config timeout for AUTH", async () => {
-    const cache = await startCache({ failure: "hang", failureCommand: "auth" });
+describe("PhotonConnector handshake timeout", () => {
+  it("uses the dedicated config timeout for HELLO", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "hello" });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
       requestTimeout: 5_000,
@@ -142,20 +283,20 @@ describe("PhotonConnector authentication timeout", () => {
       authProvider: () => ["test-user", "test-token"],
     });
     await connector.connect();
-    const authentication = connector.authenticate();
+    const handshake = connector.handshake();
 
     try {
       await expect(
         Promise.race([
-          authentication,
+          handshake,
           new Promise<never>((_, reject) =>
             setTimeout(() => reject(new Error("request timeout exceeded")), 100),
           ),
         ]),
-      ).rejects.toThrow("IAM AUTH timed out");
+      ).rejects.toThrow("HELLO 3 timed out");
     } finally {
       await connector.close();
-      await authentication.catch(() => undefined);
+      await handshake.catch(() => undefined);
     }
   });
 });
@@ -186,6 +327,12 @@ describe("PhotonConnector initialization timeout", () => {
 });
 
 describe("PhotonConnector", () => {
+  it("defaults the request timeout to five seconds", () => {
+    const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
+
+    expect((connector as unknown as { requestTimeout: number }).requestTimeout).toBe(5_000);
+  });
+
   it("rejects use before connect", async () => {
     const connector = new PhotonConnector("127.0.0.1", 1, { tls: false });
 
@@ -243,6 +390,17 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("round-trips a RESP3 null reply over the socket", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+
+    await connector.connect();
+    // A bare photon.config makes the mock send the literal `_\r\n` frame.
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
+
+    await connector.close();
+  });
+
   it("correlates concurrent requests by FIFO wire order", async () => {
     const cache = await startCache({
       responseFn: (request) => {
@@ -278,6 +436,238 @@ describe("PhotonConnector", () => {
     expect(results.map((result) => (result as unknown[])[2])).toEqual(
       Array.from({ length: 8 }, (_, index) => Buffer.from(`token-${index}`)),
     );
+    await connector.close();
+  });
+
+  it("resolves a later FIFO response before the deferred request push", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 250,
+    });
+    await connector.connect();
+
+    let firstSettled = false;
+    const first = connector.execute("photon.request", ...requestArgs("first"));
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+
+    const second = connector.execute("photon.request", ...requestArgs("second"));
+    const secondResult = await second;
+    expect(secondResult).toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("second"),
+    ]);
+    expect(firstSettled).toBe(false);
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("first")),
+    );
+    await expect(first).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("first"),
+    ]);
+    await connector.close();
+  });
+
+  it.each([42, 9_007_199_254_740_993n])(
+    "resolves an immediate request-id reply followed by a response push for id %s",
+    async (requestId) => {
+      const cache = await startCache({
+        responseFn: () => Reply.asyncResponse(requestId, Reply.ok()),
+      });
+      const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+      await connector.connect();
+
+      await expect(connector.execute("photon.request", ...requestArgs("body"))).resolves.toEqual([
+        200,
+        Buffer.from("content-type:application/x-amz-json-1.0"),
+        Buffer.from('{"Item": {}}'),
+      ]);
+      await connector.close();
+    },
+  );
+
+  it("resolves a deferred request via a push kind encoded as a simple string", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const deferred = connector.execute("photon.request", ...requestArgs("deferred"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("deferred")),
+      Buffer.from("photon.response", "ascii"),
+      "simple",
+    );
+    await expect(deferred).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("deferred"),
+    ]);
+    await connector.close();
+  });
+
+  it("keeps a request-id-shaped reply positional for a non-request command", async () => {
+    const cache = await startCache({ helloResponse: Reply.requestId(42) });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      configTimeout: 100,
+    });
+    await connector.connect();
+
+    await expect(
+      connector.execute(
+        "HELLO",
+        Buffer.from("3"),
+        Buffer.from("AUTH"),
+        Buffer.from("test-user"),
+        Buffer.from("test-token"),
+      ),
+    ).resolves.toBe("42");
+    await connector.close();
+  });
+
+  it("passes a RespError in a response push through the normal parser path", async () => {
+    const cache = await startCache({
+      responseFn: () => Reply.asyncResponse(42, Reply.error("ERR", "boom")),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const pushedError = await connector.execute("photon.request", ...requestArgs("body"));
+    const expectedError = new RespError("ERR", "boom");
+
+    expect(pushedError).toEqual(expectedError);
+    expect(() => parseRequestResponse(expectedError)).toThrow("photon.request failed: ERR boom");
+    expect(() => parseRequestResponse(pushedError)).toThrow("photon.request failed: ERR boom");
+    await connector.close();
+  });
+
+  it("drops response pushes for unknown ids while keeping the connection usable", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    const first = connector.execute("photon.request", ...requestArgs("first"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    cache.sendPush(999, Reply.ok(), Buffer.from("photon.response"));
+
+    await expect(connector.execute("photon.request", ...requestArgs("second"))).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("second"),
+    ]);
+
+    cache.sendPush(
+      42,
+      Reply.ok(200, "content-type:application/octet-stream", Buffer.from("first")),
+    );
+    await expect(first).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("first"),
+    ]);
+    await connector.close();
+  });
+
+  it.each([
+    [">0\r\n", "empty payload"],
+    [">3\r\n:123\r\n:42\r\n$1\r\nx\r\n", "non-bytes kind"],
+    [">2\r\n$15\r\nphoton.response\r\n:42\r\n", "wrong arity"],
+    [">3\r\n$15\r\nphoton.response\r\n:42\r\n$1\r\nx\r\n", "integer id is no longer accepted"],
+    [">3\r\n$10\r\nother.kind\r\n$2\r\n42\r\n$1\r\nx\r\n", "unknown push kind"],
+    [">3\r\n$15\r\nphoton.response\r\n$1\r\n\xff\r\n$1\r\nx\r\n", "invalid UTF-8 id"],
+  ])("kills the connection on a malformed push: %s (%s)", async (frame) => {
+    // latin1 so a raw invalid-UTF-8 byte (\xff) in a table entry round-trips as
+    // that exact byte rather than being re-encoded as multi-byte UTF-8.
+    const cache = await startCache({ response: new Reply(Buffer.from(frame, "latin1")) });
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    try {
+      const failure = await connector
+        .execute("photon.request", ...requestArgs("malformed"))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(PhotonConnectionLost);
+      expect((failure as Error).cause).toBeInstanceOf(PhotonProtocolError);
+      await expect(
+        connector.execute("photon.request", ...requestArgs("after-failure")),
+      ).rejects.toBeInstanceOf(PhotonConnectionLost);
+    } finally {
+      await connector.close();
+    }
+  });
+
+  it("preserves the connection when a deferred request times out", async () => {
+    let requestCount = 0;
+    const cache = await startCache({
+      responseFn: (request) => {
+        requestCount += 1;
+        if (requestCount === 1) return Reply.requestId(42);
+        return Reply.ok(200, "content-type:application/octet-stream", request.body);
+      },
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 100,
+    });
+    await connector.connect();
+
+    const deferred = connector.execute("photon.request", ...requestArgs("deferred"));
+    const deferredExpectation = expect(deferred).rejects.toThrow("async request timed out");
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    await deferredExpectation;
+
+    await expect(
+      connector.execute("photon.request", ...requestArgs("after-timeout")),
+    ).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("after-timeout"),
+    ]);
+
+    cache.sendPush(42, Reply.ok(), Buffer.from("photon.response"));
+    await expect(
+      connector.execute("photon.request", ...requestArgs("still-usable")),
+    ).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/octet-stream"),
+      Buffer.from("still-usable"),
+    ]);
     await connector.close();
   });
 
@@ -355,7 +745,7 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
-  it("runs injected AUTH before the caller sends later commands", async () => {
+  it("negotiates RESP3 and carries credentials in one HELLO command", async () => {
     const cache = await startCache();
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
@@ -363,10 +753,12 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await connector.authenticate();
+    await connector.handshake();
 
-    expect(cache.photonCommandLog).toEqual(["auth"]);
+    expect(cache.photonCommandLog).toEqual(["hello"]);
     expect(cache.receivedCommands[0]).toEqual([
+      Buffer.from("HELLO"),
+      Buffer.from("3"),
       Buffer.from("AUTH"),
       Buffer.from("test-user"),
       Buffer.from("test-token"),
@@ -374,9 +766,124 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
-  it("makes the connection unusable when AUTH is rejected", async () => {
+  it("re-authenticates a ready connection with plain AUTH and fresh credentials", async () => {
+    const cache = await startCache();
+    const authProvider = vi
+      .fn<() => [string, string]>()
+      .mockReturnValueOnce(["test-user", "initial-token"])
+      .mockReturnValueOnce(["test-user", "fresh-token"]);
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    await connector.reauthenticate();
+
+    expect(cache.photonCommandLog).toEqual(["hello", "auth"]);
+    expect(cache.receivedCommands[1]).toEqual([
+      Buffer.from("AUTH"),
+      Buffer.from("test-user"),
+      Buffer.from("fresh-token"),
+    ]);
+    expect(connector.isReady).toBe(true);
+    await connector.close();
+  });
+
+  it("keeps the last valid connection open after a re-AUTH rejection", async () => {
+    const cache = await startCache();
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    cache.setAuthResponse(Reply.error("WRONGPASS", "bad token"));
+
+    await expect(connector.reauthenticate()).rejects.toThrow("IAM AUTH rejected: WRONGPASS");
+    expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
+    expect(connector.isReady).toBe(true);
+    await expect(connector.execute("photon.config")).resolves.toBeNull();
+    await connector.close();
+  });
+
+  it("closes after an unexpected re-AUTH reply without exposing its value", async () => {
+    const cache = await startCache();
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    cache.setAuthResponse(new Reply(Buffer.from("$15\r\nsecret-response\r\n")));
+
+    const error = await connector.reauthenticate().catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("Buffer");
+    expect((error as Error).message).not.toContain("secret-response");
+    expect(connector.isDead).toBe(true);
+    expect(authProvider.refreshAuth).not.toHaveBeenCalled();
+    await connector.close();
+  });
+
+  it("uses the config timeout for re-AUTH and closes after a timeout", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "auth" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      configTimeout: 25,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await connector.handshake();
+    await expect(connector.reauthenticate()).rejects.toThrow("IAM AUTH timed out");
+    expect(connector.isDead).toBe(true);
+    await connector.close();
+  });
+
+  it("requires an auth provider for the HELLO handshake", async () => {
+    const connector = new PhotonConnector("host", 6379, { tls: false });
+
+    await expect(connector.handshake()).rejects.toThrow(
+      "PhotonConnector requires an auth provider to handshake",
+    );
+  });
+
+  it("does not accept a bulk string as HELLO success", async () => {
     const cache = await startCache({
-      authResponse: Reply.error("invalid-iam-credentials", "nope"),
+      helloResponse: new Reply(Buffer.from("$2\r\nOK\r\n")),
+    });
+    const authProvider = Object.assign(() => ["test-user", "test-token"] as [string, string], {
+      refreshAuth: vi.fn(),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 failed: expected a map reply, got bulk string",
+    );
+    expect(authProvider.refreshAuth).not.toHaveBeenCalled();
+    await connector.close();
+  });
+
+  it.each([
+    Buffer.from("%1\r\n$5\r\nproto\r\n:2\r\n"),
+    Buffer.from("%1\r\n$6\r\nserver\r\n$6\r\nvalkey\r\n"),
+  ])("makes the connection unusable when HELLO does not confirm RESP3", async (helloReply) => {
+    const cache = await startCache({
+      helloResponse: new Reply(helloReply),
     });
     const connector = new PhotonConnector(cache.host, cache.port!, {
       tls: false,
@@ -384,12 +891,92 @@ describe("PhotonConnector", () => {
     });
 
     await connector.connect();
-    await expect(connector.authenticate()).rejects.toThrow(
-      "IAM AUTH rejected: invalid-iam-credentials",
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 failed: reply did not report proto 3",
     );
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
       PhotonConnectionLost,
     );
+  });
+
+  it("reports a connection drop during HELLO as a handshake failure", async () => {
+    const cache = await startCache({ failure: "drop", failureCommand: "hello" });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow("HELLO 3 failed: connection lost");
+    expect(connector.isDead).toBe(true);
+  });
+
+  it("makes the connection unusable when HELLO is rejected", async () => {
+    const cache = await startCache({
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider: () => ["test-user", "test-token"],
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
+    );
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
+      PhotonConnectionLost,
+    );
+  });
+
+  it("invalidates managed credentials after HELLO rejection", async () => {
+    const cache = await startCache({
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    const authProvider = Object.assign(() => ["test-user", "cached-token"] as [string, string], {
+      refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+    });
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshAuth).toHaveBeenCalledOnce();
+    await connector.close();
+  });
+
+  it("preserves an object auth provider receiver while invalidating credentials", async () => {
+    const cache = await startCache({
+      helloResponse: Reply.error("invalid-iam-credentials", "nope"),
+    });
+    class StatefulAuthProvider {
+      refreshed = false;
+
+      getAuth(): [string, string] {
+        return ["test-user", "cached-token"];
+      }
+
+      refreshAuth(): [string, string] {
+        this.refreshed = true;
+        return ["test-user", "replacement-token"];
+      }
+    }
+    const authProvider = new StatefulAuthProvider();
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      authProvider,
+    });
+
+    await connector.connect();
+    await expect(connector.handshake()).rejects.toThrow(
+      "HELLO 3 rejected: invalid-iam-credentials",
+    );
+    expect(authProvider.refreshed).toBe(true);
+    await connector.close();
   });
 
   it("times out a request and makes the connection unusable", async () => {
@@ -423,16 +1010,19 @@ describe("PhotonConnector", () => {
     });
     await connector.connect();
 
-    await expect(
-      connector.execute(
+    const failure = await connector
+      .execute(
         "photon.request",
         Buffer.from("POST"),
         Buffer.from("https://x/"),
         Buffer.alloc(0),
         Buffer.from("body"),
         Buffer.from("service=s&op=o"),
-      ),
-    ).rejects.toThrow("maximum response size");
+      )
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(PhotonConnectionLost);
+    expect((failure as Error).cause).toBeInstanceOf(PhotonProtocolError);
+    expect(((failure as Error).cause as Error).message).toContain("maximum response size");
     await expect(connector.execute("photon.config", Buffer.from("{}"))).rejects.toBeInstanceOf(
       PhotonConnectionLost,
     );
@@ -504,6 +1094,20 @@ describe("PhotonConnector", () => {
     );
     connector.destroy();
     await connector.close();
+  });
+
+  it("notifies its owner exactly once when closed", async () => {
+    const cache = await startCache();
+    const connector = new PhotonConnector(cache.host, cache.port!, { tls: false });
+    const onDisconnect = vi.fn();
+    connector.onDisconnect = onDisconnect;
+    await connector.connect();
+
+    connector.destroy();
+    await connector.close();
+    connector.destroy();
+
+    expect(onDisconnect).toHaveBeenCalledOnce();
   });
 
   it("keeps close awaitable after destroy until the reader settles", async () => {
@@ -587,6 +1191,94 @@ describe("PhotonConnector", () => {
 
     await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
     await connector.close();
+  });
+
+  // These two run in this order deliberately, and together they pin the bug: the warning
+  // latches once per process, so a connector that never performs an unverified handshake must
+  // leave the latch alone. If the first test consumed it, the second would be silent.
+  it("does not warn when TLS is off and verification is moot", async () => {
+    const cache = await startCache();
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, {
+      tls: false,
+      insecureSkipVerify: true,
+    });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).not.toHaveBeenCalled();
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("warns on the first handshake that waives verification", async () => {
+    const cache = await startCache({ tls: true });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    try {
+      await connector.connect();
+      expect(emitWarning).toHaveBeenCalledWith(
+        expect.stringContaining("insecureSkipVerify"),
+        "PhotonInsecureTlsWarning",
+      );
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+    }
+  });
+
+  it("accepts an untrusted TLS certificate when verification is skipped", async () => {
+    const cache = await startCache({ tls: true });
+    // Same server and same absent CA as the test above, so the flag is the only difference.
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: true });
+
+    await connector.connect();
+    await expect(connector.execute("photon.config", Buffer.from("{}"))).resolves.toBeInstanceOf(
+      Buffer,
+    );
+    await connector.close();
+  });
+
+  it("still rejects an untrusted TLS certificate when verification is not skipped", async () => {
+    const cache = await startCache({ tls: true });
+    const connector = new PhotonConnector(cache.host, cache.port!, { insecureSkipVerify: false });
+
+    await expect(connector.connect()).rejects.toBeInstanceOf(PhotonConnectionError);
+    await connector.close();
+  });
+
+  it("sends SNI and verifies the certificate for a DNS host", async () => {
+    const server = await startSniServer();
+    const connector = new PhotonConnector("localhost", server.port, {
+      caCerts: readFileSync(certPath),
+    });
+
+    try {
+      await connector.connect();
+      await vi.waitFor(() => expect(server.servernames).toEqual(["localhost"]));
+    } finally {
+      await connector.close();
+      await server.stop();
+    }
+  });
+
+  it("omits SNI for an IPv6 host", async () => {
+    const server = await startSniServer();
+    // The fixture certificate has no ::1 SAN, so only the handshake and SNI are under test.
+    const connector = new PhotonConnector("::1", server.port, { insecureSkipVerify: true });
+    const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+
+    try {
+      await connector.connect();
+      await vi.waitFor(() => expect(server.servernames).toEqual([false]));
+    } finally {
+      emitWarning.mockRestore();
+      await connector.close();
+      await server.stop();
+    }
   });
 
   it("cleans up a TLS handshake timeout without an unhandled socket error", async () => {

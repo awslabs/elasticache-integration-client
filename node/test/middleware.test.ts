@@ -4,10 +4,16 @@ import { formatUrl } from "@aws-sdk/core/util";
 import { constructStack } from "@smithy/core/client";
 import { HttpRequest, HttpResponse } from "@smithy/core/protocols";
 import type { DeserializeHandler, FinalizeHandler, SerializeHandler } from "@smithy/types";
-import { SMITHY_CONTEXT_KEY } from "@smithy/types";
 import { Readable } from "node:stream";
 
-import { PhotonConnectionLost, PhotonError } from "../src/errors.js";
+import {
+  PhotonCacheUnavailable,
+  PhotonConnectionLost,
+  PhotonError,
+  PhotonProtocolError,
+  PhotonRejectedError,
+  PhotonTimeoutError,
+} from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata } from "../src/models.js";
 import {
   awsToPhotonRequest,
@@ -16,7 +22,8 @@ import {
   photonToHttpResponse,
   photonMiddleware,
 } from "../src/middleware.js";
-import type { PhotonSession } from "../src/session.js";
+import { PhotonSession } from "../src/session.js";
+import type { PhotonConnector } from "../src/connection.js";
 
 const request = (body?: unknown) =>
   new HttpRequest({
@@ -33,19 +40,28 @@ const request = (body?: unknown) =>
 function fakeSession(overrides: Partial<PhotonSession> & { isOpen?: boolean } = {}): PhotonSession {
   return {
     isOpen: true,
+    isConnectionHealthy: true,
     request: vi.fn(async () => new PhotonResponse({ statusCode: 200 })),
     destroy: vi.fn(),
     ...overrides,
   } as PhotonSession;
 }
 
-function contextWithSchema(schema: unknown) {
+/** A minimal PhotonConnector double for real-session recovery tests. */
+function fakeConnector(overrides: Partial<PhotonConnector> = {}): PhotonConnector {
   return {
-    commandName: "RunCommand",
-    [SMITHY_CONTEXT_KEY]: {
-      commandInstance: { schema } as never,
-    },
-  };
+    isReady: true,
+    connect: vi.fn(async () => undefined),
+    handshake: vi.fn(async () => undefined),
+    execute: vi.fn(async (command: string) =>
+      command === "photon.config"
+        ? Buffer.from('{"refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}')
+        : undefined,
+    ),
+    close: vi.fn(async () => undefined),
+    destroy: vi.fn(() => undefined),
+    ...overrides,
+  } as unknown as PhotonConnector;
 }
 
 describe("awsToPhotonRequest", () => {
@@ -257,7 +273,7 @@ describe("photon middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes idempotent Photon failures through to the origin", async () => {
+  it("passes a dropped idempotent Photon request through to the origin", async () => {
     const signedRequest = new HttpRequest({
       protocol: "https:",
       hostname: "dynamodb.us-east-1.amazonaws.com",
@@ -271,8 +287,9 @@ describe("photon middleware", () => {
       body: Buffer.from("signed-body"),
     });
     const session = fakeSession({
+      isConnectionHealthy: false,
       request: vi.fn(async () => {
-        throw new PhotonError("cache unavailable");
+        throw new PhotonTimeoutError("cache unavailable");
       }),
     });
     const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
@@ -283,10 +300,7 @@ describe("photon middleware", () => {
       expect((args.request as HttpRequest).headers["x-amz-date"]).toBe("20260812T000000Z");
       return { response: new HttpResponse({ statusCode: 503 }) };
     });
-    const handler = photonMiddleware("svc", session)(
-      next,
-      contextWithSchema([9, "svc", "Run", 0b10, "input", "output"]),
-    );
+    const handler = photonMiddleware("dynamodb", session)(next, { commandName: "GetItemCommand" });
 
     await expect(handler({ input: {}, request: signedRequest })).resolves.toEqual({
       response: expect.any(HttpResponse),
@@ -305,17 +319,146 @@ describe("photon middleware", () => {
     const next = vi.fn<FinalizeHandler<object, object>>(async () => {
       throw new Error("origin must not be called");
     });
-    const handler = photonMiddleware("svc", session)(
-      next,
-      contextWithSchema([9, "svc", "Run", 0b10, "input", "output"]),
-    );
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(connectionClosed);
     expect(next).not.toHaveBeenCalled();
   });
 
+  it("propagates fallback-window exhaustion without calling origin", async () => {
+    const unavailable = new PhotonCacheUnavailable("https://x/");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw unavailable;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("svc", session)(next, {
+      commandName: "RunCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(unavailable);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the origin while stale config triggers recovery", async () => {
+    let clock = 0;
+    const connector = fakeConnector();
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        stalenessDurationMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
+    clock = 1000;
+    // Drive staleness recovery exactly as Refresher would, without waiting on real timers.
+    await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+    expect(session.isOpen).toBe(true);
+    expect(session.connectionState).toBe("reconnecting");
+
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    // Idempotency does not matter here: the request has not reached Photon while reconnecting.
+    const handler = photonMiddleware("svc", session)(next, { commandName: "RunCommand" });
+
+    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
+
+    await session.close();
+  });
+
+  /**
+   * Bring up a real session, then leave a request in flight against the connector at the exact
+   * moment stale config starts recovery, so closing the connector rejects that request.
+   */
+  async function staleRaceSession(): Promise<{
+    session: PhotonSession;
+    connectionLost: PhotonConnectionLost;
+    goStale: () => Promise<void>;
+  }> {
+    let clock = 0;
+    let rejectRequest!: (error: unknown) => void;
+    const connectionLost = new PhotonConnectionLost("connection closed");
+    const connector = fakeConnector();
+    const session = new PhotonSession(
+      connector,
+      {},
+      {
+        stalenessDurationMs: 1000,
+        clock: () => clock,
+      },
+    );
+    await session.open();
+    vi.mocked(connector.execute).mockImplementation((command: string) => {
+      if (command === "photon.config")
+        return Promise.reject(new PhotonError("photon.config failed"));
+      return new Promise((_resolve, reject) => {
+        rejectRequest = reject;
+      });
+    });
+    vi.mocked(connector.close).mockImplementation(async () => {
+      // Staleness recovery closing the connector rejects the request already in flight.
+      rejectRequest(connectionLost);
+    });
+    return {
+      session,
+      connectionLost,
+      goStale: async () => {
+        expect(session.isConnectionHealthy).toBe(true);
+        clock = 1000;
+        await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
+        expect(session.connectionState).toBe("reconnecting");
+      },
+    };
+  }
+
+  it("falls back to the origin for an idempotent request racing staleness recovery", async () => {
+    const { session, goStale } = await staleRaceSession();
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    const handling = handler({ input: {}, request: request() });
+    await goStale();
+
+    await expect(handling).resolves.toEqual({ response: expect.any(HttpResponse) });
+    expect(next).toHaveBeenCalledOnce();
+    await session.close();
+  });
+
+  it("does not replay a non-idempotent request racing staleness recovery", async () => {
+    const { session, connectionLost, goStale } = await staleRaceSession();
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "PutItemCommand",
+    });
+
+    const handling = handler({ input: {}, request: request() });
+    await goStale();
+
+    await expect(handling).rejects.toBe(connectionLost);
+    expect(next).not.toHaveBeenCalled();
+    await session.close();
+  });
+
   it("does not replay non-idempotent Photon failures at the origin", async () => {
-    const photonError = new PhotonError("cache unavailable");
+    const photonError = new PhotonTimeoutError("cache unavailable");
     const session = fakeSession({
       request: vi.fn(async () => {
         throw photonError;
@@ -324,12 +467,128 @@ describe("photon middleware", () => {
     const next = vi.fn<FinalizeHandler<object, object>>(async () => {
       throw new Error("origin must not be called");
     });
-    const handler = photonMiddleware("svc", session)(
-      next,
-      contextWithSchema([9, "svc", "Run", 0, "input", "output"]),
-    );
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not mark a nominally healthy connection-loss error retryable", async () => {
+    const photonError = new PhotonConnectionLost("socket died");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns non-origin RESP rejections without contacting origin", async () => {
+    const photonError = new PhotonRejectedError("UNSUPPORTED", "cache rejected request");
+    const session = fakeSession({
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("marks an idempotent ORIGIN_ERROR retryable without contacting origin", async () => {
+    const photonError = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    const failure = await handler({ input: {}, request: request() }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBe(photonError);
+    expect((failure as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("returns a non-idempotent ORIGIN_ERROR without retry or fallback", async () => {
+    const photonError = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not replay a non-idempotent malformed Photon response", async () => {
+    const photonError = new PhotonProtocolError("malformed response");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not retry an idempotent malformed Photon response", async () => {
+    const photonError = new PhotonProtocolError("malformed response");
+    const session = fakeSession({
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw photonError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = photonMiddleware("dynamodb", session)(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(photonError);
+    expect((photonError as Error & { $retryable?: object }).$retryable).toBeUndefined();
     expect(next).not.toHaveBeenCalled();
   });
 

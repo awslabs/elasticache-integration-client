@@ -1,0 +1,233 @@
+name: Java Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      should-publish: ${{ steps.release.outputs.should-publish }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "21"
+          distribution: corretto
+          cache: gradle
+
+      - name: Resolve release mode and version
+        id: release
+        working-directory: java
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          project_version="$(./gradlew --quiet printVersion)"
+          case "$EVENT_NAME" in
+            push)
+              if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+                echo "Unsupported release tag: $RELEASE_TAG" >&2
+                exit 1
+              fi
+              if [[ "$(git cat-file -t "$RELEASE_TAG")" != "tag" ]]; then
+                echo "Release tag must be annotated: $RELEASE_TAG" >&2
+                exit 1
+              fi
+              version="${RELEASE_TAG#v}"
+              if [[ "$version" != "$project_version" ]]; then
+                echo "Tag version $version does not match Gradle version $project_version" >&2
+                exit 1
+              fi
+              should_publish="true"
+              ;;
+            workflow_dispatch)
+              version="$project_version"
+              should_publish="false"
+              echo "Manual dry run: validating $version without publishing"
+              ;;
+            *)
+              echo "Unsupported workflow event: $EVENT_NAME" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
+
+  test:
+    needs: resolve-release
+    uses: ./.github/workflows/java-ci.yml
+
+  dry-run:
+    needs: [resolve-release, test]
+    if: needs.resolve-release.outputs.should-publish != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "21"
+          distribution: corretto
+          cache: gradle
+
+      - name: Build unsigned release artifacts once
+        working-directory: java
+        run: ./gradlew --no-daemon -PreleasePublishing clean build publishToMavenLocal
+
+      - name: Test clean Gradle and Maven consumers
+        working-directory: java
+        run: |
+          ./scripts/consumer-smoke.sh \
+            "file://$HOME/.m2/repository" \
+            "$RELEASE_VERSION"
+
+  publish:
+    needs: [resolve-release, test]
+    if: needs.resolve-release.outputs.should-publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    env:
+      RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "21"
+          distribution: corretto
+          cache: gradle
+
+      - name: Build release artifacts once
+        working-directory: java
+        run: ./gradlew --no-daemon -PreleasePublishing clean build publishToMavenLocal
+
+      - name: Test clean Gradle and Maven consumers
+        working-directory: java
+        run: |
+          ./scripts/consumer-smoke.sh \
+            "file://$HOME/.m2/repository" \
+            "$RELEASE_VERSION"
+
+      - name: Sign and publish release artifacts
+        working-directory: java
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.MAVEN_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.MAVEN_SIGNING_PASSWORD }}
+        run: |
+          ./gradlew \
+            --no-daemon \
+            --no-configuration-cache \
+            -PreleasePublishing \
+            -PreleaseSigning \
+            publishAndReleaseToMavenCentral
+
+  verify:
+    needs: [resolve-release, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          submodules: true
+
+      - name: Set up JDK
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "21"
+          distribution: corretto
+          cache: gradle
+
+      - name: Verify Maven Central publication
+        working-directory: java
+        shell: bash
+        run: |
+          set -euo pipefail
+          pom_url="https://repo1.maven.org/maven2/software/amazon/photon/photon-java/$RELEASE_VERSION/photon-java-$RELEASE_VERSION.pom"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error --head "$pom_url" >/dev/null; then
+              ./scripts/consumer-smoke.sh "https://repo1.maven.org/maven2" "$RELEASE_VERSION"
+              exit 0
+            fi
+            echo "Waiting for Maven Central propagation ($attempt/60)"
+            sleep 30
+          done
+          echo "Maven Central did not expose version $RELEASE_VERSION within 30 minutes" >&2
+          exit 1
+
+  github-release:
+    needs: [resolve-release, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_VERSION: ${{ needs.resolve-release.outputs.version }}
+
+    steps:
+      - name: Download published Java artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          base_url="https://repo1.maven.org/maven2/software/amazon/photon/photon-java/$RELEASE_VERSION"
+          artifact_prefix="photon-java-$RELEASE_VERSION"
+          mkdir -p release-artifacts
+          for suffix in .jar -sources.jar -javadoc.jar .pom; do
+            curl --fail --silent --show-error \
+              --output "release-artifacts/$artifact_prefix$suffix" \
+              "$base_url/$artifact_prefix$suffix"
+          done
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+              || gh release view "$GITHUB_REF_NAME" >/dev/null
+          fi
+          gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber

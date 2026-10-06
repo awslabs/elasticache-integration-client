@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 
 import { PhotonError, PhotonProtocolError } from "../src/errors.js";
-import { decodeResp, encodeResp, IncompleteFrame, RespError } from "../src/resp.js";
+import { decodeResp, encodeResp, IncompleteFrame, RespError, RespPush } from "../src/resp.js";
 
 const CRLF = "\r\n";
 
@@ -50,8 +50,14 @@ describe("RESP codec", () => {
   });
 
   it("decodes a simple string", () => {
-    // Decodes a + simple string and reports bytes consumed.
-    expect(decodeResp(Buffer.from(`+OK${CRLF}`))).toEqual([Buffer.from("OK"), 5]);
+    // Simple strings remain distinguishable from binary-safe bulk strings.
+    expect(decodeResp(Buffer.from(`+OK${CRLF}`))).toEqual(["OK", 5]);
+  });
+
+  it("rejects a simple string that is not valid UTF-8", () => {
+    // Replacing invalid bytes would silently corrupt the value, so it is a protocol error.
+    const frame = Buffer.concat([Buffer.from("+"), Buffer.from([0xff]), Buffer.from(CRLF)]);
+    expect(() => decodeResp(frame)).toThrow(PhotonProtocolError);
   });
 
   it("decodes an integer", () => {
@@ -83,14 +89,51 @@ describe("RESP codec", () => {
     ).toEqual([[200, Buffer.from("hdrs"), Buffer.from("body")], 30]);
   });
 
-  it("decodes a push like an array", () => {
-    // A > push frame decodes like an array.
-    expect(decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toEqual([[1, 2], 12]);
+  it("decodes a push as a distinct RESP value", () => {
+    expect(decodeResp(Buffer.from(`>2${CRLF}:1${CRLF}:2${CRLF}`))).toEqual([
+      new RespPush([1, 2]),
+      12,
+    ]);
+  });
+
+  it("decodes a photon.response push with a decimal request id", () => {
+    const frame = Buffer.from(
+      `>3${CRLF}$15${CRLF}photon.response${CRLF}:42${CRLF}*1${CRLF}:200${CRLF}`,
+    );
+
+    const [push, consumed] = decodeResp(frame);
+
+    expect(push).toEqual(new RespPush([Buffer.from("photon.response"), 42, [200]]));
+    expect(consumed).toBe(frame.length);
   });
 
   it("decodes a null array", () => {
     // Decodes a *-1 null array to null.
     expect(decodeResp(Buffer.from(`*-1${CRLF}`))).toEqual([null, 5]);
+  });
+
+  it("decodes a RESP3 map", () => {
+    const frame = Buffer.from(
+      `%2${CRLF}$5${CRLF}proto${CRLF}:3${CRLF}$6${CRLF}server${CRLF}$6${CRLF}valkey${CRLF}`,
+    );
+
+    expect(decodeResp(frame)).toEqual([
+      new Map<unknown, unknown>([
+        [Buffer.from("proto"), 3],
+        [Buffer.from("server"), Buffer.from("valkey")],
+      ]),
+      frame.length,
+    ]);
+  });
+
+  it("decodes an empty RESP3 map", () => {
+    expect(decodeResp(Buffer.from(`%0${CRLF}`))).toEqual([new Map(), 4]);
+  });
+
+  it("preserves aggregate RESP3 map keys", () => {
+    const [value] = decodeResp(Buffer.from(`%1${CRLF}*1${CRLF}:1${CRLF}:2${CRLF}`));
+
+    expect(value).toEqual(new Map([[[1], 2]]));
   });
 
   it.each([
@@ -99,6 +142,7 @@ describe("RESP codec", () => {
     Buffer.from(`$5${CRLF}hell`), // bulk one byte short of declared length (+ trailing CRLF)
     Buffer.from(`$5${CRLF}hello`), // bulk body present but trailing CRLF missing
     Buffer.from(`*2${CRLF}:1${CRLF}`), // array missing its second element
+    Buffer.from(`%1${CRLF}$5${CRLF}proto${CRLF}`), // map key missing its value
     Buffer.from(`>2${CRLF}:1${CRLF}`), // push missing its second element
     Buffer.from(":"), // integer header with no CRLF yet
   ])("truncation raises IncompleteFrame: %j", (partial) => {
@@ -106,10 +150,24 @@ describe("RESP codec", () => {
     expect(() => decodeResp(partial)).toThrow(IncompleteFrame);
   });
 
+  it("decodes a RESP3 null", () => {
+    // Decodes the _ null frame to null.
+    expect(decodeResp(Buffer.from(`_${CRLF}`))).toEqual([null, 3]);
+  });
+
+  it("decodes a RESP3 null inside an array", () => {
+    expect(decodeResp(Buffer.from(`*2${CRLF}_${CRLF}:1${CRLF}`))).toEqual([[null, 1], 11]);
+  });
+
+  it("rejects a RESP3 null with a non-empty header", () => {
+    expect(() => decodeResp(Buffer.from(`_unexpected${CRLF}`))).toThrow(PhotonProtocolError);
+  });
+
   it.each([
     Buffer.from(`$5${CRLF}helloXX`), // body is followed by a non-CRLF terminator
     Buffer.from(`$-2${CRLF}`), // only -1 is a valid null bulk length
     Buffer.from(`*-2${CRLF}`), // only -1 is a valid null array length
+    Buffer.from(`%-1${CRLF}`), // RESP3 has no null map
   ])("malformed framing raises PhotonProtocolError: %j", (malformed) => {
     expect(() => decodeResp(malformed)).toThrow(PhotonProtocolError);
   });

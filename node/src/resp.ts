@@ -1,6 +1,8 @@
 import { PhotonError, PhotonProtocolError } from "./errors.js";
 
 const CRLF = Buffer.from("\r\n");
+/** Strict UTF-8 decoder shared by simple-string decoding and RESP-string-keyed correlation. */
+export const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * Generic RESP3 wire codec for the Photon client.
@@ -27,9 +29,23 @@ export class RespError {
   }
 }
 
-// A decoded RESP value: integer, bulk/simple string (Buffer), array, or error.
-// Safe RESP integers remain numbers; larger integer frames use bigint.
-export type RespValue = number | bigint | Buffer | RespValue[] | RespError | null;
+/** A RESP3 push frame, kept distinct from ordinary arrays. */
+export class RespPush {
+  constructor(readonly items: RespValue[]) {}
+}
+
+// A decoded RESP value: integer, bigint, simple string, bulk string, array, map, error, push,
+// or null. Safe RESP integers remain numbers; larger integer frames use bigint.
+export type RespValue =
+  | number
+  | bigint
+  | string
+  | Buffer
+  | RespValue[]
+  | Map<RespValue, RespValue>
+  | RespError
+  | RespPush
+  | null;
 
 type Decoder = (data: Buffer, header: Buffer, afterHeader: number) => [RespValue, number];
 
@@ -85,13 +101,22 @@ function parseLength(header: Buffer, what: string): number {
   return value;
 }
 
-/** Decode a `+` simple string. The raw header bytes are the value. */
+/**
+ * Decode a `+` simple string to text. Bulk strings remain binary-safe Buffers.
+ *
+ * Simple strings must be valid UTF-8; replacing invalid bytes would silently corrupt
+ * values such as deferred request IDs, so malformed input is a protocol error.
+ */
 function decodeSimpleString(
   _data: Buffer,
   header: Buffer,
   afterHeader: number,
 ): [RespValue, number] {
-  return [header, afterHeader];
+  try {
+    return [STRICT_UTF8.decode(header), afterHeader];
+  } catch {
+    throw new PhotonProtocolError(`Malformed RESP simple string: ${header.toString("latin1")}`);
+  }
 }
 
 /** Decode a `:` integer. */
@@ -127,7 +152,15 @@ function decodeBulkString(data: Buffer, header: Buffer, afterHeader: number): [R
   return [data.subarray(afterHeader, end), end + CRLF.length];
 }
 
-/** Decode a `*` array or `>` push, or `null` for the `*-1` null array. */
+/** Decode a `_` RESP3 null. No body - the header line must be empty. */
+function decodeNull(_data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+  if (header.length !== 0) {
+    throw new PhotonProtocolError(`Malformed RESP null: ${header.toString()}`);
+  }
+  return [null, afterHeader];
+}
+
+/** Decode a `*` array, or `null` for the `*-1` null array. */
 function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
   const count = parseLength(header, "array length");
   if (count === -1) {
@@ -148,14 +181,43 @@ function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespVa
   return [items, position];
 }
 
-// Prefix -> decoder dispatch. `*` (array) and `>` (push) share the same array semantics.
+/** Decode a `>` push. Pushes cannot be null; their frame type remains observable to the reader. */
+function decodePush(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+  const [items, position] = decodeArray(data, header, afterHeader);
+  if (!Array.isArray(items)) {
+    throw new PhotonProtocolError(`Malformed RESP push length: ${header.toString()}`);
+  }
+  return [new RespPush(items), position];
+}
+
+/** Decode a `%` map. Keys and values may each be any RESP value. */
+function decodeMap(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+  const count = parseLength(header, "map length");
+  if (count < 0) {
+    throw new PhotonProtocolError(`Malformed RESP map length: ${header.toString()}`);
+  }
+
+  const entries = new Map<RespValue, RespValue>();
+  let position = afterHeader;
+  for (let index = 0; index < count; index += 1) {
+    const [key, afterKey] = decodeResp(data, position);
+    const [value, afterValue] = decodeResp(data, afterKey);
+    entries.set(key, value);
+    position = afterValue;
+  }
+  return [entries, position];
+}
+
+// Prefix -> decoder dispatch.
 const DECODERS: Record<string, Decoder> = {
   "+": decodeSimpleString,
   ":": decodeInteger,
   "-": decodeError,
   $: decodeBulkString,
+  _: decodeNull,
   "*": decodeArray,
-  ">": decodeArray,
+  ">": decodePush,
+  "%": decodeMap,
 };
 
 /** Decode a single RESP3 value beginning at `start`. */
@@ -164,7 +226,7 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
     throw new IncompleteFrame("empty buffer");
   }
 
-  // Read the type prefix (+ - : $ * >)
+  // Read the type prefix (+ - : $ * > %)
   const prefix = data.subarray(start, start + 1).toString("ascii");
   // Find the end of the header line ("$3", ":42", "+OK", ...)
   const lineEnd = data.indexOf(CRLF, start + 1);

@@ -1,5 +1,7 @@
 package software.amazon.photon.session;
 
+import static org.junit.jupiter.api.Assertions.*;
+
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -7,41 +9,42 @@ import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.photon.exception.PhotonError;
 import software.amazon.photon.session.EndpointParser.ParsedEndpoint;
 
-import static org.junit.jupiter.api.Assertions.*;
-
 class EndpointParserTest {
 
     @ParameterizedTest
     @CsvSource({
-            "cache.example.com:6379, cache.example.com, 6379",
-            "127.0.0.1:6379, 127.0.0.1, 6379",
-            "localhost:11211, localhost, 11211",
-            "my-cache.serverless.use1.cache.amazonaws.com:6379, my-cache.serverless.use1.cache.amazonaws.com, 6379",
-            "[::1]:6379, ::1, 6379",
-            "::1:6379, ::1, 6379",
-            "[2001:db8::1]:8080, 2001:db8::1, 8080",
-            "host:1, host, 1",
-            "host:65535, host, 65535"
+        "cache.example.com:6379, cache.example.com, 6379",
+        "127.0.0.1:6379, 127.0.0.1, 6379",
+        "localhost:11211, localhost, 11211",
+        "my-cache.serverless.use1.cache.amazonaws.com:6379,"
+                + " my-cache.serverless.use1.cache.amazonaws.com, 6379",
+        "[::1]:6379, ::1, 6379",
+        "::1:6379, ::1, 6379",
+        "[2001:db8::1]:8080, 2001:db8::1, 8080",
+        "host:1, host, 1",
+        "host:65535, host, 65535"
     })
-    void parseEndpoint_validEndpoints_returnsHostAndPort(String endpoint, String expectedHost, int expectedPort) {
+    void parseEndpoint_validEndpoints_returnsHostAndPort(
+            String endpoint, String expectedHost, int expectedPort) {
         ParsedEndpoint result = EndpointParser.parseEndpoint(endpoint);
-        
+
         assertEquals(expectedHost, result.getHost());
         assertEquals(expectedPort, result.getPort());
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {
-            "",
-            "cache.example.com",
-            ":6379",
-            "host:",
-            "host:abc",
-            "host:0",
-            "host:65536",
-            "host:-1",
-            "host:999999"
-    })
+    @ValueSource(
+            strings = {
+                "",
+                "cache.example.com",
+                ":6379",
+                "host:",
+                "host:abc",
+                "host:0",
+                "host:65536",
+                "host:-1",
+                "host:999999"
+            })
     void parseEndpoint_invalidEndpoints_throwsPhotonError(String endpoint) {
         assertThrows(PhotonError.class, () -> EndpointParser.parseEndpoint(endpoint));
     }

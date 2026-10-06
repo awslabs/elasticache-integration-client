@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { PhotonConfigUnevaluable } from "../src/errors.js";
 import { PhotonRequest, RequestMetadata } from "../src/models.js";
 import { PredicateEvaluator } from "../src/predicates.js";
 
@@ -119,22 +120,40 @@ describe("PredicateEvaluator", () => {
     ).toBe(false);
   });
 
-  it("ignores malformed predicate entries without dropping valid siblings", () => {
-    const predicates = evaluator(
-      "not-an-object",
-      { vars: {} },
-      predicate("this is not (valid CEL"),
-      predicate("operation == 'GetItem'"),
-    );
-
-    expect(predicates.shouldRouteToPhoton(request("GetItem"))).toBe(true);
-    expect(predicates.shouldRouteToPhoton(request("PutItem"))).toBe(false);
+  it("compiles a missing predicates field to no predicates", () => {
     expect(PredicateEvaluator.compile(undefined).shouldRouteToPhoton(request("GetItem"))).toBe(
       false,
     );
-    expect(
-      PredicateEvaluator.compile({ predicates: "invalid" }).shouldRouteToPhoton(request("GetItem")),
-    ).toBe(false);
+    expect(PredicateEvaluator.compile({}).shouldRouteToPhoton(request("GetItem"))).toBe(false);
+  });
+
+  it.each([
+    ["a string", "nope"],
+    ["an object", { expr: "true" }],
+    ["null", null],
+  ])("rejects the config when predicates is %s", (_, value) => {
+    expect(() => PredicateEvaluator.compile({ predicates: value })).toThrow(
+      PhotonConfigUnevaluable,
+    );
+  });
+
+  // One bad entry taints the whole config: caching by the entries that did compile would route a
+  // different set of requests than the proxy resolved.
+  it.each([
+    ["a non-object entry", "not-an-object"],
+    ["an entry without a string expr", { vars: {} }],
+    ["an uncompilable expression", predicate("this is not (valid CEL")],
+    ["an expression that fails type checking", predicate("operation == 1")],
+  ])("rejects the whole config for %s", (_, bad) => {
+    expect(() => evaluator(predicate("operation == 'GetItem'"), bad)).toThrow(
+      PhotonConfigUnevaluable,
+    );
+  });
+
+  it("treats non-object vars as no vars", () => {
+    const predicates = evaluator({ expr: "operation == 'GetItem'", vars: "not-an-object" });
+
+    expect(predicates.shouldRouteToPhoton(request("GetItem"))).toBe(true);
   });
 
   it("routes only when the runtime result is exactly true", () => {

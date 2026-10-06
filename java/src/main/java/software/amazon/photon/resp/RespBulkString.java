@@ -2,9 +2,7 @@ package software.amazon.photon.resp;
 
 import java.util.Arrays;
 
-/**
- * RESP3 bulk string value (byte array).
- */
+/** RESP3 bulk string value (byte array). */
 public class RespBulkString implements RespValue {
 
     private final byte[] value;

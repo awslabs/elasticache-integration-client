@@ -2,9 +2,7 @@ package software.amazon.photon.resp;
 
 import java.util.Objects;
 
-/**
- * RESP3 integer value.
- */
+/** RESP3 integer value. */
 public class RespInteger implements RespValue {
 
     private final long value;

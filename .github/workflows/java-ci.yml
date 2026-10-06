@@ -1,41 +1,36 @@
 name: Java CI
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "java/**"
-      - ".github/workflows/java-ci.yml"
-  pull_request:
-    branches: [main]
-    paths:
-      - "java/**"
-      - ".github/workflows/java-ci.yml"
+  workflow_call:
 
 permissions:
   contents: read
-
-concurrency:
-  group: java-ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   build:
     strategy:
       matrix:
-        # Java 21 excluded for now - MockTlsServer uses sun.security.x509 internal
-        # APIs that changed in Java 21. TODO: Use BouncyCastle or keytool for cert gen.
-        java-version: [8, 11, 17]
+        # The JDK the tests run on. Every job also installs JDK 21 to run Gradle
+        # (compile, Error Prone, Spotless), which still emits Java 8 bytecode.
+        java-version: [8, 11, 17, 21]
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK ${{ matrix.java-version }}
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          java-version: ${{ matrix.java-version }}
+          submodules: true
+          persist-credentials: false
+
+      # Install the matrix JDK for the tests and JDK 21 for Gradle. The last entry
+      # becomes JAVA_HOME, which Gradle runs on. setup-java also exports
+      # JAVA_HOME_<major>_X64, which the test toolchain uses to find the matrix JDK.
+      - name: Set up JDK ${{ matrix.java-version }} and JDK 21
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: |
+            ${{ matrix.java-version }}
+            21
           distribution: 'corretto'
           cache: 'gradle'
 
@@ -43,14 +38,30 @@ jobs:
         working-directory: java
         run: chmod +x gradlew
 
-      - name: Build and test
+      - name: Build and test on Java ${{ matrix.java-version }}
         working-directory: java
-        run: ./gradlew build
+        run: >-
+          ./gradlew build
+          -PtestJavaVersion=${{ matrix.java-version }}
+          -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
+          -Porg.gradle.java.installations.auto-download=false
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-results-java-${{ matrix.java-version }}
-          path: java/build/reports/tests/test/
+          path: |
+            java/build/reports/tests/test/
+            java/build/reports/jacoco/test/
+          retention-days: 7
+
+      # Gradle runs on JDK 21 in every job, so the JARs are the same; upload them once.
+      - name: Upload JARs
+        if: matrix.java-version == 21
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: package-java
+          path: java/build/libs/
+          if-no-files-found: error
           retention-days: 7

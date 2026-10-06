@@ -24,9 +24,7 @@ class TestResolveAuthParams:
     """Tests for resolve_auth_params validation and defaults."""
 
     def test_defaults_user_id(self):
-        _, user_id, _ = resolve_auth_params(
-            cache_name="my-cache", region="us-west-2"
-        )
+        _, user_id, _ = resolve_auth_params(cache_name="my-cache", region="us-west-2")
         assert user_id == DEFAULT_USER_ID
 
     def test_rejects_missing_cache_name(self):
@@ -63,11 +61,14 @@ class TestGenerateIamAuthToken:
         mock_session.get_component.return_value = MagicMock()
         return mock_session
 
-    @patch.dict(os.environ, {
-        "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
-        "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-        "AWS_SESSION_TOKEN": "FwoGZXIvYXdzEBYaDHqa0APtoken",
-    })
+    @patch.dict(
+        os.environ,
+        {
+            "AWS_ACCESS_KEY_ID": "AKIAIOSFODNN7EXAMPLE",
+            "AWS_SECRET_ACCESS_KEY": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            "AWS_SESSION_TOKEN": "FwoGZXIvYXdzEBYaDHqa0APtoken",
+        },
+    )
     def test_generates_token_with_correct_format(self):
         """Generate a real token using fake env creds and verify its structure."""
         import botocore.session
