@@ -68,7 +68,7 @@ describe("awsToPhotonRequest", () => {
   it("preserves the final serialized unsigned Smithy request and explicit service metadata", () => {
     const smithyRequest = request(Buffer.from("payload"));
 
-    const photonRequest = awsToPhotonRequest(smithyRequest, "dynamodb", "GetItemCommand");
+    const photonRequest = awsToPhotonRequest(smithyRequest, "dynamodb", "GetItemCommand")!;
 
     expect(photonRequest).toEqual(
       new PhotonRequest({
@@ -103,7 +103,7 @@ describe("awsToPhotonRequest", () => {
       body: Buffer.from("payload"),
     });
 
-    const photonRequest = awsToPhotonRequest(signed, "dynamodb", "GetItemCommand");
+    const photonRequest = awsToPhotonRequest(signed, "dynamodb", "GetItemCommand")!;
 
     expect(photonRequest.headers).toEqual({
       host: "dynamodb.us-east-1.amazonaws.com",
@@ -120,13 +120,13 @@ describe("awsToPhotonRequest", () => {
     [Buffer.from("payload"), Buffer.from("payload")],
     [new Uint8Array([112, 97, 121, 108, 111, 97, 100]), Buffer.from("payload")],
   ])("normalizes %s request bodies", (body, expected) => {
-    expect(awsToPhotonRequest(request(body), "svc", "RunCommand").body).toEqual(expected);
+    expect(awsToPhotonRequest(request(body), "svc", "RunCommand")!.body).toEqual(expected);
   });
 
   it("reuses Buffer request bodies", () => {
     const body = Buffer.from("payload");
 
-    expect(awsToPhotonRequest(request(body), "svc", "RunCommand").body).toBe(body);
+    expect(awsToPhotonRequest(request(body), "svc", "RunCommand")!.body).toBe(body);
   });
 
   it("builds no Photon request for a streaming body", () => {
@@ -148,7 +148,7 @@ describe("awsToPhotonRequest", () => {
     ["GetItemCommand", "GetItem"],
     ["Custom", "Custom"],
   ])("derives operation %s as %s", (commandName, operation) => {
-    expect(awsToPhotonRequest(request(), "svc", commandName).metadata.operation).toBe(operation);
+    expect(awsToPhotonRequest(request(), "svc", commandName)!.metadata.operation).toBe(operation);
   });
 });
 
@@ -260,7 +260,8 @@ describe("photon middleware", () => {
   });
 
   it("passes a streaming request body through to the origin without calling Photon", async () => {
-    const streamingRequest = request(Readable.from(["payload"]));
+    const body = Readable.from(["payload"]);
+    const streamingRequest = request(body);
     const session = fakeSession();
     const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
       expect(args.request).toBe(streamingRequest);
@@ -273,6 +274,7 @@ describe("photon middleware", () => {
     });
     expect(session.request).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledOnce();
+    expect(body.readableDidRead).toBe(false);
   });
 
   it("does not pass Photon request validation failures through to the origin", async () => {

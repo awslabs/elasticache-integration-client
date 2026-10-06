@@ -96,10 +96,9 @@ require the corresponding tests, README, and package checks to change with it.
   or destroy the SDK before Photon. Safe path: preserve final serialized
   unsigned request ordering, synthetic responses, streaming bodies passed
   through to the origin without calling Photon, dropped-connection fallback
-  only for cataloged operations, healthy-connection `ORIGIN_ERROR` retries only for cataloged
-  operations, other RESP/non-idempotent/validation/shutdown failures
-  propagating, and
-  Photon-first teardown.
+  only for cataloged operations, healthy-connection `ORIGIN_ERROR` retries
+  only for cataloged operations, other RESP/non-idempotent/validation/shutdown
+  failures propagating, and Photon-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,
   TLS verification that is off by default or off implicitly, or plaintext by
