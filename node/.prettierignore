@@ -1,5 +1,6 @@
 # Dependencies and package artifacts
 node_modules/
+vendor/
 *.tgz
 .artifacts/
 

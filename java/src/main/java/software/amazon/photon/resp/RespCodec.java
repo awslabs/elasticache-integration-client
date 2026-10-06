@@ -1,28 +1,25 @@
 package software.amazon.photon.resp;
 
-import software.amazon.photon.exception.PhotonProtocolError;
-
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import software.amazon.photon.exception.PhotonProtocolError;
 
-/**
- * RESP3 wire protocol encoder and decoder.
- */
+/** RESP3 wire protocol encoder and decoder. */
 public final class RespCodec {
 
-    private static final byte[] CRLF = new byte[]{'\r', '\n'};
+    private static final byte[] CRLF = new byte[] {'\r', '\n'};
 
-    private RespCodec() {
-    }
+    private RespCodec() {}
 
     /**
-     * Encode a command with arguments as a RESP3 array of bulk strings.
-     * All args must be byte arrays.
+     * Encode a command with arguments as a RESP3 array of bulk strings. All args must be byte arrays.
      *
      * @param command the command name
-     * @param args    the arguments as byte arrays
+     * @param args the arguments as byte arrays
      * @return encoded RESP3 bytes
      */
     public static byte[] encodeCommand(String command, byte[]... args) {
@@ -75,10 +72,10 @@ public final class RespCodec {
     /**
      * Decode one RESP3 value from the given byte array starting at the given position.
      *
-     * @param data  the byte array
+     * @param data the byte array
      * @param start the start position
      * @return a DecodeResult containing the decoded value and the position after it
-     * @throws IncompleteFrame    if data is truncated
+     * @throws IncompleteFrame if data is truncated
      * @throws PhotonProtocolError if data is malformed / garbage
      */
     public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
@@ -99,16 +96,22 @@ public final class RespCodec {
             case '*':
                 return decodeArray(data, start);
             case '>':
-                // Push type decoded same as array
-                return decodeArray(data, start);
+                return decodePush(data, start);
+            case '%':
+                return decodeMap(data, start);
+            case '_':
+                return decodeNull(data, start);
             default:
-                throw new PhotonProtocolError("Unknown RESP prefix: " + (char) prefix + " (0x" + Integer.toHexString(prefix & 0xFF) + ")");
+                throw new PhotonProtocolError(
+                        "Unknown RESP prefix: "
+                                + (char) prefix
+                                + " (0x"
+                                + Integer.toHexString(prefix & 0xFF)
+                                + ")");
         }
     }
 
-    /**
-     * Decode one RESP3 value from the given byte array starting at position 0.
-     */
+    /** Decode one RESP3 value from the given byte array starting at position 0. */
     public static DecodeResult decode(byte[] data) throws IncompleteFrame {
         return decode(data, 0);
     }
@@ -196,6 +199,21 @@ public final class RespCodec {
         return new DecodeResult(new RespBulkString(value), dataEnd + 2);
     }
 
+    /**
+     * Decode a RESP3 null ({@code _\r\n}). The header must be empty: there is no length or value,
+     * just the CRLF terminator immediately after the prefix.
+     */
+    private static DecodeResult decodeNull(byte[] data, int start) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1);
+        if (crlfPos < 0) {
+            throw new IncompleteFrame("Incomplete null");
+        }
+        if (crlfPos != start + 1) {
+            throw new PhotonProtocolError("Malformed RESP3 null: expected an empty header");
+        }
+        return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
+    }
+
     private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1);
         if (crlfPos < 0) {
@@ -227,10 +245,43 @@ public final class RespCodec {
         return new DecodeResult(new RespArray(elements), pos);
     }
 
-    /**
-     * Find the position of CRLF starting from the given position.
-     * Returns -1 if not found.
-     */
+    private static DecodeResult decodePush(byte[] data, int start) throws IncompleteFrame {
+        DecodeResult result = decodeArray(data, start);
+        if (!(result.getValue() instanceof RespArray)) {
+            throw new PhotonProtocolError("Invalid RESP3 push payload: expected a non-null element list");
+        }
+        RespArray array = (RespArray) result.getValue();
+        return new DecodeResult(new RespPush(array.getElements()), result.getPosition());
+    }
+
+    private static DecodeResult decodeMap(byte[] data, int start) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1);
+        if (crlfPos < 0) {
+            throw new IncompleteFrame("Incomplete map length");
+        }
+        String countStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
+        int count;
+        try {
+            count = Integer.parseInt(countStr);
+        } catch (NumberFormatException e) {
+            throw new PhotonProtocolError("Invalid map count: " + countStr);
+        }
+        if (count < 0) {
+            throw new PhotonProtocolError("Invalid map count: " + count);
+        }
+
+        Map<RespValue, RespValue> entries = new LinkedHashMap<>();
+        int pos = crlfPos + 2;
+        for (int i = 0; i < count; i++) {
+            DecodeResult key = decode(data, pos);
+            DecodeResult value = decode(data, key.getPosition());
+            entries.put(key.getValue(), value.getValue());
+            pos = value.getPosition();
+        }
+        return new DecodeResult(new RespMap(entries), pos);
+    }
+
+    /** Find the position of CRLF starting from the given position. Returns -1 if not found. */
     private static int findCrlf(byte[] data, int from) {
         for (int i = from; i < data.length - 1; i++) {
             if (data[i] == '\r' && data[i + 1] == '\n') {

@@ -3,9 +3,10 @@
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
  * AWS SigV4 authentication headers, builds a PhotonRequest, calls PhotonSession,
- * and returns a synthetic HttpResponse. Photon failures for idempotent
- * operations and predicate declines return to the SDK's origin pipeline while
- * preserving its normal retry and deserialization behavior.
+ * and returns a synthetic HttpResponse. Predicate declines, explicit Photon
+ * rejections, and indeterminate failures for idempotent operations return to
+ * the SDK's origin pipeline while preserving its normal retry and
+ * deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the Photon path drops the auth
@@ -19,16 +20,34 @@ import type {
   HandlerExecutionContext,
   MiddlewareStack,
 } from "@smithy/types";
-import { SMITHY_CONTEXT_KEY } from "@smithy/types";
-
-import { PhotonError } from "./errors.js";
+import {
+  PhotonConnectionError,
+  PhotonConnectionLost,
+  PhotonError,
+  PhotonRejectedError,
+  PhotonTimeoutError,
+} from "./errors.js";
+import { isIdempotentOperation } from "./idempotency.js";
 import { PhotonRequest, RequestMetadata } from "./models.js";
 import type { PhotonResponse } from "./models.js";
 import type { PhotonSession } from "./session.js";
 
 const PHOTON_MIDDLEWARE = "photon";
-const IDEMPOTENT_TRAIT_MASK = 0b10;
-const IDEMPOTENT_HTTP_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PUT", "TRACE"]);
+const ORIGIN_ERROR = "ORIGIN_ERROR";
+
+type RetryableError = Error & { $retryable: Record<string, never> };
+
+function markRetryable(error: Error): RetryableError {
+  return Object.assign(error, { $retryable: {} });
+}
+
+function isTransportFailure(error: PhotonError): boolean {
+  return (
+    error instanceof PhotonTimeoutError ||
+    error instanceof PhotonConnectionLost ||
+    error instanceof PhotonConnectionError
+  );
+}
 
 /** The part of an AWS SDK v3 client used by PhotonHandle. */
 export interface PhotonCompatibleClient {
@@ -100,33 +119,6 @@ export function photonToHttpResponse(response: PhotonResponse): HttpResponse {
   });
 }
 
-function operationTraits(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema[3];
-  if (schema !== null && typeof schema === "object") {
-    return (schema as { traits?: unknown }).traits;
-  }
-  return undefined;
-}
-
-/**
- * Prefer Smithy operation metadata because AWS JSON protocols commonly use POST
- * for both read and write operations. HTTP method semantics cover generic
- * clients that do not provide an operation schema.
- */
-function isIdempotentRequest(request: PhotonRequest, context: HandlerExecutionContext): boolean {
-  const commandSchema = context[SMITHY_CONTEXT_KEY]?.commandInstance?.schema;
-  if (commandSchema !== undefined) {
-    const traits = operationTraits(commandSchema);
-    if (typeof traits === "number") return (traits & IDEMPOTENT_TRAIT_MASK) !== 0;
-    return (
-      traits !== null &&
-      typeof traits === "object" &&
-      (traits as { idempotent?: unknown }).idempotent === 1
-    );
-  }
-  return IDEMPOTENT_HTTP_METHODS.has(request.method.toUpperCase());
-}
-
 export function photonMiddleware<Input extends object, Output extends object>(
   service: string,
   session: PhotonSession,
@@ -139,8 +131,26 @@ export function photonMiddleware<Input extends object, Output extends object>(
       if (response === undefined) return next(args);
       return { response: photonToHttpResponse(response) };
     } catch (error) {
-      if (error instanceof PhotonError && session.isOpen && isIdempotentRequest(request, context)) {
+      if (!(error instanceof PhotonError) || !session.isOpen) {
+        throw error;
+      }
+
+      const idempotent = isIdempotentOperation(
+        request.metadata.service,
+        request.metadata.operation,
+      );
+      if (error instanceof PhotonRejectedError) {
+        if (error.code === ORIGIN_ERROR && session.isConnectionHealthy && idempotent) {
+          throw markRetryable(error);
+        }
+        throw error;
+      }
+
+      if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
         return next(args);
+      }
+      if (session.isConnectionHealthy && idempotent && error instanceof PhotonTimeoutError) {
+        throw markRetryable(error);
       }
       throw error;
     }

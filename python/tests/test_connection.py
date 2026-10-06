@@ -23,13 +23,15 @@ import pytest
 
 from photon.connection import PhotonConnector, _PendingRequests, _SocketReader
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonConnectionLost,
     PhotonConnectionError,
     PhotonError,
     PhotonProtocolError,
     PhotonTimeoutError,
 )
-from photon.resp import RespError, RespValue
+from photon.protocol import PUSH_KIND_RESPONSE
+from photon.resp import RespError, RespPush, RespValue
 from tests.mock import MockCache, Reply
 
 
@@ -68,12 +70,19 @@ class TestPhotonConnector:
     def connect_and_handshake(self, **kwargs) -> None:
         """connect() plus the photon.config handshake — ready to send requests."""
         self.connect(**kwargs)
-        self.conn.execute("photon.config", b"{}")
+        self.conn.execute("photon.config", b"{}", timeout=self.conn.config_timeout)
 
-    def send_request(self, body: bytes = b"body") -> RespValue:
+    def send_request(self, body: bytes = b"body", *, timeout: float | None = None) -> RespValue:
         """Send a canonical photon.request ([method, url, headers, body, metadata]) with the given."""
         args = [b"POST", b"https://x/", b"", body, b"service=s&op=o"]
-        return self.conn.execute("photon.request", *args)
+        return self.conn.execute("photon.request", *args, timeout=timeout)
+
+    def wait_until(self, condition, timeout: float = 2.0) -> bool:
+        """Poll ``condition`` until it is true, up to ``timeout``. Returns its final value."""
+        deadline = time.monotonic() + timeout
+        while not condition() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return condition()
 
     def wrap_writer(self) -> mock.Mock:
         """Replace the connector's stream writer with a delegating mock and return it.
@@ -88,6 +97,11 @@ class TestPhotonConnector:
     # 1. Establishment — getting a usable connection (TCP, TLS, misuse)
     # ======================================================================== #
 
+    def test_request_timeout_defaults_to_five_seconds(self):
+        self.conn = PhotonConnector("127.0.0.1", 1, tls=False)
+
+        assert self.conn._request_timeout == 5.0
+
     def test_connect_and_handshake(self):
         """connect() yields a working connection: the photon.config handshake round-trips
         the mock's resolved config (as a raw JSON bulk string — parsing it is
@@ -97,6 +111,14 @@ class TestPhotonConnector:
         cfg = json.loads(raw)
         assert cfg["version"] == "1.0"
         assert cfg["refresh_interval"] == 60
+
+    def test_no_arg_config_round_trips_resp3_null(self):
+        """A no-argument photon.config ('overrides unchanged') gets back the literal RESP3
+        null byte sequence (`_\\r\\n`) from a real server over a real socket, decoded to None —
+        proving the wire-level path end-to-end, not just resp.py's decoder in isolation."""
+        self.connect()
+        reply = self.conn.execute("photon.config")
+        assert reply is None
 
     def test_connect_to_nothing_raises(self):
         """Connecting to a port with nothing listening raises PhotonConnectionError."""
@@ -116,7 +138,7 @@ class TestPhotonConnector:
         job — this test only proves the paths function over TLS.)"""
         self.start_cache(tls=True)
         self.connect_and_handshake(tls=True, ca_certs=self.cache.cert_path)
-        assert self.send_request()[0] == 200
+        assert self.send_request(timeout=self.conn.config_timeout)[0] == 200
 
     def test_tls_untrusted_cert_refused(self):
         """With the default CA store (which does not trust the mock's self-signed cert),
@@ -168,11 +190,11 @@ class TestPhotonConnector:
             t = threading.Thread(target=run_connect)
             t.start()
             assert open_entered.wait(2)
-            conn.close()            # races connect(): nothing is installed yet
+            conn.close()  # races connect(): nothing is installed yet
             t.join(3)
 
         assert not t.is_alive()
-        assert len(outcome) == 1    # connect() raised exactly once
+        assert len(outcome) == 1  # connect() raised exactly once
         assert isinstance(outcome[0], PhotonConnectionError), outcome[0]
         assert conn._writer is None
         assert not any(th.name == "photon-io-thread" for th in threading.enumerate())
@@ -195,45 +217,104 @@ class TestPhotonConnector:
         assert conn._writer is None
 
     # ======================================================================== #
-    # 2. Authentication — the AUTH exchange
+    # 2. Handshake — the HELLO 3 exchange, carrying the credentials
     # ======================================================================== #
 
-    def test_auth_silence_times_out_and_kills_connection(self):
-        """A server that goes silent on AUTH trips the request timeout: authenticate()
-        raises PhotonConnectionError and the connection is closed."""
-        self.start_cache(failure="hang", failure_command="auth")
+    def test_hello_silence_times_out_and_kills_connection(self):
+        """A server that goes silent on HELLO trips the request timeout: handshake() raises
+        PhotonConnectionError and the connection is closed. The token never appears in
+        the message."""
+        self.start_cache(failure="hang", failure_command="hello")
         self.connect(
             request_timeout=0.3,
             auth_provider=lambda: ("test-user", "test-token"),
         )
-        with pytest.raises(PhotonConnectionError, match="AUTH timed out"):
-            self.conn.authenticate()
-        assert self.conn._closed is True
+        with pytest.raises(PhotonConnectionError, match="HELLO 3 timed out") as excinfo:
+            self.conn.handshake()
+        assert "test-token" not in str(excinfo.value)
+        assert self.conn._closed
 
-    def test_auth_accepted(self):
-        """The RESP +OK reply (decoded to b"OK") is accepted.
-        Internals: _verify_auth_reply is pure reply validation, tested directly."""
+    def test_hello_accepted(self):
+        """A map reporting proto 3 confirms the switch.
+        Internals: _verify_hello_reply is pure reply validation, tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
-        conn._verify_auth_reply(b"OK")  # must not raise
-        assert conn._closed is False
+        conn._verify_hello_reply({b"server": b"valkey", b"proto": 3})  # must not raise
+        assert not conn._closed
 
-    def test_auth_rejected_kills_connection(self):
-        """An -ERR AUTH reply raises PhotonConnectionError AND closes the connection:
-        an unauthenticated connection has no valid next use. The token never appears in
-        the message. Internals: _verify_auth_reply tested directly."""
+    @pytest.mark.parametrize("code", ["NOPROTO", "invalid-iam-credentials"])
+    def test_hello_rejected_kills_connection(self, code):
+        """One frame carries both halves of the handshake, so a refused protocol version and a
+        refused credential arrive the same way: an error reply. Either closes the connection —
+        RESP2 makes deferred responses silently unavailable, and an unauthenticated connection
+        has no valid next use — and the code is surfaced.
+        Internals: _verify_hello_reply tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError) as excinfo:
-            conn._verify_auth_reply(RespError("invalid-iam-credentials", "nope"))
-        assert "invalid-iam-credentials" in str(excinfo.value)
-        assert conn._closed is True
+            conn._verify_hello_reply(RespError(code, "nope"))
+        assert code in str(excinfo.value)
+        assert conn._closed
 
-    def test_auth_unexpected_reply_kills_connection(self):
-        """A non-error, non-OK AUTH reply is rejected and closes the connection.
-        Internals: _verify_auth_reply tested directly."""
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            {b"server": b"valkey", b"proto": 2},  # switch refused, reported as RESP2
+            {b"server": b"valkey"},  # no proto entry at all
+            "OK",  # not a map
+        ],
+        ids=["proto-2", "no-proto", "not-a-map"],
+    )
+    def test_hello_unconfirmed_switch_kills_connection(self, reply):
+        """Anything that does not positively confirm proto 3 closes the connection: continuing
+        would leave head-of-line blocking in place with nothing reporting it."""
         conn = PhotonConnector("host", 6379, tls=False)
         with pytest.raises(PhotonConnectionError):
-            conn._verify_auth_reply(123)
-        assert conn._closed is True
+            conn._verify_hello_reply(reply)
+        assert conn._closed
+
+    def test_reauth_rejection_keeps_the_connection_open(self):
+        """A background re-AUTH reply arrives in order, so a rejection is not a FIFO desync: the
+        connection stays open and the proxy keeps serving on its last valid token. This is the
+        opposite of the HELLO bring-up, where a rejection closes. Internals: _verify_auth_reply
+        tested directly."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonAuthError):
+            conn._verify_auth_reply(RespError("WRONGPASS", "bad token"))
+        assert not conn._closed
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "WHAT",  # a well-framed but unexpected simple string
+            b"cached response body",  # a bulk string from another request
+            {b"k": b"v"},  # a map
+            7,  # an int
+        ],
+        ids=["simple", "bulk", "map", "int"],
+    )
+    def test_reauth_unexpected_reply_closes_the_connection(self, reply):
+        """Any non-OK reply other than an error means the FIFO is out of sync, so the connection
+        closes and the reply is kept out of the message (it may be another request's body)."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonAuthError) as excinfo:
+            conn._verify_auth_reply(reply)
+        assert conn._closed
+        assert type(reply).__name__ in str(excinfo.value)
+        assert repr(reply) not in str(excinfo.value)
+
+    def test_handshake_carries_the_credentials_inline(self):
+        """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's FAS from the
+        credentials arriving on the HELLO, so no separate AUTH is sent."""
+        self.start_cache()
+        self.connect(auth_provider=lambda: ("test-user", "test-token"))
+        self.conn.handshake()
+        assert self.cache.photon_command_log == ["hello"]
+        assert self.cache.received_commands[0] == [
+            b"HELLO",
+            b"3",
+            b"AUTH",
+            b"test-user",
+            b"test-token",
+        ]
 
     # ======================================================================== #
     # 3. Send path — what a caller experiences calling execute
@@ -331,7 +412,11 @@ class TestPhotonConnector:
 
     @pytest.mark.parametrize(
         "leak",
-        [OSError("broken pipe"), TypeError("closing transport"), AttributeError("closing transport")],
+        [
+            OSError("broken pipe"),
+            TypeError("closing transport"),
+            AttributeError("closing transport"),
+        ],
         ids=["oserror", "typeerror", "attributeerror"],
     )
     def test_write_failure_kills_connection(self, leak):
@@ -370,10 +455,10 @@ class TestPhotonConnector:
         the closed connection."""
         self.start_cache(failure="drop", failure_after_reply=True)
         self.connect_and_handshake()
-        value = self.send_request()         # reply arrives despite the FIN right behind it
+        value = self.send_request()  # reply arrives despite the FIN right behind it
         assert value[0] == 200
         with pytest.raises(PhotonConnectionLost):
-            self.send_request()             # death detected on the next use
+            self.send_request()  # death detected on the next use
 
     def test_quiet_connection_stays_alive(self):
         """An idle connection several request_timeouts long is normal, not a failure:
@@ -390,11 +475,11 @@ class TestPhotonConnector:
         async def scenario() -> list:
             stream = asyncio.StreamReader()
             reader = _SocketReader(stream)
-            stream.feed_data(b"$5\r\nhel")           # first frame, split mid-payload
-            stream.feed_data(b"lo\r\n+OK\r\n")       # rest of it + a whole second frame
+            stream.feed_data(b"$5\r\nhel")  # first frame, split mid-payload
+            stream.feed_data(b"lo\r\n+OK\r\n")  # rest of it + a whole second frame
             return [await reader.read_frame(), await reader.read_frame()]
 
-        assert asyncio.run(scenario()) == [b"hello", b"OK"]
+        assert asyncio.run(scenario()) == [b"hello", "OK"]
 
     def test_garbage_reply_fails_caller_as_connection_lost(self):
         """A reply that cannot be decoded kills the connection: the waiting caller fails
@@ -447,8 +532,110 @@ class TestPhotonConnector:
         pending.register_new_request(Future())
         with pytest.raises(PhotonError):
             pending.register_new_request(Future())
-        pending.resolve_oldest_request(b"v1")   # frees one slot
+        pending.resolve_oldest_request(b"v1")  # frees one slot
         pending.register_new_request(Future())  # fits again
+
+    def test_max_pending_counts_deferred_requests(self):
+        """A deferred request still counts against max_pending."""
+        pending = _PendingRequests(max_pending=1)
+        pending.register_new_request(Future())
+        pending.move_head_to_async_responses("1")  # out of the FIFO, still in flight
+        with pytest.raises(PhotonError, match="too many in-flight requests"):
+            pending.register_new_request(Future())
+
+    def test_a_deferred_request_lets_the_next_reply_through(self):
+        """The reply after a deferral goes to the request behind it; the deferred one keeps
+        waiting. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        deferred, behind_it = Future(), Future()
+        pending.register_new_request(deferred)
+        pending.register_new_request(behind_it)
+        pending.move_head_to_async_responses("1")
+        pending.resolve_oldest_request(b"reply")
+        assert behind_it.result(timeout=1) == b"reply"
+        assert not deferred.done()
+
+    def test_pending_requests_move_and_resolve_async(self):
+        """move_head_to_async_responses moves the oldest future out of the FIFO under the id;
+        resolve_async resolves it. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        future = Future()
+        pending.register_new_request(future)
+        pending.move_head_to_async_responses("1")
+        assert pending.resolve_async("1", b"reply")
+        assert future.result(timeout=1) == b"reply"
+
+    def test_resolve_async_unknown_id(self):
+        """resolve_async reports an id nobody waits for, so a push that lost its caller is
+        dropped instead of failing the connection. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        assert not pending.resolve_async("999", b"v")
+
+    def test_id_reply_with_empty_fifo_is_a_protocol_error(self):
+        """A request id reply with nothing pending cannot be matched to a caller, so the stream
+        can no longer be trusted. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        with pytest.raises(PhotonProtocolError, match="no pending request"):
+            pending.move_head_to_async_responses("1")
+
+    def test_duplicate_request_id_is_a_protocol_error(self):
+        """Two live requests can never share an id; overwriting the entry would orphan the
+        first caller, so a duplicate is a protocol error. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        pending.register_new_request(Future())
+        pending.move_head_to_async_responses("1")
+        pending.register_new_request(Future())  # else the empty-FIFO check fires first
+        with pytest.raises(PhotonProtocolError, match="duplicate request id"):
+            pending.move_head_to_async_responses("1")
+
+    def test_fail_if_async_fails_a_deferred_future(self):
+        """A caller giving up on a deferred request drops its entry and the future carries the
+        failure, so a late push finds nothing to resolve. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        assert pending.fail_if_async(deferred, PhotonTimeoutError("gave up"))
+        with pytest.raises(PhotonTimeoutError):
+            deferred.result(timeout=1)
+        assert not pending.resolve_async("1", b"late")
+
+    def test_fail_if_async_when_the_reader_settled_first(self):
+        """A reply landing as the caller times out leaves nothing to fail: fail_if_async reports
+        the connection is fine and the result stands, so a healthy connection is not closed over
+        a race."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        assert pending.resolve_async("1", b"just in time")  # the reader wins
+        assert pending.fail_if_async(deferred, PhotonTimeoutError("too late"))
+        assert deferred.result(timeout=1) == b"just in time"
+
+    def test_fail_if_async_leaves_a_fifo_future_alone(self):
+        """A future still in the FIFO is not deferred, so it keeps its slot and stays pending —
+        that is how the timeout path knows the connection cannot survive.
+        Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        fifo = Future()
+        pending.register_new_request(fifo)
+        assert not pending.fail_if_async(fifo, PhotonTimeoutError("gave up"))
+        assert not fifo.done()
+
+    def test_fail_all_fails_async_futures_too(self):
+        """fail_all fails futures in BOTH structures — a deferred caller must not hang until
+        its timeout when the connection dies. Internals: _PendingRequests."""
+        pending = _PendingRequests()
+        deferred = Future()
+        pending.register_new_request(deferred)
+        pending.move_head_to_async_responses("1")
+        fifo = Future()
+        pending.register_new_request(fifo)
+        pending.fail_all(PhotonConnectionLost("gone"))
+        for future in (deferred, fifo):
+            with pytest.raises(PhotonConnectionLost):
+                future.result(timeout=1)
+        assert pending.resolve_async("1", b"late") is False  # map was cleared
 
     def test_max_pending_propagates_from_connector(self):
         """The connector passes its max_pending through to the pending queue."""
@@ -456,7 +643,82 @@ class TestPhotonConnector:
         assert conn._pending._max_pending == 7
 
     # ======================================================================== #
-    # 5. Close — teardown
+    # 5. Deferred (out-of-band) responses — HOL blocking removal
+    # ======================================================================== #
+
+    def test_reader_routes_an_id_reply_to_the_async_map(self):
+        """A simple string other than OK is a request id: the reader moves the oldest future
+        out of the FIFO into the async map under that id. Internals: _reader_loop."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        future = Future()
+        conn._pending.register_new_request(future)
+
+        async def read_frame() -> RespValue:
+            conn._closed = True
+            return "42"
+
+        conn._reader = mock.Mock(read_frame=read_frame)
+        asyncio.run(conn._reader_loop())
+        assert conn._pending._async_responses["42"] is future
+        assert future not in conn._pending._queue
+
+    @pytest.mark.parametrize(
+        "reply",
+        [[200, b"", b"body"], RespError("ERR", "origin failed")],
+        ids=["response", "error"],
+    )
+    def test_push_consumes_its_id_entry(self, reply):
+        """The push for a deferred request resolves its future and removes the id from the
+        map, so nothing is left waiting under it. An error travels as a value, like a
+        synchronous one. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        future = Future()
+        conn._pending.register_new_request(future)
+        conn._pending.move_head_to_async_responses("42")
+        conn._handle_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"42", reply]))
+        assert future.result(timeout=1) == reply
+        assert "42" not in conn._pending._async_responses
+
+    def test_async_request_timeout_keeps_connection_alive(self):
+        """A timeout on a deferred request abandons only that request: the connection
+        survives, the late push is dropped with a warning, and the next request works."""
+        replies = [Reply.request_id(1), Reply.ok(body=b"after")]
+        self.start_cache(response_fn=lambda req: replies.pop(0))
+        self.connect_and_handshake(request_timeout=0.3)
+
+        with pytest.raises(PhotonTimeoutError, match="async request timed out"):
+            self.send_request()
+        assert not self.conn._closed  # the connection survived
+
+        self.cache.send_push(1)  # late push: unknown id, dropped
+        value = self.send_request()  # connection still fully usable
+        assert value[2] == b"after"
+        assert not self.conn._closed
+
+    def test_unknown_push_kind_is_a_protocol_error(self):
+        """The proxy only sends kinds this client understands, so an unknown kind means the
+        stream cannot be trusted. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        with pytest.raises(PhotonProtocolError, match="unknown push kind"):
+            conn._handle_push(RespPush(kind=b"invalidate", items=[b"whatever"]))
+
+    def test_malformed_push_kills_connection(self):
+        """A push the protocol layer cannot read leaves the whole stream untrustworthy, so the
+        reader marks the connection dead. Payload rules live in parse_response_push."""
+        self.start_cache()
+        self.connect_and_handshake()
+        self.cache.send_push(1, items=[Reply.ok().frame])  # a reply, one item
+        assert self.wait_until(lambda: self.conn._closed)
+
+    def test_push_for_unknown_id_is_dropped(self):
+        """A push whose id maps to nothing (caller timed out earlier) is logged and dropped;
+        the connection stays alive. Internals: _handle_push."""
+        conn = PhotonConnector("host", 6379, tls=False)
+        conn._handle_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", [200, b"", b""]]))
+        assert not conn._closed
+
+    # ======================================================================== #
+    # 6. Close — teardown
     # ======================================================================== #
 
     def test_close_twice_is_safe(self):
@@ -483,7 +745,7 @@ class TestPhotonConnector:
         thread = self.conn._io_loop_thread.thread
         assert thread.is_alive()
         self.conn.close()
-        assert not thread.is_alive()          # join happened, the thread is gone
+        assert not thread.is_alive()  # join happened, the thread is gone
         assert self.conn._io_loop_thread.thread is None
         assert self.conn._io_loop_thread.loop is None
         assert self.conn._writer is None
@@ -516,11 +778,11 @@ class TestPhotonConnector:
         t = threading.Thread(target=blocked_caller)
         t.start()
         deadline = time.monotonic() + 2
-        while len(self.conn._pending._queue) == 0:   # wait until the caller is registered + waiting
+        while len(self.conn._pending._queue) == 0:  # wait until the caller is registered + waiting
             assert time.monotonic() < deadline, "caller never registered its request"
             time.sleep(0.01)
         self.conn.close()
-        t.join(timeout=2)        # must unblock well before the 10s request timeout
+        t.join(timeout=2)  # must unblock well before the 10s request timeout
 
         assert not t.is_alive(), "caller still blocked after close()"
         assert outcome == ["connection-lost"]
@@ -559,7 +821,7 @@ class TestPhotonConnector:
         thread = self.conn._io_loop_thread.thread
 
         with pytest.raises(PhotonConnectionLost):
-            self.send_request()          # server drops instead of replying
+            self.send_request()  # server drops instead of replying
 
         self.await_io_thread_exit(thread)
         assert self.conn._io_loop_thread.loop is None
@@ -608,7 +870,7 @@ class TestPhotonConnector:
             time.sleep(0.01)
 
         assert isinstance(outcome[0], RuntimeError), outcome[0]
-        assert self.conn._io_loop_thread.thread.is_alive()   # the guard fired before any teardown
+        assert self.conn._io_loop_thread.thread.is_alive()  # the guard fired before any teardown
 
     def test_failed_dial_leaves_no_io_thread(self):
         """A connect() that never establishes anything must not leave its loop thread behind:
@@ -616,7 +878,7 @@ class TestPhotonConnector:
         probe = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-        probe.close()                     # nothing is listening -> the dial fails
+        probe.close()  # nothing is listening -> the dial fails
 
         conn = PhotonConnector("127.0.0.1", port, tls=False, connect_timeout=1.0)
         with pytest.raises(PhotonConnectionError):
@@ -641,7 +903,7 @@ class TestPhotonConnector:
         conn._closed = True
         conn_ready: Future = Future()
 
-        conn._io_thread_main(conn_ready)     # returns as soon as the connection bails
+        conn._io_thread_main(conn_ready)  # returns as soon as the connection bails
 
         with pytest.raises(PhotonConnectionError):
             conn_ready.result(timeout=1)

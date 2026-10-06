@@ -1,0 +1,32 @@
+{
+  "name": "@aws/developer-toolkit-elasticache",
+  "version": "0.1.0-dev.0",
+  "description": "Developer toolkit for Amazon ElastiCache",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "peerDependencies": {
+    "@aws-sdk/credential-providers": "^3.943.0",
+    "@smithy/core": "^3.18.0",
+    "@smithy/hash-node": "^4.2.7",
+    "@smithy/signature-v4": "^5.2.7",
+    "@smithy/types": "^4.9.0"
+  }
+}

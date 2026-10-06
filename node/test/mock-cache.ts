@@ -12,7 +12,12 @@
  *   the mock over plaintext or TLS.
  */
 import { readFileSync } from "node:fs";
-import { createServer, type Server as NetServer, type Socket } from "node:net";
+import {
+  connect as connectTcp,
+  createServer,
+  type Server as NetServer,
+  type Socket,
+} from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer as createTlsServer, type Server as TlsServer } from "node:tls";
@@ -29,12 +34,32 @@ function _bulk(value: Buffer): Buffer {
   return Buffer.concat([Buffer.from(`$${value.length}`), CRLF, value, CRLF]);
 }
 
-function _int(value: number): Buffer {
+function _simple(value: Buffer): Buffer {
+  return Buffer.concat([Buffer.from("+"), value, CRLF]);
+}
+
+function _int(value: number | bigint): Buffer {
   return Buffer.concat([Buffer.from(`:${value}`), CRLF]);
 }
 
 function _array(values: Buffer[]): Buffer {
   return Buffer.concat([Buffer.from(`*${values.length}`), CRLF, ...values]);
+}
+
+function _map(entries: Array<[Buffer, Buffer]>): Buffer {
+  return Buffer.concat([
+    Buffer.from(`%${entries.length}`),
+    CRLF,
+    ...entries.flatMap(([key, value]) => [key, value]),
+  ]);
+}
+
+function _push(values: Buffer[]): Buffer {
+  return Buffer.concat([Buffer.from(`>${values.length}`), CRLF, ...values]);
+}
+
+function _null(): Buffer {
+  return Buffer.concat([Buffer.from("_"), CRLF]);
 }
 
 function _error(code: string, message: string): Buffer {
@@ -67,6 +92,25 @@ export class Reply {
   static error(code = "ERR", message = "mock error reply"): Reply {
     return new Reply(_error(code, message));
   }
+
+  /** The immediate request-id simple string that precedes a deferred push. */
+  static requestId(id: number | bigint): Reply {
+    return new Reply(_simple(Buffer.from(String(id), "ascii")));
+  }
+
+  /** An immediate request-id response followed by its photon.response push. */
+  static asyncResponse(id: number | bigint, reply = Reply.ok()): Reply {
+    return new Reply(
+      Buffer.concat([
+        _simple(Buffer.from(String(id), "ascii")),
+        _push([
+          _bulk(Buffer.from("photon.response", "ascii")),
+          _bulk(Buffer.from(String(id), "ascii")),
+          reply.toBytes(),
+        ]),
+      ]),
+    );
+  }
 }
 
 /** The decoded view of one `photon.request` the cache received. */
@@ -85,6 +129,7 @@ export interface ReceivedRequest {
 export interface MockCacheOptions {
   config?: Record<string, unknown>;
   tls?: boolean;
+  helloResponse?: Reply;
   authResponse?: Reply;
   responseStatus?: number;
   responseHeaders?: string;
@@ -92,8 +137,10 @@ export interface MockCacheOptions {
   response?: Reply;
   responseFn?: ReplyFactory;
   failure?: Failure;
-  failureCommand?: string; // which command triggers `failure` (e.g. "auth")
+  failureCommand?: string; // which command triggers `failure` (e.g. "hello")
   failureAfterReply?: boolean; // reply normally first, then apply `failure`
+  // reply for a no-arg photon.config; undefined = RESP3 null ("unchanged"). Mutable between cycles.
+  noArgConfigReply?: Record<string, unknown>;
 }
 
 // The certificate and key are checked-in fixtures used by the TLS server.
@@ -102,7 +149,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 /** A fake Photon cache server. */
 export class MockCache {
   /**
-   * Accepts any AUTH, serves a canned config, and answers each `photon.request`
+   * Accepts credentials on `HELLO 3 AUTH`, serves a canned config, and answers each
+   * `photon.request`
    * with `responseFn(request)`, a fixed `response`, or the default built from
    * `responseStatus`/`responseHeaders`/`responseBody`.
    *
@@ -110,7 +158,7 @@ export class MockCache {
    * `requests`). `failure: "hang"` never replies; `failure: "drop"` closes the
    * connection instead of replying. `failureAfterReply` sends the normal reply
    * first and then misbehaves. `failureCommand` selects the command that
-   * triggers it (default `photon.request`; use `"auth"` to break the handshake).
+   * triggers it (default `photon.request`; use `"hello"` to break the handshake).
    *
    * Plaintext by default; `tls: true` serves TLS using the checked-in fixtures.
    */
@@ -123,14 +171,24 @@ export class MockCache {
   readonly receivedCommands: Buffer[][] = [];
   readonly photonCommandLog: string[] = [];
   readonly requests: ReceivedRequest[] = [];
+  /** One entry per `photon.config`: the parsed overrides object, or `null` for the no-arg form. */
+  readonly configOverrides: (Record<string, unknown> | null)[] = [];
+  /**
+   * Reply for a no-argument `photon.config`; `undefined` means the RESP3 null ("unchanged").
+   * Mutable between refresh cycles so a test can simulate a cache-side config change.
+   */
+  noArgConfigReply?: Record<string, unknown>;
+  /** Raw no-argument config frame override for transport/protocol failure tests. */
+  noArgConfigFrame?: Buffer;
   readonly host = "127.0.0.1";
   port?: number;
   certPath?: string;
   keyPath?: string;
 
   // Contract-engine state.
-  private readonly config: Record<string, unknown>;
-  private readonly authResponse?: Reply;
+  private config: Record<string, unknown>;
+  private authResponse?: Reply;
+  private readonly helloResponse?: Reply;
   private readonly response?: Reply;
   private readonly responseFn?: ReplyFactory;
   private readonly failure?: Failure;
@@ -142,11 +200,11 @@ export class MockCache {
   private sockets = new Set<Socket>();
 
   constructor(options: MockCacheOptions = {}) {
-    this.config =
-      options.config && Object.keys(options.config).length > 0
-        ? options.config
-        : { version: "v1", refresh_interval: 60, predicates: [] };
+    // Callers usually override only `predicates`; the rest of a valid config
+    // (notably the required `refresh_interval`) is filled in here.
+    this.config = { version: "v1", refresh_interval: 60, predicates: [], ...options.config };
     this.tls = options.tls ?? false;
+    this.helloResponse = options.helloResponse;
     this.authResponse = options.authResponse;
     this.responseStatus = options.responseStatus ?? 200;
     this.responseHeaders = options.responseHeaders ?? "content-type:application/x-amz-json-1.0";
@@ -159,6 +217,7 @@ export class MockCache {
     this.failure = options.failure;
     this.failureCommand = (options.failureCommand ?? REQUEST_COMMAND).toLowerCase();
     this.failureAfterReply = options.failureAfterReply ?? false;
+    this.noArgConfigReply = options.noArgConfigReply;
   }
 
   /** Return the host and active ephemeral port. */
@@ -179,6 +238,16 @@ export class MockCache {
     return this.requests.at(-1);
   }
 
+  /** Change the config returned by subsequent connection handshakes. */
+  setConfig(config: Record<string, unknown>): void {
+    this.config = config;
+  }
+
+  /** Change the AUTH reply used by subsequent attempts. */
+  setAuthResponse(reply?: Reply): void {
+    this.authResponse = reply;
+  }
+
   /**
    * Turn one decoded RESP command into the RESP reply frame.
    * Pure: no socket, no threads.
@@ -191,13 +260,57 @@ export class MockCache {
     const name = command[0]?.toString("utf8").toLowerCase() ?? "";
     const args = command.slice(1);
 
+    if (name === "hello") {
+      this.photonCommandLog.push(name);
+      if (this.helloResponse !== undefined) return this.helloResponse.toBytes();
+      if (
+        args.length < 1 ||
+        (args[0]!.toString("ascii") !== "2" && args[0]!.toString("ascii") !== "3")
+      ) {
+        return _error("NOPROTO", "unsupported protocol version");
+      }
+      const auth = args.slice(1);
+      if (
+        auth.length !== 0 &&
+        (auth.length !== 3 || auth[0]!.toString("ascii").toUpperCase() !== "AUTH")
+      ) {
+        return _error("ERR", "syntax error");
+      }
+      const protocol = Number(args[0]!.toString("ascii"));
+      const fields: Array<[Buffer, Buffer]> = [
+        [_bulk(Buffer.from("server")), _bulk(Buffer.from("valkey"))],
+        [_bulk(Buffer.from("version")), _bulk(Buffer.from("8.0.0"))],
+        [_bulk(Buffer.from("proto")), _int(protocol)],
+        [_bulk(Buffer.from("id")), _int(1)],
+        [_bulk(Buffer.from("mode")), _bulk(Buffer.from("cluster"))],
+        [_bulk(Buffer.from("role")), _bulk(Buffer.from("primary"))],
+        [_bulk(Buffer.from("modules")), _array([])],
+      ];
+      return protocol === 3 ? _map(fields) : _array(fields.flat());
+    }
     if (name === "auth") {
       this.photonCommandLog.push(name);
-      return this.authResponse?.toBytes() ?? Buffer.concat([Buffer.from("+OK"), CRLF]);
+      if (args.length !== 2) return _error("ERR", `wrong number of arguments for AUTH`);
+      return this.authResponse?.toBytes() ?? _simple(Buffer.from("OK"));
     }
     if (name === CONFIG_COMMAND) {
       this.photonCommandLog.push(name);
-      if (args.length !== 1) return _error("CONFIG_INVALID", `expected 1 arg, got ${args.length}`);
+      if (args.length > 1) {
+        return _error("CONFIG_INVALID", `expected 0 or 1 args, got ${args.length}`);
+      }
+      if (args.length === 0) {
+        this.configOverrides.push(null);
+        if (this.noArgConfigFrame !== undefined) return this.noArgConfigFrame;
+        if (this.noArgConfigReply === undefined) return _null();
+        return _bulk(Buffer.from(JSON.stringify(this.noArgConfigReply)));
+      }
+      let overrides: unknown;
+      try {
+        overrides = JSON.parse(args[0]!.toString("utf8"));
+      } catch {
+        return _error("CONFIG_INVALID", "overrides must be a JSON object");
+      }
+      this.configOverrides.push(overrides as Record<string, unknown>);
       return _bulk(Buffer.from(JSON.stringify(this.config)));
     }
     if (name === REQUEST_COMMAND) {
@@ -314,6 +427,111 @@ export class MockCache {
         socket.write(this.handle(args));
       }
     });
+  }
+
+  /** Send a deferred response push to the active client without interleaving writes. */
+  sendPush(
+    requestId: number | bigint,
+    reply = Reply.ok(),
+    kind = Buffer.from("photon.response", "ascii"),
+    kindEncoding: "bulk" | "simple" = "bulk",
+  ): void {
+    const socket = this.onlySocket();
+    const encodedKind = kindEncoding === "simple" ? _simple(kind) : _bulk(kind);
+    socket.write(
+      _push([encodedKind, _bulk(Buffer.from(String(requestId), "ascii")), reply.toBytes()]),
+    );
+  }
+
+  private onlySocket(): Socket {
+    const socket = this.sockets.values().next().value as Socket | undefined;
+    if (socket === undefined) {
+      throw new Error("mock cache has no active client socket");
+    }
+    return socket;
+  }
+}
+
+/** Controllable TCP relay used to exercise idle disconnect and reconnect behavior. */
+export class MockTcpProxy {
+  readonly host = "127.0.0.1";
+  port?: number;
+  acceptedConnections = 0;
+
+  private server?: NetServer;
+  private forwarding = true;
+  private readonly sockets = new Set<Socket>();
+
+  constructor(
+    private readonly targetHost: string,
+    private readonly targetPort: number,
+  ) {}
+
+  async start(): Promise<void> {
+    const server = createServer((client) => this.accept(client));
+    this.server = server;
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, this.host, () => {
+        server.off("error", reject);
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("mock proxy did not bind"));
+          return;
+        }
+        this.port = address.port;
+        resolve();
+      });
+    });
+  }
+
+  disconnectClients(): void {
+    for (const socket of this.sockets) socket.destroy();
+    this.sockets.clear();
+  }
+
+  disconnectAndBlock(): void {
+    this.forwarding = false;
+    this.disconnectClients();
+  }
+
+  allowConnections(): void {
+    this.forwarding = true;
+  }
+
+  async stop(): Promise<void> {
+    this.disconnectClients();
+    const server = this.server;
+    this.server = undefined;
+    if (!server) return;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+
+  private accept(client: Socket): void {
+    this.acceptedConnections++;
+    if (!this.forwarding) {
+      client.destroy();
+      return;
+    }
+
+    const upstream = connectTcp({ host: this.targetHost, port: this.targetPort });
+    this.track(client);
+    this.track(upstream);
+    client.pipe(upstream);
+    upstream.pipe(client);
+    const closePair = () => {
+      client.destroy();
+      upstream.destroy();
+    };
+    client.once("error", closePair);
+    upstream.once("error", closePair);
+    client.once("close", closePair);
+    upstream.once("close", closePair);
+  }
+
+  private track(socket: Socket): void {
+    this.sockets.add(socket);
+    socket.once("close", () => this.sockets.delete(socket));
   }
 }
 

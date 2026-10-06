@@ -4,21 +4,29 @@ import json
 
 import pytest
 
-from photon.exceptions import PhotonError
+from photon.exceptions import (
+    PhotonError,
+    PhotonOverridesRejected,
+    PhotonProtocolError,
+    PhotonRejectedError,
+)
 from photon.models import PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig
 from photon.protocol import (
     CONFIG_COMMAND,
+    PUSH_KIND_RESPONSE,
     REQUEST_COMMAND,
     serialize_config,
     serialize_request,
     normalize_headers,
     parse_config_response,
     parse_request_response,
+    parse_response_push,
 )
-from photon.resp import RespError
+from photon.resp import RespError, RespPush
 
 
 # --- AC3: config command + parse ----------------------------------------------
+
 
 def test_serialize_config_empty():
     """Builds the photon.config command from an empty overrides dict and checks the command name and serialized arg."""
@@ -37,6 +45,14 @@ def test_serialize_config_compact_json():
     assert json.loads(args[0]) == {"b": 2, "a": 1}
 
 
+def test_serialize_config_none_sends_no_argument_form():
+    """overrides=None builds the no-argument photon.config command ('unchanged since last send'),
+    distinct from an explicit {} (which the server treats as resetting to its own defaults)."""
+    cmd, args = serialize_config(None)
+    assert cmd == CONFIG_COMMAND
+    assert args == []
+
+
 def test_parse_config_response_json_bulk_string():
     """Parses a JSON bulk-string config reply into a ResolvedConfig."""
     cfg = parse_config_response(b'{"version":"v3","refresh_interval":60,"ttl":300,"predicates":[]}')
@@ -47,18 +63,52 @@ def test_parse_config_response_json_bulk_string():
     assert cfg.raw == {"version": "v3", "refresh_interval": 60, "ttl": 300, "predicates": []}
 
 
-def test_parse_config_response_missing_fields_default_to_none():
-    """A config reply that omits the named fields yields None for them while still capturing the full document on .raw."""
-    cfg = parse_config_response(b'{"predicates":[]}')
+def test_parse_config_response_missing_version_defaults_to_none():
+    """A config reply omitting 'version' yields None for it while still capturing the full
+    document on .raw. 'refresh_interval' is required, so it must still be present."""
+    cfg = parse_config_response(b'{"refresh_interval":60,"predicates":[]}')
     assert cfg.version is None
-    assert cfg.refresh_interval is None
-    assert cfg.raw == {"predicates": []}
+    assert cfg.refresh_interval == 60
+    assert cfg.raw == {"refresh_interval": 60, "predicates": []}
+
+
+@pytest.mark.parametrize(
+    "body, expected_message",
+    [
+        (b'{"predicates":[]}', "missing required field 'refresh_interval'"),  # missing entirely
+        (
+            b'{"refresh_interval":null,"predicates":[]}',
+            "missing required field 'refresh_interval'",
+        ),  # explicit null
+        (b'{"refresh_interval":"60","predicates":[]}', "expected int, got str"),  # wrong type: str
+        (
+            b'{"refresh_interval":60.0,"predicates":[]}',
+            "expected int, got float",
+        ),  # wrong type: float
+        (
+            b'{"refresh_interval":true,"predicates":[]}',
+            "expected int, got bool",
+        ),  # wrong type: bool
+        (b'{"refresh_interval":0,"predicates":[]}', "must be positive"),  # not positive
+        (b'{"refresh_interval":-1,"predicates":[]}', "must be positive"),  # not positive
+    ],
+)
+def test_parse_config_response_rejects_invalid_refresh_interval(body, expected_message):
+    """Invalid refresh_interval must fail parsing here, not crash a background refresher later."""
+    with pytest.raises(PhotonError, match=expected_message):
+        parse_config_response(body)
 
 
 def test_parse_config_response_rejects_error_frame():
     """A RespError config reply must be rejected, not parsed."""
     with pytest.raises(PhotonError):
         parse_config_response(RespError("ERR", "nope"))
+
+
+def test_parse_config_response_config_invalid_raises_typed_error():
+    """A CONFIG_INVALID reply maps to PhotonOverridesRejected so init/refresh can hard-fail it."""
+    with pytest.raises(PhotonOverridesRejected):
+        parse_config_response(RespError("CONFIG_INVALID", "table does not exist"))
 
 
 def test_parse_config_response_rejects_array():
@@ -81,11 +131,15 @@ def test_parse_config_response_rejects_non_object_json():
 
 # --- AC4: request command shape ------------------------------------------------
 
+
 def test_serialize_request_arg_count():
     """The args are exactly the 5 request args and the command name is correct."""
     cmd, args = serialize_request(
-        PhotonRequest(method="POST", url="https://x/",
-                      metadata=RequestMetadata(service="dynamodb", operation="GetItem"))
+        PhotonRequest(
+            method="POST",
+            url="https://x/",
+            metadata=RequestMetadata(service="dynamodb", operation="GetItem"),
+        )
     )
     assert cmd == REQUEST_COMMAND == "photon.request"
     assert len(args) == 5
@@ -93,15 +147,17 @@ def test_serialize_request_arg_count():
 
 # --- AC5: request response mapping --------------------------------------------
 
+
 def test_parse_request_response_error_frame_raises():
     """A RespError request reply raises rather than being returned as a response."""
-    with pytest.raises(PhotonError):
-        parse_request_response(RespError("ERR", "boom"))
+    with pytest.raises(PhotonRejectedError) as exc_info:
+        parse_request_response(RespError("ORIGIN_ERROR", "boom"))
+    assert exc_info.value.code == "ORIGIN_ERROR"
 
 
 def test_parse_request_response_non_array_raises():
     """A non-array request reply (e.g. a bare bulk string) is malformed."""
-    with pytest.raises(PhotonError):
+    with pytest.raises(PhotonProtocolError):
         parse_request_response(b"not-an-array")
 
 
@@ -128,12 +184,17 @@ def test_serialize_request_arg_list():
 
 def test_serialize_request_passes_body_through():
     """The body bytes go on the wire exactly as stored on the request."""
-    req = PhotonRequest(method="POST", url="https://x/", body=b"hello",
-                        metadata=RequestMetadata(service="dynamodb", operation="GetItem"))
+    req = PhotonRequest(
+        method="POST",
+        url="https://x/",
+        body=b"hello",
+        metadata=RequestMetadata(service="dynamodb", operation="GetItem"),
+    )
     assert serialize_request(req)[1][3] == b"hello"
 
 
 # --- header normalization determinism -----------------------------------------
+
 
 def test_header_normalization_is_deterministic():
     """Two header dicts that differ only in case, whitespace, and excluded/auth headers normalize to the same deterministic byte string (lowercased, trimmed, sorted, LF-joined, excluded headers dropped)."""
@@ -155,10 +216,7 @@ def test_header_normalization_is_deterministic():
     b = normalize_headers(headers_b)
     assert a == b
     # Excluded headers removed; lowercased; sorted; LF-joined.
-    assert a == (
-        b"content-type:application/json\n"
-        b"x-amz-target:DynamoDB_20120810.GetItem"
-    )
+    assert a == (b"content-type:application/json\nx-amz-target:DynamoDB_20120810.GetItem")
 
 
 def test_header_normalization_all_excluded():
@@ -173,13 +231,14 @@ def test_header_normalization_handles_empty():
 
 # --- response deserialization -------------------------------------------------
 
+
 def test_parse_request_response_basic():
     """Builds a PhotonResponse from [status, headers, body], parsing the LF-delimited header blob into a dict."""
-    resp = parse_request_response([200, b"content-type:application/json", b"{\"k\":1}"])
+    resp = parse_request_response([200, b"content-type:application/json", b'{"k":1}'])
     assert isinstance(resp, PhotonResponse)
     assert resp.status_code == 200
     assert resp.headers == {"content-type": "application/json"}
-    assert resp.body == b"{\"k\":1}"
+    assert resp.body == b'{"k":1}'
 
 
 def test_parse_request_response_empty():
@@ -196,7 +255,13 @@ def test_parse_request_response_skips_malformed_header_line():
     assert resp.headers == {"content-type": "application/json"}
 
 
+def test_parse_request_response_rejects_invalid_utf8_headers():
+    with pytest.raises(PhotonProtocolError):
+        parse_request_response([200, b"\xff", b""])
+
+
 # --- status validation --------------------------------------------------------
+
 
 @pytest.mark.parametrize("bad_status", [99, 600, 0, -1, 1000])
 def test_parse_request_response_rejects_out_of_range_status(bad_status):
@@ -221,7 +286,7 @@ def test_parse_request_response_rejects_wrong_shape(elements):
 @pytest.mark.parametrize(
     "elements",
     [
-        [200, None, None],   # RESP null ($-1) decodes to None and passes the shape check
+        [200, None, None],  # RESP null ($-1) decodes to None and passes the shape check
         [200, b"", None],
         [200, None, b""],
         [200, 5, b""],
@@ -231,3 +296,38 @@ def test_parse_request_response_rejects_wrong_element_types(elements):
     """A well-shaped reply with non-bytes headers/body fails as PhotonError, not a raw crash."""
     with pytest.raises(PhotonError):
         parse_request_response(elements)
+
+
+# --- out-of-band response push ------------------------------------------------
+
+
+def test_parse_response_push_splits_id_and_reply():
+    """The id comes back as the str form the id reply used; the reply is handed over untouched
+    for parse_request_response."""
+    push = RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", [200, b"", b"body"]])
+    assert parse_response_push(push) == ("7", [200, b"", b"body"])
+
+
+def test_parse_response_push_keeps_an_error_reply():
+    """A failed request answers with a RespError inside the push, passed through as the value."""
+    error = RespError("AUTH_ERROR", "nope")
+    assert parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=[b"7", error])) == (
+        "7",
+        error,
+    )
+
+
+@pytest.mark.parametrize(
+    "items, message",
+    [
+        ([], "takes 2 items"),
+        ([b"7"], "takes 2 items"),
+        ([b"7", [200], b"extra"], "takes 2 items"),
+        ([7, [200]], "Invalid push request id"),
+    ],
+)
+def test_parse_response_push_rejects_wrong_payload(items, message):
+    """A push whose payload cannot be read is a protocol error: the stream is untrustworthy,
+    unlike a reply that merely carries an error."""
+    with pytest.raises(PhotonProtocolError, match=message):
+        parse_response_push(RespPush(kind=PUSH_KIND_RESPONSE, items=items))

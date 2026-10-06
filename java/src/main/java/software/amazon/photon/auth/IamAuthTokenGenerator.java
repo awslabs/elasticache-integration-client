@@ -1,36 +1,32 @@
 package software.amazon.photon.auth;
 
-import software.amazon.awssdk.auth.credentials.AwsCredentials;
-import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.AwsSessionCredentials;
-import software.amazon.awssdk.auth.signer.Aws4Signer;
-import software.amazon.awssdk.auth.signer.params.Aws4PresignerParams;
-import software.amazon.awssdk.http.SdkHttpFullRequest;
-import software.amazon.awssdk.http.SdkHttpMethod;
-import software.amazon.awssdk.regions.Region;
-import software.amazon.photon.exception.PhotonError;
-
-import java.net.URI;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
+import java.util.Locale;
 import java.util.Objects;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.elasticache.auth.ElastiCacheIamAuthTokenProvider;
+import software.amazon.elasticache.auth.ToolkitInputException;
+import software.amazon.photon.exception.PhotonError;
 
 /**
- * Generates IAM authentication tokens for ElastiCache Serverless caches.
+ * Photon compatibility adapter for the ElastiCache Java IAM toolkit.
  *
- * <p>The token is a SigV4-presigned URL (with scheme stripped) that the cache
- * validates as a password. This matches the token format used by ElastiCache
- * IAM authentication.
+ * <p>Input validation, normalization, credential resolution, and SigV4 signing are delegated to
+ * {@link ElastiCacheIamAuthTokenProvider}. Photon keeps this class so existing callers can continue
+ * to supply it through the established authentication API.
  *
  * <p>Example token format:
- * <pre>
+ *
+ * <pre>{@code
  * my-cache/?Action=connect&User=default&ResourceType=ServerlessCache
  * &X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=...&X-Amz-Date=...
  * &X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=...
- * </pre>
+ * }</pre>
  *
  * <p>Usage:
+ *
  * <pre>{@code
  * String token = IamAuthTokenGenerator.builder()
  *     .cacheName("my-cache")
@@ -42,135 +38,107 @@ import java.util.Objects;
  */
 public final class IamAuthTokenGenerator {
 
-    /** SigV4 presign expiry: maximum accepted by ElastiCache (15 minutes). */
+    /** SigV4 presign expiry fixed by the ElastiCache IAM toolkit contract. */
     public static final Duration TOKEN_EXPIRY = Duration.ofSeconds(900);
 
     /** Default ElastiCache IAM user for serverless caches. */
     public static final String DEFAULT_USER_ID = "default.iam-user";
 
-    private static final String SERVICE_NAME = "elasticache";
-    private static final String HTTP_SCHEME = "http://";
-
     private final String cacheName;
     private final String userId;
     private final Region region;
-    private final AwsCredentialsProvider credentialsProvider;
-    private final Duration expiresIn;
-    private final Clock clock;
+    private final ElastiCacheIamAuthTokenProvider toolkitTokenProvider;
 
     private IamAuthTokenGenerator(Builder builder) {
-        this.cacheName = Objects.requireNonNull(builder.cacheName, "cacheName is required");
-        this.userId = (builder.userId != null && !builder.userId.isEmpty()) 
-                ? builder.userId : DEFAULT_USER_ID;
+        String requestedCacheName = Objects.requireNonNull(builder.cacheName, "cacheName is required");
+        String requestedUserId =
+                builder.userId != null && !builder.userId.isEmpty() ? builder.userId : DEFAULT_USER_ID;
         this.region = Objects.requireNonNull(builder.region, "region is required");
-        this.credentialsProvider = Objects.requireNonNull(builder.credentialsProvider,
-                "credentialsProvider is required");
-        this.expiresIn = builder.expiresIn != null ? builder.expiresIn : TOKEN_EXPIRY;
-        this.clock = builder.clock != null ? builder.clock : Clock.systemUTC();
+        AwsCredentialsProvider credentialsProvider =
+                Objects.requireNonNull(builder.credentialsProvider, "credentialsProvider is required");
 
-        if (cacheName.isEmpty()) {
-            throw new IllegalArgumentException("cacheName must not be empty");
+        Duration expiresIn = builder.expiresIn != null ? builder.expiresIn : TOKEN_EXPIRY;
+        if (!TOKEN_EXPIRY.equals(expiresIn)) {
+            throw new PhotonError(
+                    "expiresIn must be exactly 900 seconds for ElastiCache IAM authentication");
         }
+        if (builder.clock != null) {
+            throw new PhotonError("clock customization is not supported by the ElastiCache IAM toolkit");
+        }
+
+        try {
+            this.toolkitTokenProvider =
+                    ElastiCacheIamAuthTokenProvider.builder()
+                            .serverlessCacheName(requestedCacheName)
+                            .userId(requestedUserId)
+                            .region(region)
+                            .credentialsProvider(credentialsProvider)
+                            .build();
+        } catch (ToolkitInputException e) {
+            throw new PhotonError(e.getMessage(), e);
+        } catch (RuntimeException e) {
+            throw new PhotonError("Failed to initialize IAM authentication", e);
+        }
+        this.cacheName = requestedCacheName.toLowerCase(Locale.ROOT);
+        this.userId = toolkitTokenProvider.getUserId();
     }
 
     /**
      * Generate a fresh IAM auth token.
      *
-     * <p>Credentials are resolved on every call so rotated credentials are
-     * picked up automatically.
+     * <p>The toolkit resolves credentials and signs a new token on every call so rotated credentials
+     * are picked up automatically. See the <a
+     * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+     * toolkit token manager documentation</a> for its validity contract.
      *
      * @return the signed token string (presigned URL with scheme stripped)
      * @throws PhotonError if credential resolution or signing fails
      */
     public String generateToken() {
-        AwsCredentials credentials;
         try {
-            credentials = credentialsProvider.resolveCredentials();
-        } catch (Exception e) {
-            throw new PhotonError("No AWS credentials available for IAM auth token generation", e);
-        }
-
-        if (credentials == null) {
-            throw new PhotonError("No AWS credentials available for IAM auth token generation");
-        }
-
-        try {
-            // Build the presign request
-            URI uri = URI.create(HTTP_SCHEME + cacheName + "/");
-            SdkHttpFullRequest request = SdkHttpFullRequest.builder()
-                    .uri(uri)
-                    .method(SdkHttpMethod.GET)
-                    .putRawQueryParameter("Action", "connect")
-                    .putRawQueryParameter("User", userId)
-                    .putRawQueryParameter("ResourceType", "ServerlessCache")
-                    .build();
-
-            Instant signingTime = clock.instant();
-
-            Aws4PresignerParams.Builder presignerParams = Aws4PresignerParams.builder()
-                    .signingRegion(region)
-                    .signingName(SERVICE_NAME)
-                    .signingClockOverride(Clock.fixed(signingTime, clock.getZone()))
-                    .expirationTime(signingTime.plus(expiresIn))
-                    .awsCredentials(credentials);
-
-            Aws4Signer signer = Aws4Signer.create();
-            SdkHttpFullRequest signedRequest = signer.presign(request, presignerParams.build());
-
-            // Convert to URL string and strip the http:// scheme
-            String url = signedRequest.getUri().toString();
-            if (url.startsWith(HTTP_SCHEME)) {
-                url = url.substring(HTTP_SCHEME.length());
-            }
-
-            return url;
-        } catch (PhotonError e) {
-            throw e;
-        } catch (Exception e) {
+            return toolkitTokenProvider.getToken();
+        } catch (ToolkitInputException e) {
+            throw new PhotonError(e.getMessage(), e);
+        } catch (RuntimeException e) {
             throw new PhotonError("Failed to generate IAM auth token", e);
         }
     }
 
-    /**
-     * Get the user ID that will be used in generated tokens.
-     */
+    /** Get the user ID that will be used in generated tokens. */
     public String getUserId() {
         return userId;
     }
 
-    /**
-     * Get the cache name.
-     */
+    /** Get the cache name. */
     public String getCacheName() {
         return cacheName;
     }
 
-    /**
-     * Get the region.
-     */
+    /** Get the region. */
     public Region getRegion() {
         return region;
     }
 
-    /**
-     * Create a new builder.
-     */
+    /** Create a new builder. */
     public static Builder builder() {
         return new Builder();
     }
 
     @Override
     public String toString() {
-        return "IamAuthTokenGenerator{" +
-                "cacheName='" + cacheName + '\'' +
-                ", userId='" + userId + '\'' +
-                ", region=" + region +
-                '}';
+        return "IamAuthTokenGenerator{"
+                + "cacheName='"
+                + cacheName
+                + '\''
+                + ", userId='"
+                + userId
+                + '\''
+                + ", region="
+                + region
+                + '}';
     }
 
-    /**
-     * Builder for {@link IamAuthTokenGenerator}.
-     */
+    /** Builder for {@link IamAuthTokenGenerator}. */
     public static final class Builder {
         private String cacheName;
         private String userId;
@@ -222,7 +190,12 @@ public final class IamAuthTokenGenerator {
         }
 
         /**
-         * Set the token expiration duration (optional, defaults to 15 minutes).
+         * Set the token expiration duration.
+         *
+         * <p>Retained for source compatibility. The ElastiCache toolkit owns the token lifetime, so
+         * unsupported values are rejected. See the <a
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
          */
@@ -232,7 +205,10 @@ public final class IamAuthTokenGenerator {
         }
 
         /**
-         * Set the clock for signing (optional, for testing).
+         * Set the clock for signing.
+         *
+         * <p>Retained for source compatibility. The toolkit owns signing time, so setting a custom
+         * clock is rejected at build time.
          *
          * @param clock the clock to use
          */
