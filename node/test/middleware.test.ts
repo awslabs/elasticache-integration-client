@@ -129,10 +129,10 @@ describe("awsToPhotonRequest", () => {
     expect(awsToPhotonRequest(request(body), "svc", "RunCommand").body).toBe(body);
   });
 
-  it("rejects streaming and unsupported request bodies", () => {
-    expect(() =>
+  it("builds no Photon request for a streaming body", () => {
+    expect(
       awsToPhotonRequest(request(Readable.from(["stream"])), "svc", "RunCommand"),
-    ).toThrow(new PhotonError("Streaming AWS request bodies are not supported"));
+    ).toBeUndefined();
   });
 
   it("rejects a non-Smithy request", () => {
@@ -257,6 +257,22 @@ describe("photon middleware", () => {
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(sessionError);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("passes a streaming request body through to the origin without calling Photon", async () => {
+    const streamingRequest = request(Readable.from(["payload"]));
+    const session = fakeSession();
+    const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
+      expect(args.request).toBe(streamingRequest);
+      return { response: new HttpResponse({ statusCode: 200 }) };
+    });
+    const handler = photonMiddleware("s3", session)(next, { commandName: "PutObjectCommand" });
+
+    await expect(handler({ input: {}, request: streamingRequest })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(session.request).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it("does not pass Photon request validation failures through to the origin", async () => {
