@@ -7,6 +7,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
@@ -126,6 +127,58 @@ class SocketReaderTest {
 
         PhotonConnectionLost e = assertThrows(PhotonConnectionLost.class, reader::readFrame);
         assertTrue(e.getMessage().contains("read failed"));
+    }
+
+    @Test
+    void readFrame_largeBulkFrameAcrossManyReads_keepsTrailingFrame() {
+        byte[] body = new byte[100_000];
+        Arrays.fill(body, (byte) 'a');
+        body[body.length - 1] = 'b';
+        ByteArrayOutputStream frame = new ByteArrayOutputStream();
+        byte[] header = ("$" + body.length + "\r\n").getBytes(StandardCharsets.UTF_8);
+        frame.write(header, 0, header.length);
+        frame.write(body, 0, body.length);
+        byte[] tail = "\r\n+next\r\n".getBytes(StandardCharsets.UTF_8);
+        frame.write(tail, 0, tail.length);
+        SocketReader reader =
+                new SocketReader(
+                        new ByteArrayInputStream(frame.toByteArray()), new PendingRequests(), () -> {});
+
+        assertArrayEquals(body, ((RespBulkString) reader.readFrame()).getValue());
+        assertEquals(
+                "next",
+                new String(((RespSimpleString) reader.readFrame()).getValue(), StandardCharsets.UTF_8));
+    }
+
+    @Test
+    void readFrame_maxSizeAppliesPerFrameNotToPipelinedReplies() {
+        // Twenty 13-byte frames arrive in one read; each is under the cap, their total is not.
+        StringBuilder replies = new StringBuilder();
+        for (int i = 0; i < 20; i++) {
+            replies.append("+0123456789\r\n");
+        }
+        SocketReader reader =
+                new SocketReader(
+                        new ByteArrayInputStream(replies.toString().getBytes(StandardCharsets.UTF_8)),
+                        new PendingRequests(),
+                        () -> {},
+                        13);
+
+        for (int i = 0; i < 20; i++) {
+            assertEquals(
+                    "0123456789",
+                    new String(((RespSimpleString) reader.readFrame()).getValue(), StandardCharsets.UTF_8));
+        }
+    }
+
+    @Test
+    void readFrame_frameOneByteOverMaxSize_throwsProtocolError() {
+        byte[] data = "+0123456789\r\n".getBytes(StandardCharsets.UTF_8);
+        SocketReader reader =
+                new SocketReader(new ByteArrayInputStream(data), new PendingRequests(), () -> {}, 12);
+
+        PhotonProtocolError e = assertThrows(PhotonProtocolError.class, reader::readFrame);
+        assertTrue(e.getMessage().contains("exceeded maximum size"));
     }
 
     @Test

@@ -416,4 +416,28 @@ class RespCodecTest {
         RespArray array = (RespArray) result.getValue();
         assertArrayEquals(binaryData, ((RespBulkString) array.getElements().get(1)).getValue());
     }
+
+    // === Bounded decode (reader buffer with unwritten capacity) ===
+
+    @Test
+    void decode_withEnd_ignoresBytesPastEnd() throws IncompleteFrame {
+        byte[] data = "$5\r\nhello\r\n+OK\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 0, 9));
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 11, 14));
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 11, 11));
+
+        DecodeResult bulk = RespCodec.decode(data, 0, 11);
+        assertArrayEquals(
+                "hello".getBytes(StandardCharsets.UTF_8), ((RespBulkString) bulk.getValue()).getValue());
+        assertEquals(11, bulk.getPosition());
+        DecodeResult ok = RespCodec.decode(data, 11, data.length);
+        assertArrayEquals(
+                "OK".getBytes(StandardCharsets.UTF_8), ((RespSimpleString) ok.getValue()).getValue());
+    }
+
+    @Test
+    void decode_withEnd_boundsNestedElements() {
+        byte[] data = "*2\r\n:1\r\n:2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 0, data.length - 1));
+    }
 }
