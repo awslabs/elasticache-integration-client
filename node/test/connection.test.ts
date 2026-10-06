@@ -114,6 +114,37 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("three");
   });
 
+  it("reassembles a large bulk frame delivered in many small reads", async () => {
+    const body = Buffer.alloc(100_000, "a");
+    body[body.length - 1] = 0x62;
+    const frame = Buffer.concat([
+      Buffer.from(`$${body.length}\r\n`),
+      body,
+      Buffer.from("\r\n+next\r\n"),
+    ]);
+    const reader = new SocketReader(sourceFrom([frame]), 1024);
+
+    await expect(reader.readFrame()).resolves.toEqual(body);
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
+
+  it("leaves an earlier bulk reply unchanged while later frames are read", async () => {
+    const chunks = ["$5\r\nfirst\r\n", "$6\r\nsecond\r\n", "$5\r\nthird\r\n"].map((frame) =>
+      Buffer.from(frame),
+    );
+    const reader = new SocketReader(sourceFrom(chunks), 4);
+
+    const first = await reader.readFrame();
+    const second = await reader.readFrame();
+    const third = await reader.readFrame();
+
+    expect([first, second, third]).toEqual([
+      Buffer.from("first"),
+      Buffer.from("second"),
+      Buffer.from("third"),
+    ]);
+  });
+
   it("decodes a RESP3 null frame", async () => {
     const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
 

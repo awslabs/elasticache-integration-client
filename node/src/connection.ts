@@ -47,7 +47,12 @@ export class SocketReader {
   private readonly iterator: AsyncIterator<Buffer>;
   private readonly readSize: number;
   private readonly maxResponseSize: number;
-  private buffer = Buffer.alloc(0);
+  // Unconsumed bytes are storage[start, end). Decoded bulk strings are views
+  // into storage, so bytes before `end` are never overwritten: appends write
+  // past `end`, and growth copies the unconsumed bytes into a new buffer.
+  private storage = Buffer.alloc(0);
+  private start = 0;
+  private end = 0;
   private pendingChunk: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
   constructor(
@@ -64,22 +69,41 @@ export class SocketReader {
   async readFrame(): Promise<RespValue> {
     while (true) {
       try {
-        const [value, consumed] = decodeResp(this.buffer);
+        const [value, consumed] = decodeResp(this.storage.subarray(this.start, this.end));
         if (consumed > this.maxResponseSize) {
           throw new PhotonProtocolError(
             `maximum response size of ${this.maxResponseSize} bytes exceeded`,
           );
         }
-        this.buffer = this.buffer.subarray(consumed);
+        this.start += consumed;
+        if (this.start === this.end && this.storage.length > this.readSize) {
+          // Drop storage grown for a large reply instead of holding it while idle.
+          this.storage = Buffer.alloc(0);
+          this.start = 0;
+          this.end = 0;
+        }
         return value;
       } catch (error) {
         if (!(error instanceof IncompleteFrame)) throw error;
         this.ensureWithinLimit();
       }
 
-      const chunk = await this.readChunk();
-      this.buffer = Buffer.concat([this.buffer, chunk]);
+      this.append(await this.readChunk());
     }
+  }
+
+  /** Append in amortized O(1): copying the whole buffer per chunk makes a frame O(n²). */
+  private append(chunk: Buffer): void {
+    if (this.end + chunk.length > this.storage.length) {
+      const unconsumed = this.end - this.start;
+      const grown = Buffer.alloc(Math.max(2 * (unconsumed + chunk.length), this.readSize));
+      this.storage.copy(grown, 0, this.start, this.end);
+      this.storage = grown;
+      this.start = 0;
+      this.end = unconsumed;
+    }
+    chunk.copy(this.storage, this.end);
+    this.end += chunk.length;
   }
 
   private async readChunk(): Promise<Buffer> {
@@ -111,7 +135,7 @@ export class SocketReader {
   }
 
   private ensureWithinLimit(): void {
-    if (this.buffer.length > this.maxResponseSize) {
+    if (this.end - this.start > this.maxResponseSize) {
       throw new PhotonProtocolError(
         `maximum response size of ${this.maxResponseSize} bytes exceeded`,
       );
