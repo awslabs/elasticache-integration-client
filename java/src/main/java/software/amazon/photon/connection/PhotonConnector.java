@@ -41,6 +41,7 @@ import software.amazon.photon.resp.RespCodec;
 import software.amazon.photon.resp.RespError;
 import software.amazon.photon.resp.RespInteger;
 import software.amazon.photon.resp.RespMap;
+import software.amazon.photon.resp.RespSimpleString;
 import software.amazon.photon.resp.RespValue;
 
 /**
@@ -381,6 +382,49 @@ public class PhotonConnector implements Closeable {
             throw new PhotonConnectionError(
                     "HELLO 3 failed: reply did not report proto " + RESP3_PROTOCOL_VERSION);
         }
+    }
+
+    /**
+     * Re-authenticate an already-ready connection with a fresh token.
+     *
+     * <p>An explicit RESP error rejects the new token but leaves the connection open so the proxy can
+     * continue serving with the last valid authentication state. A timeout or any unexpected
+     * non-error reply invalidates the FIFO stream and closes the connection.
+     *
+     * @param userId the user ID for AUTH
+     * @param authToken the fresh AUTH token/password
+     * @throws PhotonAuthenticationError if AUTH is rejected or returns an unexpected reply
+     * @throws PhotonConnectionError if AUTH times out
+     */
+    public void reauthenticate(String userId, String authToken) {
+        ensureReady();
+        byte[] encoded =
+                RespCodec.encodeCommand(
+                        "AUTH",
+                        userId.getBytes(StandardCharsets.UTF_8),
+                        authToken.getBytes(StandardCharsets.UTF_8));
+        RespValue reply;
+        try {
+            reply =
+                    sendAndAwait(encoded, new PhotonRequestCancellation(), false, initializationTimeoutMs);
+        } catch (PhotonTimeoutError e) {
+            markDead();
+            throw new PhotonConnectionError("IAM AUTH timed out - connection closed", e);
+        }
+        verifyReauthenticationReply(reply);
+    }
+
+    private void verifyReauthenticationReply(RespValue reply) {
+        if (reply instanceof RespError) {
+            throw new PhotonAuthenticationError("IAM AUTH rejected: " + ((RespError) reply).getCode());
+        }
+        if (reply instanceof RespSimpleString
+                && "OK".equals(new String(((RespSimpleString) reply).getValue(), StandardCharsets.UTF_8))) {
+            return;
+        }
+        markDead();
+        throw new PhotonAuthenticationError(
+                "IAM AUTH failed: unexpected reply of type " + reply.getClass().getSimpleName());
     }
 
     /**

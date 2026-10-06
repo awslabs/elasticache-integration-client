@@ -6,6 +6,7 @@ import {
 } from "node:tls";
 
 import {
+  PhotonAuthError,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
@@ -26,7 +27,7 @@ import {
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
 const DEFAULT_REQUEST_TIMEOUT = 5_000;
-const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO and photon.config.
+const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO, AUTH and photon.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
@@ -226,7 +227,7 @@ export interface PhotonConnectorOptions {
   connectTimeout?: number;
   /** Per-request response timeout in milliseconds. Defaults to 5000. */
   requestTimeout?: number;
-  /** Timeout for HELLO and photon.config initialization commands in milliseconds. */
+  /** Timeout for HELLO, AUTH, and photon.config commands in milliseconds. */
   configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
@@ -402,14 +403,7 @@ export class PhotonConnector {
       throw new PhotonConnectionError("PhotonConnector requires an auth provider to handshake");
     }
 
-    let credentials: [string, string];
-    try {
-      credentials = await (typeof this.authProvider === "function"
-        ? this.authProvider()
-        : this.authProvider.getAuth());
-    } catch (error) {
-      throw new PhotonError("AUTH provider failed", { cause: error });
-    }
+    const credentials = await this.authCredentials();
 
     try {
       const reply = await this.execute(
@@ -434,6 +428,40 @@ export class PhotonConnector {
           await this.authProvider.refreshAuth?.();
         } catch {
           // Preserve the cache's HELLO rejection; the next attempt retries token refresh.
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Re-authenticate the ready connection with fresh credentials.
+   *
+   * An explicit rejection leaves the connection open so the proxy can keep
+   * serving with its last valid authentication state. A timeout or unexpected
+   * reply closes the connection for FIFO safety.
+   */
+  async reauthenticate(): Promise<void> {
+    if (this.authProvider === undefined) return;
+
+    const credentials = await this.authCredentials();
+    try {
+      const reply = await this.execute(
+        "AUTH",
+        Buffer.from(credentials[0], "utf8"),
+        Buffer.from(credentials[1], "utf8"),
+      );
+      this.verifyReauthenticationReply(reply);
+    } catch (error) {
+      if (error instanceof PhotonTimeoutError) {
+        await this.close();
+        throw new PhotonConnectionError("IAM AUTH timed out", { cause: error });
+      }
+      if (error instanceof PhotonAuthError && !this.isDead) {
+        try {
+          await this.authProvider.refreshAuth?.();
+        } catch {
+          // Preserve the cache's rejection; the next backoff attempt retries credential refresh.
         }
       }
       throw error;
@@ -580,12 +608,12 @@ export class PhotonConnector {
   /**
    * Select the response timeout for a command.
    *
-   * HELLO and photon.config run during connection initialization and use the
-   * larger config timeout. Send/drain waits remain bounded by requestTimeout.
+   * HELLO, background AUTH, and photon.config use the larger config timeout.
+   * Send/drain waits remain bounded by requestTimeout.
    */
   private timeoutFor(command: string): number {
     // Bring-up commands get a larger response budget; send-side waits stay on requestTimeout.
-    return command === "HELLO" || command === "photon.config"
+    return command === "HELLO" || command === "AUTH" || command === "photon.config"
       ? this.configTimeout
       : this.requestTimeout;
   }
@@ -868,6 +896,32 @@ export class PhotonConnector {
       throw new PhotonConnectionError(
         `HELLO 3 failed: reply did not report proto ${RESP3_PROTOCOL}`,
       );
+    }
+  }
+
+  private verifyReauthenticationReply(reply: RespValue): void {
+    if (reply instanceof RespError) {
+      throw new PhotonAuthError(`IAM AUTH rejected: ${reply.code}`);
+    }
+    if (reply === "OK") return;
+
+    this.markDead(new PhotonConnectionLost("unexpected AUTH reply"));
+    let replyType: string;
+    if (reply === null) replyType = "null";
+    else if (Buffer.isBuffer(reply)) replyType = "Buffer";
+    else if (Array.isArray(reply)) replyType = "Array";
+    else if (typeof reply === "object") replyType = reply.constructor.name;
+    else replyType = typeof reply;
+    throw new PhotonAuthError(`IAM AUTH failed: unexpected reply of type ${replyType}`);
+  }
+
+  private async authCredentials(): Promise<[string, string]> {
+    try {
+      return await (typeof this.authProvider === "function"
+        ? this.authProvider()
+        : this.authProvider!.getAuth());
+    } catch (error) {
+      throw new PhotonError("AUTH provider failed", { cause: error });
     }
   }
 

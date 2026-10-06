@@ -48,11 +48,12 @@ import software.amazon.photon.resp.RespValue;
  * catalog.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Photon. Requests with no matching
- * predicate are declined for origin pass-through. The refresher started by {@link #open()} fetches
- * and applies resolved config updates while a connector is open. A refresh that fails keeps the
- * last-known-good config; failures that kill the connector use the normal reconnect path. Once the
- * staleness window passes with no config confirmed by the server, the config is no longer trusted:
- * the connector is dropped so a new one re-resolves it, and requests fall back meanwhile.
+ * predicate are declined for origin pass-through. The background runners started by {@link #open()}
+ * refresh authentication and fetch resolved config updates while a connector is open. A config
+ * refresh failure keeps the last-known-good config; failures that kill the connector use the normal
+ * reconnect path. Once the staleness window passes with no config confirmed by the server, the
+ * config is no longer trusted: the connector is dropped so a new one re-resolves it, and requests
+ * fall back meanwhile.
  */
 public class PhotonSession implements Closeable {
 
@@ -94,7 +95,8 @@ public class PhotonSession implements Closeable {
     private volatile PhotonConnector connector;
     private volatile PhotonConnector candidate;
     private volatile ConnectionSnapshot snapshot;
-    private volatile ConfigRefresher refresher;
+    private volatile Refresher configRefresher;
+    private volatile Refresher reauthRefresher;
     private volatile long fallbackDeadlineNanos;
     private boolean opening;
     private boolean reconnectRunning;
@@ -219,25 +221,30 @@ public class PhotonSession implements Closeable {
         }
     }
 
-    /** For testing: the refresher started by {@link #open()}, or null before it starts. */
-    ConfigRefresher refresher() {
-        return refresher;
+    /** For testing: the config refresher started by {@link #open()}, or null before it starts. */
+    Refresher configRefresher() {
+        return configRefresher;
+    }
+
+    /** For testing: the AUTH refresher started by {@link #open()}, or null before it starts. */
+    Refresher reauthRefresher() {
+        return reauthRefresher;
     }
 
     /**
      * Open the session: connect, negotiate RESP3 and authenticate, perform the config exchange,
-     * compile the resolved predicates, then start the config refresher.
+     * compile the resolved predicates, then start config and authentication refresh.
      *
      * <p>Connect/handshake/config failures are retried with a new connector and fresh credentials.
      * Once a connector is live, refresher construction and startup are local session setup rather
      * than connectivity, so a failure there closes the connector and fails immediately instead of
-     * repeating a successful handshake. The session becomes {@code OPEN} only once the refresher has
-     * started.
+     * repeating a successful handshake. The session becomes {@code OPEN} only once both refreshers
+     * have started.
      *
      * <p>Lifecycle transitions are synchronized against {@link #close()}, but blocking connection and
      * credential work runs outside the state lock. A concurrent close can therefore tear down an
      * in-flight open; the opener checks that it still owns the lifecycle before publishing the config
-     * or starting the refresher.
+     * or starting the refreshers.
      */
     public void open() {
         synchronized (stateLock) {
@@ -304,10 +311,21 @@ public class PhotonSession implements Closeable {
                         : new PhotonConnectionError("Photon initial connection failed");
             }
 
-            ConfigRefresher nextRefresher = null;
+            Refresher nextConfigRefresher = null;
+            Refresher nextReauthRefresher = null;
             try {
-                nextRefresher =
-                        createRefresher(establishedSnapshot.config.getRefreshInterval(), this::refreshOnce);
+                nextConfigRefresher =
+                        createRefresher(
+                                establishedSnapshot.config.getRefreshInterval(),
+                                this::refreshOnce,
+                                "photon-refresher",
+                                null);
+                nextReauthRefresher =
+                        createRefresher(
+                                reconnectPolicy.getAuthRefreshIntervalMs() / 1000.0,
+                                this::reauthenticateOnce,
+                                "photon-reauth",
+                                failures -> reconnectPolicy.delayFor(failures) / 1000.0);
                 synchronized (stateLock) {
                     if (state != State.CREATED || !established.isReady()) {
                         throw new PhotonConnectionError(
@@ -315,10 +333,12 @@ public class PhotonSession implements Closeable {
                                         ? "Photon connection closed while opening"
                                         : "Session closed while opening");
                     }
-                    nextRefresher.start();
+                    nextConfigRefresher.start();
+                    nextReauthRefresher.start();
                     candidate = null;
                     publish(established, establishedSnapshot);
-                    refresher = nextRefresher;
+                    configRefresher = nextConfigRefresher;
+                    reauthRefresher = nextReauthRefresher;
                     state = State.OPEN;
                 }
             } catch (RuntimeException failure) {
@@ -327,8 +347,11 @@ public class PhotonSession implements Closeable {
                         candidate = null;
                     }
                 }
-                if (nextRefresher != null) {
-                    nextRefresher.stop();
+                if (nextReauthRefresher != null) {
+                    nextReauthRefresher.stop();
+                }
+                if (nextConfigRefresher != null) {
+                    nextConfigRefresher.stop();
                 }
                 established.close();
                 synchronized (stateLock) {
@@ -345,11 +368,16 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Construct the refresher for this session. Package-private for testing: tests override this to
-     * observe refresher lifecycle without a public constructor or getter.
+     * Construct a refresher for this session. Package-private for testing: tests override this to
+     * observe background lifecycle without a public constructor or getter.
      */
-    ConfigRefresher createRefresher(double intervalSeconds, Runnable refreshOnce) {
-        return new ConfigRefresher(intervalSeconds, refreshOnce);
+    Refresher createRefresher(
+            double intervalSeconds,
+            Runnable refreshOnce,
+            String name,
+            Refresher.FailureDelay failureDelay) {
+        return new Refresher(
+                intervalSeconds, refreshOnce, name, reconnectPolicy.getJitterFactor(), failureDelay);
     }
 
     /**
@@ -370,14 +398,14 @@ public class PhotonSession implements Closeable {
      */
     void refreshOnce() {
         PhotonConnector active;
-        ConfigRefresher activeRefresher;
+        Refresher activeRefresher;
         Map<String, Object> payload;
         synchronized (stateLock) {
             if (state != State.OPEN || connector == null) {
                 return;
             }
             active = connector;
-            activeRefresher = refresher;
+            activeRefresher = configRefresher;
             payload = overridesSent ? null : overrides;
         }
 
@@ -392,7 +420,7 @@ public class PhotonSession implements Closeable {
 
         if (reply instanceof RespNull) {
             synchronized (stateLock) {
-                if (state == State.OPEN && connector == active && refresher == activeRefresher) {
+                if (state == State.OPEN && connector == active && configRefresher == activeRefresher) {
                     configConfirmed();
                 }
             }
@@ -410,7 +438,7 @@ public class PhotonSession implements Closeable {
         }
 
         synchronized (stateLock) {
-            if (state != State.OPEN || connector != active || refresher != activeRefresher) {
+            if (state != State.OPEN || connector != active || configRefresher != activeRefresher) {
                 // The session closed or reconnected while this refresh was in flight.
                 return;
             }
@@ -439,15 +467,14 @@ public class PhotonSession implements Closeable {
      *
      * <p>Does nothing if the connector was replaced while the refresh was in flight.
      */
-    private void refreshFailed(
-            PhotonConnector active, ConfigRefresher activeRefresher, PhotonError e) {
+    private void refreshFailed(PhotonConnector active, Refresher activeRefresher, PhotonError e) {
         if (active.isDead()) {
             beginReconnect(active);
             return;
         }
         boolean stale;
         synchronized (stateLock) {
-            if (state != State.OPEN || connector != active || refresher != activeRefresher) {
+            if (state != State.OPEN || connector != active || configRefresher != activeRefresher) {
                 return;
             }
             stale = isConfigStale();
@@ -482,6 +509,47 @@ public class PhotonSession implements Closeable {
         return e instanceof PhotonOverridesRejected
                 ? "the proxy rejected the overrides (CONFIG_INVALID)"
                 : "the config has a predicate this client cannot evaluate";
+    }
+
+    /**
+     * Obtain fresh credentials and run plain AUTH on the live connector.
+     *
+     * <p>The connection has already negotiated RESP and started its reader, so this uses the normal
+     * FIFO-correlated command path. Failures escape to the refresher, which retries with reconnect
+     * backoff. A reconnect in progress has no live connector and is skipped.
+     */
+    void reauthenticateOnce() {
+        PhotonConnector active;
+        synchronized (stateLock) {
+            if (state != State.OPEN || connector == null) {
+                return;
+            }
+            active = connector;
+        }
+
+        AuthCredentials credentials;
+        try {
+            credentials = authProvider.get();
+        } catch (RuntimeException failure) {
+            throw new PhotonConnectionError("Auth provider failed", failure);
+        }
+        if (credentials == null) {
+            throw new PhotonConnectionError("Auth provider returned null credentials");
+        }
+
+        synchronized (stateLock) {
+            if (state != State.OPEN || connector != active) {
+                return;
+            }
+        }
+        try {
+            active.reauthenticate(credentials.getUserId(), credentials.getToken());
+        } catch (PhotonAuthenticationError authFailure) {
+            if (!active.isDead()) {
+                forceRefreshAfterRejection(authFailure);
+            }
+            throw authFailure;
+        }
     }
 
     /**
@@ -532,22 +600,23 @@ public class PhotonSession implements Closeable {
     }
 
     /**
-     * Stop the refresher, then close the connector. Idempotent.
+     * Stop both refreshers, then close the connector. Idempotent.
      *
-     * <p>The refresher is stopped strictly before the connector closes, so a refresh can never fire
-     * into a half-closed connection during an orderly shutdown. The state transition is synchronized
-     * against {@link #open()}, so an in-flight opener cannot publish or start a refresher after
-     * shutdown wins the lifecycle.
+     * <p>The refreshers are stopped strictly before the connector closes, so background work can
+     * never fire into a half-closed connection during an orderly shutdown. The state transition is
+     * synchronized against {@link #open()}, so an in-flight opener cannot publish or start a
+     * refresher after shutdown wins the lifecycle.
      *
-     * <p>Marking the session closed and capturing the refresher happen under the lock; joining the
-     * refresher thread and closing the connector happen after the lock is released. Holding the lock
-     * across the join would risk a stall if refresh publication ever needed it too.
+     * <p>Marking the session closed and capturing the refreshers happen under the lock; joining their
+     * threads and closing the connector happen after the lock is released. Holding the lock across
+     * the join would risk a stall if refresh publication ever needed it too.
      */
     @Override
     public void close() {
         PhotonConnector active;
         PhotonConnector openingConnector;
-        ConfigRefresher activeRefresher;
+        Refresher activeConfigRefresher;
+        Refresher activeReauthRefresher;
         synchronized (stateLock) {
             if (state == State.CLOSED) {
                 return;
@@ -557,12 +626,17 @@ public class PhotonSession implements Closeable {
             openingConnector = candidate;
             connector = null;
             candidate = null;
-            activeRefresher = refresher;
-            refresher = null;
+            activeConfigRefresher = configRefresher;
+            activeReauthRefresher = reauthRefresher;
+            configRefresher = null;
+            reauthRefresher = null;
             stateLock.notifyAll();
         }
-        if (activeRefresher != null) {
-            activeRefresher.stop();
+        if (activeReauthRefresher != null) {
+            activeReauthRefresher.stop();
+        }
+        if (activeConfigRefresher != null) {
+            activeConfigRefresher.stop();
         }
         if (openingConnector != null && openingConnector != active) {
             openingConnector.close();
@@ -743,7 +817,7 @@ public class PhotonSession implements Closeable {
     }
 
     private void publish(PhotonConnector next, ConnectionSnapshot snapshot) {
-        ConfigRefresher activeRefresher = refresher;
+        Refresher activeRefresher = configRefresher;
         if (activeRefresher != null) {
             activeRefresher.setInterval(snapshot.config.getRefreshInterval());
         }

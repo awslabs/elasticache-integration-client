@@ -92,8 +92,11 @@ require the corresponding tests, README, and build checks to change with it.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, confine tokens to the HELLO AUTH trailer, and keep
-  verified TLS with hostname checking as the default.
+  credentials for each fresh 15-minute token, periodically re-AUTH live
+  connections, keep the last valid state after an explicit rejection, invalidate
+  the stream after a timeout or malformed reply, confine tokens to the initial
+  HELLO AUTH trailer and subsequent AUTH commands, and keep verified TLS with
+  hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
   an initialization error with cleanup failures. Safe path: return only after
   auth, session opening, and interceptor installation succeed, and clean up
@@ -137,7 +140,7 @@ mistake this contract for a review finding; intentional scope changes require
 README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
-Periodic config refresh is in scope: each `ConfigRefresher` tick sends
+Periodic config refresh is in scope: each config `Refresher` tick sends
 `photon.config`, using the zero-argument form once the session's overrides
 have been acknowledged by the server (an unacknowledged override map, including
 an explicit empty map, is resent), and applies the result. A RESP3 null reply
@@ -152,8 +155,8 @@ config, predicates, and interval as last-known-good. Every config reply, null
 reply, open, and reconnect restarts the staleness window. A refresh that fails
 after `stalenessDurationSeconds` (default 3600) have passed without
 confirmation drops the connector into the normal reconnect and origin-fallback
-path. `PhotonOverridesRejected` (`CONFIG_INVALID`) and `PhotonConfigUnevaluable` 
-(a predicate that cannot be compiled, which rejects the whole config) are logged 
+path. `PhotonOverridesRejected` (`CONFIG_INVALID`) and `PhotonConfigUnevaluable`
+(a predicate that cannot be compiled, which rejects the whole config) are logged
 at `SEVERE` on every occurrence.
 
 ## Security and test boundaries
@@ -173,7 +176,12 @@ at `SEVERE` on every occurrence.
 ## Generated and build files
 
 - Do not commit generated `build/`, `.gradle/` contents, or IDE project files.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- Release publishing is configured by `release.gradle.kts` and enabled only
+  with `-PreleasePublishing`, so normal Java 8 builds do not load the
+  JDK-11+ publishing plugin. The tag-triggered workflow builds and smoke-tests
+  artifacts before publish-step-scoped credentials sign and publish them from
+  the protected `release` environment. Publication, propagation verification,
+  and GitHub release creation are separate jobs. Manual workflow dispatches
+  perform the full validation as a non-publishing dry run.
 
 Keep changes small and reviewable.

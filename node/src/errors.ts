@@ -38,6 +38,9 @@ export class PhotonConnectionLost extends PhotonError {}
 /** A request exceeded its per-request timeout (named to avoid shadowing the builtin). */
 export class PhotonTimeoutError extends PhotonError {}
 
+/** A background re-authentication was rejected or returned an invalid reply. */
+export class PhotonAuthError extends PhotonError {}
+
 /**
  * Photon has no cache connection and the configured origin-fallback window expired.
  *

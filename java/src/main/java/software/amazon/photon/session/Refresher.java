@@ -7,29 +7,25 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * Generic periodic-callback runner used to drive config refresh.
+ * Generic periodic-callback runner used to drive background refresh tasks.
  *
  * <p>Knows nothing about Photon, sessions, or config: it runs a no-arg callback on a jittered
- * interval, in a daemon thread, until told to stop.
+ * interval, in a named daemon thread, until told to stop. Callback failures use an optional retry
+ * delay and never terminate the loop.
  *
  * <p>The loop blocks on a {@link CountDownLatch} rather than sleeping, so {@link #stop()}
- * interrupts an in-progress wait immediately instead of waiting it out. Each cycle recalculates its
- * own &plusmn;20% jitter; jitter is disabled via the constructor flag.
+ * interrupts an in-progress wait immediately instead of waiting it out. Each steady-state cycle
+ * recalculates its configured symmetric jitter.
  *
- * <p>{@code jitter}, {@code random}, and {@code waiter} are injectable so tests can disable
+ * <p>{@code jitterFactor}, {@code random}, and {@code waiter} are injectable so tests can disable
  * randomness, seed it, and substitute a fake clock. Production code uses the defaults (real jitter,
  * real waiting).
  *
  * <p>Package-private: this is internal machinery and is not part of the public API.
  */
-class ConfigRefresher {
+class Refresher {
 
-    private static final Logger LOGGER = Logger.getLogger(ConfigRefresher.class.getName());
-
-    /** Jitter bounds: the delay is the interval scaled between {@code 0.8x} and {@code 1.2x}. */
-    private static final double JITTER_MIN = 0.8;
-
-    private static final double JITTER_MAX = 1.2;
+    private static final Logger LOGGER = Logger.getLogger(Refresher.class.getName());
 
     /** Default bound on how long {@link #stop()} waits for the thread to exit. */
     private static final long DEFAULT_STOP_TIMEOUT_MILLIS = 5000;
@@ -42,14 +38,41 @@ class ConfigRefresher {
         boolean await(CountDownLatch stop, double timeoutSeconds) throws InterruptedException;
     }
 
+    interface FailureDelay {
+        double delaySeconds(long consecutiveFailures);
+    }
+
     private volatile double intervalSeconds;
     private final Runnable refreshOnce;
-    private final boolean jitter;
+    private final String name;
+    private final double jitterFactor;
+    private final FailureDelay failureDelay;
     private final Random random;
     private final Waiter waiter;
 
     private final CountDownLatch stop = new CountDownLatch(1);
     private volatile Thread thread;
+
+    Refresher(double intervalSeconds, Runnable refreshOnce) {
+        this(
+                intervalSeconds,
+                refreshOnce,
+                "photon-refresher",
+                ReconnectPolicy.DEFAULT_JITTER_FACTOR,
+                null);
+    }
+
+    Refresher(
+            double intervalSeconds, Runnable refreshOnce, boolean jitter, Random random, Waiter waiter) {
+        this(
+                intervalSeconds,
+                refreshOnce,
+                "photon-refresher",
+                jitter ? ReconnectPolicy.DEFAULT_JITTER_FACTOR : 0,
+                null,
+                random,
+                waiter);
+    }
 
     /**
      * Create a refresher that runs {@code refreshOnce} every {@code intervalSeconds} (± jitter).
@@ -57,23 +80,36 @@ class ConfigRefresher {
      * @param intervalSeconds the base interval between callbacks, in seconds
      * @param refreshOnce the callback to run on each cycle
      */
-    ConfigRefresher(double intervalSeconds, Runnable refreshOnce) {
-        this(intervalSeconds, refreshOnce, true, new Random(), null);
+    Refresher(
+            double intervalSeconds,
+            Runnable refreshOnce,
+            String name,
+            double jitterFactor,
+            FailureDelay failureDelay) {
+        this(intervalSeconds, refreshOnce, name, jitterFactor, failureDelay, new Random(), null);
     }
 
     /** Test constructor. {@code waiter} may be null to use the real blocking wait. */
-    ConfigRefresher(
-            double intervalSeconds, Runnable refreshOnce, boolean jitter, Random random, Waiter waiter) {
+    Refresher(
+            double intervalSeconds,
+            Runnable refreshOnce,
+            String name,
+            double jitterFactor,
+            FailureDelay failureDelay,
+            Random random,
+            Waiter waiter) {
         this.intervalSeconds = intervalSeconds;
         this.refreshOnce = refreshOnce;
-        this.jitter = jitter;
+        this.name = name;
+        this.jitterFactor = jitterFactor;
+        this.failureDelay = failureDelay;
         this.random = random;
-        this.waiter = waiter != null ? waiter : ConfigRefresher::realAwait;
+        this.waiter = waiter != null ? waiter : Refresher::realAwait;
     }
 
     /** Start the refresh loop on a new daemon thread. */
     void start() {
-        Thread refreshThread = new Thread(this::refreshLoop, "photon-refresher");
+        Thread refreshThread = new Thread(this::refreshLoop, name);
         refreshThread.setDaemon(true);
         this.thread = refreshThread;
         refreshThread.start();
@@ -129,14 +165,32 @@ class ConfigRefresher {
     }
 
     private void refreshLoop() {
+        double delaySeconds = nextRefreshDelaySeconds();
+        long consecutiveFailures = 0;
         try {
-            while (!waiter.await(stop, nextRefreshDelaySeconds())) {
+            while (!waiter.await(stop, delaySeconds)) {
                 try {
                     refreshOnce.run();
+                    consecutiveFailures = 0;
+                    delaySeconds = nextRefreshDelaySeconds();
                 } catch (RuntimeException e) {
-                    // One failed callback must not silently terminate the daemon and disable
-                    // every future refresh.
-                    LOGGER.log(Level.WARNING, "Config refresh callback failed", e);
+                    consecutiveFailures++;
+                    Level level =
+                            consecutiveFailures == 1 || consecutiveFailures % 100 == 0
+                                    ? Level.WARNING
+                                    : Level.FINE;
+                    LOGGER.log(
+                            level,
+                            "Photon background task "
+                                    + name
+                                    + " failed ("
+                                    + consecutiveFailures
+                                    + " in a row); retrying. The cache keeps serving meanwhile.",
+                            e);
+                    delaySeconds =
+                            failureDelay != null
+                                    ? failureDelay.delaySeconds(consecutiveFailures)
+                                    : nextRefreshDelaySeconds();
                 }
             }
         } catch (InterruptedException e) {
@@ -147,11 +201,10 @@ class ConfigRefresher {
 
     /** The delay before the next cycle, freshly jittered. Package-private for tests. */
     double nextRefreshDelaySeconds() {
-        if (!jitter) {
+        if (jitterFactor == 0) {
             return intervalSeconds;
         }
-        return intervalSeconds
-                * (JITTER_MIN + random.nextDouble() * (JITTER_MAX - JITTER_MIN)); // 0.8 + [0.0, 1.0) * 0.4
+        return intervalSeconds * ((1 - jitterFactor) + random.nextDouble() * (2 * jitterFactor));
     }
 
     /** The refresh thread, or null before {@link #start()}. Package-private for tests. */

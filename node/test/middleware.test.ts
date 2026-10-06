@@ -359,7 +359,7 @@ describe("photon middleware", () => {
     await session.open();
     vi.mocked(connector.execute).mockRejectedValue(new PhotonError("photon.config failed"));
     clock = 1000;
-    // Drive staleness recovery exactly as ConfigRefresher would, without waiting on real timers.
+    // Drive staleness recovery exactly as Refresher would, without waiting on real timers.
     await (session as unknown as { refreshOnce: () => Promise<void> }).refreshOnce();
     expect(session.isOpen).toBe(true);
     expect(session.connectionState).toBe("reconnecting");

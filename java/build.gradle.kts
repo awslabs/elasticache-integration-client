@@ -1,9 +1,10 @@
 import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.Exec
+import org.gradle.api.tasks.bundling.AbstractArchiveTask
 
 plugins {
-    java
+    `java-library`
     jacoco
     id("com.diffplug.spotless") version "8.10.3"
     id("net.ltgt.errorprone") version "5.1.1"
@@ -12,11 +13,15 @@ plugins {
 group = "software.amazon.photon"
 version = "0.0.1"
 
+val releasePublishing = providers.gradleProperty("releasePublishing").isPresent
+
 java {
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
-    withSourcesJar()
-    withJavadocJar()
+    if (!releasePublishing) {
+        withSourcesJar()
+        withJavadocJar()
+    }
 }
 
 repositories {
@@ -66,12 +71,12 @@ dependencies {
     implementation(files(iamToolkitJar))
 
     // AWS SDK v2 for the sourced IAM toolkit and ExecutionInterceptor integration
-    implementation(platform("software.amazon.awssdk:bom:2.55.6"))
-    implementation("software.amazon.awssdk:auth")
-    implementation("software.amazon.awssdk:regions")
-    implementation("software.amazon.awssdk:sdk-core")
-    implementation("software.amazon.awssdk:aws-core")
-    implementation("software.amazon.awssdk:http-client-spi")
+    api(platform("software.amazon.awssdk:bom:2.55.6"))
+    api("software.amazon.awssdk:auth")
+    api("software.amazon.awssdk:regions")
+    api("software.amazon.awssdk:sdk-core")
+    api("software.amazon.awssdk:aws-core")
+    api("software.amazon.awssdk:http-client-spi")
     implementation("software.amazon.awssdk:http-auth-spi")
     implementation("software.amazon.awssdk:identity-spi")
     implementation("software.amazon.awssdk:http-auth-aws")
@@ -95,6 +100,39 @@ tasks.withType<JavaCompile>().configureEach {
     }
 }
 
+tasks.jar {
+    dependsOn(buildIamToolkit)
+
+    // TODO(#49): Stop bundling these classes once the toolkit is on Maven Central.
+    // The IAM toolkit is sourced rather than published, so include its classes
+    // in the distributable JAR. Its AWS SDK dependencies remain normal POM
+    // dependencies declared above.
+    from({ zipTree(iamToolkitJar.asFile) }) {
+        exclude(
+            "META-INF/*.SF",
+            "META-INF/*.DSA",
+            "META-INF/*.RSA",
+            "META-INF/MANIFEST.MF",
+            "META-INF/LICENSE",
+            "META-INF/NOTICE"
+        )
+    }
+
+    from("../LICENSE") {
+        into("META-INF")
+        rename { "LICENSE" }
+    }
+    from("../NOTICE") {
+        into("META-INF")
+        rename { "NOTICE" }
+    }
+}
+
+tasks.withType<AbstractArchiveTask>().configureEach {
+    isPreserveFileTimestamps = false
+    isReproducibleFileOrder = true
+}
+
 // Gradle itself runs on JDK 21. Pass -PtestJavaVersion=<n> to run the tests on another
 // installed JDK, which is how CI covers every supported Java version.
 val testJavaVersion = providers.gradleProperty("testJavaVersion")
@@ -116,6 +154,16 @@ tasks.jacocoTestReport {
     }
 }
 
+if (releasePublishing) {
+    if (!JavaVersion.current().isJava11Compatible) {
+        throw GradleException("Release publishing requires JDK 11 or newer")
+    }
+    apply(from = "release.gradle.kts")
+}
+
+val sourcesJarTaskName = "sourcesJar"
+val javadocJarTaskName = if (releasePublishing) "plainJavadocJar" else "javadocJar"
+
 // Rounded down to the nearest 5 from the 2026-10-01 baseline (line 85.9%, branch 72.8%).
 tasks.jacocoTestCoverageVerification {
     violationRules {
@@ -136,20 +184,31 @@ tasks.check {
     dependsOn(tasks.jacocoTestCoverageVerification)
 }
 
-// TODO(#52): add POM generation and validation once the IAM toolkit is published (#49).
-// The vendored toolkit is a files(...) dependency, so it is not inside the main JAR and a
-// generated POM would not declare it.
 val verifyJars by tasks.registering {
     description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
-    val jars = mapOf(
-        tasks.jar to listOf("software/amazon/photon/session/PhotonClient.class", "idempotent-operations.json"),
-        tasks.named<Jar>("sourcesJar") to listOf("software/amazon/photon/session/PhotonClient.java"),
-        tasks.named<Jar>("javadocJar") to listOf("index.html")
-    )
-    jars.keys.forEach { inputs.file(it.flatMap { jar -> jar.archiveFile }) }
+    dependsOn(tasks.jar, sourcesJarTaskName, javadocJarTaskName)
+    inputs.file(tasks.jar.flatMap { it.archiveFile })
+    inputs.file(providers.provider {
+        tasks.named<AbstractArchiveTask>(sourcesJarTaskName).get().archiveFile.get().asFile
+    })
+    inputs.file(providers.provider {
+        tasks.named<AbstractArchiveTask>(javadocJarTaskName).get().archiveFile.get().asFile
+    })
     doLast {
-        jars.forEach { (jarTask, expected) ->
-            val jarFile = jarTask.get().archiveFile.get().asFile
+        val jars = mapOf(
+            tasks.jar.get().archiveFile.get().asFile to listOf(
+                "software/amazon/photon/session/PhotonClient.class",
+                "software/amazon/elasticache/auth/ElastiCacheIamAuthTokenProvider.class",
+                "idempotent-operations.json",
+                "META-INF/LICENSE",
+                "META-INF/NOTICE"
+            ),
+            tasks.named<AbstractArchiveTask>(sourcesJarTaskName).get().archiveFile.get().asFile to
+                listOf("software/amazon/photon/session/PhotonClient.java"),
+            tasks.named<AbstractArchiveTask>(javadocJarTaskName).get().archiveFile.get().asFile to
+                listOf("index.html")
+        )
+        jars.forEach { (jarFile, expected) ->
             ZipFile(jarFile).use { zip ->
                 expected.forEach { entry ->
                     check(zip.getEntry(entry) != null) { "${jarFile.name} is missing $entry" }
@@ -161,4 +220,11 @@ val verifyJars by tasks.registering {
 
 tasks.check {
     dependsOn(verifyJars)
+}
+
+tasks.register("printVersion") {
+    description = "Print the Maven publication version"
+    doLast {
+        println(project.version)
+    }
 }
