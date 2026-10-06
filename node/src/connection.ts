@@ -48,11 +48,13 @@ export class SocketReader {
   private readonly readSize: number;
   private readonly maxResponseSize: number;
   // Unconsumed bytes are storage[start, end). Decoded bulk strings are views
-  // into storage, so bytes before `end` are never overwritten: appends write
-  // past `end`, and growth copies the unconsumed bytes into a new buffer.
+  // into storage, so once a frame has been returned from it, storage is never
+  // written again: the next append moves the unconsumed bytes to a new buffer.
+  // A caller's reply therefore never shares memory with a later reply.
   private storage = Buffer.alloc(0);
   private start = 0;
   private end = 0;
+  private storageShared = false;
   private pendingChunk: Buffer<ArrayBufferLike> = Buffer.alloc(0);
 
   constructor(
@@ -76,11 +78,14 @@ export class SocketReader {
           );
         }
         this.start += consumed;
-        if (this.start === this.end && this.storage.length > this.readSize) {
-          // Drop storage grown for a large reply instead of holding it while idle.
+        if (this.start === this.end) {
+          // Nothing left to keep, so drop storage rather than hold it while idle.
           this.storage = Buffer.alloc(0);
           this.start = 0;
           this.end = 0;
+          this.storageShared = false;
+        } else {
+          this.storageShared = true;
         }
         return value;
       } catch (error) {
@@ -94,13 +99,14 @@ export class SocketReader {
 
   /** Append in amortized O(1): copying the whole buffer per chunk makes a frame O(n²). */
   private append(chunk: Buffer): void {
-    if (this.end + chunk.length > this.storage.length) {
+    if (this.storageShared || this.end + chunk.length > this.storage.length) {
       const unconsumed = this.end - this.start;
-      const grown = Buffer.alloc(Math.max(2 * (unconsumed + chunk.length), this.readSize));
+      const grown = Buffer.alloc(2 * (unconsumed + chunk.length));
       this.storage.copy(grown, 0, this.start, this.end);
       this.storage = grown;
       this.start = 0;
       this.end = unconsumed;
+      this.storageShared = false;
     }
     chunk.copy(this.storage, this.end);
     this.end += chunk.length;

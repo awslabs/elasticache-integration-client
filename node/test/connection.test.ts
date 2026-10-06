@@ -128,21 +128,28 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("next");
   });
 
-  it("leaves an earlier bulk reply unchanged while later frames are read", async () => {
-    const chunks = ["$5\r\nfirst\r\n", "$6\r\nsecond\r\n", "$5\r\nthird\r\n"].map((frame) =>
-      Buffer.from(frame),
+  it("does not write later replies into memory backing an earlier reply", async () => {
+    // Small replies that fit one read-size allocation: the first is delivered
+    // alone, and the second chunk also carries the start of the third reply.
+    const chunks = ["$6\r\nsecret\r\n", "$5\r\nlater\r\n$5\r\nth", "ird\r\n"].map((chunk) =>
+      Buffer.from(chunk),
     );
-    const reader = new SocketReader(sourceFrom(chunks), 4);
+    const reader = new SocketReader(sourceFrom(chunks));
 
     const first = await reader.readFrame();
     const second = await reader.readFrame();
     const third = await reader.readFrame();
 
     expect([first, second, third]).toEqual([
-      Buffer.from("first"),
-      Buffer.from("second"),
+      Buffer.from("secret"),
+      Buffer.from("later"),
       Buffer.from("third"),
     ]);
+    const backing = (value: unknown) => Buffer.from((value as Buffer).buffer).toString("latin1");
+    expect(backing(first)).not.toContain("later");
+    expect(backing(second)).not.toContain("secret");
+    expect(backing(second)).not.toContain("ird");
+    expect(backing(third)).not.toContain("later");
   });
 
   it("decodes a RESP3 null frame", async () => {
