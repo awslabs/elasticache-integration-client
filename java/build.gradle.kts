@@ -90,7 +90,7 @@ dependencies {
     testImplementation("software.amazon.awssdk:dynamodb")
 
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
+    testImplementation("org.junit.jupiter:junit-jupiter:5.14.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

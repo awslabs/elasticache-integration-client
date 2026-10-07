@@ -114,6 +114,44 @@ describe("SocketReader", () => {
     await expect(reader.readFrame()).resolves.toBe("three");
   });
 
+  it("reassembles a large bulk frame delivered in many small reads", async () => {
+    const body = Buffer.alloc(100_000, "a");
+    body[body.length - 1] = 0x62;
+    const frame = Buffer.concat([
+      Buffer.from(`$${body.length}\r\n`),
+      body,
+      Buffer.from("\r\n+next\r\n"),
+    ]);
+    const reader = new SocketReader(sourceFrom([frame]), 1024);
+
+    await expect(reader.readFrame()).resolves.toEqual(body);
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
+
+  it("does not write later replies into memory backing an earlier reply", async () => {
+    // Small replies that fit one read-size allocation: the first is delivered
+    // alone, and the second chunk also carries the start of the third reply.
+    const chunks = ["$6\r\nsecret\r\n", "$5\r\nlater\r\n$5\r\nth", "ird\r\n"].map((chunk) =>
+      Buffer.from(chunk),
+    );
+    const reader = new SocketReader(sourceFrom(chunks));
+
+    const first = await reader.readFrame();
+    const second = await reader.readFrame();
+    const third = await reader.readFrame();
+
+    expect([first, second, third]).toEqual([
+      Buffer.from("secret"),
+      Buffer.from("later"),
+      Buffer.from("third"),
+    ]);
+    const backing = (value: unknown) => Buffer.from((value as Buffer).buffer).toString("latin1");
+    expect(backing(first)).not.toContain("later");
+    expect(backing(second)).not.toContain("secret");
+    expect(backing(second)).not.toContain("ird");
+    expect(backing(third)).not.toContain("later");
+  });
+
   it("decodes a RESP3 null frame", async () => {
     const reader = new SocketReader(sourceFrom([Buffer.from("_\r\n+next\r\n")]));
 
@@ -270,6 +308,19 @@ describe("SocketReader limits", () => {
     const reader = new SocketReader(source, 64, 8);
 
     await expect(reader.readFrame()).rejects.toThrow("maximum response size");
+  });
+
+  it("accepts a frame of exactly the maximum size delivered in small reads", async () => {
+    const body = Buffer.alloc(1_000, "a");
+    const frame = Buffer.concat([Buffer.from(`$${body.length}\r\n`), body, Buffer.from("\r\n")]);
+    const reader = new SocketReader(
+      sourceFrom([Buffer.concat([frame, Buffer.from("+next\r\n")])]),
+      64,
+      frame.length,
+    );
+
+    await expect(reader.readFrame()).resolves.toEqual(body);
+    await expect(reader.readFrame()).resolves.toBe("next");
   });
 });
 
