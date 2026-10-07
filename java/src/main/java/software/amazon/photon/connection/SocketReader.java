@@ -1,6 +1,5 @@
 package software.amazon.photon.connection;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.SocketTimeoutException;
@@ -8,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 import software.amazon.photon.exception.PhotonConnectionLost;
 import software.amazon.photon.exception.PhotonProtocolError;
@@ -41,10 +41,10 @@ public class SocketReader {
     private final int maxResponseSize;
     private final Runnable onDeath;
 
-    private final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-    private final byte[] readBuf = new byte[READ_BUFFER_SIZE];
-
-    // Track consumed position to avoid re-parsing entire buffer
+    // Unconsumed bytes are buffer[consumedOffset, length). The decoder reads the array in place,
+    // so a frame arriving in many reads is not copied once per read.
+    private byte[] buffer = new byte[READ_BUFFER_SIZE];
+    private int length = 0;
     private int consumedOffset = 0;
 
     /**
@@ -203,27 +203,31 @@ public class SocketReader {
      */
     public RespValue readFrame() {
         while (true) {
-            // Try to decode from buffered data
-            if (buffer.size() > consumedOffset) {
-                byte[] data = buffer.toByteArray();
+            if (length > consumedOffset) {
                 try {
-                    DecodeResult result = RespCodec.decode(data, consumedOffset);
-                    // Successfully decoded - advance consumed offset
+                    DecodeResult result = RespCodec.decode(buffer, consumedOffset, length);
+                    // A frame that arrived whole in one read never reaches the check below.
+                    if (result.getPosition() - consumedOffset > maxResponseSize) {
+                        throw responseTooLarge();
+                    }
                     consumedOffset = result.getPosition();
-                    // Compact buffer if we've consumed a lot
                     if (consumedOffset > READ_BUFFER_SIZE) {
                         compactBuffer();
                     }
                     return result.getValue();
                 } catch (IncompleteFrame e) {
-                    // Need more data, fall through to read
+                    // Everything unconsumed is a prefix of one unfinished frame, so this caps a
+                    // single reply, not the pipelined replies buffered with it.
+                    if (length - consumedOffset > maxResponseSize) {
+                        throw responseTooLarge();
+                    }
                 }
             }
 
-            // Read more data from the socket
+            ensureCapacity(READ_BUFFER_SIZE);
             int bytesRead;
             try {
-                bytesRead = inputStream.read(readBuf);
+                bytesRead = inputStream.read(buffer, length, READ_BUFFER_SIZE);
             } catch (SocketTimeoutException e) {
                 throw new PhotonTimeoutError("Read timed out", e);
             } catch (IOException e) {
@@ -234,26 +238,29 @@ public class SocketReader {
                 throw new PhotonConnectionLost("Connection closed by server (EOF)");
             }
 
-            if (buffer.size() + bytesRead > maxResponseSize) {
-                throw new PhotonProtocolError(
-                        "Response exceeded maximum size of " + maxResponseSize + " bytes");
-            }
-
-            buffer.write(readBuf, 0, bytesRead);
+            length += bytesRead;
         }
     }
 
-    /** Compact the buffer by removing already-consumed bytes. */
-    private void compactBuffer() {
-        byte[] data = buffer.toByteArray();
-        buffer.reset();
-        buffer.write(data, consumedOffset, data.length - consumedOffset);
-        consumedOffset = 0;
+    private PhotonProtocolError responseTooLarge() {
+        return new PhotonProtocolError(
+                "Response exceeded maximum size of " + maxResponseSize + " bytes");
     }
 
-    /** Clear the buffer. Used when resetting state. */
-    public void reset() {
-        buffer.reset();
+    /** Grow geometrically so that appends are amortized O(1). */
+    private void ensureCapacity(int extra) {
+        if (length + extra > buffer.length) {
+            buffer = Arrays.copyOf(buffer, Math.max(length + extra, buffer.length * 2));
+        }
+    }
+
+    /**
+     * Move the unconsumed bytes to the front, overwriting consumed ones. Safe because Java has no
+     * view onto a byte[], so every decoded value is already a copy of it.
+     */
+    private void compactBuffer() {
+        System.arraycopy(buffer, consumedOffset, buffer, 0, length - consumedOffset);
+        length -= consumedOffset;
         consumedOffset = 0;
     }
 }

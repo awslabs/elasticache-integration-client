@@ -57,8 +57,29 @@ logger = logging.getLogger(__name__)
 _ORIGIN_ERROR = "ORIGIN_ERROR"
 
 
-def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest:
+#: Prepared-body types Photon can put in a single ``photon.request`` frame. Anything else is a
+#: stream: reading it to serialize would consume it, leaving nothing for the real send.
+_CARRIABLE_BODY_TYPES = (bytes, bytearray, memoryview, str)
+
+
+def _is_carriable_body(body: object) -> bool:
+    """Whether ``body`` fits in one frame. ``None`` means no body at all, which does."""
+    return body is None or isinstance(body, _CARRIABLE_BODY_TYPES)
+
+
+def _body_as_bytes(body: bytes | bytearray | memoryview | str | None) -> bytes:
+    """Normalize a carriable prepared body to bytes. A missing body is an empty body."""
+    if body is None:
+        return b""
+    if isinstance(body, str):
+        return body.encode()
+    return bytes(body)
+
+
+def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest | None:
     """Build an internal PhotonRequest from a botocore prepared request and event name.
+
+    Returns None for a streaming body; the caller passes the request through.
 
     boto3 builds an ``AWSPreparedRequest`` for every SDK call: the final HTTP request —
     method, url, headers, body — after serialization and signing, exactly what would be
@@ -90,12 +111,13 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
         }
     except UnicodeDecodeError as exc:
         raise PhotonError("Undecodable header value in prepared request") from exc
-    body = request.body or b""
+    if not _is_carriable_body(request.body):
+        return None
     return PhotonRequest(
         method=request.method,
         url=request.url,
         headers=headers,
-        body=body,
+        body=_body_as_bytes(request.body),
         metadata=RequestMetadata(service=service, operation=operation),
     )
 
@@ -139,12 +161,14 @@ class PhotonHandle:
         """The before-send handler: serve the request from Photon, or pass it through.
 
         Returning None tells botocore no handler served the request, so it sends the original
-        request down the pipeline. The session declines before sending when no predicate matched or
-        no cache connection is available within the fallback window, which is safe for every
-        operation. After sending, a timeout or lost connection becomes SDK-retryable only for a
-        replay-safe operation, so the retry goes through the cache again. A healthy-connection
-        ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation; other RESP errors
-        remain terminal. Non-Photon exceptions propagate.
+        request down the pipeline. A request with a streaming body is declined here, before it
+        reaches the session, because serializing it would consume the stream. The session declines
+        before sending when no predicate matched or no cache connection is available within the
+        fallback window, which is safe for every operation. After sending, a timeout or lost
+        connection becomes SDK-retryable only for a replay-safe operation, so the retry goes
+        through the cache again. A healthy-connection ORIGIN_ERROR becomes SDK-retryable only for
+        a replay-safe operation; other RESP errors remain terminal. Non-Photon exceptions
+        propagate.
         """
         try:
             http_request = _aws_to_photon_request(request, kwargs.get("event_name", ""))
@@ -153,6 +177,10 @@ class PhotonHandle:
                 "Photon could not adapt the request; passing through to the service",
                 exc_info=True,
             )
+            return None
+        if http_request is None:
+            # Expected for every streaming upload, so debug rather than the warning above.
+            logger.debug("Streaming request body; passing through to the service")
             return None
 
         try:

@@ -77,30 +77,51 @@ public final class RespCodec {
      * @return a DecodeResult containing the decoded value and the position after it
      * @throws IncompleteFrame if data is truncated
      * @throws PhotonProtocolError if data is malformed / garbage
+     * @throws IndexOutOfBoundsException unless {@code 0 <= start <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
-        if (start >= data.length) {
+        return decode(data, start, data.length);
+    }
+
+    /**
+     * Decode one RESP3 value from {@code data[start, end)}, ignoring any bytes at or past {@code
+     * end}. A reader passes the written length of a buffer that has spare capacity.
+     *
+     * @param data the byte array
+     * @param start the start position
+     * @param end the position after the last readable byte
+     * @return a DecodeResult containing the decoded value and the position after it
+     * @throws IncompleteFrame if the value does not end before {@code end}
+     * @throws PhotonProtocolError if data is malformed / garbage
+     * @throws IndexOutOfBoundsException unless {@code 0 <= start <= end <= data.length}
+     */
+    public static DecodeResult decode(byte[] data, int start, int end) throws IncompleteFrame {
+        if (start < 0 || start > end || end > data.length) {
+            throw new IndexOutOfBoundsException(
+                    "Range [" + start + ", " + end + ") out of bounds for length " + data.length);
+        }
+        if (start == end) {
             throw new IncompleteFrame("No data available at position " + start);
         }
 
         byte prefix = data[start];
         switch (prefix) {
             case '+':
-                return decodeSimpleString(data, start);
+                return decodeSimpleString(data, start, end);
             case ':':
-                return decodeInteger(data, start);
+                return decodeInteger(data, start, end);
             case '-':
-                return decodeError(data, start);
+                return decodeError(data, start, end);
             case '$':
-                return decodeBulkString(data, start);
+                return decodeBulkString(data, start, end);
             case '*':
-                return decodeArray(data, start);
+                return decodeArray(data, start, end);
             case '>':
-                return decodePush(data, start);
+                return decodePush(data, start, end);
             case '%':
-                return decodeMap(data, start);
+                return decodeMap(data, start, end);
             case '_':
-                return decodeNull(data, start);
+                return decodeNull(data, start, end);
             default:
                 throw new PhotonProtocolError(
                         "Unknown RESP prefix: "
@@ -116,8 +137,9 @@ public final class RespCodec {
         return decode(data, 0);
     }
 
-    private static DecodeResult decodeSimpleString(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeSimpleString(byte[] data, int start, int end)
+            throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete simple string");
         }
@@ -127,8 +149,9 @@ public final class RespCodec {
         return new DecodeResult(new RespSimpleString(value), crlfPos + 2);
     }
 
-    private static DecodeResult decodeInteger(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeInteger(byte[] data, int start, int end)
+            throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete integer");
         }
@@ -142,8 +165,8 @@ public final class RespCodec {
         }
     }
 
-    private static DecodeResult decodeError(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeError(byte[] data, int start, int end) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete error");
         }
@@ -162,8 +185,9 @@ public final class RespCodec {
         return new DecodeResult(new RespError(code, message), crlfPos + 2);
     }
 
-    private static DecodeResult decodeBulkString(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeBulkString(byte[] data, int start, int end)
+            throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete bulk string length");
         }
@@ -186,7 +210,7 @@ public final class RespCodec {
         int dataStart = crlfPos + 2;
         long dataEndLong = (long) dataStart + length;
         // Need data + CRLF
-        if (dataEndLong + 2 > data.length) {
+        if (dataEndLong + 2 > end) {
             throw new IncompleteFrame("Incomplete bulk string data");
         }
         int dataEnd = (int) dataEndLong;
@@ -203,8 +227,8 @@ public final class RespCodec {
      * Decode a RESP3 null ({@code _\r\n}). The header must be empty: there is no length or value,
      * just the CRLF terminator immediately after the prefix.
      */
-    private static DecodeResult decodeNull(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeNull(byte[] data, int start, int end) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete null");
         }
@@ -214,8 +238,8 @@ public final class RespCodec {
         return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
     }
 
-    private static DecodeResult decodeArray(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeArray(byte[] data, int start, int end) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete array length");
         }
@@ -238,15 +262,15 @@ public final class RespCodec {
         List<RespValue> elements = new ArrayList<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
-            DecodeResult element = decode(data, pos);
+            DecodeResult element = decode(data, pos, end);
             elements.add(element.getValue());
             pos = element.getPosition();
         }
         return new DecodeResult(new RespArray(elements), pos);
     }
 
-    private static DecodeResult decodePush(byte[] data, int start) throws IncompleteFrame {
-        DecodeResult result = decodeArray(data, start);
+    private static DecodeResult decodePush(byte[] data, int start, int end) throws IncompleteFrame {
+        DecodeResult result = decodeArray(data, start, end);
         if (!(result.getValue() instanceof RespArray)) {
             throw new PhotonProtocolError("Invalid RESP3 push payload: expected a non-null element list");
         }
@@ -254,8 +278,8 @@ public final class RespCodec {
         return new DecodeResult(new RespPush(array.getElements()), result.getPosition());
     }
 
-    private static DecodeResult decodeMap(byte[] data, int start) throws IncompleteFrame {
-        int crlfPos = findCrlf(data, start + 1);
+    private static DecodeResult decodeMap(byte[] data, int start, int end) throws IncompleteFrame {
+        int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete map length");
         }
@@ -273,17 +297,17 @@ public final class RespCodec {
         Map<RespValue, RespValue> entries = new LinkedHashMap<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
-            DecodeResult key = decode(data, pos);
-            DecodeResult value = decode(data, key.getPosition());
+            DecodeResult key = decode(data, pos, end);
+            DecodeResult value = decode(data, key.getPosition(), end);
             entries.put(key.getValue(), value.getValue());
             pos = value.getPosition();
         }
         return new DecodeResult(new RespMap(entries), pos);
     }
 
-    /** Find the position of CRLF starting from the given position. Returns -1 if not found. */
-    private static int findCrlf(byte[] data, int from) {
-        for (int i = from; i < data.length - 1; i++) {
+    /** Find the position of CRLF in {@code data[from, end)}. Returns -1 if not found. */
+    private static int findCrlf(byte[] data, int from, int end) {
+        for (int i = from; i < end - 1; i++) {
             if (data[i] == '\r' && data[i + 1] == '\n') {
                 return i;
             }
