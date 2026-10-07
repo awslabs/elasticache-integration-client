@@ -77,6 +77,7 @@ public final class RespCodec {
      * @return a DecodeResult containing the decoded value and the position after it
      * @throws IncompleteFrame if data is truncated
      * @throws PhotonProtocolError if data is malformed / garbage
+     * @throws IndexOutOfBoundsException unless {@code 0 <= start <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
         return decode(data, start, data.length);
@@ -92,9 +93,14 @@ public final class RespCodec {
      * @return a DecodeResult containing the decoded value and the position after it
      * @throws IncompleteFrame if the value does not end before {@code end}
      * @throws PhotonProtocolError if data is malformed / garbage
+     * @throws IndexOutOfBoundsException unless {@code 0 <= start <= end <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start, int end) throws IncompleteFrame {
-        if (start >= end) {
+        if (start < 0 || start > end || end > data.length) {
+            throw new IndexOutOfBoundsException(
+                    "Range [" + start + ", " + end + ") out of bounds for length " + data.length);
+        }
+        if (start == end) {
             throw new IncompleteFrame("No data available at position " + start);
         }
 

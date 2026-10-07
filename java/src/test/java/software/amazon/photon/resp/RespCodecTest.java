@@ -440,4 +440,12 @@ class RespCodecTest {
         byte[] data = "*2\r\n:1\r\n:2\r\n".getBytes(StandardCharsets.UTF_8);
         assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 0, data.length - 1));
     }
+
+    @Test
+    void decode_withEnd_rejectsOutOfRangeBounds() {
+        byte[] data = "+OK\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, -1, 5));
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 3, 2));
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 0, 6));
+    }
 }

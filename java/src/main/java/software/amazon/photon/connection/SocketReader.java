@@ -255,18 +255,12 @@ public class SocketReader {
     }
 
     /**
-     * Move the unconsumed bytes to the front. Decoded values are copies, so overwriting consumed
-     * bytes is safe.
+     * Move the unconsumed bytes to the front, overwriting consumed ones. Safe because Java has no
+     * view onto a byte[], so every decoded value is already a copy of it.
      */
     private void compactBuffer() {
         System.arraycopy(buffer, consumedOffset, buffer, 0, length - consumedOffset);
         length -= consumedOffset;
-        consumedOffset = 0;
-    }
-
-    /** Clear the buffer. Used when resetting state. */
-    public void reset() {
-        length = 0;
         consumedOffset = 0;
     }
 }

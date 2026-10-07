@@ -447,24 +447,4 @@ class SocketReaderTest {
         assertTrue(f1.isCompletedExceptionally());
         assertTrue(f2.isCompletedExceptionally());
     }
-
-    @Test
-    void reset_clearsBuffer() {
-        // Verify that reset() clears internal state without throwing.
-        // The primary use case is during error recovery in handshake flows.
-        byte[] data = "+OK\r\n".getBytes(StandardCharsets.UTF_8);
-        InputStream input = new ByteArrayInputStream(data);
-        PendingRequests pending = new PendingRequests();
-        SocketReader reader = new SocketReader(input, pending, () -> {});
-
-        // Read a frame to populate internal state
-        RespValue v1 = reader.readFrame();
-        assertEquals("OK", new String(((RespSimpleString) v1).getValue(), StandardCharsets.UTF_8));
-
-        // Reset clears the buffer and consumed offset
-        reader.reset();
-
-        // Calling reset multiple times is safe
-        assertDoesNotThrow(() -> reader.reset());
-    }
 }
