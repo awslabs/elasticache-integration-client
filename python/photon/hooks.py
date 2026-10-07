@@ -57,15 +57,25 @@ logger = logging.getLogger(__name__)
 _ORIGIN_ERROR = "ORIGIN_ERROR"
 
 
-def _body_as_bytes(body: object) -> bytes | None:
-    """The prepared body as bytes, or None for a streaming body Photon cannot carry."""
-    if not body:
+#: Prepared-body types Photon can put in a single ``photon.request`` frame. Anything else is a
+#: stream: reading it to serialize would consume it, leaving nothing for the real send.
+_CARRIABLE_BODY_TYPES = (bytes, bytearray, memoryview, str)
+
+
+def _is_carriable_body(body: object) -> bool:
+    """Whether ``body`` fits in one frame. ``None`` means no body at all, which does."""
+    return body is None or isinstance(body, _CARRIABLE_BODY_TYPES)
+
+
+def _body_as_bytes(body: bytes | bytearray | memoryview | str | None) -> bytes:
+    """Normalize a carriable prepared body to bytes. A missing body is an empty body."""
+    if body is None:
         return b""
-    if isinstance(body, bytes):
+    if isinstance(body, bytes):  # the common path (json protocols); no copy
         return body
-    if isinstance(body, str):
+    if isinstance(body, str):  # query protocols: sts, ec2, cloudformation, iam, rds
         return body.encode()
-    return None
+    return bytes(body)
 
 
 def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> PhotonRequest | None:
@@ -103,14 +113,13 @@ def _aws_to_photon_request(request: AWSPreparedRequest, event_name: str) -> Phot
         }
     except UnicodeDecodeError as exc:
         raise PhotonError("Undecodable header value in prepared request") from exc
-    body = _body_as_bytes(request.body)
-    if body is None:
+    if not _is_carriable_body(request.body):
         return None
     return PhotonRequest(
         method=request.method,
         url=request.url,
         headers=headers,
-        body=body,
+        body=_body_as_bytes(request.body),
         metadata=RequestMetadata(service=service, operation=operation),
     )
 
