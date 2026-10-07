@@ -116,9 +116,11 @@ describe("awsToPhotonRequest", () => {
   it.each([
     [undefined, Buffer.alloc(0)],
     [null, Buffer.alloc(0)],
+    ["", Buffer.alloc(0)],
     ["payload", Buffer.from("payload")],
     [Buffer.from("payload"), Buffer.from("payload")],
     [new Uint8Array([112, 97, 121, 108, 111, 97, 100]), Buffer.from("payload")],
+    [new Uint8Array(), Buffer.alloc(0)],
   ])("normalizes %s request bodies", (body, expected) => {
     expect(awsToPhotonRequest(request(body), "svc", "RunCommand")!.body).toEqual(expected);
   });
@@ -129,10 +131,15 @@ describe("awsToPhotonRequest", () => {
     expect(awsToPhotonRequest(request(body), "svc", "RunCommand")!.body).toBe(body);
   });
 
-  it("builds no Photon request for a streaming body", () => {
-    expect(
-      awsToPhotonRequest(request(Readable.from(["stream"])), "svc", "RunCommand"),
-    ).toBeUndefined();
+  it.each([
+    ["a Readable", Readable.from(["stream"])],
+    ["a web ReadableStream", new ReadableStream()],
+    ["a Blob", new Blob(["payload"])],
+    ["a non-Uint8Array typed array", new Int8Array()],
+    ["0", 0],
+    ["false", false],
+  ])("builds no Photon request for %s body", (_name, body) => {
+    expect(awsToPhotonRequest(request(body), "svc", "RunCommand")).toBeUndefined();
   });
 
   it("rejects a non-Smithy request", () => {
