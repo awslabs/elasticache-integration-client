@@ -309,6 +309,19 @@ describe("SocketReader limits", () => {
 
     await expect(reader.readFrame()).rejects.toThrow("maximum response size");
   });
+
+  it("accepts a frame of exactly the maximum size delivered in small reads", async () => {
+    const body = Buffer.alloc(1_000, "a");
+    const frame = Buffer.concat([Buffer.from(`$${body.length}\r\n`), body, Buffer.from("\r\n")]);
+    const reader = new SocketReader(
+      sourceFrom([Buffer.concat([frame, Buffer.from("+next\r\n")])]),
+      64,
+      frame.length,
+    );
+
+    await expect(reader.readFrame()).resolves.toEqual(body);
+    await expect(reader.readFrame()).resolves.toBe("next");
+  });
 });
 
 describe("PhotonConnector handshake timeout", () => {

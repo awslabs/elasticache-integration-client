@@ -101,7 +101,10 @@ export class SocketReader {
   private append(chunk: Buffer): void {
     if (this.storageShared || this.end + chunk.length > this.storage.length) {
       const unconsumed = this.end - this.start;
-      const grown = Buffer.alloc(2 * (unconsumed + chunk.length));
+      const needed = unconsumed + chunk.length;
+      const grown = Buffer.alloc(
+        Math.max(needed, Math.min(2 * needed, this.maxResponseSize + chunk.length)),
+      );
       this.storage.copy(grown, 0, this.start, this.end);
       this.storage = grown;
       this.start = 0;
