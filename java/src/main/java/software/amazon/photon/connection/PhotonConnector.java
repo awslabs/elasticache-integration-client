@@ -84,6 +84,9 @@ public class PhotonConnector implements Closeable {
     /** Default maximum pending requests. */
     public static final int DEFAULT_MAX_PENDING = 100;
 
+    /** Default number of bytes requested from the socket per read (64 KB). */
+    public static final int DEFAULT_READ_SIZE = 64 * 1024;
+
     /** Maximum response size in bytes (16 MB). */
     public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
@@ -113,6 +116,7 @@ public class PhotonConnector implements Closeable {
     private final int initializationTimeoutMs;
     private final int requestTimeoutMs;
     private final int maxPending;
+    private final int socketReadSize;
 
     // Connection state - guarded by stateLock
     private final Object stateLock = new Object();
@@ -208,10 +212,43 @@ public class PhotonConnector implements Closeable {
             int initializationTimeoutMs,
             int requestTimeoutMs,
             int maxPending) {
+        this(
+                host,
+                port,
+                sslContext,
+                connectTimeoutMs,
+                initializationTimeoutMs,
+                requestTimeoutMs,
+                maxPending,
+                DEFAULT_READ_SIZE);
+    }
+
+    /**
+     * Create a connection with independent initialization and request budgets and a custom read size.
+     *
+     * @param host the cache host
+     * @param port the cache port
+     * @param sslContext the SSL context
+     * @param connectTimeoutMs TCP connection timeout in milliseconds
+     * @param initializationTimeoutMs TLS, HELLO, and config timeout in milliseconds
+     * @param requestTimeoutMs total timeout for each Photon request attempt
+     * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
+     * @param socketReadSize most bytes to request from the socket per read
+     */
+    public PhotonConnector(
+            String host,
+            int port,
+            SSLContext sslContext,
+            int connectTimeoutMs,
+            int initializationTimeoutMs,
+            int requestTimeoutMs,
+            int maxPending,
+            int socketReadSize) {
         requirePositive("connectTimeoutMs", connectTimeoutMs);
         requirePositive("initializationTimeoutMs", initializationTimeoutMs);
         requirePositive("requestTimeoutMs", requestTimeoutMs);
         requirePositive("maxPending", maxPending);
+        requirePositive("socketReadSize", socketReadSize);
         this.host = host;
         this.port = port;
         this.sslContext = sslContext;
@@ -219,6 +256,7 @@ public class PhotonConnector implements Closeable {
         this.initializationTimeoutMs = initializationTimeoutMs;
         this.requestTimeoutMs = requestTimeoutMs;
         this.maxPending = maxPending;
+        this.socketReadSize = socketReadSize;
     }
 
     // =========================================================================
@@ -281,7 +319,12 @@ public class PhotonConnector implements Closeable {
                 // Initialize pending queue and reader (not started yet)
                 pending = new PendingRequests(maxPending);
                 reader =
-                        new SocketReader(socket.getInputStream(), pending, this::markDead, MAX_RESPONSE_SIZE);
+                        new SocketReader(
+                                socket.getInputStream(),
+                                pending,
+                                this::markDead,
+                                MAX_RESPONSE_SIZE,
+                                socketReadSize);
             } catch (IOException e) {
                 closeSocketQuietly();
                 throw new PhotonConnectionError(

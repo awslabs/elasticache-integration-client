@@ -33,17 +33,18 @@ import software.amazon.photon.resp.RespValue;
  */
 public class SocketReader {
 
-    private static final int READ_BUFFER_SIZE = 8192;
+    private static final int DEFAULT_READ_SIZE = 64 * 1024;
     private static final int DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024; // 16 MB
 
     private final InputStream inputStream;
     private final PendingRequests pending;
     private final int maxResponseSize;
+    private final int readSize;
     private final Runnable onDeath;
 
     // Unconsumed bytes are buffer[consumedOffset, length). The decoder reads the array in place,
     // so a frame arriving in many reads is not copied once per read.
-    private byte[] buffer = new byte[READ_BUFFER_SIZE];
+    private byte[] buffer;
     private int length = 0;
     private int consumedOffset = 0;
 
@@ -68,10 +69,34 @@ public class SocketReader {
      */
     public SocketReader(
             InputStream inputStream, PendingRequests pending, Runnable onDeath, int maxResponseSize) {
+        this(inputStream, pending, onDeath, maxResponseSize, DEFAULT_READ_SIZE);
+    }
+
+    /**
+     * Create a socket reader with custom max response size and read size.
+     *
+     * @param inputStream the socket input stream
+     * @param pending the pending requests queue to resolve
+     * @param onDeath callback when the reader dies
+     * @param maxResponseSize maximum response size in bytes
+     * @param readSize most bytes to request from the socket per read
+     * @throws IllegalArgumentException if readSize is not positive
+     */
+    public SocketReader(
+            InputStream inputStream,
+            PendingRequests pending,
+            Runnable onDeath,
+            int maxResponseSize,
+            int readSize) {
+        if (readSize <= 0) {
+            throw new IllegalArgumentException("readSize must be positive: " + readSize);
+        }
         this.inputStream = inputStream;
         this.pending = pending;
         this.onDeath = onDeath;
         this.maxResponseSize = maxResponseSize;
+        this.readSize = readSize;
+        this.buffer = new byte[readSize];
     }
 
     /**
@@ -211,7 +236,7 @@ public class SocketReader {
                         throw responseTooLarge();
                     }
                     consumedOffset = result.getPosition();
-                    if (consumedOffset > READ_BUFFER_SIZE) {
+                    if (consumedOffset > readSize) {
                         compactBuffer();
                     }
                     return result.getValue();
@@ -224,10 +249,10 @@ public class SocketReader {
                 }
             }
 
-            ensureCapacity(READ_BUFFER_SIZE);
+            ensureCapacity(readSize);
             int bytesRead;
             try {
-                bytesRead = inputStream.read(buffer, length, READ_BUFFER_SIZE);
+                bytesRead = inputStream.read(buffer, length, readSize);
             } catch (SocketTimeoutException e) {
                 throw new PhotonTimeoutError("Read timed out", e);
             } catch (IOException e) {
