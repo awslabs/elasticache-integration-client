@@ -2,10 +2,12 @@
 
 import io
 
+from array import array
 from unittest import mock
 
 import pytest
 from botocore.hooks import first_non_none_response
+from botocore.httpchecksum import AwsChunkedWrapper
 
 from photon import hooks
 from photon.exceptions import (
@@ -123,23 +125,21 @@ def test_body_conversion_does_not_copy_bytes():
     assert result.body is payload
 
 
-def test_streaming_body_is_not_carried():
-    request = mock.Mock(method="PUT", url="https://host/", headers={}, body=io.BytesIO(b"payload"))
-    assert hooks._aws_to_photon_request(request, "before-send.s3.PutObject") is None
-
-
-def test_zero_length_stream_is_not_mistaken_for_an_empty_body():
-    """A body is classified by type, never by truthiness: an object reporting ``len`` 0 is still
-    a stream, and sending it as ``b""`` would put a request Photon never read into the cache."""
-
-    class ZeroLengthStream:
-        def __len__(self) -> int:
-            return 0
-
-        def read(self, size: int = -1) -> bytes:
-            return b""
-
-    request = mock.Mock(method="PUT", url="https://host/", headers={}, body=ZeroLengthStream())
+@pytest.mark.parametrize(
+    "body",
+    [
+        io.BytesIO(b"payload"),
+        AwsChunkedWrapper(io.BytesIO(b"payload")),  # what s3 put_object actually delivers
+        array("b"),  # falsy, so classification must not rely on truthiness
+        0,
+        False,
+    ],
+)
+def test_uncarriable_bodies_are_declined(body):
+    """A body is classified by type, never by truthiness. Anything that is not bytes-like is a
+    stream, and sending a falsy one as ``b""`` would put a request Photon never read in the cache.
+    """
+    request = mock.Mock(method="PUT", url="https://host/", headers={}, body=body)
     assert hooks._aws_to_photon_request(request, "before-send.s3.PutObject") is None
 
 

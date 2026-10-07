@@ -71,9 +71,7 @@ def _body_as_bytes(body: bytes | bytearray | memoryview | str | None) -> bytes:
     """Normalize a carriable prepared body to bytes. A missing body is an empty body."""
     if body is None:
         return b""
-    if isinstance(body, bytes):  # the common path (json protocols); no copy
-        return body
-    if isinstance(body, str):  # query protocols: sts, ec2, cloudformation, iam, rds
+    if isinstance(body, str):
         return body.encode()
     return bytes(body)
 
