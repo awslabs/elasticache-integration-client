@@ -71,7 +71,8 @@ dependencies {
     implementation(files(iamToolkitJar))
 
     // AWS SDK v2 for the sourced IAM toolkit and ExecutionInterceptor integration
-    api(platform("software.amazon.awssdk:bom:2.55.6"))
+    // The compatibility workflow passes -PawsSdkVersion=2.+ to test the latest SDK.
+    api(platform("software.amazon.awssdk:bom:${providers.gradleProperty("awsSdkVersion").getOrElse("2.55.6")}"))
     api("software.amazon.awssdk:auth")
     api("software.amazon.awssdk:regions")
     api("software.amazon.awssdk:sdk-core")
