@@ -15,6 +15,10 @@ from photon.exceptions import PhotonProtocolError
 
 _CRLF = b"\r\n"
 
+#: A read buffer. The reader accumulates into a bytearray; callers may also pass bytes.
+#: Decoded values are always normalized to bytes, so this never leaks to a caller.
+RespBuffer = bytes | bytearray
+
 
 @dataclass(slots=True, frozen=True)
 class RespError:
@@ -82,24 +86,26 @@ def _parse_int(header: bytes, what: str) -> int:
         raise PhotonProtocolError(f"Malformed RESP {what}: {header!r}") from exc
 
 
-def _decode_simple_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_simple_string(
+    data: RespBuffer, header: bytes, after_header: int
+) -> tuple[RespValue, int]:
     """Decode a ``+`` simple string to ``str``. Bulk strings stay ``bytes``."""
     return header.decode(), after_header
 
 
-def _decode_integer(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_integer(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``:`` integer."""
     return _parse_int(header, "integer"), after_header
 
 
-def _decode_error(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_error(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``-`` error into a :class:`RespError` (``-CODE message``)."""
     text = header.decode("utf-8", errors="replace")
     code, _, message = text.partition(" ")
     return RespError(code=code, message=message), after_header
 
 
-def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_null(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``_`` null, the RESP3 form. A valid one carries no body, so a payload is
     rejected rather than ignored: a garbled null would otherwise pass as a real one."""
     if header:
@@ -107,7 +113,9 @@ def _decode_null(data: bytes, header: bytes, after_header: int) -> tuple[RespVal
     return None, after_header
 
 
-def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_bulk_string(
+    data: RespBuffer, header: bytes, after_header: int
+) -> tuple[RespValue, int]:
     """Decode a ``$`` bulk string, or ``None`` for the ``$-1`` null bulk."""
     length = _parse_int(header, "bulk length")
     if length == -1:
@@ -115,11 +123,11 @@ def _decode_bulk_string(data: bytes, header: bytes, after_header: int) -> tuple[
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
         raise IncompleteFrame("bulk string body incomplete")
-    return data[after_header:end], end + 2
+    return bytes(data[after_header:end]), end + 2
 
 
 def _decode_array(
-    data: bytes, header: bytes, after_header: int
+    data: RespBuffer, header: bytes, after_header: int
 ) -> tuple[list[RespValue] | None, int]:
     """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
@@ -133,7 +141,7 @@ def _decode_array(
     return items, pos
 
 
-def _decode_push(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_push(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``>`` push: array element semantics, first element is the kind, rest are items."""
     elements, pos = _decode_array(data, header, after_header)
     if not elements:  # ``>0`` or the null ``>-1``
@@ -146,7 +154,7 @@ def _decode_push(data: bytes, header: bytes, after_header: int) -> tuple[RespVal
     return RespPush(kind=kind, items=items), pos
 
 
-def _decode_map(data: bytes, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_map(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
     """Decode a ``%`` map into a ``dict``. Keys and values are each any RESP value."""
     count = _parse_int(header, "map length")
     if count < 0:
@@ -176,7 +184,7 @@ _DECODERS = {
 }
 
 
-def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
+def decode_resp(data: RespBuffer, start: int = 0) -> tuple[RespValue, int]:
     """Decode a single RESP3 value beginning at ``start``.
 
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
@@ -195,9 +203,9 @@ def decode_resp(data: bytes, start: int = 0) -> tuple[RespValue, int]:
     header_end = data.find(_CRLF, start)
     if header_end == -1:
         raise IncompleteFrame("incomplete frame")
-    prefix = data[start : start + 1]
+    prefix = bytes(data[start : start + 1])
     decoder = _DECODERS.get(prefix)
     if decoder is None:
         raise PhotonProtocolError(f"Unsupported RESP prefix: {prefix!r}")
-    header = data[start + 1 : header_end]
+    header = bytes(data[start + 1 : header_end])
     return decoder(data, header, header_end + len(_CRLF))

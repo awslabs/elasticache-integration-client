@@ -196,3 +196,56 @@ def test_decode_garbage_raises_protocol_error(garbage, message):
     """Genuinely corrupt input raises PhotonProtocolError, naming what it could not read."""
     with pytest.raises(PhotonProtocolError, match=message):
         decode_resp(garbage)
+
+
+# --- bytearray input (incremental reader buffer) -------------------------------
+
+
+def test_decode_from_bytearray_returns_bytes():
+    """A bytearray buffer decodes like bytes: bulk strings come back as bytes and simple
+    strings as str, exactly as from a bytes buffer — never as bytearray slices."""
+    frame = bytearray(b"*3\r\n:200\r\n+OK\r\n$5\r\nhello\r\n")
+    value, nxt = decode_resp(frame)
+    assert value == [200, "OK", b"hello"]
+    assert type(value[1]) is str and type(value[2]) is bytes
+    assert nxt == len(frame)
+
+
+def test_decode_from_bytearray_incremental_consume():
+    """The reader's loop shape: append chunks to a bytearray, decode, delete the consumed
+    prefix in place; the trailing bytes stay available for the next frame."""
+    buf = bytearray()
+    with pytest.raises(IncompleteFrame):
+        decode_resp(buf)
+    buf += b"$5\r\nhel"
+    with pytest.raises(IncompleteFrame):
+        decode_resp(buf)
+    buf += b"lo\r\n+OK\r\n"
+    value, consumed = decode_resp(buf)
+    assert value == b"hello"
+    assert type(value) is bytes
+    del buf[:consumed]
+    assert decode_resp(buf) == ("OK", 5)
+
+
+def test_decode_bytearray_garbage_raises_protocol_error():
+    """Unknown prefixes are rejected from a bytearray buffer too (hashable prefix lookup)."""
+    with pytest.raises(PhotonProtocolError):
+        decode_resp(bytearray(b"!bad\r\n"))
+
+
+def test_decode_map_from_bytearray_keeps_keys_hashable():
+    """A HELLO reply is a ``%`` map and dict keys must be hashable, so an unnormalized
+    bytearray key raises PhotonProtocolError on the connect path. Added with the ``%``/``>``
+    decoders, which landed after the bytearray change was written."""
+    value, _ = decode_resp(bytearray(b"%1\r\n$5\r\nproto\r\n:3\r\n"))
+    assert value == {b"proto": 3}
+    assert all(type(key) is bytes for key in value)
+
+
+def test_decode_push_from_bytearray_keeps_the_kind_bytes():
+    """``_decode_push`` isinstance-checks the kind against bytes, so an unnormalized bytearray
+    would be rejected as an invalid push kind."""
+    value, _ = decode_resp(bytearray(b">2\r\n$15\r\nphoton.response\r\n:1\r\n"))
+    assert value.kind == b"photon.response"
+    assert type(value.kind) is bytes

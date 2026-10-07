@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from importlib.metadata import version
 
-from photon.client import client
+from photon.client import PhotonClientConfiguration, client
 from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
 
 __version__ = version("photon-python")
@@ -30,6 +30,7 @@ logging.getLogger("photon").addHandler(logging.NullHandler())
 
 __all__ = [
     "client",
+    "PhotonClientConfiguration",
     "PhotonCacheUnavailable",
     "PhotonConfigError",
     "PhotonError",

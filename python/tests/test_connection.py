@@ -507,6 +507,65 @@ class TestPhotonConnector:
         with pytest.raises(PhotonConnectionLost):
             asyncio.run(scenario())
 
+    def test_reader_rejects_a_frame_over_the_cap(self):
+        """A length header may declare any size, so the cap is on bytes held, not bytes promised:
+        a body streamed past max_response_size is rejected instead of buffered. Without this the
+        buffer has no ceiling at all. Internals: _SocketReader on an in-memory stream."""
+
+        async def scenario() -> None:
+            stream = asyncio.StreamReader()
+            reader = _SocketReader(stream, max_response_size=1024)
+            stream.feed_data(b"$9999999999\r\n")  # declares ~10 GB
+            stream.feed_data(b"x" * 4096)  # and starts delivering it
+            # EOF so that an uncapped reader ends the read loop instead of waiting forever:
+            # without it, losing the cap would hang this test rather than fail it.
+            stream.feed_eof()
+            await reader.read_frame()
+
+        with pytest.raises(PhotonProtocolError, match="maximum response size"):
+            asyncio.run(scenario())
+
+    def test_reader_accepts_a_frame_exactly_at_the_cap(self):
+        """The cap counts the whole frame including its header and CRLFs, and a frame of exactly
+        that size is legal — so an off-by-one here would reject the largest valid reply.
+        Internals: _SocketReader on an in-memory stream."""
+        frame = b"$5\r\nhello\r\n"  # 11 bytes all in
+
+        async def scenario(max_response_size: int) -> RespValue:
+            stream = asyncio.StreamReader()
+            reader = _SocketReader(stream, max_response_size=max_response_size)
+            stream.feed_data(frame)
+            return await reader.read_frame()
+
+        assert asyncio.run(scenario(len(frame))) == b"hello"
+        with pytest.raises(PhotonProtocolError, match="maximum response size"):
+            asyncio.run(scenario(len(frame) - 1))
+
+    def test_reader_caps_each_frame_not_the_connection(self):
+        """The cap is per reply, not a running total: pipelined frames arrive in one read, so a
+        check on the buffer alone would reject a batch of small legal frames. Ten 5-byte frames
+        totalling 50 bytes all decode under an 11-byte cap. Internals: _SocketReader."""
+
+        async def scenario() -> list:
+            stream = asyncio.StreamReader()
+            reader = _SocketReader(stream, max_response_size=11)
+            stream.feed_data(b"+OK\r\n" * 10)  # one chunk, ten whole frames
+            return [await reader.read_frame() for _ in range(10)]
+
+        assert asyncio.run(scenario()) == ["OK"] * 10
+
+    def test_oversize_reply_fails_caller_as_connection_lost(self):
+        """An over-cap reply kills the connection the same way any undecodable one does: the
+        caller sees PhotonConnectionLost carrying the PhotonProtocolError as its cause. The
+        request was sent and never answered, so it is indeterminate, not a response error."""
+        self.start_cache(response=Reply.ok(body=b"x" * 4096))
+        self.connect_and_handshake(max_response_size=512)  # roomy for HELLO/config, not the body
+        with pytest.raises(PhotonConnectionLost) as exc_info:
+            self.send_request()
+        assert isinstance(exc_info.value.__cause__, PhotonProtocolError)
+        assert "maximum response size" in str(exc_info.value.__cause__)
+        assert self.conn._closed is True
+
     def test_replies_routed_fifo(self):
         """_PendingRequests resolves futures strictly in registration (FIFO) order, and a
         RespError is delivered as a future's RESULT (a value), not raised — the caller-facing
