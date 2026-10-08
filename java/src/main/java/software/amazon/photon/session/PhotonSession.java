@@ -2,6 +2,7 @@ package software.amazon.photon.session;
 
 import java.io.Closeable;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -249,7 +250,8 @@ public class PhotonSession implements Closeable {
     public void open() {
         synchronized (stateLock) {
             if (state != State.CREATED) {
-                throw new PhotonError("open() called on a " + state.name().toLowerCase() + " session");
+                throw new PhotonError(
+                        "open() called on a " + state.name().toLowerCase(Locale.ROOT) + " session");
             }
             if (opening) {
                 throw new PhotonError("open() called while session is opening");
@@ -869,7 +871,8 @@ public class PhotonSession implements Closeable {
     private void ensureUsable() {
         State current = state;
         if (current != State.OPEN && current != State.RECONNECTING) {
-            throw new PhotonError("request() called on a " + current.name().toLowerCase() + " session");
+            throw new PhotonError(
+                    "request() called on a " + current.name().toLowerCase(Locale.ROOT) + " session");
         }
     }
 
