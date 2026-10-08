@@ -1,9 +1,13 @@
 """Unit tests for photon.hooks."""
 
+import io
+
+from array import array
 from unittest import mock
 
 import pytest
 from botocore.hooks import first_non_none_response
+from botocore.httpchecksum import AwsChunkedWrapper
 
 from photon import hooks
 from photon.exceptions import (
@@ -89,6 +93,62 @@ def test_undecodable_header_value_passes_through():
     )
     responses = sdk.meta.events.emit("before-send.service.Operation", request=request)
     assert first_non_none_response(responses) is None
+    session.request.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        (None, b""),
+        ("", b""),
+        (b"raw", b"raw"),
+        (
+            "Action=GetCallerIdentity&Version=2011-06-15",
+            b"Action=GetCallerIdentity&Version=2011-06-15",
+        ),
+        (bytearray(b"mutable"), b"mutable"),
+        (memoryview(b"buffered"), b"buffered"),
+        (bytearray(), b""),
+    ],
+)
+def test_body_conversion(body, expected):
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=body)
+    result = hooks._aws_to_photon_request(request, "before-send.sts.GetCallerIdentity")
+    assert result.body == expected
+    assert type(result.body) is bytes  # encode_resp needs real bytes, not a buffer view
+
+
+def test_body_conversion_does_not_copy_bytes():
+    """The json-protocol path is every DynamoDB request, so normalizing must not copy the body."""
+    payload = b'{"TableName": "t"}'
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=payload)
+    result = hooks._aws_to_photon_request(request, "before-send.dynamodb.GetItem")
+    assert result.body is payload
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        io.BytesIO(b"payload"),
+        AwsChunkedWrapper(io.BytesIO(b"payload")),  # what s3 put_object actually delivers
+        array("b"),  # falsy, so classification must not rely on truthiness
+        0,
+        False,
+    ],
+)
+def test_uncarriable_bodies_are_declined(body):
+    """A body is classified by type, never by truthiness. Anything that is not bytes-like is a
+    stream, and sending a falsy one as ``b""`` would put a request Photon never read in the cache.
+    """
+    request = mock.Mock(method="PUT", url="https://host/", headers={}, body=body)
+    assert hooks._aws_to_photon_request(request, "before-send.s3.PutObject") is None
+
+
+def test_streaming_body_passes_through():
+    sdk = MockClient()
+    session = mock_session()
+    hooks.PhotonHandle(sdk, session)
+    assert _emit(sdk, body=io.BytesIO(b"payload")) is None
     session.request.assert_not_called()
 
 

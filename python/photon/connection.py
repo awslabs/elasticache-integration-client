@@ -40,6 +40,7 @@ from photon.resp import IncompleteFrame, RespError, RespPush, RespValue, decode_
 logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
+_DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024  # 16 MB, matching the node and java clients
 _DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 5.0
 _DEFAULT_CONFIG_TIMEOUT = 2.0  # init-phase commands: HELLO and photon.config
@@ -53,28 +54,47 @@ _AUTH_REJECTION_CODES = frozenset({"WRONGPASS", "invalid-iam-credentials"})
 class _SocketReader:
     """Accumulates bytes from ``stream`` and yields one framed RespValue per :meth:`read_frame`."""
 
-    def __init__(self, stream: asyncio.StreamReader, read_size: int = _DEFAULT_READ_SIZE) -> None:
+    def __init__(
+        self,
+        stream: asyncio.StreamReader,
+        read_size: int = _DEFAULT_READ_SIZE,
+        max_response_size: int = _DEFAULT_MAX_RESPONSE_SIZE,
+    ) -> None:
         self._stream = stream
         self._read_size = read_size
+        self._max_response_size = max_response_size
         self._buf = bytearray()
 
     async def read_frame(self) -> RespValue:
         """Return the next complete RESP value, reading more bytes as needed.
 
         Raises :class:`~photon.exceptions.PhotonConnectionLost` on clean EOF and lets
-        :class:`~photon.exceptions.PhotonProtocolError` (genuine garbage) propagate.
+        :class:`~photon.exceptions.PhotonProtocolError` propagate, for genuine garbage and
+        for a reply larger than ``max_response_size``.
         """
         while True:
             try:
                 value, consumed = decode_resp(self._buf)
             except IncompleteFrame:
+                # Everything buffered is a prefix of one unfinished frame -- completed frames are
+                # trimmed before being returned -- so this caps a single reply, not the connection.
+                if len(self._buf) > self._max_response_size:
+                    raise self._too_large() from None
                 chunk = await self._stream.read(self._read_size)
                 if not chunk:
                     raise PhotonConnectionLost("connection closed by peer")
                 self._buf += chunk
                 continue
+            if consumed > self._max_response_size:
+                # A frame that arrived whole in one chunk never went round the loop above.
+                raise self._too_large()
             del self._buf[:consumed]  # retain any trailing bytes for the next frame
             return value
+
+    def _too_large(self) -> PhotonProtocolError:
+        return PhotonProtocolError(
+            f"reply exceeded the maximum response size of {self._max_response_size} bytes"
+        )
 
 
 class _PendingRequests:
@@ -254,6 +274,7 @@ class PhotonConnector:
         ca_certs: str | None = None,
         verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
+        max_response_size: int = _DEFAULT_MAX_RESPONSE_SIZE,
         auth_provider=None,
         max_pending: int = _DEFAULT_MAX_PENDING,
     ) -> None:
@@ -266,6 +287,7 @@ class PhotonConnector:
         self._ca_certs = ca_certs
         self._verify = verify
         self._read_size = socket_read_size
+        self._max_response_size = max_response_size
         self._auth_provider = auth_provider
 
         #: Called once when this connection ends, for any reason, including a deliberate close().
@@ -398,7 +420,7 @@ class PhotonConnector:
                 # kill it: aborting the transport closes the socket in both directions.
                 writer.transport.abort()
                 raise PhotonConnectionError("connector closed during connect")
-            self._reader = _SocketReader(stream_reader, self._read_size)
+            self._reader = _SocketReader(stream_reader, self._read_size, self._max_response_size)
             self._writer = writer
 
     def handshake(self) -> None:
