@@ -168,6 +168,12 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
         ("cache_policy_overrides", []),
         ("cache_policy_timeout", 0),
         ("cache_policy_timeout", "600"),
+        ("iam_token_refresh_delay", 0),
+        ("iam_token_refresh_delay", True),
+        ("iam_token_refresh_delay", float("nan")),
+        ("iam_token_refresh_delay", float("inf")),
+        ("iam_token_refresh_delay", 880),
+        ("iam_token_refresh_delay", "300"),
     ],
 )
 def test_client_configuration_rejects_unusable_values(field, bad):

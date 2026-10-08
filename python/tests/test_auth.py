@@ -1,4 +1,4 @@
-"""Tests for Photon's managed adapter around the ElastiCache IAM toolkit."""
+"""Tests for the managed adapter around the ElastiCache IAM toolkit."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from developer_toolkit_elasticache import ConfigurationError, InvalidParameterEr
 from photon.auth import (
     DEFAULT_USER_ID,
     ManagedIamAuthTokenProvider,
-    _to_photon_error,
     build_cache_auth_provider,
 )
 from photon.exceptions import PhotonError
@@ -96,8 +95,8 @@ class TestBuildCacheAuthProvider:
             refresh_after=120,
         )
 
-    @patch.dict(os.environ, {"AWS_DEFAULT_REGION": "us-east-2"}, clear=True)
-    def test_region_falls_back_through_toolkit(self):
+    @patch.dict(os.environ, {"AWS_DEFAULT_REGION": "us-east-1"}, clear=True)
+    def test_supplied_session_region_wins_over_environment(self):
         provider = build_cache_auth_provider(
             cache_name="my-cache",
             botocore_session=fake_session(region="us-east-2"),
@@ -148,5 +147,16 @@ class TestBuildCacheAuthProvider:
         ),
     ],
 )
-def test_toolkit_input_errors_keep_their_actionable_message(toolkit_error):
-    assert str(_to_photon_error(toolkit_error, "generic")) == str(toolkit_error)
+@patch("photon.auth.ElastiCacheIAMAuthTokenManager")
+def test_toolkit_input_errors_reach_the_caller(manager_class, toolkit_error):
+    manager_class.side_effect = toolkit_error
+
+    error = pytest.raises(
+        PhotonError,
+        build_cache_auth_provider,
+        cache_name="my-cache",
+        region="us-east-1",
+        botocore_session=fake_session(),
+    ).value
+
+    assert str(error) == str(toolkit_error)

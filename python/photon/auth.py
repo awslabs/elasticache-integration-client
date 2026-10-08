@@ -1,7 +1,7 @@
-"""Photon adapters for the Amazon ElastiCache IAM developer toolkit.
+"""ElastiCache Integrations adapters for the Amazon ElastiCache IAM developer toolkit.
 
 The toolkit owns parameter validation, normalization, region and credential
-resolution, SigV4 signing, token caching, and background refresh. Photon keeps
+resolution, SigV4 signing, token caching, and background refresh. The client keeps
 the connector-facing ``() -> (user_id, token)`` contract and translates toolkit
 failures into its public error taxonomy.
 """
@@ -22,7 +22,7 @@ DEFAULT_USER_ID = "default.iam-user"
 
 
 def _to_photon_error(exc: Exception, message: str) -> PhotonError:
-    """Translate toolkit failures into Photon's error taxonomy.
+    """Translate toolkit failures into the client's error taxonomy.
 
     Toolkit input errors carry static, actionable guidance and are safe to pass through.
     Unexpected failures get a stable generic message; callers chain the original as ``__cause__``.
@@ -64,7 +64,7 @@ def build_cache_auth_provider(
     botocore_session: BotocoreSession | None = None,
     token_refresh_delay: float | None = None,
 ) -> ManagedIamAuthTokenProvider:
-    """Build Photon's managed cache auth provider."""
+    """Build the managed cache auth provider."""
     if not cache_name:
         raise PhotonError("cache_name is required for IAM authentication.")
     session = botocore_session or botocore.session.Session()

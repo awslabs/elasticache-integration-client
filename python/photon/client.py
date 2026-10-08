@@ -16,6 +16,10 @@ from photon.hooks import PhotonHandle
 from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 
+#: Upper bound for iam_token_refresh_delay, mirroring the toolkit's 20-second safety margin
+#: on the 15-minute token. The toolkit re-validates; this is the user-facing check.
+MAX_IAM_TOKEN_REFRESH_DELAY = 880
+
 
 @dataclass(frozen=True, kw_only=True)
 class PhotonClientConfiguration:
@@ -68,6 +72,16 @@ class PhotonClientConfiguration:
         if type(self.cache_policy_timeout) is not int or self.cache_policy_timeout <= 0:
             raise PhotonConfigError(
                 "cache_policy_timeout must be a positive whole number of seconds"
+            )
+        if self.iam_token_refresh_delay is not None and (
+            isinstance(self.iam_token_refresh_delay, bool)
+            or not isinstance(self.iam_token_refresh_delay, (int, float))
+            or not math.isfinite(self.iam_token_refresh_delay)
+            or not 0 < self.iam_token_refresh_delay < MAX_IAM_TOKEN_REFRESH_DELAY
+        ):
+            raise PhotonConfigError(
+                "iam_token_refresh_delay must be a number of seconds greater than 0 and less "
+                f"than {MAX_IAM_TOKEN_REFRESH_DELAY}, or None to use the toolkit default"
             )
 
 
