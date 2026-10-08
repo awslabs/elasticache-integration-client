@@ -4,8 +4,9 @@
 ## Install & test
 
 ```bash
+git submodule update --init python/vendor/developer-toolkit-elasticache
 cd python
-pip install -e '.[test]'   # runtime deps: boto3, botocore
+pip install -e '.[test]'   # runtime deps plus pytest and TLS test fixtures
 python -m pytest           # see tests/README.md for details
 pip install -e '.[dev]'    # pinned ruff, mypy, build, twine
 ruff format --check . && ruff check . && mypy
@@ -40,7 +41,7 @@ publishing to PyPI.
 
 The library delivers the happy path: intercept → serialize → `photon.config` handshake →
 `photon.request` → return the cached response over a real TLS RESP3 connection, with
-session-level IAM auth (POC). The transport runs on a **pure-Python RESP3 connector**
+session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
 (`PhotonConnector`) — no Glide or other native dependency.
 Its per-request timeout defaults to 5 seconds and can be changed with the
 `photon_request_timeout` field (see below).
@@ -60,6 +61,7 @@ ddb = photon.client(
         photon_request_timeout=2.0,
         fallback_duration=60,
         cache_policy_overrides={"exclude_tables": ["audit-log"]},
+        iam_token_refresh_delay=300,
     ),
 )
 ```
@@ -70,8 +72,28 @@ ddb = photon.client(
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what Photon caches, such as tables to exclude and cache entry lifetimes. |
 | `cache_policy_timeout` | 3600 s | How long Photon may use a cache policy without confirmation from the cache. |
+| `iam_token_refresh_delay` | 300 s | When the IAM toolkit signs a replacement token in the background. |
 
 Building `PhotonClientConfiguration` raises `PhotonConfigError` for a value that is not usable.
+
+## IAM authentication
+
+IAM token generation and refresh are provided by the Amazon ElastiCache developer toolkit.
+The toolkit validates and lowercases cache names and user IDs, resolves fresh AWS credentials
+for every newly signed token, and owns the SigV4 signing contract. Photon sends the bearer token
+only in the TLS-protected `HELLO 3 AUTH` exchange; origin request signing remains owned by boto3.
+
+The `client()` factory creates a toolkit token manager. It caches the current token, signs a
+replacement in the background after 300 seconds by default, and force-refreshes when a live
+connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to customize that
+background signing point through `PhotonClientConfiguration`; it must be greater than 0 and less
+than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
+
+Independently, Photon sends `AUTH` on the live connection every 15 minutes to refresh the proxy's
+forward-access session. A rejected background `AUTH` leaves the existing connection alive on its
+previous authentication and is retried with backoff. Only a timeout or unexpected reply closes the
+connection for FIFO safety. Closing the boto3 client stops both Photon re-authentication and the
+toolkit's token refresh.
 
 ## Reconnection and fallback
 
@@ -123,13 +145,21 @@ rules while the connection is being replaced.
   default `fallback_duration` a cache outage has no symptom other than the origin service's bill.
 - **Detecting a silently dead peer.** A peer that vanishes without closing the socket is noticed only
   when the next request times out. Closing that gap needs a periodic health check.
-- **IAM authentication hardening.** The connector performs IAM-token session auth at connect time
-  (SigV4-presigned `elasticache:connect` token — POC). Follow-ups: validation against a real
-  cache, periodic re-`AUTH` (which also prevents the 12-hour IAM disconnect), and the origin-call
-  (FAS) token. Re-`AUTH` recovers by recycling the connection, which now exists.
+- **IAM authentication validation.** Exercise the toolkit-backed flow against a real IAM-enabled
+  cache in addition to the hermetic mock-cache coverage.
 - **Asynchronous / out-of-band responses.** Only the synchronous reply is handled. A follow-up
   handles the out-of-band response (request-id followed by a later push) so a slow cache miss does
   not block pipelined hits.
 - **Public TTL / NTTL controls.** TTL/NTTL policy is resolved server-side from the
   `photon.config` overrides; the public API does not expose per-table or per-request TTL
   overrides yet.
+
+## Development
+
+The ElastiCache toolkit is pinned as a Git submodule and bundled into the Photon wheel until its
+managed-token API is available in the published Python package. Initialize it before installing
+or building from a checkout:
+
+```bash
+git submodule update --init python/vendor/developer-toolkit-elasticache
+```

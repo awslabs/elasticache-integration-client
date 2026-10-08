@@ -10,8 +10,8 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 dependencies = [
-    "boto3>=1.34,<2",
-    "botocore>=1.34,<2",
+    "boto3>=1.43,<2",
+    "botocore>=1.43,<2",
     "cel-python>=0.1",  # CEL evaluation of the resolved photon.config predicates
 ]
 
@@ -30,8 +30,11 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["photon*"]
+where = [".", "vendor/developer-toolkit-elasticache/python/src"]
+include = ["photon*", "developer_toolkit_elasticache*"]
+
+[tool.setuptools.package-data]
+developer_toolkit_elasticache = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -52,6 +55,7 @@ fail_under = 90
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+exclude = ["vendor"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
@@ -61,5 +65,16 @@ python_version = "3.10"
 files = ["photon"]
 
 [[tool.mypy.overrides]]
-module = ["boto3", "boto3.*", "botocore", "botocore.*", "celpy", "celpy.*", "urllib3", "urllib3.*"]
+module = [
+    "boto3",
+    "boto3.*",
+    "botocore",
+    "botocore.*",
+    "celpy",
+    "celpy.*",
+    "developer_toolkit_elasticache",
+    "developer_toolkit_elasticache.*",
+    "urllib3",
+    "urllib3.*",
+]
 ignore_missing_imports = true

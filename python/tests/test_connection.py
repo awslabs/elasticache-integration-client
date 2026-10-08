@@ -241,18 +241,50 @@ class TestPhotonConnector:
         conn._verify_hello_reply({b"server": b"valkey", b"proto": 3})  # must not raise
         assert not conn._closed
 
-    @pytest.mark.parametrize("code", ["NOPROTO", "invalid-iam-credentials"])
-    def test_hello_rejected_kills_connection(self, code):
+    @pytest.mark.parametrize(
+        "code,error_type",
+        [
+            ("NOPROTO", PhotonConnectionError),
+            ("invalid-iam-credentials", PhotonAuthError),
+        ],
+    )
+    def test_hello_rejected_kills_connection(self, code, error_type):
         """One frame carries both halves of the handshake, so a refused protocol version and a
         refused credential arrive the same way: an error reply. Either closes the connection —
         RESP2 makes deferred responses silently unavailable, and an unauthenticated connection
         has no valid next use — and the code is surfaced.
         Internals: _verify_hello_reply tested directly."""
         conn = PhotonConnector("host", 6379, tls=False)
-        with pytest.raises(PhotonConnectionError) as excinfo:
+        with pytest.raises(error_type) as excinfo:
             conn._verify_hello_reply(RespError(code, "nope"))
         assert code in str(excinfo.value)
         assert conn._closed
+
+    def test_hello_rejection_force_refreshes_managed_auth(self):
+        """A rejected cached token is replaced before the bounded connect retry."""
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(
+            return_value=RespError("invalid-iam-credentials", "credentials rejected")
+        )
+
+        with pytest.raises(PhotonAuthError, match="invalid-iam-credentials"):
+            conn.handshake()
+
+        provider.refresh_auth.assert_called_once()
+
+    def test_non_auth_hello_rejection_does_not_refresh_managed_auth(self):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=RespError("NOPROTO", "unsupported protocol"))
+
+        with pytest.raises(PhotonConnectionError, match="NOPROTO") as excinfo:
+            conn.handshake()
+
+        assert not isinstance(excinfo.value, PhotonAuthError)
+        provider.refresh_auth.assert_not_called()
 
     @pytest.mark.parametrize(
         "reply",
@@ -280,6 +312,41 @@ class TestPhotonConnector:
         with pytest.raises(PhotonAuthError):
             conn._verify_auth_reply(RespError("WRONGPASS", "bad token"))
         assert not conn._closed
+
+    def test_reauth_rejection_force_refreshes_managed_auth(self):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=RespError("WRONGPASS", "bad token"))
+
+        with pytest.raises(PhotonAuthError, match="WRONGPASS"):
+            conn.authenticate()
+
+        provider.refresh_auth.assert_called_once()
+
+    def test_reauth_unexpected_reply_does_not_refresh_closed_connection(self):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(return_value=("iam-user", "replacement-token"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=b"response from another request")
+
+        with pytest.raises(PhotonAuthError, match="unexpected reply"):
+            conn.authenticate()
+
+        assert not conn.is_alive
+        provider.refresh_auth.assert_not_called()
+
+    def test_failed_forced_refresh_logs_and_preserves_rejection(self, caplog):
+        provider = mock.Mock(return_value=("iam-user", "cached-token"))
+        provider.refresh_auth = mock.Mock(side_effect=RuntimeError("signing failed"))
+        conn = PhotonConnector("host", 6379, tls=False, auth_provider=provider)
+        conn.execute = mock.Mock(return_value=RespError("WRONGPASS", "bad token"))
+
+        with caplog.at_level("WARNING", logger="photon.connection"):
+            with pytest.raises(PhotonAuthError, match="WRONGPASS"):
+                conn.authenticate()
+
+        assert "Failed to force-refresh IAM authentication" in caplog.text
 
     @pytest.mark.parametrize(
         "reply",

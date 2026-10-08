@@ -24,15 +24,19 @@ def _patch_common(monkeypatch, sdk_client):
     """Run client() without a network: fake boto3 and the cache auth provider."""
     boto3_session = MagicMock()
     boto3_session.client.return_value = sdk_client
+    boto3_session.region_name = None
     boto3_stub = MagicMock()
     boto3_stub.Session.return_value = boto3_session
+    auth_provider = MagicMock()
+    auth_builder = MagicMock(return_value=auth_provider)
     monkeypatch.setattr(client_mod, "boto3", boto3_stub)
-    monkeypatch.setattr(client_mod, "build_cache_auth_provider", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(client_mod, "build_cache_auth_provider", auth_builder)
+    return boto3_session, auth_builder, auth_provider
 
 
 def test_client_closes_sdk_client_when_session_bringup_fails(monkeypatch):
     sdk_client = MagicMock()
-    _patch_common(monkeypatch, sdk_client)
+    _, _, auth_provider = _patch_common(monkeypatch, sdk_client)
 
     def boom(*args, **kwargs):
         raise PhotonError("bring-up failed")
@@ -43,6 +47,7 @@ def test_client_closes_sdk_client_when_session_bringup_fails(monkeypatch):
         client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c")
 
     sdk_client.close.assert_called_once()
+    auth_provider.close.assert_called_once()
 
 
 def test_client_returns_sdk_client_on_success(monkeypatch):
@@ -55,6 +60,56 @@ def test_client_returns_sdk_client_on_success(monkeypatch):
 
     assert result is sdk_client
     sdk_client.close.assert_not_called()
+
+
+def test_client_uses_sdk_session_for_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    boto3_session, auth_builder, _ = _patch_common(monkeypatch, sdk_client)
+    boto3_session.region_name = "us-east-1"
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client(
+        "dynamodb",
+        endpoint="cache:6379",
+        cache_name="My-Cache",
+        region_name="us-east-1",
+        user_id="IAM-User",
+        client_configuration=PhotonClientConfiguration(iam_token_refresh_delay=120),
+    )
+
+    auth_builder.assert_called_once_with(
+        cache_name="My-Cache",
+        user_id="IAM-User",
+        region="us-east-1",
+        botocore_session=boto3_session._session,
+        token_refresh_delay=120,
+    )
+
+
+def test_client_uses_the_sdk_resolved_region_for_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    boto3_session, auth_builder, _ = _patch_common(monkeypatch, sdk_client)
+    boto3_session.region_name = "ap-southeast-2"
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="my-cache")
+
+    assert auth_builder.call_args.kwargs["region"] == "ap-southeast-2"
+
+
+def test_client_gives_session_ownership_of_managed_auth(monkeypatch):
+    sdk_client = MagicMock()
+    _, _, auth_provider = _patch_common(monkeypatch, sdk_client)
+    built = {}
+    monkeypatch.setattr(client_mod, "PhotonSession", lambda *a, **k: built.update(k) or MagicMock())
+    monkeypatch.setattr(client_mod, "PhotonHandle", lambda *a, **k: MagicMock())
+
+    client_mod.client("dynamodb", endpoint="cache:6379", cache_name="c")
+
+    built["close_callback"]()
+    auth_provider.close.assert_called_once()
 
 
 @pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])
@@ -113,6 +168,12 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
         ("cache_policy_overrides", []),
         ("cache_policy_timeout", 0),
         ("cache_policy_timeout", "600"),
+        ("iam_token_refresh_delay", 0),
+        ("iam_token_refresh_delay", True),
+        ("iam_token_refresh_delay", float("nan")),
+        ("iam_token_refresh_delay", float("inf")),
+        ("iam_token_refresh_delay", 880),
+        ("iam_token_refresh_delay", "300"),
     ],
 )
 def test_client_configuration_rejects_unusable_values(field, bad):

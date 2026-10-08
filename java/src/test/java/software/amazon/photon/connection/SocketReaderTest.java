@@ -7,7 +7,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
@@ -179,6 +181,58 @@ class SocketReaderTest {
 
         PhotonProtocolError e = assertThrows(PhotonProtocolError.class, reader::readFrame);
         assertTrue(e.getMessage().contains("exceeded maximum size"));
+    }
+
+    /** Records the {@code len} of every read so a test can see how much the reader asked for. */
+    private static final class RecordingInputStream extends ByteArrayInputStream {
+        final List<Integer> requestedLengths = new ArrayList<>();
+
+        RecordingInputStream(byte[] data) {
+            super(data);
+        }
+
+        @Override
+        public synchronized int read(byte[] b, int off, int len) {
+            requestedLengths.add(len);
+            return super.read(b, off, len);
+        }
+    }
+
+    @Test
+    void readFrame_requests64KbPerReadByDefault() {
+        RecordingInputStream input =
+                new RecordingInputStream("+OK\r\n".getBytes(StandardCharsets.UTF_8));
+        SocketReader reader = new SocketReader(input, new PendingRequests(), () -> {});
+
+        reader.readFrame();
+
+        assertEquals(Arrays.asList(65536), input.requestedLengths);
+    }
+
+    @Test
+    void readFrame_requestsConfiguredReadSizeAndDecodesAcrossReads() {
+        RecordingInputStream input =
+                new RecordingInputStream("+0123456789\r\n".getBytes(StandardCharsets.UTF_8));
+        SocketReader reader = new SocketReader(input, new PendingRequests(), () -> {}, 1024, 4);
+
+        RespValue value = reader.readFrame();
+
+        assertEquals(
+                "0123456789", new String(((RespSimpleString) value).getValue(), StandardCharsets.UTF_8));
+        assertEquals(Arrays.asList(4, 4, 4, 4), input.requestedLengths);
+    }
+
+    @Test
+    void constructor_rejectsNonPositiveReadSize() {
+        InputStream input = new ByteArrayInputStream(new byte[0]);
+        IllegalArgumentException e =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () -> new SocketReader(input, new PendingRequests(), () -> {}, 1024, 0));
+        assertEquals("readSize must be positive: 0", e.getMessage());
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new SocketReader(input, new PendingRequests(), () -> {}, 1024, -1));
     }
 
     @Test

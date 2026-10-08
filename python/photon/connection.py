@@ -48,6 +48,7 @@ _CLOSE_TIMEOUT = 0.5  # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
 _DEFAULT_MAX_PENDING = 100
+_AUTH_REJECTION_CODES = frozenset({"WRONGPASS", "invalid-iam-credentials"})
 
 
 class _SocketReader:
@@ -429,8 +430,9 @@ class PhotonConnector:
         the connection to avoid FIFO desync.
 
         Raises:
-            PhotonConnectionError: If there is no auth provider, or the handshake is rejected
-                or times out.
+            PhotonAuthError: If the cache explicitly rejects the credentials.
+            PhotonConnectionError: If there is no auth provider, the protocol negotiation fails,
+                or the handshake times out.
             PhotonError: If the provider fails to generate a token.
         """
         if self._auth_provider is None:
@@ -453,7 +455,11 @@ class PhotonConnector:
             # answering, would otherwise surface as a bare lost connection.
             self.close()
             raise PhotonConnectionError("HELLO 3 failed: connection lost") from exc
-        self._verify_hello_reply(reply)
+        try:
+            self._verify_hello_reply(reply)
+        except PhotonAuthError:
+            self._refresh_auth_after_rejection()
+            raise
 
     def _verify_hello_reply(self, reply: RespValue) -> None:
         """Require a map reporting ``proto`` 3; an error reply or any other shape closes the
@@ -465,7 +471,10 @@ class PhotonConnector:
         """
         if isinstance(reply, RespError):
             self.close()
-            raise PhotonConnectionError(f"HELLO 3 rejected: {reply.code}")
+            error_type = (
+                PhotonAuthError if reply.code in _AUTH_REJECTION_CODES else PhotonConnectionError
+            )
+            raise error_type(f"HELLO 3 rejected: {reply.code}")
         if not isinstance(reply, dict):
             self.close()
             raise PhotonConnectionError(
@@ -496,7 +505,29 @@ class PhotonConnector:
             logger.warning("AUTH command timed out - closing connection")
             self.close()
             raise PhotonConnectionError("IAM AUTH timed out — connection closed") from exc
-        self._verify_auth_reply(reply)
+        try:
+            self._verify_auth_reply(reply)
+        except PhotonAuthError:
+            # An explicit error reply is in-order and leaves the connection usable, so replace
+            # the rejected cached token. An unexpected reply closes for FIFO safety; refreshing
+            # credentials cannot repair that connection.
+            if self.is_alive:
+                self._refresh_auth_after_rejection()
+            raise
+
+    def _refresh_auth_after_rejection(self) -> None:
+        """Best-effort forced refresh for toolkit-managed providers."""
+        refresh = getattr(self._auth_provider, "refresh_auth", None)
+        if refresh is None:
+            return
+        try:
+            refresh()
+        except Exception:
+            # Preserve the cache's rejection. The next retry can attempt refresh again.
+            logger.warning(
+                "Failed to force-refresh IAM authentication after cache rejection",
+                exc_info=True,
+            )
 
     def _verify_auth_reply(self, reply: RespValue) -> None:
         """Validate a re-AUTH reply. Raises PhotonAuthError on rejection or unexpected shape."""
