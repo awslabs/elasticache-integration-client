@@ -56,13 +56,21 @@ export interface PhotonCompatibleClient {
   destroy(): void;
 }
 
-/** The prepared body as bytes, or undefined for a streaming body Photon cannot carry. */
-function normalizeBody(body: unknown): Buffer | undefined {
+/**
+ * Whether `body` fits in one `photon.request` frame. A missing body does. Any
+ * body that is not bytes-like, such as a stream, does not: reading it to
+ * serialize would consume it, leaving nothing for the origin send.
+ */
+function isCarriableBody(body: unknown): body is string | Uint8Array | null | undefined {
+  return body == null || typeof body === "string" || body instanceof Uint8Array;
+}
+
+/** Normalize a carriable prepared body to bytes. A missing body is an empty body. */
+function normalizeBody(body: string | Uint8Array | null | undefined): Buffer {
   if (body == null) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
   if (typeof body === "string") return Buffer.from(body, "utf8");
-  if (body instanceof Uint8Array) return Buffer.from(body);
-  return undefined;
+  return Buffer.from(body);
 }
 
 /** AWS SigV4 authentication headers, removed before forwarding to Photon. */
@@ -82,9 +90,8 @@ function stripSigningHeaders(headers: Record<string, string>): Record<string, st
  *
  * The SDK has already signed the request by this point; the SigV4
  * authentication headers are stripped so Photon receives an unsigned request.
- * Returns undefined for a streaming body, because serializing it into one
- * `photon.request` frame would consume the stream; the caller passes the
- * request through to the origin.
+ * Returns undefined for a body that is not bytes-like, such as a stream; the
+ * caller passes the request through to the origin.
  */
 export function awsToPhotonRequest(
   request: unknown,
@@ -105,14 +112,14 @@ export function awsToPhotonRequest(
     throw new PhotonError("Malformed Photon middleware command metadata");
   }
 
-  const body = normalizeBody(request.body);
-  if (body === undefined) return undefined;
+  const body = request.body;
+  if (!isCarriableBody(body)) return undefined;
 
   return new PhotonRequest({
     method: request.method,
     url: formatUrl(request),
     headers: stripSigningHeaders(request.headers),
-    body,
+    body: normalizeBody(body),
     metadata: new RequestMetadata({ service, operation }),
   });
 }

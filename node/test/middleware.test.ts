@@ -138,7 +138,7 @@ describe("awsToPhotonRequest", () => {
     ["a non-Uint8Array typed array", new Int8Array()],
     ["0", 0],
     ["false", false],
-  ])("builds no Photon request for %s body", (_name, body) => {
+  ])("declines an uncarriable %s request body", (_name, body) => {
     expect(awsToPhotonRequest(request(body), "svc", "RunCommand")).toBeUndefined();
   });
 
