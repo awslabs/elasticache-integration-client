@@ -84,12 +84,6 @@ public class PhotonConnector implements Closeable {
     /** Default maximum pending requests. */
     public static final int DEFAULT_MAX_PENDING = 100;
 
-    /** Default number of bytes requested from the socket per read (64 KB). */
-    public static final int DEFAULT_READ_SIZE = 64 * 1024;
-
-    /** Maximum response size in bytes (16 MB). */
-    public static final int MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
-
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
     private static final int RESP3_PROTOCOL_VERSION = 3;
     private static final RespBulkString HELLO_PROTO_KEY =
@@ -220,7 +214,7 @@ public class PhotonConnector implements Closeable {
                 initializationTimeoutMs,
                 requestTimeoutMs,
                 maxPending,
-                DEFAULT_READ_SIZE);
+                SocketReader.DEFAULT_READ_SIZE);
     }
 
     /**
@@ -323,7 +317,7 @@ public class PhotonConnector implements Closeable {
                                 socket.getInputStream(),
                                 pending,
                                 this::markDead,
-                                MAX_RESPONSE_SIZE,
+                                SocketReader.DEFAULT_MAX_RESPONSE_SIZE,
                                 socketReadSize);
             } catch (IOException e) {
                 closeSocketQuietly();

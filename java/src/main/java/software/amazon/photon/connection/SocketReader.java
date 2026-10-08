@@ -33,8 +33,11 @@ import software.amazon.photon.resp.RespValue;
  */
 public class SocketReader {
 
-    private static final int DEFAULT_READ_SIZE = 64 * 1024;
-    private static final int DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024; // 16 MB
+    /** Default number of bytes requested from the socket per read (64 KB). */
+    public static final int DEFAULT_READ_SIZE = 64 * 1024;
+
+    /** Default maximum response size in bytes (16 MB). */
+    public static final int DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 
     private final InputStream inputStream;
     private final PendingRequests pending;
