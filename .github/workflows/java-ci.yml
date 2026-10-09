@@ -41,7 +41,7 @@ jobs:
       - name: Build and test on Java ${{ matrix.java-version }}
         working-directory: java
         run: >-
-          ./gradlew build
+          ./gradlew build --console=colored
           -PtestJavaVersion=${{ matrix.java-version }}
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
           -Porg.gradle.java.installations.auto-download=false

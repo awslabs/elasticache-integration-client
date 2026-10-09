@@ -12,6 +12,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
@@ -68,7 +69,7 @@ public final class PhotonProtocol {
         // Use a TreeMap to sort by lowercased name
         TreeMap<String, String> sorted = new TreeMap<>();
         for (Map.Entry<String, String> entry : headers.entrySet()) {
-            String name = entry.getKey().toLowerCase().trim();
+            String name = entry.getKey().toLowerCase(Locale.ROOT).trim();
             if (EXCLUDED_HEADERS.contains(name)) {
                 continue;
             }
