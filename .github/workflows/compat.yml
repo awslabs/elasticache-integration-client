@@ -11,6 +11,12 @@ on:
 permissions:
   contents: read
 
+# CI steps don't run in a terminal, so tools print plain text unless told otherwise.
+# FORCE_COLOR covers pip, ruff, mypy, and the Node tools; PY_COLORS covers pytest.
+env:
+  FORCE_COLOR: "1"
+  PY_COLORS: "1"
+
 jobs:
   python:
     name: python (${{ matrix.python-version }})
@@ -223,7 +229,7 @@ jobs:
       - name: Test against the newest AWS SDK 2.x
         working-directory: java
         run: >-
-          ./gradlew test
+          ./gradlew test --console=colored
           -PawsSdkVersion=2.+
           -PtestJavaVersion=${{ matrix.java-version }}
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
