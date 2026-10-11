@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { PhotonError } from "../src/errors.js";
+import {
+  PhotonError,
+  PhotonOverridesRejected,
+  PhotonProtocolError,
+  PhotonRejectedError,
+} from "../src/errors.js";
 import { PhotonRequest, PhotonResponse, RequestMetadata, ResolvedConfig } from "../src/models.js";
 import {
   CONFIG_COMMAND,
@@ -18,6 +23,11 @@ import { RespError } from "../src/resp.js";
 describe("Photon protocol", () => {
   it("serializes an empty config override compactly", () => {
     expect(serializeConfig({})).toEqual([CONFIG_COMMAND, [Buffer.from("{}")]]);
+  });
+
+  it.each([null, undefined])("sends no argument for %s overrides", (overrides) => {
+    // No overrides means "give me the current config", which is a zero-argument command.
+    expect(serializeConfig(overrides)).toEqual([CONFIG_COMMAND, []]);
   });
 
   it("serializes config overrides without whitespace", () => {
@@ -43,12 +53,47 @@ describe("Photon protocol", () => {
     });
   });
 
-  it("defaults missing config fields while preserving raw data", () => {
-    const config = parseConfigResponse(Buffer.from('{"predicates":[]}'));
+  it("defaults a missing version while preserving raw data", () => {
+    const config = parseConfigResponse(Buffer.from('{"refresh_interval":60,"predicates":[]}'));
 
     expect(config.version).toBeUndefined();
-    expect(config.refreshInterval).toBeUndefined();
-    expect(config.raw).toEqual({ predicates: [] });
+    expect(config.refreshInterval).toBe(60);
+    expect(config.raw).toEqual({ refresh_interval: 60, predicates: [] });
+  });
+
+  it("accepts integer-valued JSON numbers such as 56.0", () => {
+    const config = parseConfigResponse(Buffer.from('{"refresh_interval":56.0,"predicates":[]}'));
+
+    expect(config.refreshInterval).toBe(56);
+  });
+
+  it.each([1, 5, 3600, 3601])("accepts the positive refresh_interval %s", (refreshInterval) => {
+    const config = parseConfigResponse(
+      Buffer.from(`{"refresh_interval":${refreshInterval},"predicates":[]}`),
+    );
+
+    expect(config.refreshInterval).toBe(refreshInterval);
+  });
+
+  it.each([
+    // Missing entirely; the refresher has no interval to schedule from.
+    '{"predicates":[]}',
+    // Explicit null.
+    '{"refresh_interval":null,"predicates":[]}',
+    // Wrong type: string.
+    '{"refresh_interval":"60","predicates":[]}',
+    // Wrong type: boolean.
+    '{"refresh_interval":true,"predicates":[]}',
+    // Wrong type: object.
+    '{"refresh_interval":{},"predicates":[]}',
+    // Fractional.
+    '{"refresh_interval":60.5,"predicates":[]}',
+    // Not positive.
+    '{"refresh_interval":0,"predicates":[]}',
+    '{"refresh_interval":-1,"predicates":[]}',
+  ])("rejects the invalid refresh_interval in %s", (body) => {
+    // Invalid intervals must fail at parse time, not crash a background refresher later.
+    expect(() => parseConfigResponse(Buffer.from(body))).toThrow(PhotonError);
   });
 
   it("requires request metadata at the model boundary", () => {
@@ -78,6 +123,15 @@ describe("Photon protocol", () => {
     Buffer.from("[1,2,3]"),
   ])("rejects malformed config response %#", (value) => {
     expect(() => parseConfigResponse(value as never)).toThrow(PhotonError);
+  });
+
+  it("maps a CONFIG_INVALID reply to PhotonOverridesRejected", () => {
+    expect(() =>
+      parseConfigResponse(new RespError("CONFIG_INVALID", "table does not exist")),
+    ).toThrow(PhotonOverridesRejected);
+    expect(() => parseConfigResponse(new RespError("ERR", "nope"))).not.toThrow(
+      PhotonOverridesRejected,
+    );
   });
 
   it("serializes a request into the five protocol arguments", () => {
@@ -254,12 +308,19 @@ describe("Photon protocol", () => {
 
   it("rejects request response error frames", () => {
     // A RespError request reply raises rather than being returned as a response.
-    expect(() => parseRequestResponse(new RespError("ERR", "boom"))).toThrow(PhotonError);
+    let failure: unknown;
+    try {
+      parseRequestResponse(new RespError("ORIGIN_ERROR", "boom"));
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(PhotonRejectedError);
+    expect((failure as PhotonRejectedError).code).toBe("ORIGIN_ERROR");
   });
 
   it("rejects non-array request responses", () => {
     // A non-array request reply, such as a bare bulk string, is malformed.
-    expect(() => parseRequestResponse(Buffer.from("not-an-array"))).toThrow(PhotonError);
+    expect(() => parseRequestResponse(Buffer.from("not-an-array"))).toThrow(PhotonProtocolError);
   });
 
   it("rejects unsupported request body types", () => {

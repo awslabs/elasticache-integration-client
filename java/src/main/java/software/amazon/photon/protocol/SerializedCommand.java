@@ -2,9 +2,7 @@ package software.amazon.photon.protocol;
 
 import java.util.List;
 
-/**
- * A serialized command ready to be encoded to RESP3 wire format.
- */
+/** A serialized command ready to be encoded to RESP3 wire format. */
 public class SerializedCommand {
 
     private final String commandName;

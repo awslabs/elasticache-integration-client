@@ -1,0 +1,16 @@
+[submodule "java/vendor/developer-toolkit-elasticache"]
+	path = java/vendor/developer-toolkit-elasticache
+	url = https://github.com/aws/developer-toolkit-elasticache.git
+	# TODO: Track main once the Java implementation is published there.
+	branch = release-2
+
+[submodule "node/vendor/developer-toolkit-elasticache"]
+	path = node/vendor/developer-toolkit-elasticache
+	url = https://github.com/aws/developer-toolkit-elasticache.git
+	# TODO: Track main once the Node implementation is merged there if the npm package is not yet released.
+	branch = release-2
+[submodule "python/vendor/developer-toolkit-elasticache"]
+	path = python/vendor/developer-toolkit-elasticache
+	url = https://github.com/aws/developer-toolkit-elasticache.git
+	# TODO: Use the published Python package once it includes the managed-token API.
+	branch = release-2

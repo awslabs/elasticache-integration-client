@@ -1,0 +1,249 @@
+name: Python Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: python-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build release distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      artifact-name: ${{ steps.version.outputs.artifact-name }}
+      version: ${{ steps.version.outputs.version }}
+      project-name: ${{ steps.version.outputs.project-name }}
+      should-publish: ${{ steps.version.outputs.should-publish }}
+    defaults:
+      run:
+        working-directory: python
+
+    steps:
+      - name: Checkout release revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: python/pyproject.toml
+
+      - name: Install release build tools
+        run: python -m pip install --upgrade build packaging twine
+
+      - name: Resolve release mode and package version
+        id: version
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "${EVENT_NAME}" in
+            push)
+              if [[ "$(git cat-file -t "${RELEASE_TAG}")" != "tag" ]]; then
+                echo "::error::Release tag must be annotated: ${RELEASE_TAG}"
+                exit 1
+              fi
+              version="$(python scripts/release.py version --tag "${RELEASE_TAG}")"
+              should_publish="true"
+              ;;
+            workflow_dispatch)
+              version="$(python scripts/release.py current-version)"
+              should_publish="false"
+              echo "Manual dry run: validating ${version} without publishing"
+              ;;
+            *)
+              echo "::error::Unsupported workflow event: ${EVENT_NAME}"
+              exit 1
+              ;;
+          esac
+
+          project_name="$(python scripts/release.py project-name)"
+          echo "artifact-name=photon-python-${version}" >>"${GITHUB_OUTPUT}"
+          echo "version=${version}" >>"${GITHUB_OUTPUT}"
+          echo "project-name=${project_name}" >>"${GITHUB_OUTPUT}"
+          echo "should-publish=${should_publish}" >>"${GITHUB_OUTPUT}"
+
+      - name: Build wheel and source distribution once
+        run: python -m build --outdir release/dist
+
+      - name: Validate distribution metadata
+        run: python -m twine check release/dist/*
+
+      - name: Check packaged idempotency catalog
+        run: unzip -l release/dist/*.whl | grep -q "photon/idempotent-operations.json"
+
+      - name: Upload immutable release distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.version.outputs.artifact-name }}
+          path: python/release/
+          if-no-files-found: error
+          retention-days: 30
+
+  validate:
+    name: Run Python CI
+    uses: ./.github/workflows/python-ci.yml
+
+  smoke:
+    name: Smoke test wheel on Python ${{ matrix.python-version }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12", "3.14"]
+
+    steps:
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Download the distributions built by the release job
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: release
+
+      - name: Install and smoke test the wheel
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m pip install release/dist/*.whl
+          python - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          import photon
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert version("photon-python") == expected
+          assert photon.__version__ == expected
+          for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
+              assert hasattr(photon, name), name
+          PY
+
+  publish:
+    name: Publish to PyPI
+    needs: [build, validate, smoke]
+    if: needs.build.outputs.should-publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: release
+      url: https://pypi.org/project/${{ needs.build.outputs.project-name }}/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download the validated distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: release
+
+      - name: Publish the exact validated distributions
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: release/dist
+          attestations: true
+
+  verify:
+    name: Verify PyPI publication
+    needs: [build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI and smoke test the published version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.build.outputs.version }}
+          PROJECT_NAME: ${{ needs.build.outputs.project-name }}
+        run: |
+          set -euo pipefail
+          smoke_env="${RUNNER_TEMP}/photon-pypi-smoke"
+          python -m venv "${smoke_env}"
+          "${smoke_env}/bin/python" -m pip install --upgrade pip
+
+          for attempt in {1..20}; do
+            if "${smoke_env}/bin/python" -m pip install \
+              "${PROJECT_NAME}==${EXPECTED_VERSION}"; then
+              break
+            fi
+            if [[ "${attempt}" == "20" ]]; then
+              echo "::error::The published version did not become installable from PyPI."
+              exit 1
+            fi
+            sleep 30
+          done
+
+          "${smoke_env}/bin/python" - <<'PY'
+          import os
+          from importlib.metadata import version
+
+          import photon
+
+          expected = os.environ["EXPECTED_VERSION"]
+          assert version("photon-python") == expected
+          assert photon.__version__ == expected
+          for name in ("client", "PhotonCacheUnavailable", "PhotonConfigError", "PhotonError"):
+              assert hasattr(photon, name), name
+          PY
+
+  github-release:
+    name: Attach Python artifacts to GitHub Release
+    needs: [build, verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download the published distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build.outputs.artifact-name }}
+          path: release
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd release/dist && sha256sum * > ../python-SHA256SUMS)
+
+          if ! gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            if ! gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes; then
+              gh release view "${GITHUB_REF_NAME}" >/dev/null
+            fi
+          fi
+
+          gh release upload "${GITHUB_REF_NAME}" \
+            release/python-SHA256SUMS \
+            release/dist/* \
+            --clobber

@@ -12,6 +12,8 @@
 
 - `node/`: TypeScript/Node.js Photon client.
 - `java/`: Java/AWS SDK v2 Photon client.
+- `python/`: Python/boto3 Photon client.
+- `shared/`: language-neutral client contracts mirrored into packaged clients.
 - `README.md`: repository-wide overview and client scope.
 - `.github/workflows/`: CI contracts for each client.
 
@@ -31,7 +33,10 @@ Run commands from the client directory they apply to:
   and `npm run verify` for the complete local gate. Use `npm run pack:smoke`
   when changing package metadata, exports, builds, or published contents.
 - Java: use focused Gradle tests when appropriate and `./gradlew build` for the
-  complete local gate.
+  complete local gate. Gradle must run on JDK 21. Use `./gradlew spotlessApply`
+  to fix formatting.
+- Python: use focused pytest tests when appropriate and `python -m pytest` for
+  the complete local gate.
 - Before reporting completion, state which validation commands actually ran and
   which expected checks were not run.
 

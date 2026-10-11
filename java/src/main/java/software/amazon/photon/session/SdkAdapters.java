@@ -1,5 +1,13 @@
 package software.amazon.photon.session;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.SdkExecutionAttribute;
 import software.amazon.awssdk.http.AbortableInputStream;
@@ -10,20 +18,11 @@ import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-
 /**
  * Adapts between AWS SDK v2 HTTP types and Photon request/response models.
  *
- * <p>Used by {@link PhotonInterceptor} to convert SDK requests before sending
- * to the cache, and to convert Photon responses back to SDK responses.
+ * <p>Used by {@link PhotonInterceptor} to convert SDK requests before sending to the cache, and to
+ * convert Photon responses back to SDK responses.
  */
 public final class SdkAdapters {
 
@@ -32,18 +31,17 @@ public final class SdkAdapters {
     /**
      * Convert an AWS SDK HTTP request to a Photon request.
      *
-     * @param sdkRequest         the SDK request before signing
+     * @param sdkRequest the SDK request before signing
      * @param executionAttributes the execution attributes (for service/operation metadata)
      * @return the Photon request
      */
-    public static PhotonRequest toPhotonRequest(SdkHttpFullRequest sdkRequest,
-                                                  ExecutionAttributes executionAttributes) {
+    public static PhotonRequest toPhotonRequest(
+            SdkHttpFullRequest sdkRequest, ExecutionAttributes executionAttributes) {
         return toPhotonRequest(sdkRequest, executionAttributes, extractBody(sdkRequest));
     }
 
-    static PhotonRequest toPhotonRequest(SdkHttpFullRequest sdkRequest,
-                                         ExecutionAttributes executionAttributes,
-                                         byte[] body) {
+    static PhotonRequest toPhotonRequest(
+            SdkHttpFullRequest sdkRequest, ExecutionAttributes executionAttributes, byte[] body) {
         // Extract method and URL
         String method = sdkRequest.method().name();
         String url = sdkRequest.getUri().toString();
@@ -72,8 +70,8 @@ public final class SdkAdapters {
      * @return the SDK response
      */
     public static SdkHttpFullResponse toSdkResponse(PhotonResponse photonResponse) {
-        SdkHttpFullResponse.Builder builder = SdkHttpFullResponse.builder()
-                .statusCode(photonResponse.getStatusCode());
+        SdkHttpFullResponse.Builder builder =
+                SdkHttpFullResponse.builder().statusCode(photonResponse.getStatusCode());
 
         // Convert headers
         if (photonResponse.getHeaders() != null) {
@@ -91,18 +89,19 @@ public final class SdkAdapters {
         return builder.build();
     }
 
-    /**
-     * Extract the request body as a byte array.
-     */
+    /** Extract the request body as a byte array. */
     private static byte[] extractBody(SdkHttpFullRequest request) {
-        Optional<? extends InputStream> contentStreamProvider = request.contentStreamProvider()
-                .map(provider -> {
-                    try {
-                        return provider.newStream();
-                    } catch (Exception e) {
-                        throw new PhotonError("Failed to read request body", e);
-                    }
-                });
+        Optional<? extends InputStream> contentStreamProvider =
+                request
+                        .contentStreamProvider()
+                        .map(
+                                provider -> {
+                                    try {
+                                        return provider.newStream();
+                                    } catch (Exception e) {
+                                        throw new PhotonError("Failed to read request body", e);
+                                    }
+                                });
 
         if (!contentStreamProvider.isPresent()) {
             return new byte[0];
@@ -115,9 +114,7 @@ public final class SdkAdapters {
         }
     }
 
-    /**
-     * Read all bytes from an input stream.
-     */
+    /** Read all bytes from an input stream. */
     private static byte[] readAllBytes(InputStream stream) throws IOException {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] data = new byte[8192];
@@ -128,9 +125,7 @@ public final class SdkAdapters {
         return buffer.toByteArray();
     }
 
-    /**
-     * Extract service and operation metadata from execution attributes.
-     */
+    /** Extract service and operation metadata from execution attributes. */
     private static RequestMetadata extractMetadata(ExecutionAttributes attributes) {
         String service = null;
         String operation = null;

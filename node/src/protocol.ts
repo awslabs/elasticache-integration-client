@@ -1,6 +1,11 @@
 import { TextDecoder } from "node:util";
 
-import { PhotonError } from "./errors.js";
+import {
+  PhotonError,
+  PhotonOverridesRejected,
+  PhotonProtocolError,
+  PhotonRejectedError,
+} from "./errors.js";
 import { PhotonResponse, ResolvedConfig, type PhotonRequest } from "./models.js";
 import { RespError, type RespValue } from "./resp.js";
 
@@ -16,6 +21,9 @@ import { RespError, type RespValue } from "./resp.js";
  */
 export const CONFIG_COMMAND = "photon.config";
 export const REQUEST_COMMAND = "photon.request";
+export const PUSH_KIND_RESPONSE = Buffer.from("photon.response", "ascii");
+/** RESP error code the proxy returns when it rejects the `photon.config` overrides. */
+export const CONFIG_INVALID_CODE = "CONFIG_INVALID";
 
 const MIN_STATUS = 100;
 const MAX_STATUS = 599;
@@ -100,7 +108,7 @@ function parseHeaders(raw: Buffer): Record<string, string> {
   try {
     text = valueAsText(raw);
   } catch (cause) {
-    throw new PhotonError("Invalid UTF-8 in response headers", { cause });
+    throw new PhotonProtocolError("Invalid UTF-8 in response headers", { cause });
   }
   const headers: Record<string, string> = {};
 
@@ -123,7 +131,7 @@ function parseHeaders(raw: Buffer): Record<string, string> {
 function parseStatus(raw: unknown): number {
   if (typeof raw === "number") {
     if (!Number.isFinite(raw)) {
-      throw new PhotonError(`Invalid status code: ${String(raw)}`);
+      throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
     }
     return Math.trunc(raw);
   }
@@ -132,16 +140,16 @@ function parseStatus(raw: unknown): number {
   try {
     text = valueAsText(raw);
   } catch (cause) {
-    throw new PhotonError("Invalid UTF-8 in response status", { cause });
+    throw new PhotonProtocolError("Invalid UTF-8 in response status", { cause });
   }
   // Accept an integer status string with optional surrounding whitespace, such as " 200 ".
   // Decimal, exponent, and other numeric formats are rejected.
   if (!/^\s*[+-]?\d+\s*$/.test(text)) {
-    throw new PhotonError(`Invalid status code: ${String(raw)}`);
+    throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
   }
   const value = Number(text);
   if (!Number.isFinite(value)) {
-    throw new PhotonError(`Invalid status code: ${String(raw)}`);
+    throw new PhotonProtocolError(`Invalid status code: ${String(raw)}`);
   }
   return value;
 }
@@ -154,7 +162,7 @@ function parseStatus(raw: unknown): number {
  */
 export function deserializeResponse(elements: readonly unknown[] | null): PhotonResponse {
   if (!Array.isArray(elements) || elements.length !== 3) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed response: expected 3 elements [status, headers, body], got ${
         elements === null
           ? "None"
@@ -168,10 +176,12 @@ export function deserializeResponse(elements: readonly unknown[] | null): Photon
   const [statusRaw, headersRaw, bodyRaw] = elements;
   const status = parseStatus(statusRaw);
   if (status < MIN_STATUS || status > MAX_STATUS) {
-    throw new PhotonError(`Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`);
+    throw new PhotonProtocolError(
+      `Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`,
+    );
   }
   if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
     );
   }
@@ -193,12 +203,17 @@ function describeType(value: unknown): string {
 /**
  * Build the `photon.config` command from an overrides object.
  *
- * Returns `["photon.config", [overridesJsonBytes]]`.
+ * Returns `["photon.config", [overridesJsonBytes]]`. `null`/`undefined` means "no overrides
+ * argument at all" and returns `["photon.config", []]`, which is how a refresh asks the cache
+ * for the current config; an empty object still sends an explicit `{}` argument.
  */
 export function serializeConfig(
   overrides: Record<string, unknown> | null | undefined,
-): [string, [Buffer]] {
-  const payload = escapeNonAscii(stringifyConfig(overrides ?? {}));
+): [string, Buffer[]] {
+  if (overrides === null || overrides === undefined) {
+    return [CONFIG_COMMAND, []];
+  }
+  const payload = escapeNonAscii(stringifyConfig(overrides));
   return [CONFIG_COMMAND, [Buffer.from(payload, "utf8")]];
 }
 
@@ -236,6 +251,9 @@ function escapeNonAscii(value: string): string {
  */
 export function parseConfigResponse(value: RespValue): ResolvedConfig {
   if (value instanceof RespError) {
+    if (value.code === CONFIG_INVALID_CODE) {
+      throw new PhotonOverridesRejected(`photon.config rejected: ${value.toString()}`);
+    }
     throw new PhotonError(`photon.config failed: ${value.toString()}`);
   }
   if (!Buffer.isBuffer(value)) {
@@ -268,9 +286,31 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   const object = raw as Record<string, unknown>;
   return new ResolvedConfig({
     version: object.version,
-    refreshInterval: object.refresh_interval,
+    refreshInterval: parseRefreshInterval(object.refresh_interval),
     raw: object,
   });
+}
+
+/**
+ * Validate the `refresh_interval` field: required, an integer number of seconds, and positive.
+ *
+ * The value feeds the config refresher's jittered delay arithmetic, so a
+ * missing, wrongly typed, or non-positive value is treated as a malformed config rather than
+ * deferred to a background timer.
+ */
+function parseRefreshInterval(value: unknown): number {
+  if (value === undefined || value === null) {
+    throw new PhotonError("Config JSON missing required field 'refresh_interval'");
+  }
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new PhotonError(
+      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${JSON.stringify(value) ?? String(value)}`,
+    );
+  }
+  if (value <= 0) {
+    throw new PhotonError(`Invalid 'refresh_interval': must be positive, got ${value}`);
+  }
+  return value;
 }
 
 /**
@@ -296,15 +336,14 @@ export function serializeRequest(
 /**
  * Interpret a `photon.request` reply into a PhotonResponse.
  *
- * Expects a 3-element array `[status, headers, body]`. Raises `PhotonError` on a `RespError`
- * reply or a malformed shape.
+ * Expects a 3-element array `[status, headers, body]`.
  */
 export function parseRequestResponse(value: RespValue): PhotonResponse {
   if (value instanceof RespError) {
-    throw new PhotonError(`photon.request failed: ${value.toString()}`);
+    throw new PhotonRejectedError(value.code, `photon.request failed: ${value.toString()}`);
   }
   if (!Array.isArray(value)) {
-    throw new PhotonError(
+    throw new PhotonProtocolError(
       `Malformed request response: expected array, got ${value === null ? "null" : typeof value}`,
     );
   }

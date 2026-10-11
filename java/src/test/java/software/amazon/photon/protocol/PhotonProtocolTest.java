@@ -1,17 +1,21 @@
 package software.amazon.photon.protocol;
 
+import static org.junit.jupiter.api.Assertions.*;
+
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import software.amazon.photon.exception.PhotonError;
+import software.amazon.photon.exception.PhotonOverridesRejected;
 import software.amazon.photon.exception.PhotonProtocolError;
+import software.amazon.photon.exception.PhotonRejectedError;
 import software.amazon.photon.model.PhotonRequest;
 import software.amazon.photon.model.PhotonResponse;
 import software.amazon.photon.model.RequestMetadata;
 import software.amazon.photon.model.ResolvedConfig;
 import software.amazon.photon.resp.*;
-
-import java.nio.charset.StandardCharsets;
-import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.*;
 
 class PhotonProtocolTest {
 
@@ -19,9 +23,12 @@ class PhotonProtocolTest {
 
     @Test
     void serializeRequest_argCount() {
-        PhotonRequest request = new PhotonRequest("GET", "https://example.com",
-                Collections.singletonMap("Host", "example.com"),
-                new RequestMetadata("s3", "GetObject"));
+        PhotonRequest request =
+                new PhotonRequest(
+                        "GET",
+                        "https://example.com",
+                        Collections.singletonMap("Host", "example.com"),
+                        new RequestMetadata("s3", "GetObject"));
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         assertEquals(PhotonProtocol.REQUEST_COMMAND, cmd.getCommandName());
         assertEquals(5, cmd.getArgs().size());
@@ -29,9 +36,13 @@ class PhotonProtocolTest {
 
     @Test
     void serializeRequest_methodCoercion() {
-        PhotonRequest request = new PhotonRequest("POST", "https://example.com",
-                Collections.emptyMap(), "body".getBytes(StandardCharsets.UTF_8),
-                new RequestMetadata("svc", "op"));
+        PhotonRequest request =
+                new PhotonRequest(
+                        "POST",
+                        "https://example.com",
+                        Collections.emptyMap(),
+                        "body".getBytes(StandardCharsets.UTF_8),
+                        new RequestMetadata("svc", "op"));
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         assertArrayEquals("POST".getBytes(StandardCharsets.UTF_8), cmd.getArgs().get(0));
         assertArrayEquals("https://example.com".getBytes(StandardCharsets.UTF_8), cmd.getArgs().get(1));
@@ -40,16 +51,21 @@ class PhotonProtocolTest {
     @Test
     void serializeRequest_bodyPassedThrough() {
         byte[] body = "request body".getBytes(StandardCharsets.UTF_8);
-        PhotonRequest request = new PhotonRequest("PUT", "https://example.com",
-                Collections.emptyMap(), body, new RequestMetadata("svc", "op"));
+        PhotonRequest request =
+                new PhotonRequest(
+                        "PUT",
+                        "https://example.com",
+                        Collections.emptyMap(),
+                        body,
+                        new RequestMetadata("svc", "op"));
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         assertArrayEquals(body, cmd.getArgs().get(3));
     }
 
     @Test
     void serializeRequest_nullMetadata() {
-        PhotonRequest request = new PhotonRequest("GET", "https://example.com",
-                Collections.emptyMap(), null);
+        PhotonRequest request =
+                new PhotonRequest("GET", "https://example.com", Collections.emptyMap(), null);
         assertNotNull(request.getMetadata());
         SerializedCommand cmd = PhotonProtocol.serializeRequest(request);
         assertArrayEquals("service=&op=".getBytes(StandardCharsets.UTF_8), cmd.getArgs().get(4));
@@ -93,8 +109,8 @@ class PhotonProtocolTest {
         headers2.put("Accept", "text/html");
         headers2.put("Content-Type", "application/json");
 
-        assertArrayEquals(PhotonProtocol.normalizeHeaders(headers1),
-                PhotonProtocol.normalizeHeaders(headers2));
+        assertArrayEquals(
+                PhotonProtocol.normalizeHeaders(headers1), PhotonProtocol.normalizeHeaders(headers2));
 
         // Should be sorted by name
         String result = new String(PhotonProtocol.normalizeHeaders(headers1), StandardCharsets.UTF_8);
@@ -110,6 +126,22 @@ class PhotonProtocolTest {
         byte[] result = PhotonProtocol.normalizeHeaders(headers);
         String resultStr = new String(result, StandardCharsets.UTF_8);
         assertEquals("content-type:application/json", resultStr);
+    }
+
+    @Test
+    void normalizeHeaders_ignoresDefaultLocale() {
+        Locale original = Locale.getDefault();
+        Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+        try {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("If-Match", "etag");
+            headers.put("X-Amz-Id-2", "id");
+            headers.put("X-Amz-Request-Id", "req-id");
+            String result = new String(PhotonProtocol.normalizeHeaders(headers), StandardCharsets.UTF_8);
+            assertEquals("if-match:etag\nx-amz-id-2:id", result);
+        } finally {
+            Locale.setDefault(original);
+        }
     }
 
     // === formatMetadata tests ===
@@ -145,6 +177,56 @@ class PhotonProtocolTest {
     }
 
     @Test
+    void parseConfigResponse_missingVersion_defaultsToNull() {
+        // 'version' is optional; 'refresh_interval' is required, so it must still be present.
+        String json = "{\"refresh_interval\":60,\"predicates\":[]}";
+        ResolvedConfig config =
+                PhotonProtocol.parseConfigResponse(
+                        new RespBulkString(json.getBytes(StandardCharsets.UTF_8)));
+        assertNull(config.getVersion());
+        assertEquals(Integer.valueOf(60), config.getRefreshInterval());
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {1, 5, 60, 3600, Integer.MAX_VALUE})
+    void parseConfigResponse_acceptsAnyPositiveInteger(int seconds) {
+        // Any positive integer is accepted
+        String json = "{\"refresh_interval\":" + seconds + "}";
+        ResolvedConfig config =
+                PhotonProtocol.parseConfigResponse(
+                        new RespBulkString(json.getBytes(StandardCharsets.UTF_8)));
+        assertEquals(Integer.valueOf(seconds), config.getRefreshInterval());
+    }
+
+    /**
+     * An invalid refresh_interval must fail parsing here rather than crash a background refresher
+     * later, and an integral-looking real such as 60.0 must be rejected, not truncated to 60.
+     */
+    @ParameterizedTest
+    @ValueSource(
+            strings = {
+                "{\"predicates\":[]}", // missing entirely
+                "{\"refresh_interval\":null}", // explicit null
+                "{\"refresh_interval\":\"60\"}", // wrong type: string
+                "{\"refresh_interval\":true}", // wrong type: boolean
+                "{\"refresh_interval\":false}", // wrong type: boolean
+                "{\"refresh_interval\":60.0}", // wrong type: real
+                "{\"refresh_interval\":60.9}", // wrong type: real, would truncate to 60
+                "{\"refresh_interval\":0.5}", // wrong type: real, would truncate to 0
+                "{\"refresh_interval\":[60]}", // wrong type: array
+                "{\"refresh_interval\":{\"seconds\":60}}", // wrong type: object
+                "{\"refresh_interval\":0}", // not positive
+                "{\"refresh_interval\":-1}", // not positive
+                "{\"refresh_interval\":-60}", // not positive
+                "{\"refresh_interval\":2147483648}", // Integer.MAX_VALUE + 1
+                "{\"refresh_interval\":9223372036854775808}" // beyond long: BigInteger
+            })
+    void parseConfigResponse_rejectsInvalidRefreshInterval(String json) {
+        RespBulkString value = new RespBulkString(json.getBytes(StandardCharsets.UTF_8));
+        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
+    }
+
+    @Test
     void parseConfigResponse_malformedJson() {
         RespBulkString value = new RespBulkString("not json".getBytes(StandardCharsets.UTF_8));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
@@ -160,7 +242,19 @@ class PhotonProtocolTest {
     @Test
     void parseConfigResponse_errorFrame() {
         RespError error = new RespError("ERR", "something failed");
-        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(error));
+        PhotonError thrown =
+                assertThrows(PhotonError.class, () -> PhotonProtocol.parseConfigResponse(error));
+        assertFalse(thrown instanceof PhotonProtocolError);
+        assertFalse(thrown instanceof PhotonOverridesRejected);
+    }
+
+    @Test
+    void parseConfigResponse_configInvalidIsOverridesRejected() {
+        RespError error = new RespError("CONFIG_INVALID", "unknown override key");
+        PhotonOverridesRejected thrown =
+                assertThrows(
+                        PhotonOverridesRejected.class, () -> PhotonProtocol.parseConfigResponse(error));
+        assertTrue(thrown.getMessage().contains("unknown override key"));
     }
 
     @Test
@@ -177,7 +271,7 @@ class PhotonProtocolTest {
 
     @Test
     void parseConfigResponse_rejectsInvalidUtf8() {
-        RespBulkString value = new RespBulkString(new byte[]{(byte) 0xff});
+        RespBulkString value = new RespBulkString(new byte[] {(byte) 0xff});
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseConfigResponse(value));
     }
 
@@ -185,11 +279,11 @@ class PhotonProtocolTest {
 
     @Test
     void parseRequestResponse_valid() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString("content-type:application/json".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString("response body".getBytes(StandardCharsets.UTF_8))
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespBulkString("content-type:application/json".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString("response body".getBytes(StandardCharsets.UTF_8)));
         RespArray array = new RespArray(elements);
         PhotonResponse response = PhotonProtocol.parseRequestResponse(array);
         assertEquals(200, response.getStatusCode());
@@ -206,7 +300,9 @@ class PhotonProtocolTest {
     @Test
     void parseRequestResponse_errorFrame() {
         RespError error = new RespError("CACHE", "miss");
-        assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.parseRequestResponse(error));
+        PhotonRejectedError failure =
+                assertThrows(PhotonRejectedError.class, () -> PhotonProtocol.parseRequestResponse(error));
+        assertEquals("CACHE", failure.getCode());
     }
 
     // === deserializeResponse tests ===
@@ -219,83 +315,82 @@ class PhotonProtocolTest {
 
     @Test
     void deserializeResponse_wrongShape_tooMany() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespBulkString(new byte[0]),
+                        new RespBulkString(new byte[0]),
+                        new RespBulkString(new byte[0]));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
     @Test
     void deserializeResponse_nonIntegerStatus() {
-        List<RespValue> elements = Arrays.asList(
-                new RespBulkString("not_a_number".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespBulkString("not_a_number".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString(new byte[0]),
+                        new RespBulkString(new byte[0]));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
     @Test
     void deserializeResponse_outOfRangeStatus_low() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(99),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(99), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
     @Test
     void deserializeResponse_outOfRangeStatus_high() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(600),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(600), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
     @Test
     void deserializeResponse_skipsMalformedHeaderLinesAndTrimsValues() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(" content-type : application/json \nno-colon-here".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespBulkString(
+                                " content-type : application/json \nno-colon-here"
+                                        .getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString(new byte[0]));
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
-        assertEquals(Collections.singletonMap("content-type", "application/json"), response.getHeaders());
+        assertEquals(
+                Collections.singletonMap("content-type", "application/json"), response.getHeaders());
     }
 
     @Test
     void deserializeResponse_rejectsInvalidUtf8InHeaders() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(new byte[]{(byte) 0xff}),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespBulkString(new byte[] {(byte) 0xff}),
+                        new RespBulkString(new byte[0]));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
     @Test
     void deserializeResponse_acceptsWhitespaceAroundStringStatus() {
-        List<RespValue> elements = Arrays.asList(
-                new RespBulkString(" 200 ".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespBulkString(" 200 ".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString(new byte[0]),
+                        new RespBulkString(new byte[0]));
         assertEquals(200, PhotonProtocol.deserializeResponse(elements).getStatusCode());
     }
 
     @Test
     void deserializeResponse_emptyHeaders() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(new byte[0]),
-                new RespBulkString("body".getBytes(StandardCharsets.UTF_8))
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespBulkString(new byte[0]),
+                        new RespBulkString("body".getBytes(StandardCharsets.UTF_8)));
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
         assertEquals(200, response.getStatusCode());
         assertTrue(response.getHeaders().isEmpty());
@@ -305,11 +400,11 @@ class PhotonProtocolTest {
     @Test
     void deserializeResponse_strInputStatus() {
         // Status as bulk string "200" should work
-        List<RespValue> elements = Arrays.asList(
-                new RespBulkString("200".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString("host:example.com".getBytes(StandardCharsets.UTF_8)),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespBulkString("200".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString("host:example.com".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString(new byte[0]));
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
         assertEquals(200, response.getStatusCode());
         assertEquals("example.com", response.getHeaders().get("host"));
@@ -317,22 +412,18 @@ class PhotonProtocolTest {
 
     @Test
     void deserializeResponse_boundaryStatus_100() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(100),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(100), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
         assertEquals(100, response.getStatusCode());
     }
 
     @Test
     void deserializeResponse_boundaryStatus_599() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(599),
-                new RespBulkString(new byte[0]),
-                new RespBulkString(new byte[0])
-        );
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(599), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
         assertEquals(599, response.getStatusCode());
     }
@@ -341,11 +432,8 @@ class PhotonProtocolTest {
 
     @Test
     void deserializeResponse_nullBody_treatedAsEmpty() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(new byte[0]),
-                RespNull.INSTANCE
-        );
+        List<RespValue> elements =
+                Arrays.asList(new RespInteger(200), new RespBulkString(new byte[0]), RespNull.INSTANCE);
         PhotonResponse response = PhotonProtocol.deserializeResponse(elements);
         assertEquals(200, response.getStatusCode());
         assertArrayEquals(new byte[0], response.getBody());
@@ -353,11 +441,8 @@ class PhotonProtocolTest {
 
     @Test
     void deserializeResponse_unexpectedBodyType_throws() {
-        List<RespValue> elements = Arrays.asList(
-                new RespInteger(200),
-                new RespBulkString(new byte[0]),
-                new RespInteger(42)
-        );
+        List<RespValue> elements =
+                Arrays.asList(new RespInteger(200), new RespBulkString(new byte[0]), new RespInteger(42));
         assertThrows(PhotonProtocolError.class, () -> PhotonProtocol.deserializeResponse(elements));
     }
 
@@ -375,8 +460,17 @@ class PhotonProtocolTest {
     }
 
     @Test
-    void serializeConfig_null() {
+    void serializeConfig_null_sendsNoArgumentForm() {
+        // null means "unchanged since last send"; distinct from an explicit {}, which the
+        // server treats as a reset to its defaults.
         SerializedCommand cmd = PhotonProtocol.serializeConfig(null);
+        assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
+        assertEquals(0, cmd.getArgs().size());
+    }
+
+    @Test
+    void serializeConfig_emptyMap_sendsExplicitEmptyObject() {
+        SerializedCommand cmd = PhotonProtocol.serializeConfig(Collections.emptyMap());
         assertEquals(PhotonProtocol.CONFIG_COMMAND, cmd.getCommandName());
         assertEquals(1, cmd.getArgs().size());
         assertEquals("{}", new String(cmd.getArgs().get(0), StandardCharsets.UTF_8));

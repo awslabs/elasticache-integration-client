@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  PhotonAuthError,
+  PhotonCacheUnavailable,
+  PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionLost,
   PhotonConnectionError,
   PhotonError,
   PhotonProtocolError,
+  PhotonRejectedError,
   PhotonTimeoutError,
 } from "../src/errors.js";
 import * as photon from "../src/index.js";
 
 const ERROR_TYPES = [
   PhotonError,
+  PhotonAuthError,
+  PhotonConfigError,
+  PhotonOverridesRejected,
+  PhotonConfigUnevaluable,
   PhotonConnectionError,
   PhotonProtocolError,
   PhotonConnectionLost,
@@ -42,7 +52,27 @@ describe("Photon errors", () => {
     expect(error.name).toBe(ErrorType.name);
   });
 
-  it("does not expose internal error types from the package entry point", () => {
-    expect("PhotonError" in photon).toBe(false);
+  it("exposes the public configuration and availability errors", () => {
+    expect(photon.PhotonError).toBe(PhotonError);
+    expect(photon.PhotonConfigError).toBe(PhotonConfigError);
+    expect(photon.PhotonCacheUnavailable).toBe(PhotonCacheUnavailable);
+  });
+
+  it("makes cache unavailability retryable without putting it in PhotonError", () => {
+    const error = new PhotonCacheUnavailable("https://origin.example:8443");
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(PhotonError);
+    expect(error.endpointUrl).toBe("https://origin.example:8443");
+    expect(error.$retryable).toEqual({});
+    expect(error.message).toContain("https://origin.example:8443");
+  });
+
+  it("preserves the RESP error code on a rejection", () => {
+    const error = new PhotonRejectedError("ORIGIN_ERROR", "origin unavailable");
+
+    expect(error.code).toBe("ORIGIN_ERROR");
+    expect(error.message).toBe("origin unavailable");
+    expect(error).toBeInstanceOf(PhotonError);
   });
 });

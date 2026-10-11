@@ -1,0 +1,30 @@
+{
+  "dynamodb": [
+    "BatchGetItem",
+    "DescribeBackup",
+    "DescribeContinuousBackups",
+    "DescribeContributorInsights",
+    "DescribeEndpoints",
+    "DescribeExport",
+    "DescribeGlobalTable",
+    "DescribeGlobalTableSettings",
+    "DescribeImport",
+    "DescribeKinesisStreamingDestination",
+    "DescribeLimits",
+    "DescribeTable",
+    "DescribeTableReplicaAutoScaling",
+    "DescribeTimeToLive",
+    "GetItem",
+    "GetResourcePolicy",
+    "ListBackups",
+    "ListContributorInsights",
+    "ListExports",
+    "ListGlobalTables",
+    "ListImports",
+    "ListTables",
+    "ListTagsOfResource",
+    "Query",
+    "Scan",
+    "TransactGetItems"
+  ]
+}

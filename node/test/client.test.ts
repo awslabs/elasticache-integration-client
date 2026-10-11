@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import { constructStack } from "@smithy/core/client";
 import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from "@smithy/types";
 
+import { PhotonConfigError } from "../src/errors.js";
+
 const mocks = vi.hoisted(() => ({
   buildCacheAuthProvider: vi.fn(),
   connection: vi.fn(),
@@ -61,6 +63,14 @@ const credentials = {
   secretAccessKey: "secret-example",
 };
 
+const generatedAuthProvider = Object.assign(
+  vi.fn(async () => ["iam-user", "iam-token"] as [string, string]),
+  {
+    refreshAuth: vi.fn(async () => ["iam-user", "refreshed-token"] as [string, string]),
+    close: vi.fn(),
+  },
+);
+
 const createdClients: FakeClient[] = [];
 
 class FakeClient {
@@ -87,10 +97,15 @@ function setup() {
     mocks.sessionConstructor,
     mocks.handle.install,
     mocks.handleConstructor,
+    generatedAuthProvider,
+    generatedAuthProvider.refreshAuth,
+    generatedAuthProvider.close,
   ]) {
     mock.mockReset();
   }
-  mocks.buildCacheAuthProvider.mockResolvedValue("auth-provider");
+  generatedAuthProvider.mockResolvedValue(["iam-user", "iam-token"]);
+  generatedAuthProvider.refreshAuth.mockResolvedValue(["iam-user", "refreshed-token"]);
+  mocks.buildCacheAuthProvider.mockResolvedValue(generatedAuthProvider);
   mocks.session.open.mockResolvedValue(undefined);
 }
 
@@ -123,12 +138,24 @@ describe("client", () => {
     });
     const authOptions = mocks.buildCacheAuthProvider.mock.calls[0]![0];
     await expect(authOptions.credentials()).resolves.toBe(credentials);
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as (() => unknown) & {
+      close?: () => void;
+    };
+    connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       tls: false,
       requestTimeout: 1234,
-      authProvider: "auth-provider",
+      authProvider: generatedAuthProvider,
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), { timeout: 42 });
+    connectorFactory.close?.();
+    expect(generatedAuthProvider.close).toHaveBeenCalledOnce();
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      {
+        stalenessDurationMs: 3_600_000,
+      },
+    );
     expect(mocks.session.open).toHaveBeenCalledOnce();
     expect(mocks.handleConstructor).toHaveBeenCalledWith(sdkClient, mocks.session, "dynamodb");
     expect(mocks.handle.install).toHaveBeenCalledOnce();
@@ -150,8 +177,129 @@ describe("client", () => {
       cacheName: "my-cache",
       credentials: expect.any(Function),
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), {});
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      {},
+      {
+        stalenessDurationMs: 3_600_000,
+      },
+    );
   });
+
+  it("passes reconnect policy to the session", async () => {
+    setup();
+    const reconnectPolicy = {
+      connectAttempts: 2,
+      connectionTimeoutMs: 50,
+      baseDelayMs: 5,
+      maxDelayMs: 20,
+      jitter: 0.1,
+    };
+
+    await client("dynamodb", FakeClient, { ...options, reconnectPolicy });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      {
+        ...reconnectPolicy,
+        stalenessDurationMs: 3_600_000,
+      },
+    );
+  });
+
+  it("passes a custom IAM refresh interval to the managed auth provider", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, {
+      ...options,
+      iamRefreshAfterSeconds: 120,
+    });
+
+    expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
+      cacheName: "my-cache",
+      credentials: expect.any(Function),
+      refreshAfterSeconds: 120,
+      region: "us-east-1",
+      userId: "iam-user",
+    });
+  });
+
+  it("converts the public fallback duration from seconds to milliseconds", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, { ...options, fallbackDuration: 60 });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      {
+        fallbackDurationMs: 60_000,
+        stalenessDurationMs: 3_600_000,
+      },
+    );
+  });
+
+  it.each([0.5, Number.MAX_SAFE_INTEGER])(
+    "rejects unsupported fallback duration %s",
+    async (fallbackDuration) => {
+      setup();
+
+      await expect(
+        client("dynamodb", FakeClient, { ...options, fallbackDuration }),
+      ).rejects.toThrow("fallbackDuration must be a whole number of seconds");
+    },
+  );
+
+  it("uses a supplied authProvider instead of generating a token", async () => {
+    setup();
+    const authProvider = () => ["injected-user", "injected-token"] as [string, string];
+
+    await client("dynamodb", FakeClient, {
+      endpoint: options.endpoint,
+      cacheName: options.cacheName,
+      clientConfig: { credentials },
+      connectorOptions: { tls: false, authProvider },
+    });
+
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
+    connectorFactory();
+    expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
+      tls: false,
+      authProvider,
+    });
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      {},
+      {
+        stalenessDurationMs: 3_600_000,
+      },
+    );
+  });
+
+  it("plumbs a custom stalenessDuration to the session as milliseconds", async () => {
+    setup();
+
+    await client("dynamodb", FakeClient, { ...options, stalenessDuration: 120 });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      stalenessDurationMs: 120_000,
+    });
+  });
+
+  it.each([0, -1, 1.5, NaN, Infinity, 2 ** 53])(
+    "rejects an invalid stalenessDuration of %s before creating the SDK client",
+    async (stalenessDuration) => {
+      setup();
+
+      await expect(
+        client("dynamodb", FakeClient, { ...options, stalenessDuration }),
+      ).rejects.toThrow(PhotonConfigError);
+      expect(createdClients).toHaveLength(0);
+      expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["auth", "open", "install"])(
     "cleans up owned resources when %s initialization fails",

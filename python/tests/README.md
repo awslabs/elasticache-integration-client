@@ -26,11 +26,14 @@ From `python/`:
 python -m pytest                       # run the whole suite (coverage is reported automatically)
 python -m pytest -q                    # quieter output
 python -m pytest --no-cov              # skip coverage for a faster inner loop
-python -m pytest tests/test_protocol.py              # one file
-python -m pytest tests/test_connection.py            # connector unit + integration tests
+python -m pytest --no-cov tests/test_protocol.py              # one file
+python -m pytest --no-cov tests/test_connection.py            # connector unit + integration tests
 ```
 
-Coverage (`--cov=photon --cov-report=term-missing`) is enabled by default via `pyproject.toml`.
+Coverage (`--cov=photon --cov-report=term-missing`) is enabled by default via `pyproject.toml`,
+and the run fails if combined line and branch coverage drops below `fail_under` in
+`[tool.coverage.report]`. A subset of the suite never reaches that floor, so pass `--no-cov`
+when running individual files.
 
 ### Fast loop vs. end-to-end
 
@@ -52,6 +55,7 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | `test_connection.py` | component + integration | `photon.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `PhotonConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
 | `test_session.py` | component | `photon.session.PhotonSession` sync API, driven by the `mock_connector()` autospec double |
 | `test_hooks.py` | component | `photon.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
+| `test_idempotency.py` | component | replay-safe operation lookup loads the shared language-neutral catalog |
 | `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
 | `test_ddb.py` | **end-to-end** | the full path `photon.client → boto3 GetItem → hook → PhotonSession → real PhotonConnector (TLS) → MockCache` |
 

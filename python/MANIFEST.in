@@ -1,0 +1,5 @@
+# The tests need fixtures the sdist does not carry (tests/mock.py), so leave them out.
+prune tests
+recursive-include vendor/developer-toolkit-elasticache/python/src *.py py.typed
+include vendor/developer-toolkit-elasticache/python/LICENSE
+include vendor/developer-toolkit-elasticache/python/NOTICE

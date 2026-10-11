@@ -34,6 +34,7 @@ from botocore.hooks import HierarchicalEmitter
 
 from photon.connection import PhotonConnector
 from photon.models import PhotonResponse, RequestMetadata
+from photon.protocol import PUSH_KIND_RESPONSE
 from photon.session import PhotonSession
 
 _CRLF = b"\r\n"
@@ -49,9 +50,20 @@ DEFAULT_RESOLVED_CONFIG = {
     "predicates": [
         {
             "expr": "service == 'dynamodb' && operation in ops",
-            "vars": {"ops": ["GetItem", "BatchGetItem", "Query", "Scan", "PutItem", "UpdateItem",
-                             "DeleteItem", "BatchWriteItem", "TransactGetItems",
-                             "TransactWriteItems"]},
+            "vars": {
+                "ops": [
+                    "GetItem",
+                    "BatchGetItem",
+                    "Query",
+                    "Scan",
+                    "PutItem",
+                    "UpdateItem",
+                    "DeleteItem",
+                    "BatchWriteItem",
+                    "TransactGetItems",
+                    "TransactWriteItems",
+                ]
+            },
         }
     ],
 }
@@ -70,24 +82,27 @@ def table_allowlist_config(*tables: str) -> dict:
         "predicates": [
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.TableName) && body.TableName in allowed",
-                "vars": {"ops": ["GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem"],
-                         "allowed": allowed},
+                "&& has(body.TableName) && body.TableName in allowed",
+                "vars": {
+                    "ops": ["GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem"],
+                    "allowed": allowed,
+                },
             },
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.RequestItems) && size(body.RequestItems) > 0 "
-                        "&& body.RequestItems.all(t, t in allowed)",
+                "&& has(body.RequestItems) && size(body.RequestItems) > 0 "
+                "&& body.RequestItems.all(t, t in allowed)",
                 "vars": {"ops": ["BatchGetItem", "BatchWriteItem"], "allowed": allowed},
             },
             {
                 "expr": "service == 'dynamodb' && operation in ops "
-                        "&& has(body.TransactItems) && size(body.TransactItems) > 0 "
-                        "&& body.TransactItems.all(i, i.all(k, i[k].TableName in allowed))",
+                "&& has(body.TransactItems) && size(body.TransactItems) > 0 "
+                "&& body.TransactItems.all(i, i.all(k, i[k].TableName in allowed))",
                 "vars": {"ops": ["TransactGetItems", "TransactWriteItems"], "allowed": allowed},
             },
         ],
     }
+
 
 # Error codes the real cache uses in its `-<CODE> <message>` replies. They are
 # client-visible protocol, so the mock replies with the same names.
@@ -112,6 +127,10 @@ def _array(items: list[bytes]) -> bytes:
     return b"*" + str(len(items)).encode() + _CRLF + b"".join(items)
 
 
+def _map(pairs: list[tuple[bytes, bytes]]) -> bytes:
+    return b"%" + str(len(pairs)).encode() + _CRLF + b"".join(k + v for k, v in pairs)
+
+
 def _error(code: str, message: str) -> bytes:
     text = f"{code} {message}".strip()
     # An error line is CRLF-framed; a newline inside it would silently truncate the
@@ -119,6 +138,14 @@ def _error(code: str, message: str) -> bytes:
     if "\r" in text or "\n" in text:
         raise ValueError(f"error text must be newline-free: {text!r}")
     return b"-" + text.encode() + _CRLF
+
+
+def _simple_string(data: bytes) -> bytes:
+    return b"+" + data + _CRLF
+
+
+def _push(items: list[bytes]) -> bytes:
+    return b">" + str(len(items)).encode() + _CRLF + b"".join(items)
 
 
 # --------------------------------------------------------------------------- #
@@ -147,6 +174,22 @@ class Reply:
     def error(cls, code: str = "ERR", message: str = "mock error reply") -> "Reply":
         """A RESP error reply ``-<CODE> <message>``."""
         return cls(_error(code, message))
+
+    @classmethod
+    def push_response(cls, request_id: int, reply: "Reply | None" = None) -> "Reply":
+        """An out-of-band exchange: the request id as a simple string, immediately followed
+        by the ``photon.response`` push carrying ``reply`` (default :meth:`ok`) for that id."""
+        reply = reply or cls.ok()
+        return cls(
+            _simple_string(str(request_id).encode())
+            + _push([_bulk(PUSH_KIND_RESPONSE), _bulk(str(request_id).encode()), reply.frame])
+        )
+
+    @classmethod
+    def request_id(cls, request_id: int) -> "Reply":
+        """Only the request id (simple string); the push never arrives on its own — deliver it
+        later with :meth:`MockCache.send_push`."""
+        return cls(_simple_string(str(request_id).encode()))
 
 
 # --------------------------------------------------------------------------- #
@@ -237,7 +280,7 @@ def _read_command(rfile) -> list[bytes] | None:
 class MockCache:
     """A fake Photon cache server.
 
-    Accepts any AUTH, serves a canned config, and answers each ``photon.request`` with
+    Accepts any AUTH, answers ``HELLO 3`` with a RESP3 map, serves a canned config, and answers each ``photon.request`` with
     ``response_fn(request)``, a fixed ``response``, or the default built from
     ``response_status``/``response_headers``/``response_body``
     Records everything received (``received_commands``, ``photon_command_log``, ``requests``).
@@ -246,7 +289,7 @@ class MockCache:
     replying. ``failure_after_reply=True`` sends the normal reply first and *then* misbehaves —
     e.g. with ``failure="drop"`` the reply and the connection close arrive back-to-back.
     ``failure_command`` picks the command that triggers it (default
-    ``photon.request``; use ``"auth"`` to break the handshake).
+    ``photon.request``; use ``"auth"`` or ``"hello"`` to break the handshake).
 
     Plaintext by default; ``tls=True`` serves verifying TLS — trust it via ``ca_certs=cache.cert_path``.
 
@@ -269,6 +312,8 @@ class MockCache:
         failure: str | None = None,
         failure_command: str = "photon.request",  # which command triggers `failure` (e.g. "auth")
         failure_after_reply: bool = False,  # reply normally first, then apply `failure`
+        no_arg_config_reply: dict | None = None,  # reply for no-arg photon.config; None = RESP3
+        # null ("unchanged"). Mutable between ticks.
     ) -> None:
         self._config = config or DEFAULT_RESOLVED_CONFIG
         self.tls = tls
@@ -282,12 +327,13 @@ class MockCache:
         self.failure = failure
         self.failure_command = failure_command.lower()
         self.failure_after_reply = failure_after_reply
+        self.no_arg_config_reply = no_arg_config_reply
 
         # Recording, for test assertions.
         self.received_commands: list[list[bytes]] = []  # every command, full arg list incl. name
         self.photon_command_log: list[str] = []  # names of auth/photon.* commands, in order
         self.requests: list[ReceivedRequest] = []  # decoded photon.request records, in order
-        self.config_overrides: list[dict] = []  # decoded photon.config overrides, in order
+        self.config_overrides: list[dict | None] = []  # decoded photon.config overrides, in order
         self.protocol_errors: list[str] = []  # RESP framing violations by the client, in order
 
         # Server state.
@@ -295,10 +341,19 @@ class MockCache:
         self._ssl_ctx: ssl.SSLContext | None = None
         self._accept_thread: threading.Thread | None = None
         self._stop = threading.Event()
+        self._client_sock: socket.socket | None = None  # most recent client connection
         self.host: str | None = None
         self.port: int | None = None
         self.cert_path: str | None = None
         self._key_path: str | None = None
+
+    def set_config(self, config: dict) -> None:
+        """Answer later ``photon.config`` exchanges with ``config``.
+
+        Lets a test change what the cache resolves between connections — a reconnect picks up the new
+        one — without reaching into the mock's internals.
+        """
+        self._config = config
 
     # --- introspection --------------------------------------------------------
     @property
@@ -335,10 +390,38 @@ class MockCache:
             # Accept any credentials — this is a test mock.
             return b"+OK\r\n"
 
+        if name == "hello":
+            self.photon_command_log.append(name)
+            # HELLO <protover> [AUTH <user> <token>]: any credentials are accepted, as with AUTH.
+            # The reply echoes the version asked for, encoded in it: a map for RESP3, array for RESP2.
+            if not args or args[0] not in (b"2", b"3"):
+                return _error("NOPROTO", "unsupported protocol version")
+            rest = args[1:]
+            if rest and (len(rest) != 3 or rest[0].upper() != b"AUTH"):
+                return _error("ERR", "syntax error")
+            proto = int(args[0])
+            fields = [
+                (_bulk(b"server"), _bulk(b"valkey")),
+                (_bulk(b"version"), _bulk(b"8.0.0")),
+                (_bulk(b"proto"), _int(proto)),
+                (_bulk(b"id"), _int(1)),
+                (_bulk(b"mode"), _bulk(b"cluster")),
+                (_bulk(b"role"), _bulk(b"primary")),
+                (_bulk(b"modules"), _array([])),
+            ]
+            if proto == 2:
+                return _array([item for pair in fields for item in pair])
+            return _map(fields)
+
         if name == "photon.config":
             self.photon_command_log.append(name)
+            if len(args) == 0:
+                self.config_overrides.append(None)
+                if self.no_arg_config_reply is None:
+                    return b"_\r\n"
+                return _bulk(json.dumps(self.no_arg_config_reply).encode("utf-8"))
             if len(args) != 1:
-                return _error(CODE_CONFIG_INVALID, f"expected 1 arg, got {len(args)}")
+                return _error(CODE_CONFIG_INVALID, f"expected 0 or 1 args, got {len(args)}")
             try:
                 overrides = json.loads(args[0])
             except (ValueError, UnicodeDecodeError):
@@ -405,6 +488,26 @@ class MockCache:
             return self._response
         return Reply.ok(self.response_status, self.response_headers, self.response_body)
 
+    def send_push(
+        self,
+        request_id: int,
+        reply: Reply | None = None,
+        *,
+        kind: bytes = PUSH_KIND_RESPONSE,
+        items: list[bytes] | None = None,
+    ) -> None:
+        """Send a push frame for ``request_id`` on the most recent client connection.
+
+        Delivers the out-of-band half of a :meth:`Reply.request_id` exchange; ``kind`` lets a
+        test send an unknown push kind and ``items`` a payload the client must reject.
+        """
+        if self._client_sock is None:
+            raise RuntimeError("no client connection to push on")
+        reply = reply or Reply.ok()
+        if items is None:
+            items = [_bulk(str(request_id).encode()), reply.frame]
+        self._client_sock.sendall(_push([_bulk(kind), *items]))
+
     # --- synchronous threaded TLS server -------------------------------------
     def start(self) -> None:
         """Start the threaded server on an ephemeral 127.0.0.1 port (plaintext unless ``tls``)."""
@@ -432,7 +535,10 @@ class MockCache:
                 self._listen_sock.close()  # unblocks accept()
             except OSError:
                 pass
-        if self._accept_thread is not None and self._accept_thread is not threading.current_thread():
+        if (
+            self._accept_thread is not None
+            and self._accept_thread is not threading.current_thread()
+        ):
             self._accept_thread.join(5)
         # The self-signed cert/key were written with delete=False; remove them so a
         # test run doesn't accumulate temp files (one of them is a private key).
@@ -455,9 +561,7 @@ class MockCache:
                 continue
             except OSError:
                 break  # listening socket closed by stop()
-            threading.Thread(
-                target=self._handle_connection, args=(conn,), daemon=True
-            ).start()
+            threading.Thread(target=self._handle_connection, args=(conn,), daemon=True).start()
 
     def _handle_connection(self, conn: socket.socket) -> None:
         if self.tls:
@@ -469,6 +573,7 @@ class MockCache:
                 return
         else:
             sock = conn
+        self._client_sock = sock
         try:
             rfile = sock.makefile("rb")
             while not self._stop.is_set():
@@ -510,6 +615,135 @@ class MockCache:
                 sock.close()
             except Exception:  # noqa: BLE001 - best-effort socket teardown
                 pass
+
+
+# --------------------------------------------------------------------------- #
+# MockTcpProxy — a controllable TCP relay, for driving reconnect
+# --------------------------------------------------------------------------- #
+class MockTcpProxy:
+    """TCP relay in front of a :class:`MockCache` for testing reconnect behavior.
+
+    The proxy can disconnect existing connections, reject new connections, or
+    resume forwarding, allowing tests to exercise reconnects without requiring
+    the cache itself to fail.
+
+    Point the client at :attr:`port` instead of the cache's own port.
+
+    * :meth:`disconnect_clients` closes existing connections and triggers EOF.
+    * :meth:`disconnect_and_block` closes existing connections and refuses new ones, so every
+      reconnect attempt fails too.
+    * :meth:`allow_connections` lets new connections reach the cache again.
+    * :attr:`accepted_connections` counts client connections, which can be used
+      to detect duplicate or concurrent reconnect attempts.
+    """
+
+    def __init__(self, target_host: str, target_port: int) -> None:
+        self._target = (target_host, target_port)
+        self._sockets: list[socket.socket] = []
+        self._sockets_lock = threading.Lock()
+        self._running = True
+        self._forwarding = True
+        self.accepted_connections = 0
+
+        self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._listener.bind(("127.0.0.1", 0))  # port 0: the OS picks a free port
+        self._listener.listen(16)
+        self.host, self.port = self._listener.getsockname()[:2]
+        self._accept_thread = threading.Thread(
+            target=self._accept_loop, name="mock-proxy-accept", daemon=True
+        )
+        self._accept_thread.start()
+
+    @property
+    def endpoint(self) -> str:
+        return f"{self.host}:{self.port}"
+
+    def allow_connections(self) -> None:
+        """Let new connections through to the cache again."""
+        self._forwarding = True
+
+    def disconnect_and_block(self) -> None:
+        """Close every connection and refuse new ones, so reconnect attempts keep failing."""
+        self._forwarding = False
+        self.disconnect_clients()
+
+    def disconnect_clients(self) -> None:
+        """Close every relayed socket, so both ends see EOF."""
+        with self._sockets_lock:
+            sockets, self._sockets = self._sockets, []
+        for sock in sockets:
+            _close_quietly(sock)
+
+    def stop(self) -> None:
+        """Stop relaying and release the listener. Idempotent."""
+        if not self._running:
+            return
+        self._running = False
+        _close_quietly(self._listener)  # unblocks accept()
+        self.disconnect_clients()
+        if self._accept_thread is not threading.current_thread():
+            self._accept_thread.join(5)
+
+    def _accept_loop(self) -> None:
+        self._listener.settimeout(0.5)  # wake periodically to observe the stop flag
+        while self._running:
+            try:
+                client, _ = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break  # listener closed by stop()
+            self.accepted_connections += 1
+            if not self._forwarding:
+                _close_quietly(client)
+                continue
+            self._start_relay(client)
+
+    def _start_relay(self, client: socket.socket) -> None:
+        try:
+            upstream = socket.create_connection(self._target)
+        except OSError:
+            _close_quietly(client)
+            return
+        with self._sockets_lock:
+            self._sockets.extend((client, upstream))
+        for src, dst in ((client, upstream), (upstream, client)):
+            threading.Thread(
+                target=self._pump, args=(src, dst), name="mock-proxy-pump", daemon=True
+            ).start()
+
+    def _pump(self, src: socket.socket, dst: socket.socket) -> None:
+        try:
+            while self._running:
+                chunk = src.recv(65536)
+                if not chunk:
+                    break
+                dst.sendall(chunk)
+        except OSError:
+            pass  # a broken relay is the behavior under test
+        finally:
+            # Close both directions so a broken relay appears as a dead connection,
+            # rather than leaving the peer waiting on a half-open socket.
+            _close_quietly(src)
+            _close_quietly(dst)
+
+
+def _close_quietly(sock: socket.socket) -> None:
+    """Shutdown and close a socket without raising.
+
+    ``shutdown`` is required before ``close`` because relay threads may be
+    blocked in ``recv`` on the socket. It wakes the blocked thread and causes
+    the peer to observe the connection ending instead of hanging.
+    """
+    try:
+        sock.shutdown(socket.SHUT_RDWR)
+    except OSError:
+        pass  # already shut down, or never connected
+    try:
+        sock.close()
+    except OSError:
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -559,11 +793,16 @@ def mock_connector() -> PhotonConnector:
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
     """
     conn = create_autospec(PhotonConnector, instance=True)
-    # Instance attribute (set in __init__), invisible to autospec; the session reads it.
+    # config_timeout is an instance attribute, which autospec leaves as a bare Mock; the session
+    # passes it as a timeout, so it has to be a real number.
     conn.config_timeout = 2.0
+    # A property autospec leaves as a bare Mock; must be a real bool tests can flip.
+    conn.is_alive = True
 
     def _execute(command, *args, timeout=None):
         if command == "photon.config":
+            if not args:
+                return None
             return json.dumps(DEFAULT_RESOLVED_CONFIG).encode()
         return [200, b"content-type:application/json", b'{"ok":true}']
 
@@ -574,5 +813,7 @@ def mock_connector() -> PhotonConnector:
 def mock_session() -> PhotonSession:
     """A ``create_autospec(PhotonSession)`` double that returns a 200 PhotonResponse by default."""
     session = create_autospec(PhotonSession, instance=True)
+    session.is_open = True
+    session.is_connection_healthy = True
     session.request.return_value = PhotonResponse(status_code=200, headers={}, body=b"{}")
     return session

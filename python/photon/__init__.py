@@ -16,10 +16,12 @@ routes eligible requests through the cache.
 from __future__ import annotations
 
 import logging
+from importlib.metadata import version
 
-from photon.client import client
+from photon.client import PhotonClientConfiguration, client
+from photon.exceptions import PhotonCacheUnavailable, PhotonConfigError, PhotonError
 
-__version__ = "0.0.1"
+__version__ = version("photon-python")
 
 # Library best practice: attach a NullHandler to the package logger so Photon never emits
 # "No handlers could be found" warnings or configures logging on the application's behalf.
@@ -28,5 +30,9 @@ logging.getLogger("photon").addHandler(logging.NullHandler())
 
 __all__ = [
     "client",
+    "PhotonClientConfiguration",
+    "PhotonCacheUnavailable",
+    "PhotonConfigError",
+    "PhotonError",
     "__version__",
 ]

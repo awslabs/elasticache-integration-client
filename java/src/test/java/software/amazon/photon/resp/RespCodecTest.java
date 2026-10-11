@@ -1,13 +1,13 @@
 package software.amazon.photon.resp;
 
-import org.junit.jupiter.api.Test;
-import software.amazon.photon.exception.PhotonProtocolError;
+import static org.junit.jupiter.api.Assertions.*;
 
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
-import java.util.List;
-
-import static org.junit.jupiter.api.Assertions.*;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import software.amazon.photon.exception.PhotonProtocolError;
 
 class RespCodecTest {
 
@@ -15,16 +15,18 @@ class RespCodecTest {
 
     @Test
     void encodeCommand_simpleCommand() {
-        byte[] result = RespCodec.encodeCommand("PING");
-        String expected = "*1\r\n$4\r\nPING\r\n";
+        byte[] result = RespCodec.encodeCommand("TEST");
+        String expected = "*1\r\n$4\r\nTEST\r\n";
         assertEquals(expected, new String(result, StandardCharsets.UTF_8));
     }
 
     @Test
     void encodeCommand_withArgs() {
-        byte[] result = RespCodec.encodeCommand("SET",
-                "key".getBytes(StandardCharsets.UTF_8),
-                "value".getBytes(StandardCharsets.UTF_8));
+        byte[] result =
+                RespCodec.encodeCommand(
+                        "SET",
+                        "key".getBytes(StandardCharsets.UTF_8),
+                        "value".getBytes(StandardCharsets.UTF_8));
         String expected = "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
         assertEquals(expected, new String(result, StandardCharsets.UTF_8));
     }
@@ -43,8 +45,8 @@ class RespCodecTest {
 
     @Test
     void encodeCommand_nullArg_throws() {
-        assertThrows(IllegalArgumentException.class, () ->
-                RespCodec.encodeCommand("CMD", (byte[]) null));
+        assertThrows(
+                IllegalArgumentException.class, () -> RespCodec.encodeCommand("CMD", (byte[]) null));
     }
 
     // === Decode tests - Simple String ===
@@ -139,6 +141,46 @@ class RespCodecTest {
         assertTrue(result.getValue() instanceof RespNull);
     }
 
+    // === Decode tests - RESP3 null ===
+
+    @Test
+    void decode_resp3Null() throws IncompleteFrame {
+        byte[] data = "_\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+        assertSame(RespNull.INSTANCE, result.getValue());
+        assertEquals(3, result.getPosition());
+    }
+
+    @Test
+    void decode_resp3Null_incompleteWithoutCrlf() {
+        byte[] data = "_".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_resp3Null_malformedNonEmptyHeaderRejected() {
+        byte[] data = "_garbage\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_resp3Null_insideArray() throws IncompleteFrame {
+        byte[] data = "*2\r\n_\r\n$3\r\nfoo\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+        RespArray array = (RespArray) result.getValue();
+        assertSame(RespNull.INSTANCE, array.getElements().get(0));
+        assertArrayEquals("foo".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+    }
+
+    @Test
+    void decode_resp3Null_beforeAnotherFrame() throws IncompleteFrame {
+        byte[] data = "_\r\n$3\r\nfoo\r\n".getBytes(StandardCharsets.UTF_8);
+        DecodeResult first = RespCodec.decode(data, 0);
+        assertSame(RespNull.INSTANCE, first.getValue());
+        DecodeResult second = RespCodec.decode(data, first.getPosition());
+        assertArrayEquals("foo".getBytes(), ((RespBulkString) second.getValue()).getValue());
+    }
+
     // === Decode tests - Array ===
 
     @Test
@@ -191,15 +233,69 @@ class RespCodecTest {
         assertTrue(array.getElements().get(2) instanceof RespSimpleString);
     }
 
+    // === Decode tests - Map ===
+
+    @Test
+    void decode_map() throws IncompleteFrame {
+        byte[] data =
+                ("%2\r\n$5\r\nproto\r\n:3\r\n" + "$6\r\nserver\r\n$6\r\nvalkey\r\n")
+                        .getBytes(StandardCharsets.UTF_8);
+        DecodeResult result = RespCodec.decode(data);
+
+        Map<RespValue, RespValue> expected = new LinkedHashMap<>();
+        expected.put(new RespBulkString("proto".getBytes(StandardCharsets.UTF_8)), new RespInteger(3));
+        expected.put(
+                new RespBulkString("server".getBytes(StandardCharsets.UTF_8)),
+                new RespBulkString("valkey".getBytes(StandardCharsets.UTF_8)));
+        assertEquals(new RespMap(expected), result.getValue());
+        assertEquals(data.length, result.getPosition());
+    }
+
+    @Test
+    void decode_emptyMap() throws IncompleteFrame {
+        DecodeResult result = RespCodec.decode("%0\r\n".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(new RespMap(Collections.emptyMap()), result.getValue());
+    }
+
+    @Test
+    void decode_negativeMapLength_throwsProtocolError() {
+        byte[] data = "%-1\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_truncatedMapValue_throwsIncompleteFrame() {
+        byte[] data = "%1\r\n$5\r\nproto\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
     // === Decode tests - Push (>) ===
 
     @Test
-    void decode_push_decodedAsArray() throws IncompleteFrame {
+    void decode_push_decodedAsDistinctPushValue() throws IncompleteFrame {
         byte[] data = ">2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
-        assertTrue(result.getValue() instanceof RespArray);
-        RespArray array = (RespArray) result.getValue();
-        assertEquals(2, array.getElements().size());
+        assertTrue(result.getValue() instanceof RespPush);
+        RespPush push = (RespPush) result.getValue();
+        assertEquals(2, push.getElements().size());
+        assertFalse(result.getValue() instanceof RespArray);
+    }
+
+    @Test
+    void decode_emptyPush() throws IncompleteFrame {
+        DecodeResult result = RespCodec.decode(">0\r\n".getBytes(StandardCharsets.UTF_8));
+
+        assertEquals(new RespPush(Collections.emptyList()), result.getValue());
+    }
+
+    @Test
+    void decode_nullPush_throwsProtocolError() {
+        byte[] data = ">-1\r\n".getBytes(StandardCharsets.UTF_8);
+
+        assertThrows(PhotonProtocolError.class, () -> RespCodec.decode(data));
     }
 
     // === Incomplete frame tests ===
@@ -237,6 +333,12 @@ class RespCodecTest {
     @Test
     void decode_largeArrayCount_doesNotPreallocateFromWireValue() {
         byte[] data = "*2000000000\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
+    }
+
+    @Test
+    void decode_largeMapCount_doesNotPreallocateFromWireValue() {
+        byte[] data = "%2000000000\r\n".getBytes(StandardCharsets.UTF_8);
         assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
     }
 
@@ -288,29 +390,62 @@ class RespCodecTest {
 
     @Test
     void roundTrip_command() throws IncompleteFrame {
-        byte[] encoded = RespCodec.encodeCommand("photon.request",
-                "GET".getBytes(StandardCharsets.UTF_8),
-                "https://example.com".getBytes(StandardCharsets.UTF_8));
+        byte[] encoded =
+                RespCodec.encodeCommand(
+                        "photon.request",
+                        "GET".getBytes(StandardCharsets.UTF_8),
+                        "https://example.com".getBytes(StandardCharsets.UTF_8));
         DecodeResult result = RespCodec.decode(encoded);
         assertTrue(result.getValue() instanceof RespArray);
         RespArray array = (RespArray) result.getValue();
         assertEquals(3, array.getElements().size());
-        assertArrayEquals("photon.request".getBytes(),
-                ((RespBulkString) array.getElements().get(0)).getValue());
-        assertArrayEquals("GET".getBytes(),
-                ((RespBulkString) array.getElements().get(1)).getValue());
-        assertArrayEquals("https://example.com".getBytes(),
-                ((RespBulkString) array.getElements().get(2)).getValue());
+        assertArrayEquals(
+                "photon.request".getBytes(), ((RespBulkString) array.getElements().get(0)).getValue());
+        assertArrayEquals("GET".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+        assertArrayEquals(
+                "https://example.com".getBytes(), ((RespBulkString) array.getElements().get(2)).getValue());
         assertEquals(encoded.length, result.getPosition());
     }
 
     @Test
     void roundTrip_binaryData() throws IncompleteFrame {
-        byte[] binaryData = new byte[]{0x00, 0x01, 0x02, (byte) 0xFF, (byte) 0xFE};
+        byte[] binaryData = new byte[] {0x00, 0x01, 0x02, (byte) 0xFF, (byte) 0xFE};
         byte[] encoded = RespCodec.encodeCommand("CMD", binaryData);
         DecodeResult result = RespCodec.decode(encoded);
         assertTrue(result.getValue() instanceof RespArray);
         RespArray array = (RespArray) result.getValue();
         assertArrayEquals(binaryData, ((RespBulkString) array.getElements().get(1)).getValue());
+    }
+
+    // === Bounded decode (reader buffer with unwritten capacity) ===
+
+    @Test
+    void decode_withEnd_ignoresBytesPastEnd() throws IncompleteFrame {
+        byte[] data = "$5\r\nhello\r\n+OK\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 0, 9));
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 11, 14));
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 11, 11));
+
+        DecodeResult bulk = RespCodec.decode(data, 0, 11);
+        assertArrayEquals(
+                "hello".getBytes(StandardCharsets.UTF_8), ((RespBulkString) bulk.getValue()).getValue());
+        assertEquals(11, bulk.getPosition());
+        DecodeResult ok = RespCodec.decode(data, 11, data.length);
+        assertArrayEquals(
+                "OK".getBytes(StandardCharsets.UTF_8), ((RespSimpleString) ok.getValue()).getValue());
+    }
+
+    @Test
+    void decode_withEnd_boundsNestedElements() {
+        byte[] data = "*2\r\n:1\r\n:2\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data, 0, data.length - 1));
+    }
+
+    @Test
+    void decode_withEnd_rejectsOutOfRangeBounds() {
+        byte[] data = "+OK\r\n".getBytes(StandardCharsets.UTF_8);
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, -1, 5));
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 3, 2));
+        assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 0, 6));
     }
 }
