@@ -117,7 +117,7 @@ def test_a_failed_configure_closes_everything(failing_step):
     # One attempt, so the assertion is about closing rather than about how often we retry.
     with pytest.raises(ElastiCacheIntegrationsError):
         ElastiCacheIntegrationsSession(
-            lambda: connector, policy=ReconnectPolicy(connect_attempts=1)
+            lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
         )
     connector.close.assert_called_once_with()
 
@@ -130,7 +130,7 @@ def test_failed_initialization_releases_owned_resource():
     with pytest.raises(ElastiCacheIntegrationsConnectionError, match="rejected"):
         ElastiCacheIntegrationsSession(
             lambda: connector,
-            policy=ReconnectPolicy(connect_attempts=1),
+            policy=ReconnectPolicy(reconnect_timeout=0.05),
             close_callback=close_callback,
         )
 
@@ -149,7 +149,7 @@ def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog
     ):
         with pytest.raises(ElastiCacheIntegrationsConnectionError, match="bring-up rejected"):
             ElastiCacheIntegrationsSession(
-                lambda: connector, policy=ReconnectPolicy(connect_attempts=1)
+                lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
             )
 
     assert "cleanup failed during initialization" in caplog.text
@@ -660,7 +660,7 @@ def test_a_first_attempt_that_closes_before_its_install_is_retried():
 
     session = ElastiCacheIntegrationsSession(
         lambda: next(connectors),
-        policy=ReconnectPolicy(connect_attempts=2, base_delay=0.001, max_delay=0.001),
+        policy=ReconnectPolicy(base_delay=0.001, max_delay=0.001),
     )
 
     first.close.assert_called()

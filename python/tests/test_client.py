@@ -290,6 +290,33 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
     assert built["config_policy"].staleness_duration == expected
 
 
+@pytest.mark.parametrize("requested,expected", [(None, 2.0), (0.5, 0.5)])
+def test_client_passes_reconnect_timeout_to_the_session(monkeypatch, requested, expected):
+    _patch_common(monkeypatch, MagicMock())
+    built: dict = {}
+    monkeypatch.setattr(
+        client_mod, "ElastiCacheIntegrationsSession", lambda *a, **k: built.update(k) or MagicMock()
+    )
+    monkeypatch.setattr(client_mod, "ElastiCacheIntegrationsHandle", lambda *a, **k: MagicMock())
+
+    configuration = (
+        ElastiCacheIntegrationsClientConfiguration()
+        if requested is None
+        else ElastiCacheIntegrationsClientConfiguration(reconnect_timeout=requested)
+    )
+    client_mod.client(
+        "dynamodb", endpoint="cache:6379", cache_name="c", client_configuration=configuration
+    )
+
+    assert built["policy"].reconnect_timeout == expected
+
+
+@pytest.mark.parametrize("bad", [0, True, float("nan"), float("inf"), "2"])
+def test_client_configuration_rejects_unusable_reconnect_timeout(bad):
+    with pytest.raises(ElastiCacheIntegrationsConfigError):
+        ElastiCacheIntegrationsClientConfiguration(reconnect_timeout=bad)
+
+
 @pytest.mark.parametrize(
     "field,bad",
     [

@@ -101,6 +101,7 @@ elasticache_integrations.install(
     cache_name="my-cache",
     client_configuration=elasticache_integrations.ElastiCacheIntegrationsClientConfiguration(
         cache_request_timeout=2.0,
+        reconnect_timeout=2.0,
         fallback_duration=60,
         cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
         iam_token_refresh_delay=300,
@@ -111,6 +112,7 @@ elasticache_integrations.install(
 | Field | Default | Meaning |
 |---|---|---|
 | `cache_request_timeout` | 5 s | How long to wait for each ElastiCacheIntegrations request's reply. |
+| `reconnect_timeout` | 2 s | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
 | `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |
@@ -170,12 +172,13 @@ toolkit's token refresh.
 
 ## Reconnection and fallback
 
-A lost connection is rebuilt in the background and retried until it succeeds.
-Reconnecting never blocks a request: while there is no connection, requests are
-declined so the AWS SDK sends them to the origin service using the application's
-own credentials.
+A lost connection is rebuilt in the background and retried until it succeeds. Right after the
+loss, a request waits up to `reconnect_timeout` for the new connection. If the connection is not
+back by then, the AWS SDK sends the request to the origin service using the application's own
+credentials. The same timeout bounds startup; client creation fails if no connection is ready.
 
-How long requests may fall back is controlled by the `fallback_duration` field:
+How long requests may fall back, counted from the end of `reconnect_timeout`, is controlled by
+`fallback_duration`:
 
 | `fallback_duration` | Behavior |
 |---|---|

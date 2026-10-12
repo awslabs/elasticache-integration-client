@@ -24,16 +24,11 @@ class ReconnectPolicy:
     """
 
     fallback_duration: int | None = None
-    connect_attempts: int = 3
-    # How long opening one connection may take: transport connect, AUTH and the config exchange
-    # bounded from outside while the steps keep their own timeouts underneath. It caps every
-    # attempt, so creating a session takes at most connect_attempts of these plus the backoff
-    # between them, and each later reconnect attempt is capped by one.
-    connection_timeout: float = 5.0
+    # How long to keep trying to get a connection: at startup before raising, and after a drop
+    # before a waiting request falls back. Attempts back off inside it.
+    reconnect_timeout: float = 2.0
     # How often to re-run AUTH in the background to refresh the connection's FAS.
     auth_refresh_interval: float = 900.0
-    # How long a request with no live connector waits for a reconnect before it falls back to the origin.
-    request_wait: float = 0.25
     base_delay: float = 0.1
     max_delay: float = 3.2
     jitter: float = 0.2
@@ -45,14 +40,17 @@ class ReconnectPolicy:
             raise ElastiCacheIntegrationsConfigError(
                 "fallback_duration must be a whole number of seconds or None"
             )
-        if self.connect_attempts < 1:
-            raise ElastiCacheIntegrationsConfigError("connect_attempts must be >= 1")
-        if self.connection_timeout <= 0:
-            raise ElastiCacheIntegrationsConfigError("connection_timeout must be > 0")
+        if (
+            isinstance(self.reconnect_timeout, bool)
+            or not isinstance(self.reconnect_timeout, (int, float))
+            or not math.isfinite(self.reconnect_timeout)
+            or self.reconnect_timeout <= 0
+        ):
+            raise ElastiCacheIntegrationsConfigError(
+                "reconnect_timeout must be a positive number of seconds"
+            )
         if self.auth_refresh_interval <= 0:
             raise ElastiCacheIntegrationsConfigError("auth_refresh_interval must be > 0")
-        if self.request_wait < 0:
-            raise ElastiCacheIntegrationsConfigError("request_wait must be >= 0")
         if self.base_delay <= 0:
             raise ElastiCacheIntegrationsConfigError("base_delay must be > 0")
         if self.max_delay < self.base_delay:
