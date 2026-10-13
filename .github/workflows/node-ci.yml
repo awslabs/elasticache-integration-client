@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+# CI steps don't run in a terminal. Force color instead of relying on each
+# tool's CI detection.
+env:
+  FORCE_COLOR: "1"
+
 jobs:
   verify:
     strategy:

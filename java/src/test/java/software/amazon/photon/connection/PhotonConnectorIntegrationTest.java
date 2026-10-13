@@ -320,6 +320,54 @@ class PhotonConnectorIntegrationTest {
     }
 
     @Test
+    void request_succeedsWithOneByteReadSize() throws Exception {
+        PhotonConnector conn =
+                new PhotonConnector(
+                        "localhost",
+                        server.getPort(),
+                        clientSslContext,
+                        PhotonConnector.DEFAULT_CONNECT_TIMEOUT_MS,
+                        PhotonConnector.DEFAULT_INITIALIZATION_TIMEOUT_MS,
+                        PhotonConnector.DEFAULT_READ_TIMEOUT_MS,
+                        PhotonConnector.DEFAULT_MAX_PENDING,
+                        1);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+
+            PhotonResponse response =
+                    conn.request(
+                            new PhotonRequest(
+                                    "GET",
+                                    "https://example.com/item",
+                                    Collections.emptyMap(),
+                                    new byte[0],
+                                    new RequestMetadata("dynamodb", "GetItem")));
+
+            assertEquals(200, response.getStatusCode());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void constructor_rejectsNonPositiveReadSize() {
+        IllegalArgumentException e =
+                assertThrows(
+                        IllegalArgumentException.class,
+                        () ->
+                                new PhotonConnector(
+                                        "localhost",
+                                        server.getPort(),
+                                        clientSslContext,
+                                        PhotonConnector.DEFAULT_CONNECT_TIMEOUT_MS,
+                                        PhotonConnector.DEFAULT_INITIALIZATION_TIMEOUT_MS,
+                                        PhotonConnector.DEFAULT_READ_TIMEOUT_MS,
+                                        PhotonConnector.DEFAULT_MAX_PENDING,
+                                        0));
+        assertEquals("socketReadSize must be positive: 0", e.getMessage());
+    }
+
+    @Test
     void request_customResponseStatus() {
         Map<String, String> respHeaders = new LinkedHashMap<>();
         respHeaders.put("content-type", "application/json");

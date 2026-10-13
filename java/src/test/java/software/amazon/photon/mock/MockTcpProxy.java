@@ -4,6 +4,7 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.ArrayList;
@@ -29,8 +30,9 @@ public final class MockTcpProxy implements Closeable {
     public MockTcpProxy(String targetHost, int targetPort) throws IOException {
         this.targetHost = targetHost;
         this.targetPort = targetPort;
-        // Port 0 asks the OS to allocate an available ephemeral port.
-        this.listener = new ServerSocket(0);
+        // Port 0 asks the OS for a free ephemeral port. Bind loopback, not the wildcard address,
+        // so the port cannot be shared with another process listening on 127.0.0.1.
+        this.listener = new ServerSocket(0, 50, InetAddress.getLoopbackAddress());
         workers.execute(this::acceptLoop);
     }
 

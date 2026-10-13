@@ -9,6 +9,9 @@ CATALOG = "idempotent-operations.json"
 SHARED_CATALOG = Path(__file__).parent.parent / "shared" / CATALOG
 # Where the sdist carries the catalog. A wheel built from an sdist has no ../shared to read.
 SDIST_CATALOG = Path(__file__).parent / "photon" / CATALOG
+TOOLKIT_ROOT = Path(__file__).parent / "vendor" / "developer-toolkit-elasticache" / "python"
+TOOLKIT_PACKAGE = "developer_toolkit_elasticache"
+TOOLKIT_LEGAL_FILES = ("LICENSE", "NOTICE")
 
 
 class sdist(_sdist):
@@ -29,6 +32,10 @@ class build_py(_build_py):
         target = Path(self.build_lib) / "photon" / CATALOG
         target.parent.mkdir(parents=True, exist_ok=True)
         copyfile(source, target)
+        toolkit_target = Path(self.build_lib) / TOOLKIT_PACKAGE
+        toolkit_target.mkdir(parents=True, exist_ok=True)
+        for filename in TOOLKIT_LEGAL_FILES:
+            copyfile(TOOLKIT_ROOT / filename, toolkit_target / filename)
 
 
 setup(cmdclass={"build_py": build_py, "sdist": sdist})

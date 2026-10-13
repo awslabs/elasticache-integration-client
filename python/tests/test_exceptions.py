@@ -5,6 +5,7 @@ import pytest
 from botocore.exceptions import ConnectionClosedError
 
 from photon.exceptions import (
+    PhotonAuthError,
     PhotonCacheUnavailable,
     PhotonConfigError,
     PhotonOverridesRejected,
@@ -19,6 +20,7 @@ from photon.exceptions import (
 )
 
 _SUBCLASSES = [
+    PhotonAuthError,
     PhotonConfigError,
     PhotonOverridesRejected,
     PhotonConfigUnevaluable,

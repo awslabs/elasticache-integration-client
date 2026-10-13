@@ -1,3 +1,4 @@
+import { lookup } from "node:dns/promises";
 import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { createServer as createTlsServer, type TLSSocket } from "node:tls";
@@ -35,8 +36,12 @@ function startCache(options: ConstructorParameters<typeof MockCache>[0] = {}): P
   return cache.start().then(() => cache);
 }
 
-/** Start a dual-stack TLS server that records the SNI each client sends. */
-async function startSniServer(): Promise<{
+/**
+ * Start a TLS server on `host` that records the SNI each client sends. Bind the exact loopback
+ * address the test connects to, not the wildcard address. A wildcard socket can share its port
+ * with another process listening on that loopback address, which would then take the connection.
+ */
+async function startSniServer(host: string): Promise<{
   port: number;
   servernames: Array<string | false>;
   stop: () => Promise<void>;
@@ -56,7 +61,7 @@ async function startSniServer(): Promise<{
   );
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(0, "::", () => {
+    server.listen(0, host, () => {
       server.off("error", reject);
       resolve();
     });
@@ -1301,8 +1306,29 @@ describe("PhotonConnector", () => {
     await connector.close();
   });
 
+  it("binds the SNI test server so another loopback listener cannot share its port", async () => {
+    // The SNI test connects to "localhost". If another process could listen on the same address
+    // and port, the client would reach that process instead of this server (issue #97).
+    const { address } = await lookup("localhost");
+    const server = await startSniServer(address);
+    const other = createServer();
+
+    try {
+      await expect(
+        new Promise<void>((resolve, reject) => {
+          other.once("error", reject);
+          other.listen(server.port, address, resolve);
+        }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      other.close(() => {});
+      await server.stop();
+    }
+  });
+
   it("sends SNI and verifies the certificate for a DNS host", async () => {
-    const server = await startSniServer();
+    // Bind the address "localhost" resolves to first, which is where the connector connects first.
+    const server = await startSniServer((await lookup("localhost")).address);
     const connector = new PhotonConnector("localhost", server.port, {
       caCerts: readFileSync(certPath),
     });
@@ -1317,7 +1343,7 @@ describe("PhotonConnector", () => {
   });
 
   it("omits SNI for an IPv6 host", async () => {
-    const server = await startSniServer();
+    const server = await startSniServer("::1");
     // The fixture certificate has no ::1 SAN, so only the handshake and SNI are under test.
     const connector = new PhotonConnector("::1", server.port, { insecureSkipVerify: true });
     const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});

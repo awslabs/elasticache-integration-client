@@ -112,6 +112,35 @@ def test_a_failed_configure_closes_everything(failing_step):
     connector.close.assert_called_once_with()
 
 
+def test_failed_initialization_releases_owned_resource():
+    connector = mock_connector()
+    connector.handshake.side_effect = PhotonConnectionError("rejected")
+    close_callback = mock.Mock()
+
+    with pytest.raises(PhotonConnectionError, match="rejected"):
+        PhotonSession(
+            lambda: connector,
+            policy=ReconnectPolicy(connect_attempts=1),
+            close_callback=close_callback,
+        )
+
+    close_callback.assert_called_once()
+
+
+def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog):
+    connector = mock_connector()
+    connector.handshake.side_effect = PhotonConnectionError("bring-up rejected")
+
+    with (
+        mock.patch.object(PhotonSession, "close", side_effect=RuntimeError("cleanup failed")),
+        caplog.at_level("WARNING", logger="photon.session"),
+    ):
+        with pytest.raises(PhotonConnectionError, match="bring-up rejected"):
+            PhotonSession(lambda: connector, policy=ReconnectPolicy(connect_attempts=1))
+
+    assert "cleanup failed during initialization" in caplog.text
+
+
 def test_policy_none_uses_the_default_policy():
     """Passing ``policy=None`` explicitly behaves like omitting it."""
     connector = mock_connector()
@@ -697,6 +726,36 @@ def test_close_delegates_to_connector():
     session.close()
     session.close()
     assert connector.close.call_count == 2  # session adds no state; connector handles idempotence
+
+
+def test_close_releases_owned_resource_once():
+    connector = mock_connector()
+    close_callback = mock.Mock()
+    session = PhotonSession(lambda: connector, close_callback=close_callback)
+
+    session.close()
+    session.close()
+
+    close_callback.assert_called_once()
+
+
+def test_close_releases_owned_resource_when_a_refresher_stop_fails():
+    connector = mock_connector()
+    close_callback = mock.Mock()
+    session = PhotonSession(lambda: connector, close_callback=close_callback)
+    reauth_runner = session._reauth_runner
+    assert reauth_runner is not None
+    reauth_runner.stop()
+    session._reauth_runner = mock.Mock()
+    session._reauth_runner.stop.side_effect = RuntimeError("join failed")
+
+    try:
+        with pytest.raises(RuntimeError, match="join failed"):
+            session.close()
+        close_callback.assert_called_once()
+    finally:
+        session._config_refresher.stop()
+        session._connection_manager.close()
 
 
 def test_is_open_tracks_lifecycle():

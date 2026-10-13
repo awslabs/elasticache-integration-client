@@ -2,6 +2,7 @@ package software.amazon.photon.mock;
 
 import java.io.*;
 import java.math.BigInteger;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
@@ -40,7 +41,10 @@ public class MockTlsServer implements Closeable {
         this.cache = cache;
         this.sslContext = createSelfSignedSslContext();
         SSLServerSocketFactory factory = sslContext.getServerSocketFactory();
-        this.serverSocket = (SSLServerSocket) factory.createServerSocket(0); // random port
+        // Bind loopback, not the wildcard address. A wildcard socket can share its port with
+        // another process listening on 127.0.0.1, and "localhost" clients then reach that process.
+        this.serverSocket =
+                (SSLServerSocket) factory.createServerSocket(0, 50, InetAddress.getLoopbackAddress());
         this.serverThread = new Thread(this::acceptLoop, "mock-tls-server");
         this.serverThread.setDaemon(true);
         this.serverThread.start();

@@ -57,7 +57,7 @@ class PhotonTimeoutError(PhotonError):
 
 
 class PhotonAuthError(PhotonError):
-    """A background re-AUTH was rejected by the proxy."""
+    """The cache rejected credentials during handshake or background re-AUTH."""
 
 
 class PhotonCacheUnavailable(ConnectionClosedError):

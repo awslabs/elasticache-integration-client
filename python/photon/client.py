@@ -16,6 +16,10 @@ from photon.hooks import PhotonHandle
 from photon.reconnect_policy import ReconnectPolicy
 from photon.session import PhotonSession, parse_endpoint
 
+#: Upper bound for iam_token_refresh_delay, mirroring the toolkit's 20-second safety margin
+#: on the 15-minute token. The toolkit re-validates; this is the user-facing check.
+MAX_IAM_TOKEN_REFRESH_DELAY = 880
+
 
 @dataclass(frozen=True, kw_only=True)
 class PhotonClientConfiguration:
@@ -34,6 +38,10 @@ class PhotonClientConfiguration:
         cache_policy_timeout: How long, in seconds, Photon may use a cache policy without
             confirmation from the cache. After this time, Photon reconnects to get a current policy.
             Defaults to 3600 seconds and must be a positive whole number.
+        iam_token_refresh_delay: How long, in seconds, after a token is issued before the IAM
+            toolkit signs a replacement in the background, while callers keep using the current
+            token. Must be greater than 0 and less than 880. When omitted, the toolkit default of
+            300 seconds is used.
 
     Building the configuration raises :class:`~photon.exceptions.PhotonConfigError` for a value
     that is not usable.
@@ -43,6 +51,7 @@ class PhotonClientConfiguration:
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
+    iam_token_refresh_delay: float | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -63,6 +72,16 @@ class PhotonClientConfiguration:
         if type(self.cache_policy_timeout) is not int or self.cache_policy_timeout <= 0:
             raise PhotonConfigError(
                 "cache_policy_timeout must be a positive whole number of seconds"
+            )
+        if self.iam_token_refresh_delay is not None and (
+            isinstance(self.iam_token_refresh_delay, bool)
+            or not isinstance(self.iam_token_refresh_delay, (int, float))
+            or not math.isfinite(self.iam_token_refresh_delay)
+            or not 0 < self.iam_token_refresh_delay < MAX_IAM_TOKEN_REFRESH_DELAY
+        ):
+            raise PhotonConfigError(
+                "iam_token_refresh_delay must be a number of seconds greater than 0 and less "
+                f"than {MAX_IAM_TOKEN_REFRESH_DELAY}, or None to use the toolkit default"
             )
 
 
@@ -102,12 +121,19 @@ def client(
                                 cache_policy_overrides={"exclude_tables": ["audit-log"]}))
     """
     configuration = client_configuration or PhotonClientConfiguration()
-    sdk_client = boto3.Session(region_name=region_name).client(service)
+    boto3_session = boto3.Session(region_name=region_name)
+    sdk_client = boto3_session.client(service)
+    resolved_region = boto3_session.region_name
+    auth_provider = None
 
     try:
         host, port = parse_endpoint(endpoint)
         auth_provider = build_cache_auth_provider(
-            cache_name=cache_name, user_id=user_id, region=region_name
+            cache_name=cache_name,
+            user_id=user_id,
+            region=resolved_region,
+            botocore_session=boto3_session._session,
+            token_refresh_delay=configuration.iam_token_refresh_delay,
         )
 
         def connector_factory() -> PhotonConnector:
@@ -127,12 +153,18 @@ def client(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(fallback_duration=configuration.fallback_duration),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
+            close_callback=auth_provider.close,
         )
         PhotonHandle(sdk_client, session)
     except BaseException:
         # Bring-up failed (auth, the config handshake, or wiring). Close the boto3 client
         # we already created so its connection pool does not leak, then re-raise the original
         # error.
+        if auth_provider is not None:
+            try:
+                auth_provider.close()
+            except Exception:
+                pass
         try:
             sdk_client.close()
         except Exception:

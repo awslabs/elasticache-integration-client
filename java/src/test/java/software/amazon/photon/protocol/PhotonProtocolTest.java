@@ -128,6 +128,22 @@ class PhotonProtocolTest {
         assertEquals("content-type:application/json", resultStr);
     }
 
+    @Test
+    void normalizeHeaders_ignoresDefaultLocale() {
+        Locale original = Locale.getDefault();
+        Locale.setDefault(Locale.forLanguageTag("tr-TR"));
+        try {
+            Map<String, String> headers = new LinkedHashMap<>();
+            headers.put("If-Match", "etag");
+            headers.put("X-Amz-Id-2", "id");
+            headers.put("X-Amz-Request-Id", "req-id");
+            String result = new String(PhotonProtocol.normalizeHeaders(headers), StandardCharsets.UTF_8);
+            assertEquals("if-match:etag\nx-amz-id-2:id", result);
+        } finally {
+            Locale.setDefault(original);
+        }
+    }
+
     // === formatMetadata tests ===
 
     @Test
