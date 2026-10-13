@@ -148,6 +148,9 @@ class SdkRequestCasesTest {
                                         DynamoDbClient.builder(),
                                         b ->
                                                 b.region(Region.US_EAST_1)
+                                                        // Java hands Photon the request before SigV4 signing, so no
+                                                        // signing header reaches it with any credentials. The encode
+                                                        // vectors cover the excluded headers.
                                                         .credentialsProvider(
                                                                 StaticCredentialsProvider.create(
                                                                         AwsBasicCredentials.create("testkey", "testsecret"))))

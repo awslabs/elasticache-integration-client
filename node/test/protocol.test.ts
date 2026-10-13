@@ -82,6 +82,8 @@ describe("ElastiCacheIntegrations protocol", () => {
     expect(config.raw).toEqual({ refresh_interval: 60, predicates: [] });
   });
 
+  // Python rejects 56.0. Delete this test when the shared vector
+  // config_integral_float_refresh_interval leaves KNOWN_GAPS in protocol-vectors.test.ts.
   it("accepts integer-valued JSON numbers such as 56.0", () => {
     const config = parseConfigResponse(Buffer.from('{"refresh_interval":56.0,"predicates":[]}'));
 

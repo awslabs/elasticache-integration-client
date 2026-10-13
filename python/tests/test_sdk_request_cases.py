@@ -23,7 +23,8 @@ def aws_creds(monkeypatch):
     # Dummy credentials so botocore can sign the request before the hook short-circuits it.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testkey")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testsecret")
-    monkeypatch.setenv("AWS_SESSION_TOKEN", "")
+    # A session token makes botocore send x-amz-security-token, which Photon must strip.
+    monkeypatch.setenv("AWS_SESSION_TOKEN", "testtoken")
 
 
 @pytest.fixture(autouse=True)

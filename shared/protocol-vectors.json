@@ -217,7 +217,37 @@
       "reply": "$44\r\n{\"version\":\"v1\",\"refresh_interval\":60,\"x\":1}\r\n",
       "config": {
         "version": "v1",
-        "refresh_interval": 60
+        "refresh_interval": 60,
+        "raw": {
+          "version": "v1",
+          "refresh_interval": 60,
+          "x": 1
+        }
+      }
+    },
+    {
+      "name": "config_missing_version",
+      "command": "photon.config",
+      "reply": "$23\r\n{\"refresh_interval\":60}\r\n",
+      "config": {
+        "version": null,
+        "refresh_interval": 60,
+        "raw": {
+          "refresh_interval": 60
+        }
+      }
+    },
+    {
+      "name": "config_null_version",
+      "command": "photon.config",
+      "reply": "$38\r\n{\"version\":null,\"refresh_interval\":60}\r\n",
+      "config": {
+        "version": null,
+        "refresh_interval": 60,
+        "raw": {
+          "version": null,
+          "refresh_interval": 60
+        }
       }
     },
     {

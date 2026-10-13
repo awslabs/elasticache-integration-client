@@ -37,7 +37,7 @@ interface DecodeVector {
   command: "photon.request" | "photon.config";
   reply: string;
   response?: { status: number; headers: Record<string, string>; body: string };
-  config?: { version: string; refresh_interval: number };
+  config?: { version: unknown; refresh_interval: number; raw: Record<string, unknown> };
   error?: keyof typeof ERRORS;
   code?: string;
 }
@@ -54,13 +54,27 @@ const ERRORS = {
 };
 
 /**
- * Vectors Node does not match yet. Each one must still fail (`it.fails`); when a fix makes it pass,
- * the test fails until the name is removed here.
+ * Vectors Node does not match yet, each mapped to a fragment of the assertion message it fails
+ * with today. A gap passes only when it fails with that message; when a fix makes it pass, the
+ * test fails until the name is removed here.
  */
-const KNOWN_GAPS = new Set([
-  // parseRefreshInterval checks Number.isInteger, and JSON.parse reads 60.0 as 60.
-  "config_integral_float_refresh_interval",
+const KNOWN_GAPS = new Map([
+  // parseRefreshInterval checks Number.isInteger, and JSON.parse reads 60.0 as 60. Delete
+  // protocol.test.ts "accepts integer-valued JSON numbers such as 56.0" with the fix.
+  ["config_integral_float_refresh_interval", "to be an instance of PhotonError"],
 ]);
+
+function knownGap(name: string, fragment: string, check: () => void): () => void {
+  return () => {
+    try {
+      check();
+    } catch (error) {
+      expect((error as Error).message).toContain(fragment);
+      return;
+    }
+    throw new Error(`${name} now matches the shared vector; remove it from KNOWN_GAPS`);
+  };
+}
 
 function assertEncodes(vector: EncodeVector): void {
   const [command, args] = vector.request
@@ -106,20 +120,24 @@ function assertDecodes(vector: DecodeVector): void {
     expect(response.body.toString("utf8")).toBe(vector.response.body);
   } else {
     const config = parseConfigResponse(reply);
-    expect(config.version).toBe(vector.config?.version);
+    // JSON has no undefined, so the vectors write a missing version as null.
+    expect(config.version ?? null).toEqual(vector.config?.version);
     expect(config.refreshInterval).toBe(vector.config?.refresh_interval);
+    expect(config.raw).toEqual(vector.config?.raw);
   }
 }
 
 describe("shared protocol vectors", () => {
   for (const vector of VECTORS.encode) {
-    const test = KNOWN_GAPS.has(vector.name) ? it.fails : it;
-    test(`encodes ${vector.name}`, () => assertEncodes(vector));
+    const gap = KNOWN_GAPS.get(vector.name);
+    const check = () => assertEncodes(vector);
+    it(`encodes ${vector.name}`, gap ? knownGap(vector.name, gap, check) : check);
   }
 
   for (const vector of VECTORS.decode) {
-    const test = KNOWN_GAPS.has(vector.name) ? it.fails : it;
-    test(`decodes ${vector.name}`, () => assertDecodes(vector));
+    const gap = KNOWN_GAPS.get(vector.name);
+    const check = () => assertDecodes(vector);
+    it(`decodes ${vector.name}`, gap ? knownGap(vector.name, gap, check) : check);
   }
 
   // This runner skips any field it doesn't know, so an unknown or missing field fails here.
@@ -140,12 +158,12 @@ describe("shared protocol vectors", () => {
         .join(",");
       expect(["response", "config", "error", "code,error"]).toContain(outcome);
       if (vector.response) expect(keys(vector.response)).toBe("body,headers,status");
-      if (vector.config) expect(keys(vector.config)).toBe("refresh_interval,version");
+      if (vector.config) expect(keys(vector.config)).toBe("raw,refresh_interval,version");
     }
   });
 
   it("lists only existing vectors as known gaps", () => {
     const names = new Set([...VECTORS.encode, ...VECTORS.decode].map((vector) => vector.name));
-    expect([...KNOWN_GAPS].filter((name) => !names.has(name))).toEqual([]);
+    expect([...KNOWN_GAPS.keys()].filter((name) => !names.has(name))).toEqual([]);
   });
 });

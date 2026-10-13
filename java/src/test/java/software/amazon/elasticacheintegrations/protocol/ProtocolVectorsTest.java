@@ -8,6 +8,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.NullNode;
+import com.fasterxml.jackson.databind.node.TextNode;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -43,21 +45,26 @@ class ProtocolVectorsTest {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     /**
-     * Vectors Java does not match yet. Each one must still fail; when a fix makes it pass, this test
-     * fails until the name is removed here.
+     * Vectors Java does not match yet, each mapped to a fragment of the assertion message it fails
+     * with today. A gap passes only when it fails with that message; when a fix makes it pass, the
+     * test fails until the name is removed here.
      */
-    private static final Set<String> KNOWN_GAPS =
-            new HashSet<>(
-                    Arrays.asList(
-                            // normalizeHeaders keys a TreeMap by lowercased name, so one value is dropped.
-                            "request_duplicate_header_names_after_lowercasing",
-                            // Jackson writes raw UTF-8; Python and Node escape non-ASCII as \\uXXXX.
-                            "config_non_ascii_escaped",
-                            // deserializeResponse reads a RESP null body as empty instead of rejecting it.
-                            "response_null_body",
-                            // Null headers parse as {} and a simple-string body is accepted.
-                            "response_null_headers",
-                            "response_simple_string_body"));
+    private static final Map<String, String> KNOWN_GAPS = new HashMap<>();
+
+    static {
+        // normalizeHeaders keys a TreeMap by lowercased name, so one value is dropped.
+        KNOWN_GAPS.put("request_duplicate_header_names_after_lowercasing", "$5\r\nx-a:1\r\n");
+        // Jackson writes raw UTF-8; Python and Node escape non-ASCII as \\uXXXX.
+        KNOWN_GAPS.put("config_non_ascii_escaped", "$16\r\n{\"name\":\"caf");
+        // deserializeResponse reads a RESP null body as empty instead of rejecting it. Delete
+        // PhotonProtocolTest.deserializeResponse_nullBody_treatedAsEmpty with the fix.
+        KNOWN_GAPS.put("response_null_body", "nothing was thrown");
+        // Null headers parse as {} and a simple-string body is accepted.
+        KNOWN_GAPS.put("response_null_headers", "nothing was thrown");
+        KNOWN_GAPS.put("response_simple_string_body", "nothing was thrown");
+        // parseConfigResponse converts the version with String.valueOf, so null becomes "null".
+        KNOWN_GAPS.put("config_null_version", "but was: <\"null\">");
+    }
 
     private static final Map<String, Class<? extends PhotonError>> ERRORS = new HashMap<>();
 
@@ -95,7 +102,7 @@ class ProtocolVectorsTest {
                 names.add(vector.get("name").asText());
             }
         }
-        Set<String> unknown = new HashSet<>(KNOWN_GAPS);
+        Set<String> unknown = new HashSet<>(KNOWN_GAPS.keySet());
         unknown.removeAll(names);
         assertEquals(Collections.emptySet(), unknown);
     }
@@ -130,7 +137,7 @@ class ProtocolVectorsTest {
                 assertEquals(keys("body", "headers", "status"), keys(vector.get("response")));
             }
             if (vector.has("config")) {
-                assertEquals(keys("refresh_interval", "version"), keys(vector.get("config")));
+                assertEquals(keys("raw", "refresh_interval", "version"), keys(vector.get("config")));
             }
         }
     }
@@ -147,7 +154,8 @@ class ProtocolVectorsTest {
 
     private static DynamicTest vectorTest(JsonNode vector, Executable check) {
         String name = vector.get("name").asText();
-        if (!KNOWN_GAPS.contains(name)) {
+        String gap = KNOWN_GAPS.get(name);
+        if (gap == null) {
             return DynamicTest.dynamicTest(name, check);
         }
         return DynamicTest.dynamicTest(
@@ -156,6 +164,9 @@ class ProtocolVectorsTest {
                     try {
                         check.execute();
                     } catch (AssertionError expected) {
+                        assertTrue(
+                                String.valueOf(expected.getMessage()).contains(gap),
+                                name + " failed for another reason: " + expected.getMessage());
                         return;
                     }
                     fail(name + " now matches the shared vector; remove it from KNOWN_GAPS");
@@ -218,9 +229,14 @@ class ProtocolVectorsTest {
         } else {
             JsonNode expected = vector.get("config");
             ResolvedConfig config = PhotonProtocol.parseConfigResponse(decoded.getValue());
-            assertEquals(expected.get("version").asText(), config.getVersion());
+            JsonNode version =
+                    config.getVersion() == null
+                            ? NullNode.getInstance()
+                            : TextNode.valueOf(config.getVersion());
+            assertEquals(expected.get("version"), version);
             assertEquals(
                     Integer.valueOf(expected.get("refresh_interval").asInt()), config.getRefreshInterval());
+            assertEquals(MAPPER.convertValue(expected.get("raw"), Map.class), config.getRaw());
         }
     }
 

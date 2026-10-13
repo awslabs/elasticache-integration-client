@@ -26,7 +26,8 @@ client must send for a given request or config, and the response or error type
 each client must produce for a given reply. Every client's test suite runs all
 of them, and Python, the reference client, defines the expected values. The
 Node and Java vector tests list the vectors they do not match yet in
-`KNOWN_GAPS`, and each listed vector must keep failing until it is fixed and
+`KNOWN_GAPS`, each with a fragment of the failure message it produces today. A
+listed vector must keep failing with that message until it is fixed and
 removed.
 
 `shared/sdk-request-cases.json` holds SDK-level cases: a DynamoDB call and the

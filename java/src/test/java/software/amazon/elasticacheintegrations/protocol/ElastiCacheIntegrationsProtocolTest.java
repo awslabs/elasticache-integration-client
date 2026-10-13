@@ -474,6 +474,8 @@ class ElastiCacheIntegrationsProtocolTest {
 
     // === serializeConfig tests ===
 
+    // Python and Node reject a null body. Delete this test when the shared vector
+    // response_null_body leaves KNOWN_GAPS in ProtocolVectorsTest.
     @Test
     void deserializeResponse_nullBody_treatedAsEmpty() {
         List<RespValue> elements =

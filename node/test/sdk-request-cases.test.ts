@@ -60,7 +60,12 @@ describe("shared SDK request cases", () => {
         region: "us-east-1",
         connectorOptions: { tls: false },
         clientConfig: {
-          credentials: { accessKeyId: "testkey", secretAccessKey: "testsecret" },
+          // A session token makes the SDK send x-amz-security-token, which Photon must strip.
+          credentials: {
+            accessKeyId: "testkey",
+            secretAccessKey: "testsecret",
+            sessionToken: "testtoken",
+          },
           // Photon must carry every case; a request that falls back to the origin fails here
           // instead of reaching real AWS.
           requestHandler: {

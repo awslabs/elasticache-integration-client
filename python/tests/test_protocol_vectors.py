@@ -80,6 +80,7 @@ def test_decode_vector(vector):
         config = parse(reply)
         assert config.version == vector["config"]["version"]
         assert config.refresh_interval == vector["config"]["refresh_interval"]
+        assert config.raw == vector["config"]["raw"]
 
 
 def test_vectors_use_only_known_fields():
@@ -98,4 +99,4 @@ def test_vectors_use_only_known_fields():
         if "response" in vector:
             assert set(vector["response"]) == {"status", "headers", "body"}, vector
         if "config" in vector:
-            assert set(vector["config"]) == {"version", "refresh_interval"}, vector
+            assert set(vector["config"]) == {"version", "refresh_interval", "raw"}, vector
