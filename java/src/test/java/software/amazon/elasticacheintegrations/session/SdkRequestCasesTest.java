@@ -18,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
@@ -47,6 +48,20 @@ import software.amazon.elasticacheintegrations.mock.Reply;
 class SdkRequestCasesTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /*
+     * Header names the Java SDK sends or omits compared with expected.headers, which lists what
+     * Python sends. Java hands ElastiCacheIntegrations the request before the SDK adds
+     * amz-sdk-invocation-id and user-agent. The header-name check is exact, so a name missing from
+     * this map fails, and so does an entry the SDK no longer adds or omits.
+     */
+    private static final Map<String, Set<String>> ACCEPTED_HEADER_DIFFERENCES = new HashMap<>();
+
+    static {
+        ACCEPTED_HEADER_DIFFERENCES.put("extra", Collections.emptySet());
+        ACCEPTED_HEADER_DIFFERENCES.put(
+                "missing", new HashSet<>(Arrays.asList("amz-sdk-invocation-id", "user-agent")));
+    }
 
     /**
      * The SDK call for each case. The Java SDK cannot build a request from JSON, so each case is
@@ -170,10 +185,22 @@ class SdkRequestCasesTest {
 
             // Normalized headers are one "name:value" line each, so compare whole lines.
             List<String> lines = Arrays.asList(request.getHeaders().split("\n"));
+            Set<String> names = new TreeSet<>();
+            for (String line : lines) {
+                names.add(line.substring(0, line.indexOf(':')));
+            }
+            Set<String> expectedNames = new TreeSet<>();
+            expected.get("headers").fieldNames().forEachRemaining(expectedNames::add);
+            expectedNames.removeAll(ACCEPTED_HEADER_DIFFERENCES.get("missing"));
+            expectedNames.addAll(ACCEPTED_HEADER_DIFFERENCES.get("extra"));
+            assertEquals(expectedNames, names);
             for (Iterator<String> it = expected.get("headers").fieldNames(); it.hasNext(); ) {
                 String name = it.next();
-                String line = name + ":" + expected.get("headers").get(name).asText();
-                assertTrue(lines.contains(line), "missing " + line);
+                JsonNode value = expected.get("headers").get(name);
+                if (!value.isNull()) {
+                    String line = name + ":" + value.asText();
+                    assertTrue(lines.contains(line), "missing " + line);
+                }
             }
             for (JsonNode excluded : file.get("excluded_headers")) {
                 assertFalse(sendsHeader(lines, excluded.asText()), excluded.asText() + " was sent");

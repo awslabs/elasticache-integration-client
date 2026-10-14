@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from botocore import xform_name
+from botocore.compat import HAS_CRT
 
 import elasticache_integrations
 from tests.mock import MockCache
@@ -18,6 +19,11 @@ pytestmark = pytest.mark.alignment
 CASES = json.loads(
     (Path(__file__).parents[2] / "shared" / "sdk-request-cases.json").read_text(encoding="utf-8")
 )
+
+# Header names botocore sends or omits compared with expected.headers. botocore adds host only on
+# its awscrt signing path. The header-name check is exact, so a name missing from this list fails,
+# and so does an entry botocore no longer adds or omits.
+ACCEPTED_HEADER_DIFFERENCES = {"extra": {"host"} if HAS_CRT else set(), "missing": set()}
 
 
 @pytest.fixture(autouse=True)
@@ -67,8 +73,14 @@ def test_sdk_request_case(cache, case):
     assert json.loads(request.body) == case["params"]
     # Normalized headers are one "name:value" line each, so compare whole lines.
     lines = request.headers.decode().split("\n")
+    names = {line.split(":", 1)[0] for line in lines}
+    expected_names = (
+        set(expected["headers"]) - ACCEPTED_HEADER_DIFFERENCES["missing"]
+    ) | ACCEPTED_HEADER_DIFFERENCES["extra"]
+    assert names == expected_names
     for name, value in expected["headers"].items():
-        assert f"{name}:{value}" in lines
+        if value is not None:
+            assert f"{name}:{value}" in lines
     for name in CASES["excluded_headers"]:
         assert not any(line.startswith(f"{name}:") for line in lines), name
 

@@ -18,9 +18,17 @@ interface SdkRequestCase {
     method: string;
     url: string;
     metadata: string;
-    headers: Record<string, string>;
+    headers: Record<string, string | null>;
   };
 }
+
+// Header names the JS SDK sends or omits compared with expected.headers, which lists what Python
+// sends. The header-name check is exact, so a name missing from this list fails, and so does an
+// entry the SDK no longer adds or omits.
+const ACCEPTED_HEADER_DIFFERENCES = {
+  extra: ["host", "x-amz-content-sha256", "x-amz-user-agent"],
+  missing: [] as string[],
+};
 
 const CASES = JSON.parse(
   readFileSync(new URL("../../shared/sdk-request-cases.json", import.meta.url), "utf8"),
@@ -91,8 +99,16 @@ describe("shared SDK request cases", () => {
       expect(JSON.parse(request.body.toString("utf8"))).toEqual(testCase.params);
       // Normalized headers are one "name:value" line each, so compare whole lines.
       const lines = request.headers.toString("utf8").split("\n");
+      const names = lines.map((line) => line.slice(0, line.indexOf(":"))).sort();
+      const expectedNames = Object.keys(expected.headers)
+        .filter((name) => !ACCEPTED_HEADER_DIFFERENCES.missing.includes(name))
+        .concat(ACCEPTED_HEADER_DIFFERENCES.extra)
+        .sort();
+      expect(names).toEqual(expectedNames);
       for (const [name, value] of Object.entries(expected.headers)) {
-        expect(lines).toContain(`${name}:${value}`);
+        if (value !== null) {
+          expect(lines).toContain(`${name}:${value}`);
+        }
       }
       for (const name of CASES.excluded_headers) {
         expect(lines.filter((line) => line.startsWith(`${name}:`))).toEqual([]);

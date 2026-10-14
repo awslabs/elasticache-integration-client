@@ -1,5 +1,5 @@
 {
-  "description": "Cross-client SDK request cases. Each client sends the call through its real AWS SDK (region us-east-1, no endpoint override) into its mock cache, which serves `config`. The client then checks the aws.request the mock received: the body must equal `params` as parsed JSON, only the listed headers are compared, and the five excluded headers must be absent. Python is the reference client.",
+  "description": "Cross-client SDK request cases. Each client sends the call through its real AWS SDK (region us-east-1, no endpoint override) into its mock cache, which serves `config`. The client then checks the aws.request the mock received: the body must equal `params` as parsed JSON, the sent header names must equal `expected.headers` apart from the client's listed differences, a null value means the value is not compared, and the five excluded headers must be absent. Python is the reference client.",
   "config": {
     "version": "1.0",
     "refresh_interval": 60,
@@ -42,7 +42,10 @@
         "url": "https://dynamodb.us-east-1.amazonaws.com/",
         "metadata": "service=dynamodb&op=GetItem",
         "headers": {
+          "amz-sdk-invocation-id": null,
+          "content-length": null,
           "content-type": "application/x-amz-json-1.0",
+          "user-agent": null,
           "x-amz-target": "DynamoDB_20120810.GetItem"
         }
       }
@@ -66,7 +69,10 @@
         "url": "https://dynamodb.us-east-1.amazonaws.com/",
         "metadata": "service=dynamodb&op=Query",
         "headers": {
+          "amz-sdk-invocation-id": null,
+          "content-length": null,
           "content-type": "application/x-amz-json-1.0",
+          "user-agent": null,
           "x-amz-target": "DynamoDB_20120810.Query"
         }
       }
@@ -93,7 +99,10 @@
         "url": "https://dynamodb.us-east-1.amazonaws.com/",
         "metadata": "service=dynamodb&op=BatchGetItem",
         "headers": {
+          "amz-sdk-invocation-id": null,
+          "content-length": null,
           "content-type": "application/x-amz-json-1.0",
+          "user-agent": null,
           "x-amz-target": "DynamoDB_20120810.BatchGetItem"
         }
       }
@@ -118,7 +127,10 @@
         "url": "https://dynamodb.us-east-1.amazonaws.com/",
         "metadata": "service=dynamodb&op=PutItem",
         "headers": {
+          "amz-sdk-invocation-id": null,
+          "content-length": null,
           "content-type": "application/x-amz-json-1.0",
+          "user-agent": null,
           "x-amz-target": "DynamoDB_20120810.PutItem"
         }
       }

@@ -32,9 +32,13 @@ removed.
 
 `shared/sdk-request-cases.json` holds SDK-level cases: a DynamoDB call and the
 `aws.request` it must produce. Each client sends the call through its real
-AWS SDK into its mock cache and checks the method, URL, metadata, and listed
-headers. It also checks that the body, as parsed JSON, equals the call's
-`params`, and that no excluded header is sent.
+AWS SDK into its mock cache and checks the method, URL, and metadata. It also
+checks that the body, as parsed JSON, equals the call's `params`, and that no
+excluded header is sent. The header names sent must equal the case's
+`expected.headers`, and a header whose expected value is `null` is checked by
+name only. Each SDK adds or omits a few headers of its own, so each runner
+lists those names in `ACCEPTED_HEADER_DIFFERENCES`. An entry that no longer
+matches what the SDK sends fails the test.
 
 Local test runs include both sets of tests. CI runs them in a separate
 `alignment` job for each changed client and excludes them from the client jobs,
