@@ -112,11 +112,12 @@ try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result = ElastiCacheIn
 The default synchronous origin transport is the SDK Apache HTTP client. Supply
 a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 
-A request whose body comes from an `InputStream` or a file, such as
-`RequestBody.fromInputStream` or `RequestBody.fromFile`, passes through to the
-origin transport without Cache. Reading a stream for Cache would consume it
-before the origin send, and a file would be buffered whole. Other bodies,
-including DynamoDB requests, are read for Cache.
+A request whose body comes from an `InputStream` or a file passes through to
+the origin transport without Cache. This covers `RequestBody.fromInputStream`,
+`RequestBody.fromFile`, and `RequestBody.fromContentProvider` without a content
+length. Reading a stream for Cache would consume it before the origin send, and
+a file would be buffered whole. Other bodies, including DynamoDB requests, are
+read for Cache.
 
 ## Asynchronous client
 
@@ -141,8 +142,11 @@ block SDK event-loop threads while waiting for Cache.
 
 The default asynchronous origin transport is the SDK Netty HTTP client. Use
 `originAsyncHttpClient(SdkAsyncHttpClient)` to supply a caller-managed origin
-transport. Cache buffers eligible asynchronous request bodies so the same
-signed request can be replayed safely during origin fallback. Only publishers
+transport. A request whose `AsyncRequestBody` is not bytes passes through to
+the origin transport without Cache. This covers `AsyncRequestBody.fromInputStream`,
+`fromFile`, `fromPublisher`, and custom `AsyncRequestBody` implementations.
+Cache buffers the remaining request bodies, including DynamoDB requests, so the
+same signed request can be replayed safely during origin fallback. Only bodies
 with a known content length are admitted. Buffering is limited to 16 MiB per
 request and eight concurrent collectors by default. Configure these limits with
 `asyncMaxBufferedRequestBytes(int)` and

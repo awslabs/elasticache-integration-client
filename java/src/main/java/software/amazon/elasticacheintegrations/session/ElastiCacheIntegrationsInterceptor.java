@@ -107,7 +107,7 @@ public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor 
     public SdkHttpFullRequest modifyHttpRequest(
             Context.ModifyHttpRequest context, ExecutionAttributes executionAttributes) {
         SdkHttpFullRequest sdkRequest = (SdkHttpFullRequest) context.httpRequest();
-        if (hasStreamingBody(sdkRequest)) {
+        if (!isCarriableBody(sdkRequest)) {
             // An InputStream may be readable only once, and a file may be too large to buffer.
             LOGGER.fine("Streaming request body; passing through to the service");
             requestContext.capturePassThrough(executionAttributes);
@@ -120,11 +120,13 @@ public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor 
     }
 
     /**
-     * Whether the body streams from an {@code InputStream} or a file, which Cache does not carry.
-     * Bodies from bytes, strings and custom providers (including DynamoDB's) are read for Cache.
+     * Whether Cache can carry the body. A body that streams from an {@code InputStream} or a file
+     * cannot, including {@code RequestBody.fromContentProvider} without a length, which the SDK wraps
+     * as a stream. Bodies from bytes, strings and custom providers with a length (including
+     * DynamoDB's) are read for Cache.
      */
-    private static boolean hasStreamingBody(SdkHttpFullRequest sdkRequest) {
-        return sdkRequest
+    private static boolean isCarriableBody(SdkHttpFullRequest sdkRequest) {
+        return !sdkRequest
                 .contentStreamProvider()
                 .map(ContentStreamProvider::name)
                 .filter(

@@ -6,10 +6,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.net.URI;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -23,16 +26,23 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.reactivestreams.Subscriber;
 import org.reactivestreams.Subscription;
+import software.amazon.awssdk.core.async.AsyncRequestBody;
 import software.amazon.awssdk.core.exception.RetryableException;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
+import software.amazon.awssdk.core.interceptor.InterceptorContext;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.http.async.AsyncExecuteRequest;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
+import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsCacheUnavailable;
@@ -45,6 +55,8 @@ import software.amazon.elasticacheintegrations.model.ElastiCacheIntegrationsResp
 import software.amazon.elasticacheintegrations.model.RequestMetadata;
 
 class ElastiCacheIntegrationsAsyncHttpClientTest {
+
+    private static final byte[] PAYLOAD = "payload".getBytes(StandardCharsets.UTF_8);
 
     @Test
     void knownOversizedBodyFallsBackBeforeSubscribing() throws Exception {
@@ -379,6 +391,125 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         assertTrue(ownedExecutor.isShutdown());
     }
 
+    @Test
+    void streamingBodyPassesThrough() throws Exception {
+        RecordingSession session = new RecordingSession();
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        ExecutorService streamExecutor = Executors.newSingleThreadExecutor();
+        try {
+            AsyncRequestBody body =
+                    AsyncRequestBody.fromInputStream(
+                            new ByteArrayInputStream(PAYLOAD), (long) PAYLOAD.length, streamExecutor);
+
+            sendThroughInterceptor(session, origin, body).get(2, TimeUnit.SECONDS);
+        } finally {
+            streamExecutor.shutdownNow();
+        }
+
+        assertEquals(0, session.requestCount.get());
+        assertArrayEquals(PAYLOAD, origin.body);
+    }
+
+    /** Async bodies other than {@code Bytes} skip Cache, even when their length is known. */
+    @ParameterizedTest
+    @ValueSource(strings = {"fromFile", "fromPublisher", "custom"})
+    void uncarriableBodiesAreDeclined(String factory, @TempDir Path dir) throws Exception {
+        RecordingSession session = new RecordingSession();
+        RecordingBodyOrigin origin = new RecordingBodyOrigin();
+        AsyncRequestBody body;
+        switch (factory) {
+            case "fromFile":
+                body = AsyncRequestBody.fromFile(Files.write(dir.resolve("upload.bin"), PAYLOAD));
+                break;
+            case "fromPublisher":
+                body = AsyncRequestBody.fromPublisher(AsyncRequestBody.fromBytes(PAYLOAD));
+                break;
+            default:
+                body = new CustomBody(AsyncRequestBody.fromBytes(PAYLOAD));
+        }
+
+        sendThroughInterceptor(session, origin, body).get(2, TimeUnit.SECONDS);
+
+        assertEquals(0, session.requestCount.get());
+        assertArrayEquals(PAYLOAD, origin.body);
+    }
+
+    /**
+     * {@code Bytes} bodies, and requests with no async body (the DynamoDB shape, whose body the SDK
+     * publishes from the marshalled request), are read for Cache.
+     */
+    @ParameterizedTest
+    @CsvSource({"fromBytes, payload", "fromString, payload", "empty, ''", "none, payload"})
+    void bodyConversion(String factory, String expected) throws Exception {
+        RecordingSession session = new RecordingSession();
+        RecordingOrigin origin = new RecordingOrigin();
+        AsyncRequestBody body;
+        switch (factory) {
+            case "fromBytes":
+                body = AsyncRequestBody.fromBytes(PAYLOAD);
+                break;
+            case "fromString":
+                body = AsyncRequestBody.fromString("payload");
+                break;
+            case "empty":
+                body = AsyncRequestBody.empty();
+                break;
+            default:
+                body = null;
+        }
+
+        sendThroughInterceptor(session, origin, body).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, session.requestCount.get());
+        assertEquals(expected, new String(session.lastBody, StandardCharsets.UTF_8));
+        assertEquals(0, origin.executeCount.get());
+    }
+
+    /**
+     * Drive the async interceptor and its transport in the order the SDK calls them. A null {@code
+     * body} has no async request body, and the transport receives {@link #PAYLOAD}.
+     */
+    private static CompletableFuture<Void> sendThroughInterceptor(
+            ElastiCacheIntegrationsSession session, SdkAsyncHttpClient origin, AsyncRequestBody body) {
+        ElastiCacheIntegrationsAsyncInterceptor interceptor =
+                new ElastiCacheIntegrationsAsyncInterceptor(
+                        session, origin, false, Runnable::run, null, 1024, 1);
+        SdkHttpFullRequest httpRequest =
+                SdkHttpFullRequest.builder()
+                        .method(SdkHttpMethod.POST)
+                        .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
+                        .build();
+        InterceptorContext context =
+                InterceptorContext.builder()
+                        .request(PutItemRequest.builder().build())
+                        .httpRequest(httpRequest)
+                        .asyncRequestBody(body)
+                        .build();
+        ExecutionAttributes attributes = new ExecutionAttributes();
+        interceptor.modifyHttpRequest(context, attributes);
+        interceptor.beforeTransmission(context, attributes);
+        AsyncRequestBody published = body != null ? body : AsyncRequestBody.fromBytes(PAYLOAD);
+        return interceptor
+                .getHttpClient()
+                .execute(
+                        AsyncExecuteRequest.builder()
+                                .request(httpRequest)
+                                .requestContentPublisher(
+                                        new SdkHttpContentPublisher() {
+                                            @Override
+                                            public Optional<Long> contentLength() {
+                                                return published.contentLength();
+                                            }
+
+                                            @Override
+                                            public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
+                                                published.subscribe(subscriber);
+                                            }
+                                        })
+                                .responseHandler(new NoopResponseHandler())
+                                .build());
+    }
+
     private static ElastiCacheIntegrationsRequestContext preparedContext() {
         return preparedContext("ListTables");
     }
@@ -478,6 +609,44 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
             }
             cancelled.countDown();
             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+        }
+    }
+
+    private static final class RecordingSession extends OpenSession {
+        private final AtomicInteger requestCount = new AtomicInteger();
+        private volatile byte[] lastBody;
+
+        private RecordingSession() {
+            super();
+        }
+
+        @Override
+        ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            requestCount.incrementAndGet();
+            lastBody = request.getBody();
+            return new ElastiCacheIntegrationsResponse(
+                    200, Collections.emptyMap(), "cache".getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    /** A caller's own body type, which the SDK names {@code Unknown}. */
+    private static final class CustomBody implements AsyncRequestBody {
+        private final AsyncRequestBody delegate;
+
+        private CustomBody(AsyncRequestBody delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public Optional<Long> contentLength() {
+            return delegate.contentLength();
+        }
+
+        @Override
+        public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
+            delegate.subscribe(subscriber);
         }
     }
 

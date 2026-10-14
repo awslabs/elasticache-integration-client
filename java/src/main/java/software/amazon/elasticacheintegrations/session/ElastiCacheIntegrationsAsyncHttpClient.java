@@ -82,7 +82,11 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
     public CompletableFuture<Void> execute(AsyncExecuteRequest request) {
         // The interceptor records one unsigned Cache request per SDK attempt.
         // Consume it synchronously before this method crosses any thread boundary.
+        boolean passThrough = requestContext.takePassThrough();
         ElastiCacheIntegrationsRequest capturedRequest = requestContext.takeAttempt();
+        if (passThrough) {
+            return new RequestExecution(request, null).passThrough();
+        }
         if (capturedRequest == null) {
             return failed(
                     request.responseHandler(),
@@ -103,6 +107,13 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
                 AsyncExecuteRequest request, ElastiCacheIntegrationsRequest capturedRequest) {
             this.request = request;
             this.capturedRequest = capturedRequest;
+        }
+
+        /** Send the original request to the origin without Cache, such as for a streaming body. */
+        private CompletableFuture<Void> passThrough() {
+            registerCancellation();
+            fallbackToOrigin(request);
+            return result;
         }
 
         private CompletableFuture<Void> start() {

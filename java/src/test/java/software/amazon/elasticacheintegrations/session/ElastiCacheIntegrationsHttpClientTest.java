@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.InterceptorContext;
 import software.amazon.awssdk.core.sync.RequestBody;
@@ -220,7 +223,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
-    void streamingBodyPassesThroughToOrigin() throws Exception {
+    void streamingBodyPassesThrough() throws Exception {
         StubSession session = new StubSession();
         RecordingHttpClient origin = new RecordingHttpClient();
         RequestBody body = RequestBody.fromInputStream(readOnce("payload"), 7);
@@ -233,35 +236,75 @@ class ElastiCacheIntegrationsHttpClientTest {
         assertEquals("payload", originBody(origin));
     }
 
-    @Test
-    void fileBodyPassesThroughToOrigin(@TempDir Path dir) throws Exception {
+    /** Bodies the SDK names {@code Stream} or {@code File} skip Cache and reach the origin intact. */
+    @ParameterizedTest
+    @ValueSource(strings = {"fromInputStream", "fromFile", "fromContentProviderWithoutLength"})
+    void uncarriableBodiesAreDeclined(String factory, @TempDir Path dir) throws Exception {
         StubSession session = new StubSession();
         RecordingHttpClient origin = new RecordingHttpClient();
-        Path file = Files.write(dir.resolve("upload.bin"), "payload".getBytes(StandardCharsets.UTF_8));
-        RequestBody body = RequestBody.fromFile(file);
+        byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
+        RequestBody body;
+        switch (factory) {
+            case "fromInputStream":
+                body = RequestBody.fromInputStream(readOnce("payload"), payload.length);
+                break;
+            case "fromFile":
+                body = RequestBody.fromFile(Files.write(dir.resolve("upload.bin"), payload));
+                break;
+            default:
+                body =
+                        RequestBody.fromContentProvider(
+                                () -> new ByteArrayInputStream(payload), "application/octet-stream");
+        }
 
-        HttpExecuteResponse response =
-                sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        sendThroughInterceptor(session, origin, body.contentStreamProvider());
 
-        assertEquals(201, response.httpResponse().statusCode());
         assertEquals(0, session.requestCount.get());
         assertEquals("payload", originBody(origin));
     }
 
-    @Test
-    void byteBodyStillGoesToCache() throws Exception {
+    /**
+     * Bodies named {@code Bytes}, and custom providers with a known length (the shape DynamoDB's
+     * marshaller produces), are read for Cache.
+     */
+    @ParameterizedTest
+    @CsvSource({
+        "fromBytes, payload",
+        "fromString, payload",
+        "empty, ''",
+        "fromContentProvider, payload"
+    })
+    void bodyConversion(String factory, String expected) throws Exception {
         StubSession session = new StubSession();
         session.response =
                 new ElastiCacheIntegrationsResponse(
                         200, Collections.emptyMap(), "cache".getBytes(StandardCharsets.UTF_8));
         RecordingHttpClient origin = new RecordingHttpClient();
-        RequestBody body = RequestBody.fromBytes("payload".getBytes(StandardCharsets.UTF_8));
+        byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
+        RequestBody body;
+        switch (factory) {
+            case "fromBytes":
+                body = RequestBody.fromBytes(payload);
+                break;
+            case "fromString":
+                body = RequestBody.fromString("payload");
+                break;
+            case "empty":
+                body = RequestBody.empty();
+                break;
+            default:
+                body =
+                        RequestBody.fromContentProvider(
+                                () -> new ByteArrayInputStream(payload),
+                                payload.length,
+                                "application/octet-stream");
+        }
 
         HttpExecuteResponse response =
                 sendThroughInterceptor(session, origin, body.contentStreamProvider());
 
         assertEquals(200, response.httpResponse().statusCode());
-        assertEquals("payload", new String(session.lastRequest.getBody(), StandardCharsets.UTF_8));
+        assertEquals(expected, new String(session.lastRequest.getBody(), StandardCharsets.UTF_8));
         assertEquals(0, origin.prepareCount.get());
     }
 
