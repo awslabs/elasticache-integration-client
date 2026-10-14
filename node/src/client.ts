@@ -3,7 +3,7 @@ import {
   ElastiCacheIntegrationsConnector,
   type ElastiCacheIntegrationsConnectorOptions,
 } from "./connection.js";
-import { ElastiCacheIntegrationsConfigError, ElastiCacheIntegrationsError } from "./errors.js";
+import { ElastiCacheIntegrationsConfigError } from "./errors.js";
 import {
   ElastiCacheIntegrationsHandle,
   type ElastiCacheIntegrationsCompatibleClient,
@@ -15,13 +15,13 @@ import {
   type ReconnectPolicyOptions,
 } from "./session.js";
 
-export interface ElastiCacheIntegrationsClientOptions<TConfig extends object> {
+export interface ElastiCacheIntegrationsClientOptions<TClient extends InstallableClient> {
+  /** AWS SDK v3 client to install ElastiCacheIntegrations into. Its region, credentials, and service are used. */
+  client: TClient;
   /** Cache endpoint as host:port. */
   endpoint: string;
   /** ElastiCache Serverless cache name, distinct from the endpoint. */
   cacheName: string;
-  /** AWS region; resolved from standard AWS configuration when omitted. */
-  region?: string;
   /** ElastiCache IAM user id; defaults to default.iam-user. */
   userId?: string;
   /**
@@ -31,8 +31,6 @@ export interface ElastiCacheIntegrationsClientOptions<TConfig extends object> {
    * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
    */
   iamRefreshAfterSeconds?: number;
-  /** AWS SDK v3 client configuration. */
-  clientConfig?: Omit<TConfig, "region">;
   /** Node-specific ElastiCacheIntegrations transport configuration. */
   connectorOptions?: ElastiCacheIntegrationsConnectorOptions;
   /**
@@ -63,9 +61,14 @@ export interface ElastiCacheIntegrationsClientOptions<TConfig extends object> {
   stalenessDuration?: number;
 }
 
+/** The part of an AWS SDK v3 client that install() reads. */
+type InstallableClient = ElastiCacheIntegrationsCompatibleClient & {
+  config: { region: () => Promise<string>; serviceId: string };
+};
+
 interface InitializeOptions {
   cacheName: string;
-  region?: string;
+  region: string;
   userId?: string;
   iamRefreshAfterSeconds?: number;
   connectorOptions?: ElastiCacheIntegrationsConnectorOptions;
@@ -111,7 +114,7 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
       ? await buildCacheAuthProvider({
           cacheName: options.cacheName,
           ...(options.userId === undefined ? {} : { userId: options.userId }),
-          ...(options.region === undefined ? {} : { region: options.region }),
+          region: options.region,
           ...(options.iamRefreshAfterSeconds === undefined
             ? {}
             : { refreshAfterSeconds: options.iamRefreshAfterSeconds }),
@@ -127,18 +130,25 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
       }),
     managedAuthProvider === undefined ? {} : { close: () => managedAuthProvider.close() },
   );
-  const reconnectPolicy = {
-    ...options.reconnectPolicy,
-    ...(options.fallbackDuration === undefined
-      ? {}
-      : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
-    stalenessDurationMs: options.stalenessDurationMs,
-  };
-  const session = new ElastiCacheIntegrationsSession(
-    connectorFactory,
-    options.overrides,
-    reconnectPolicy,
-  );
+  let session: ElastiCacheIntegrationsSession;
+  try {
+    const reconnectPolicy = {
+      ...options.reconnectPolicy,
+      ...(options.fallbackDuration === undefined
+        ? {}
+        : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
+      stalenessDurationMs: options.stalenessDurationMs,
+    };
+    session = new ElastiCacheIntegrationsSession(
+      connectorFactory,
+      options.overrides,
+      reconnectPolicy,
+    );
+  } catch (error) {
+    // The session owns the managed provider only once it exists.
+    managedAuthProvider?.close();
+    throw error;
+  }
   try {
     await session.open();
     const handle = new ElastiCacheIntegrationsHandle(sdkClient, session, service);
@@ -165,30 +175,22 @@ function fallbackDurationMs(value: number | null): number | null {
 }
 
 /**
- * Create an AWS SDK v3 client for `service` wired up with ElastiCacheIntegrations.
+ * Install ElastiCacheIntegrations into an AWS SDK v3 client the application already built.
  *
- * Returns the ordinary SDK client with an identical API. Calling destroy() on
- * it disconnects ElastiCacheIntegrations before destroying the SDK client as usual.
- *
- * `ClientCtor` and `clientConfig` are Node-specific because AWS SDK v3 has no
- * runtime service-name factory.
+ * Returns the same client once the cache connection, authentication, and aws.config exchange
+ * complete. Calling destroy() on it disconnects ElastiCacheIntegrations before destroying the SDK
+ * client as usual. If installation fails, ElastiCacheIntegrations releases what it opened and
+ * leaves the client untouched.
  */
-export async function client<
-  TConfig extends object,
-  TClient extends ElastiCacheIntegrationsCompatibleClient,
->(
-  service: string,
-  ClientCtor: new (config: TConfig) => TClient,
-  options: ElastiCacheIntegrationsClientOptions<TConfig>,
+export async function install<TClient extends InstallableClient>(
+  options: ElastiCacheIntegrationsClientOptions<TClient>,
 ): Promise<TClient> {
-  if (!service.trim()) throw new ElastiCacheIntegrationsError("service must not be blank");
   const {
+    client: sdkClient,
     endpoint,
     cacheName,
-    region,
     userId,
     iamRefreshAfterSeconds,
-    clientConfig,
     connectorOptions,
     fallbackDuration,
     reconnectPolicy,
@@ -196,30 +198,28 @@ export async function client<
     stalenessDuration,
   } = options;
   const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
-  const sdkClient = new ClientCtor({
-    ...clientConfig,
-    ...(region === undefined ? {} : { region }),
-  } as TConfig);
-
+  // botocore names a service by lowercasing its service id and hyphenating spaces; the proxy's
+  // predicates match that name, so Node derives it the same way.
+  const service = sdkClient.config.serviceId.toLowerCase().replace(/ /g, "-");
+  let region: string;
   try {
-    await initialize(sdkClient, service, endpoint, {
-      cacheName,
-      ...(region === undefined ? {} : { region }),
-      ...(userId === undefined ? {} : { userId }),
-      ...(iamRefreshAfterSeconds === undefined ? {} : { iamRefreshAfterSeconds }),
-      ...(connectorOptions === undefined ? {} : { connectorOptions }),
-      ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
-      ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
-      overrides,
-      stalenessDurationMs: resolvedStalenessDurationMs,
-    });
+    region = await sdkClient.config.region();
   } catch (error) {
-    try {
-      sdkClient.destroy();
-    } catch {
-      // Preserve the initialization error.
-    }
-    throw error;
+    throw new ElastiCacheIntegrationsConfigError(
+      "Could not resolve the AWS region of the SDK client",
+      { cause: error },
+    );
   }
+  await initialize(sdkClient, service, endpoint, {
+    cacheName,
+    region,
+    ...(userId === undefined ? {} : { userId }),
+    ...(iamRefreshAfterSeconds === undefined ? {} : { iamRefreshAfterSeconds }),
+    ...(connectorOptions === undefined ? {} : { connectorOptions }),
+    ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
+    ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
+    overrides,
+    stalenessDurationMs: resolvedStalenessDurationMs,
+  });
   return sdkClient;
 }

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { constructStack } from "@smithy/core/client";
-import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from "@smithy/types";
+import type { AwsCredentialIdentityProvider } from "@smithy/types";
 
 import { ElastiCacheIntegrationsConfigError } from "../src/errors.js";
 
@@ -51,12 +51,7 @@ vi.mock("../src/middleware.js", () => ({
   },
 }));
 
-import { client } from "../src/client.js";
-
-type FakeConfig = {
-  region?: string;
-  credentials?: AwsCredentialIdentity;
-};
+import { install } from "../src/client.js";
 
 const credentials = {
   accessKeyId: "AKIAEXAMPLE",
@@ -71,24 +66,24 @@ const generatedAuthProvider = Object.assign(
   },
 );
 
-const createdClients: FakeClient[] = [];
-
 class FakeClient {
   readonly middlewareStack = constructStack<object, object>();
-  readonly config: { credentials: AwsCredentialIdentityProvider };
-  readonly constructorConfig: FakeConfig;
+  readonly config: {
+    credentials: AwsCredentialIdentityProvider;
+    region: () => Promise<string>;
+    serviceId: string;
+  };
   readonly destroy = vi.fn();
 
-  constructor(config: FakeConfig) {
-    this.constructorConfig = config;
-    const credentials = config.credentials!;
-    this.config = { credentials: async () => credentials };
-    createdClients.push(this);
+  constructor({
+    region = async () => "us-east-1",
+    serviceId = "DynamoDB",
+  }: { region?: () => Promise<string>; serviceId?: string } = {}) {
+    this.config = { credentials: async () => credentials, region, serviceId };
   }
 }
 
 function setup() {
-  createdClients.length = 0;
   for (const mock of [
     mocks.buildCacheAuthProvider,
     mocks.connection,
@@ -112,24 +107,20 @@ function setup() {
 const options = {
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
-  region: "us-east-1",
   userId: "iam-user",
   overrides: { timeout: 42 },
-  clientConfig: { credentials },
   connectorOptions: { tls: false, requestTimeout: 1234 },
 };
 
-describe("client", () => {
-  it("creates an ordinary SDK client and initializes ElastiCacheIntegrations before returning", async () => {
+describe("install", () => {
+  it("installs ElastiCacheIntegrations into the given client and returns that client", async () => {
     setup();
+    const sdkClient = new FakeClient();
 
-    const sdkClient = await client("dynamodb", FakeClient, options);
+    const returned = await install({ client: sdkClient, ...options });
 
-    expect(sdkClient).toBeInstanceOf(FakeClient);
-    expect(sdkClient.constructorConfig).toEqual({
-      credentials,
-      region: "us-east-1",
-    });
+    expect(returned).toBe(sdkClient);
+    expect(sdkClient.destroy).not.toHaveBeenCalled();
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
@@ -161,29 +152,48 @@ describe("client", () => {
     expect(mocks.handle.install).toHaveBeenCalledOnce();
   });
 
-  it("allows region and userId to resolve from the environment", async () => {
+  it("uses the SDK-resolved region for managed auth", async () => {
     setup();
 
-    const sdkClient = await client("dynamodb", FakeClient, {
+    await install({
+      client: new FakeClient({ region: async () => "eu-west-1" }),
       endpoint: options.endpoint,
       cacheName: options.cacheName,
-      clientConfig: { credentials },
     });
 
-    expect(sdkClient.constructorConfig).toEqual({
-      credentials,
-    });
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      region: "eu-west-1",
     });
-    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
-      expect.any(Function),
-      {},
-      {
-        stalenessDurationMs: 3_600_000,
+  });
+
+  it.each([
+    ["DynamoDB", "dynamodb"],
+    ["Secrets Manager", "secrets-manager"],
+  ])("derives the service %s from the client as %s", async (serviceId, service) => {
+    setup();
+    const sdkClient = new FakeClient({ serviceId });
+
+    await install({ client: sdkClient, ...options });
+
+    expect(mocks.handleConstructor).toHaveBeenCalledWith(sdkClient, mocks.session, service);
+  });
+
+  it("rejects a client whose region cannot be resolved", async () => {
+    setup();
+    const sdkClient = new FakeClient({
+      region: async () => {
+        throw new Error("Region is missing");
       },
-    );
+    });
+
+    const failure = install({ client: sdkClient, ...options });
+
+    await expect(failure).rejects.toThrow(ElastiCacheIntegrationsConfigError);
+    await expect(failure).rejects.toThrow("Could not resolve the AWS region of the SDK client");
+    expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+    expect(sdkClient.destroy).not.toHaveBeenCalled();
   });
 
   it("passes reconnect policy to the session", async () => {
@@ -196,7 +206,7 @@ describe("client", () => {
       jitter: 0.1,
     };
 
-    await client("dynamodb", FakeClient, { ...options, reconnectPolicy });
+    await install({ client: new FakeClient(), ...options, reconnectPolicy });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(
       expect.any(Function),
@@ -211,10 +221,7 @@ describe("client", () => {
   it("passes a custom IAM refresh interval to the managed auth provider", async () => {
     setup();
 
-    await client("dynamodb", FakeClient, {
-      ...options,
-      iamRefreshAfterSeconds: 120,
-    });
+    await install({ client: new FakeClient(), ...options, iamRefreshAfterSeconds: 120 });
 
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
@@ -228,7 +235,7 @@ describe("client", () => {
   it("converts the public fallback duration from seconds to milliseconds", async () => {
     setup();
 
-    await client("dynamodb", FakeClient, { ...options, fallbackDuration: 60 });
+    await install({ client: new FakeClient(), ...options, fallbackDuration: 60 });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(
       expect.any(Function),
@@ -246,7 +253,7 @@ describe("client", () => {
       setup();
 
       await expect(
-        client("dynamodb", FakeClient, { ...options, fallbackDuration }),
+        install({ client: new FakeClient(), ...options, fallbackDuration }),
       ).rejects.toThrow("fallbackDuration must be a whole number of seconds");
     },
   );
@@ -255,10 +262,10 @@ describe("client", () => {
     setup();
     const authProvider = () => ["injected-user", "injected-token"] as [string, string];
 
-    await client("dynamodb", FakeClient, {
+    await install({
+      client: new FakeClient(),
       endpoint: options.endpoint,
       cacheName: options.cacheName,
-      clientConfig: { credentials },
       connectorOptions: { tls: false, authProvider },
     });
 
@@ -281,7 +288,7 @@ describe("client", () => {
   it("plumbs a custom stalenessDuration to the session as milliseconds", async () => {
     setup();
 
-    await client("dynamodb", FakeClient, { ...options, stalenessDuration: 120 });
+    await install({ client: new FakeClient(), ...options, stalenessDuration: 120 });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
       stalenessDurationMs: 120_000,
@@ -289,37 +296,57 @@ describe("client", () => {
   });
 
   it.each([0, -1, 1.5, NaN, Infinity, 2 ** 53])(
-    "rejects an invalid stalenessDuration of %s before creating the SDK client",
+    "rejects an invalid stalenessDuration of %s before connecting",
     async (stalenessDuration) => {
       setup();
 
       await expect(
-        client("dynamodb", FakeClient, { ...options, stalenessDuration }),
+        install({ client: new FakeClient(), ...options, stalenessDuration }),
       ).rejects.toThrow(ElastiCacheIntegrationsConfigError);
-      expect(createdClients).toHaveLength(0);
       expect(mocks.sessionConstructor).not.toHaveBeenCalled();
     },
   );
 
   it.each(["auth", "open", "install"])(
-    "cleans up owned resources when %s initialization fails",
+    "cleans up ElastiCacheIntegrations but leaves the caller's client usable when %s initialization fails",
     async (failure) => {
       setup();
+      const sdkClient = new FakeClient();
       const error = new Error(`${failure} failed`);
-      if (failure === "auth") mocks.buildCacheAuthProvider.mockRejectedValue(error);
-      if (failure === "open") mocks.session.open.mockRejectedValue(error);
+      if (failure === "auth") mocks.buildCacheAuthProvider.mockRejectedValueOnce(error);
+      if (failure === "open") mocks.session.open.mockRejectedValueOnce(error);
       if (failure === "install")
-        mocks.handle.install.mockImplementation(() => {
+        mocks.handle.install.mockImplementationOnce(() => {
           throw error;
         });
 
-      await expect(client("dynamodb", FakeClient, options)).rejects.toBe(error);
+      await expect(install({ client: sdkClient, ...options })).rejects.toBe(error);
 
-      expect(createdClients[0]?.destroy).toHaveBeenCalledOnce();
+      expect(sdkClient.destroy).not.toHaveBeenCalled();
       expect(mocks.session.destroy).toHaveBeenCalledTimes(failure === "auth" ? 0 : 1);
       if (failure === "open") {
         expect(mocks.handleConstructor).not.toHaveBeenCalled();
       }
+      await expect(install({ client: sdkClient, ...options })).resolves.toBe(sdkClient);
     },
   );
+
+  it.each([
+    ["an invalid fallbackDuration", { fallbackDuration: 1.5 }],
+    ["a session that rejects its reconnect policy", {}],
+  ])("closes the managed auth provider when install fails on %s", async (_, extra) => {
+    setup();
+    const error = new ElastiCacheIntegrationsConfigError("jitter must be in [0, 1)");
+    if (!("fallbackDuration" in extra)) {
+      mocks.sessionConstructor.mockImplementationOnce(() => {
+        throw error;
+      });
+    }
+
+    await expect(install({ client: new FakeClient(), ...options, ...extra })).rejects.toThrow(
+      ElastiCacheIntegrationsConfigError,
+    );
+
+    expect(generatedAuthProvider.close).toHaveBeenCalledOnce();
+  });
 });

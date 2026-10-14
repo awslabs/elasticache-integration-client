@@ -12,12 +12,13 @@ if (!packageSpec || !expectedName || !expectedVersion) {
 }
 
 const checks = [
-  'typeof elastiCacheIntegrations.client === "function"',
+  'typeof elastiCacheIntegrations.install === "function"',
   `elastiCacheIntegrations.version === ${JSON.stringify(expectedVersion)}`,
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsError === "function"',
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsConfigError === "function"',
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsCacheUnavailable === "function"',
   '!("ElastiCacheIntegrationsHandle" in elastiCacheIntegrations)',
+  '!("client" in elastiCacheIntegrations)',
 ].join(" && ");
 const smokeRoot = mkdtempSync(join(tmpdir(), "elasticache-integrations-smoke-"));
 

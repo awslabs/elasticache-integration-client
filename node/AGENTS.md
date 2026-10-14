@@ -112,7 +112,8 @@ require the corresponding tests, README, and package checks to change with it.
 - **Client readiness:** flag returning a partially initialized client or
   masking an initialization error with cleanup failures. Safe path: return
   only after auth, session opening, and middleware installation succeed, and
-  clean up resources already owned by the factory.
+  clean up only what `install()` opened. The caller owns the SDK client, so a
+  failed install must not destroy it.
 
 ### Finding standard
 

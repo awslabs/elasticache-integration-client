@@ -27,7 +27,8 @@ This package currently ports the Python implementation's:
   SigV4 headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
   origin only for operations in the shared replay-safe catalog, and marks a
   healthy-connection `ORIGIN_ERROR` retryable only for those operations;
-- an async `client()` factory that returns an ordinary AWS SDK v3 client.
+- an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
+  the application already built.
 
 Automatic ElastiCacheIntegrations failover to another endpoint remains out of scope. Deferred
 cache responses are correlated by request ID and later `aws.response`
@@ -57,7 +58,7 @@ without a cache round trip. Evaluation errors and malformed or non-object JSON
 bodies count as no match. A predicate that cannot be compiled is different: one
 bad entry rejects the whole config rather than caching by the entries that did
 compile, because those would route a different set of requests than the proxy
-resolved. `client()` fails on such a config, a reconnect retries, and a refresh
+resolved. `install()` fails on such a config, a reconnect retries, and a refresh
 keeps the last good config.
 
 The predicates are compiled when the session opens and recompiled whenever a
@@ -69,12 +70,14 @@ and a RESP3 null reply means the config is unchanged. See
 
 ```ts
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { client } from "elasticache-integrations";
+import { install } from "elasticache-integrations";
 
-const dynamodb = await client("dynamodb", DynamoDBClient, {
+const dynamodb = new DynamoDBClient({ region: "us-east-1", maxAttempts: 10 });
+
+await install({
+  client: dynamodb,
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
-  region: "us-east-1",
 });
 
 try {
@@ -85,10 +88,18 @@ try {
 }
 ```
 
-The factory completes the authenticated `HELLO 3` and `aws.config` handshakes
-before installing middleware and returning the ordinary SDK client. Wrapped AWS
-requests are fully serialized and signed by the SDK before ElastiCacheIntegrations intercepts
-them. ElastiCacheIntegrations strips volatile SigV4 headers only from its copied request model;
+`install()` completes the authenticated `HELLO 3` and `aws.config` handshakes
+before installing middleware, then returns the same client. Every SDK setting
+on the client stays as configured. ElastiCacheIntegrations reads three things
+from it: the region, which also signs the cache's IAM token; the credentials,
+which sign that token; and the service id, lowercased with spaces replaced by
+`-` (`DynamoDB` becomes `dynamodb`) to match the `service` in request
+predicates. A client whose region cannot be resolved raises
+`ElastiCacheIntegrationsConfigError`. If installation fails,
+ElastiCacheIntegrations releases what it opened and leaves the client usable.
+Wrapped AWS requests are fully serialized and signed by the SDK before
+ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
+SigV4 headers only from its copied request model;
 the original signed request remains untouched for origin pass-through. When the
 ElastiCacheIntegrations connection drops, failures for operations in the shared replay-safe
 catalog return to the SDK's normal origin pipeline. While the connection
@@ -98,14 +109,13 @@ validation errors and fallback-window exhaustion propagate. Calling `destroy()`
 detaches ElastiCacheIntegrations before SDK teardown, rejects in-flight ElastiCacheIntegrations requests without
 passing shutdown failures to the origin, stops reconnect activity, and is safe
 to repeat.
-`region` and `userId` are optional and otherwise resolve from the standard
-Node.js AWS configuration. `clientConfig` and `connectorOptions` are
-Node-specific; all `aws.config` overrides are passed through `overrides`.
+`userId` defaults to `default.iam-user`. `connectorOptions` is Node-specific;
+all `aws.config` overrides are passed through `overrides`.
 `stalenessDuration` is described under [Config staleness](#config-staleness).
 
 ## Reconnection and fallback
 
-Client creation retries the initial connection a bounded number of times and
+`install()` retries the initial connection a bounded number of times and
 still fails loudly if no attempt completes. After a live connection is lost,
 ElastiCacheIntegrations reconnects in the background until it succeeds or the client is
 destroyed. Idle socket loss starts recovery without waiting for a request.
@@ -149,7 +159,8 @@ connection. Refresh timeouts and connection loss
 start recovery immediately.
 
 ```ts
-const dynamodb = await client("dynamodb", DynamoDBClient, {
+await install({
+  client: dynamodb,
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
   fallbackDuration: 60,
@@ -171,7 +182,7 @@ setting it to `0` disables jitter for all three schedules. Closing or destroying
 the SDK client interrupts reconnect backoff and prevents further attempts.
 
 The `HELLO 3 AUTH` handshake normally uses `@aws/developer-toolkit-elasticache` to cache and
-automatically refresh short-lived IAM tokens from the SDK credential chain.
+automatically refresh short-lived IAM tokens from the SDK client's credentials.
 The toolkit validates cache names and user IDs, normalizes them to lowercase
 before signing, and refreshes the cached token in the background. If ElastiCacheIntegrations
 rejects either the initial handshake or a background AUTH refresh, it invalidates
@@ -187,8 +198,8 @@ background refresh point; the accepted range, defaults, retry behavior, and
 safety margin are defined by the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
 
-The `client()` factory creates this default manager, so destroying the returned
-SDK client also closes the manager and stops its timers. When
+`install()` creates this default manager, so destroying the SDK client also
+closes the manager and stops its timers. When
 `connectorOptions.authProvider` is supplied, ElastiCacheIntegrations does not create or close
 that provider; the caller owns its lifecycle, matching Java's explicitly
 constructed `IamAuthTokenManager`.

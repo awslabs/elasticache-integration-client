@@ -194,6 +194,17 @@ export function installCacheMiddleware<Input extends object, Output extends obje
   });
 }
 
+/**
+ * Drop the handlers a `cacheMiddleware: true` client resolved before its stack changed.
+ *
+ * Smithy caches each command's resolved middleware chain in the private `handlers` field and
+ * clears it the same way in its own destroy(). Without this, a command sent before install()
+ * keeps its cache-free chain.
+ */
+function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): void {
+  Reflect.deleteProperty(client, "handlers");
+}
+
 /** Attaches ElastiCacheIntegrations to one AWS SDK client and detaches it cleanly. */
 export class ElastiCacheIntegrationsHandle {
   installed = false;
@@ -212,6 +223,7 @@ export class ElastiCacheIntegrationsHandle {
   install(): void {
     if (this.installed || this.destroyed) return;
     installCacheMiddleware(this.sdkClient, this.service, this.session);
+    clearCachedHandlers(this.sdkClient);
     this.sdkDestroy = this.sdkClient.destroy.bind(this.sdkClient);
     this.sdkClient.destroy = this.destroy;
     this.installed = true;
