@@ -140,7 +140,7 @@ jobs:
             cd .artifacts
             shasum -a 256 "$tarball" > "$tarball.sha256"
           )
-          echo "artifact-name=elasticache-integrations-nodejs-$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=elasticache-integrations-$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "dist-tag=$dist_tag" >> "$GITHUB_OUTPUT"
           echo "package-name=$package_name" >> "$GITHUB_OUTPUT"
           echo "tarball=$tarball" >> "$GITHUB_OUTPUT"

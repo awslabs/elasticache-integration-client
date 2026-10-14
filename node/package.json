@@ -1,5 +1,5 @@
 {
-  "name": "elasticache-integrations-nodejs",
+  "name": "elasticache-integrations",
   "version": "0.0.1",
   "description": "TypeScript parity prototype for the ElastiCacheIntegrations Node.js client.",
   "license": "Apache-2.0",

@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>software.amazon.elasticacheintegrations.smoke</groupId>
-    <artifactId>elasticache-integrations-java-maven-smoke</artifactId>
+    <artifactId>elasticache-integrations-maven-smoke</artifactId>
     <version>1.0.0</version>
 
     <properties>
@@ -24,7 +24,7 @@
     <dependencies>
         <dependency>
             <groupId>software.amazon.elasticacheintegrations</groupId>
-            <artifactId>elasticache-integrations-java</artifactId>
+            <artifactId>elasticache-integrations</artifactId>
             <version>${cache.version}</version>
         </dependency>
     </dependencies>

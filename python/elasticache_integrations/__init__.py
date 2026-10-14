@@ -25,7 +25,7 @@ from elasticache_integrations.exceptions import (
     ElastiCacheIntegrationsError,
 )
 
-__version__ = version("elasticache-integrations-python")
+__version__ = version("elasticache-integrations")
 
 # Library best practice: attach a NullHandler to the package logger so ElastiCacheIntegrations never emits
 # "No handlers could be found" warnings or configures logging on the application's behalf.

@@ -24,9 +24,7 @@ def test_derive_version_rejects_invalid_version():
 
 
 def test_validated_version_checks_tag_against_project(monkeypatch):
-    monkeypatch.setattr(
-        release, "project_metadata", lambda: ("elasticache-integrations-python", "1.2.3")
-    )
+    monkeypatch.setattr(release, "project_metadata", lambda: ("elasticache-integrations", "1.2.3"))
 
     with pytest.raises(ValueError, match="package metadata"):
         release.validated_version("v1.2.4")

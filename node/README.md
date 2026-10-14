@@ -69,7 +69,7 @@ and a RESP3 null reply means the config is unchanged. See
 
 ```ts
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { client } from "elasticache-integrations-nodejs";
+import { client } from "elasticache-integrations";
 
 const dynamodb = await client("dynamodb", DynamoDBClient, {
   endpoint: "cache.example.com:6379",

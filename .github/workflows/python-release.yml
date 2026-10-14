@@ -72,7 +72,7 @@ jobs:
           esac
 
           project_name="$(python scripts/release.py project-name)"
-          echo "artifact-name=elasticache-integrations-python-${version}" >>"${GITHUB_OUTPUT}"
+          echo "artifact-name=elasticache-integrations-${version}" >>"${GITHUB_OUTPUT}"
           echo "version=${version}" >>"${GITHUB_OUTPUT}"
           echo "project-name=${project_name}" >>"${GITHUB_OUTPUT}"
           echo "should-publish=${should_publish}" >>"${GITHUB_OUTPUT}"
@@ -134,7 +134,7 @@ jobs:
           import elasticache_integrations
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("elasticache-integrations-python") == expected
+          assert version("elasticache-integrations") == expected
           assert elasticache_integrations.__version__ == expected
           for name in ("client", "ElastiCacheIntegrationsCacheUnavailable", "ElastiCacheIntegrationsConfigError", "ElastiCacheIntegrationsError"):
               assert hasattr(elasticache_integrations, name), name
@@ -208,7 +208,7 @@ jobs:
           import elasticache_integrations
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("elasticache-integrations-python") == expected
+          assert version("elasticache-integrations") == expected
           assert elasticache_integrations.__version__ == expected
           for name in ("client", "ElastiCacheIntegrationsCacheUnavailable", "ElastiCacheIntegrationsConfigError", "ElastiCacheIntegrationsError"):
               assert hasattr(elasticache_integrations, name), name

@@ -184,7 +184,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pom_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations-java/$RELEASE_VERSION/elasticache-integrations-java-$RELEASE_VERSION.pom"
+          pom_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations/$RELEASE_VERSION/elasticache-integrations-$RELEASE_VERSION.pom"
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error --head "$pom_url" >/dev/null; then
               ./scripts/consumer-smoke.sh "https://repo1.maven.org/maven2" "$RELEASE_VERSION"
@@ -210,8 +210,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations-java/$RELEASE_VERSION"
-          artifact_prefix="elasticache-integrations-java-$RELEASE_VERSION"
+          base_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations/$RELEASE_VERSION"
+          artifact_prefix="elasticache-integrations-$RELEASE_VERSION"
           mkdir -p release-artifacts
           for suffix in .jar -sources.jar -javadoc.jar .pom; do
             curl --fail --silent --show-error \

@@ -19,7 +19,7 @@ const checks = [
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsCacheUnavailable === "function"',
   '!("ElastiCacheIntegrationsHandle" in elastiCacheIntegrations)',
 ].join(" && ");
-const smokeRoot = mkdtempSync(join(tmpdir(), "elasticache-integrations-nodejs-smoke-"));
+const smokeRoot = mkdtempSync(join(tmpdir(), "elasticache-integrations-smoke-"));
 
 try {
   for (const [name, type, source] of [

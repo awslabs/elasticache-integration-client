@@ -11,7 +11,7 @@ repositories {
 
 dependencies {
     implementation(
-        "software.amazon.elasticacheintegrations:elasticache-integrations-java:" +
+        "software.amazon.elasticacheintegrations:elasticache-integrations:" +
             providers.gradleProperty("cacheVersion").get()
     )
 }

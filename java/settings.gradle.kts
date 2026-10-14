@@ -1,1 +1,1 @@
-rootProject.name = "elasticache-integrations-java"
+rootProject.name = "elasticache-integrations"

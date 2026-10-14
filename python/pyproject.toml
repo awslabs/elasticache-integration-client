@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "elasticache-integrations-python"
+name = "elasticache-integrations"
 version = "0.0.1"
 description = "ElastiCacheIntegrations client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
 readme = "README.md"

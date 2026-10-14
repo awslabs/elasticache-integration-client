@@ -1,1 +1,1 @@
-rootProject.name = "elasticache-integrations-java-gradle-smoke"
+rootProject.name = "elasticache-integrations-gradle-smoke"
