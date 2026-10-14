@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from botocore import xform_name
 
-import photon
+import elasticache_integrations
 from tests.mock import MockCache
 
 pytestmark = pytest.mark.alignment
@@ -25,13 +25,13 @@ def aws_creds(monkeypatch):
     # Dummy credentials so botocore can sign the request before the hook short-circuits it.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testkey")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testsecret")
-    # A session token makes botocore send x-amz-security-token, which Photon must strip.
+    # A session token makes botocore send x-amz-security-token, which ElastiCacheIntegrations must strip.
     monkeypatch.setenv("AWS_SESSION_TOKEN", "testtoken")
 
 
 @pytest.fixture(autouse=True)
 def no_origin(monkeypatch):
-    # Photon must carry every case; a request that falls back to the origin fails here instead of
+    # ElastiCacheIntegrations must carry every case; a request that falls back to the origin fails here instead of
     # reaching real AWS.
     def send(self, request):
         raise AssertionError(f"request went to the origin: {request.url}")
@@ -50,7 +50,7 @@ def cache(monkeypatch):
 
 @pytest.mark.parametrize("case", CASES["cases"], ids=lambda c: c["name"])
 def test_sdk_request_case(cache, case):
-    client = photon.client(
+    client = elasticache_integrations.client(
         case["service"], region_name="us-east-1", endpoint=cache.endpoint, cache_name="test-cache"
     )
     try:

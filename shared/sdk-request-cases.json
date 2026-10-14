@@ -1,5 +1,5 @@
 {
-  "description": "Cross-client SDK request cases. Each client sends the call through its real AWS SDK (region us-east-1, no endpoint override) into its mock cache, which serves `config`. The client then checks the photon.request the mock received: the body must equal `params` as parsed JSON, only the listed headers are compared, and the five excluded headers must be absent. Python is the reference client.",
+  "description": "Cross-client SDK request cases. Each client sends the call through its real AWS SDK (region us-east-1, no endpoint override) into its mock cache, which serves `config`. The client then checks the aws.request the mock received: the body must equal `params` as parsed JSON, only the listed headers are compared, and the five excluded headers must be absent. Python is the reference client.",
   "config": {
     "version": "1.0",
     "refresh_interval": 60,

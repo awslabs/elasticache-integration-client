@@ -3,12 +3,12 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
-  PhotonError,
-  PhotonOverridesRejected,
-  PhotonProtocolError,
-  PhotonRejectedError,
+  ElastiCacheIntegrationsError,
+  ElastiCacheIntegrationsOverridesRejected,
+  ElastiCacheIntegrationsProtocolError,
+  ElastiCacheIntegrationsRejectedError,
 } from "../src/errors.js";
-import { PhotonRequest, RequestMetadata } from "../src/models.js";
+import { ElastiCacheIntegrationsRequest, RequestMetadata } from "../src/models.js";
 import {
   parseConfigResponse,
   parseRequestResponse,
@@ -34,7 +34,7 @@ interface EncodeVector {
 
 interface DecodeVector {
   name: string;
-  command: "photon.request" | "photon.config";
+  command: "aws.request" | "aws.config";
   reply: string;
   response?: { status: number; headers: Record<string, string>; body: string };
   config?: { version: unknown; refresh_interval: number; raw: Record<string, unknown> };
@@ -47,10 +47,10 @@ const VECTORS = JSON.parse(
 ) as { encode: EncodeVector[]; decode: DecodeVector[] };
 
 const ERRORS = {
-  protocol: PhotonProtocolError,
-  rejected: PhotonRejectedError,
-  overrides_rejected: PhotonOverridesRejected,
-  error: PhotonError,
+  protocol: ElastiCacheIntegrationsProtocolError,
+  rejected: ElastiCacheIntegrationsRejectedError,
+  overrides_rejected: ElastiCacheIntegrationsOverridesRejected,
+  error: ElastiCacheIntegrationsError,
 };
 
 /**
@@ -61,7 +61,7 @@ const ERRORS = {
 const KNOWN_GAPS = new Map([
   // parseRefreshInterval checks Number.isInteger, and JSON.parse reads 60.0 as 60. Delete
   // protocol.test.ts "accepts integer-valued JSON numbers such as 56.0" with the fix.
-  ["config_integral_float_refresh_interval", "to be an instance of PhotonError"],
+  ["config_integral_float_refresh_interval", "to be an instance of ElastiCacheIntegrationsError"],
 ]);
 
 function knownGap(name: string, fragment: string, check: () => void): () => void {
@@ -79,7 +79,7 @@ function knownGap(name: string, fragment: string, check: () => void): () => void
 function assertEncodes(vector: EncodeVector): void {
   const [command, args] = vector.request
     ? serializeRequest(
-        new PhotonRequest({
+        new ElastiCacheIntegrationsRequest({
           method: vector.request.method,
           url: vector.request.url,
           headers: vector.request.headers,
@@ -96,7 +96,7 @@ function assertDecodes(vector: DecodeVector): void {
   const replyBytes = Buffer.from(vector.reply, "utf8");
   const [reply, consumed] = decodeResp(replyBytes);
   expect(consumed).toBe(replyBytes.length);
-  const parse = vector.command === "photon.request" ? parseRequestResponse : parseConfigResponse;
+  const parse = vector.command === "aws.request" ? parseRequestResponse : parseConfigResponse;
 
   if (vector.error) {
     let thrown: unknown;
@@ -105,13 +105,13 @@ function assertDecodes(vector: DecodeVector): void {
     } catch (error) {
       thrown = error;
     }
-    expect(thrown).toBeInstanceOf(PhotonError);
-    // "error" accepts any PhotonError; the other kinds name an exact class.
+    expect(thrown).toBeInstanceOf(ElastiCacheIntegrationsError);
+    // "error" accepts any ElastiCacheIntegrationsError; the other kinds name an exact class.
     if (vector.error !== "error") {
       expect((thrown as Error).constructor).toBe(ERRORS[vector.error]);
     }
     if (vector.code) {
-      expect((thrown as PhotonRejectedError).code).toBe(vector.code);
+      expect((thrown as ElastiCacheIntegrationsRejectedError).code).toBe(vector.code);
     }
   } else if (vector.response) {
     const response = parseRequestResponse(reply);

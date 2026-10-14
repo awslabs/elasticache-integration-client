@@ -1,4 +1,4 @@
-package software.amazon.photon.session;
+package software.amazon.elasticacheintegrations.session;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -33,10 +33,10 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.KeysAndAttributes;
-import software.amazon.photon.mock.MockCache;
-import software.amazon.photon.mock.MockTlsServer;
-import software.amazon.photon.mock.ReceivedRequest;
-import software.amazon.photon.mock.Reply;
+import software.amazon.elasticacheintegrations.mock.MockCache;
+import software.amazon.elasticacheintegrations.mock.MockTlsServer;
+import software.amazon.elasticacheintegrations.mock.ReceivedRequest;
+import software.amazon.elasticacheintegrations.mock.Reply;
 
 /**
  * Runs the cross-client SDK request cases in shared/sdk-request-cases.json. Each case goes through
@@ -140,8 +140,8 @@ class SdkRequestCasesTest {
                 Reply.ok(
                         200, Collections.singletonMap("content-type", "application/x-amz-json-1.0"), "{}"));
         try (MockTlsServer server = new MockTlsServer(cache);
-                PhotonClient.Result<DynamoDbClient> result =
-                        PhotonClient.builder()
+                ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
+                        ElastiCacheIntegrationsClient.builder()
                                 .endpoint("localhost:" + server.getPort())
                                 .authCredentials("test-user", "test-token")
                                 .sslContext(server.getSslContext())
@@ -150,9 +150,10 @@ class SdkRequestCasesTest {
                                         DynamoDbClient.builder(),
                                         b ->
                                                 b.region(Region.US_EAST_1)
-                                                        // Java hands Photon the request before SigV4 signing, so no
-                                                        // signing header reaches it with any credentials. The encode
-                                                        // vectors cover the excluded headers.
+                                                        // Java hands ElastiCacheIntegrations the request before
+                                                        // SigV4 signing, so no signing header reaches it with any
+                                                        // credentials. The encode vectors cover the excluded
+                                                        // headers.
                                                         .credentialsProvider(
                                                                 StaticCredentialsProvider.create(
                                                                         AwsBasicCredentials.create("testkey", "testsecret"))))
@@ -181,8 +182,8 @@ class SdkRequestCasesTest {
     }
 
     /**
-     * Photon must carry every case; a request that falls back to the origin fails here instead of
-     * reaching real AWS.
+     * ElastiCacheIntegrations must carry every case; a request that falls back to the origin fails
+     * here instead of reaching real AWS.
      */
     private static final class NoOriginClient implements SdkHttpClient {
         @Override

@@ -31,7 +31,7 @@ listed vector must keep failing with that message until it is fixed and
 removed.
 
 `shared/sdk-request-cases.json` holds SDK-level cases: a DynamoDB call and the
-`photon.request` it must produce. Each client sends the call through its real
+`aws.request` it must produce. Each client sends the call through its real
 AWS SDK into its mock cache and checks the method, URL, metadata, and listed
 headers. It also checks that the body, as parsed JSON, equals the call's
 `params`, and that no excluded header is sent.

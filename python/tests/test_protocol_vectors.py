@@ -8,20 +8,20 @@ from pathlib import Path
 
 import pytest
 
-from photon.exceptions import (
-    PhotonError,
-    PhotonOverridesRejected,
-    PhotonProtocolError,
-    PhotonRejectedError,
+from elasticache_integrations.exceptions import (
+    ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsOverridesRejected,
+    ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRejectedError,
 )
-from photon.models import PhotonRequest, RequestMetadata
-from photon.protocol import (
+from elasticache_integrations.models import ElastiCacheIntegrationsRequest, RequestMetadata
+from elasticache_integrations.protocol import (
     parse_config_response,
     parse_request_response,
     serialize_config,
     serialize_request,
 )
-from photon.resp import decode_resp, encode_resp
+from elasticache_integrations.resp import decode_resp, encode_resp
 
 pytestmark = pytest.mark.alignment
 
@@ -30,10 +30,10 @@ VECTORS = json.loads(
 )
 
 ERRORS = {
-    "protocol": PhotonProtocolError,
-    "rejected": PhotonRejectedError,
-    "overrides_rejected": PhotonOverridesRejected,
-    "error": PhotonError,
+    "protocol": ElastiCacheIntegrationsProtocolError,
+    "rejected": ElastiCacheIntegrationsRejectedError,
+    "overrides_rejected": ElastiCacheIntegrationsOverridesRejected,
+    "error": ElastiCacheIntegrationsError,
 }
 
 
@@ -42,7 +42,7 @@ def test_encode_vector(vector):
     if "request" in vector:
         r = vector["request"]
         command, args = serialize_request(
-            PhotonRequest(
+            ElastiCacheIntegrationsRequest(
                 method=r["method"],
                 url=r["url"],
                 headers=r["headers"],
@@ -60,14 +60,12 @@ def test_decode_vector(vector):
     reply_bytes = vector["reply"].encode()
     reply, consumed = decode_resp(reply_bytes)
     assert consumed == len(reply_bytes)
-    parse = (
-        parse_request_response if vector["command"] == "photon.request" else parse_config_response
-    )
+    parse = parse_request_response if vector["command"] == "aws.request" else parse_config_response
 
     if "error" in vector:
-        with pytest.raises(PhotonError) as excinfo:
+        with pytest.raises(ElastiCacheIntegrationsError) as excinfo:
             parse(reply)
-        # "error" accepts any PhotonError; the other kinds name an exact class.
+        # "error" accepts any ElastiCacheIntegrationsError; the other kinds name an exact class.
         if vector["error"] != "error":
             assert type(excinfo.value) is ERRORS[vector["error"]]
         if "code" in vector:

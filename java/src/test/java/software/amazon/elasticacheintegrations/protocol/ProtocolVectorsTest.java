@@ -1,4 +1,4 @@
-package software.amazon.photon.protocol;
+package software.amazon.elasticacheintegrations.protocol;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -26,16 +26,16 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.function.Executable;
-import software.amazon.photon.exception.PhotonError;
-import software.amazon.photon.exception.PhotonOverridesRejected;
-import software.amazon.photon.exception.PhotonProtocolError;
-import software.amazon.photon.exception.PhotonRejectedError;
-import software.amazon.photon.model.PhotonRequest;
-import software.amazon.photon.model.PhotonResponse;
-import software.amazon.photon.model.RequestMetadata;
-import software.amazon.photon.model.ResolvedConfig;
-import software.amazon.photon.resp.DecodeResult;
-import software.amazon.photon.resp.RespCodec;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsOverridesRejected;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsProtocolError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticacheintegrations.model.ElastiCacheIntegrationsRequest;
+import software.amazon.elasticacheintegrations.model.ElastiCacheIntegrationsResponse;
+import software.amazon.elasticacheintegrations.model.RequestMetadata;
+import software.amazon.elasticacheintegrations.model.ResolvedConfig;
+import software.amazon.elasticacheintegrations.resp.DecodeResult;
+import software.amazon.elasticacheintegrations.resp.RespCodec;
 
 /**
  * Runs the cross-client wire vectors in shared/protocol-vectors.json. Python and Node run the same
@@ -57,9 +57,9 @@ class ProtocolVectorsTest {
         // normalizeHeaders keys a TreeMap by lowercased name, so one value is dropped.
         KNOWN_GAPS.put("request_duplicate_header_names_after_lowercasing", "$5\r\nx-a:1\r\n");
         // Jackson writes raw UTF-8; Python and Node escape non-ASCII as \\uXXXX.
-        KNOWN_GAPS.put("config_non_ascii_escaped", "$16\r\n{\"name\":\"caf");
+        KNOWN_GAPS.put("config_non_ascii_escaped", "$32\r\n{\"version\":\"1.0\",\"name\":\"caf");
         // deserializeResponse reads a RESP null body as empty instead of rejecting it. Delete
-        // PhotonProtocolTest.deserializeResponse_nullBody_treatedAsEmpty with the fix.
+        // ElastiCacheIntegrationsProtocolTest.deserializeResponse_nullBody_treatedAsEmpty with the fix.
         KNOWN_GAPS.put("response_null_body", "nothing was thrown");
         // Null headers parse as {} and a simple-string body is accepted.
         KNOWN_GAPS.put("response_null_headers", "nothing was thrown");
@@ -68,13 +68,14 @@ class ProtocolVectorsTest {
         KNOWN_GAPS.put("config_null_version", "but was: <\"null\">");
     }
 
-    private static final Map<String, Class<? extends PhotonError>> ERRORS = new HashMap<>();
+    private static final Map<String, Class<? extends ElastiCacheIntegrationsError>> ERRORS =
+            new HashMap<>();
 
     static {
-        ERRORS.put("protocol", PhotonProtocolError.class);
-        ERRORS.put("rejected", PhotonRejectedError.class);
-        ERRORS.put("overrides_rejected", PhotonOverridesRejected.class);
-        ERRORS.put("error", PhotonError.class);
+        ERRORS.put("protocol", ElastiCacheIntegrationsProtocolError.class);
+        ERRORS.put("rejected", ElastiCacheIntegrationsRejectedError.class);
+        ERRORS.put("overrides_rejected", ElastiCacheIntegrationsOverridesRejected.class);
+        ERRORS.put("error", ElastiCacheIntegrationsError.class);
     }
 
     @TestFactory
@@ -182,8 +183,8 @@ class ProtocolVectorsTest {
             @SuppressWarnings("unchecked")
             Map<String, String> headers = MAPPER.convertValue(r.get("headers"), Map.class);
             command =
-                    PhotonProtocol.serializeRequest(
-                            new PhotonRequest(
+                    ElastiCacheIntegrationsProtocol.serializeRequest(
+                            new ElastiCacheIntegrationsRequest(
                                     r.get("method").asText(),
                                     r.get("url").asText(),
                                     headers,
@@ -196,7 +197,7 @@ class ProtocolVectorsTest {
             @SuppressWarnings("unchecked")
             Map<String, Object> map =
                     overrides.isNull() ? null : MAPPER.convertValue(overrides, Map.class);
-            command = PhotonProtocol.serializeConfig(map);
+            command = ElastiCacheIntegrationsProtocol.serializeConfig(map);
         }
         byte[] frame =
                 RespCodec.encodeCommand(command.getCommandName(), command.getArgs().toArray(new byte[0][]));
@@ -207,30 +208,33 @@ class ProtocolVectorsTest {
         byte[] replyBytes = utf8(vector.get("reply").asText());
         DecodeResult decoded = RespCodec.decode(replyBytes);
         assertEquals(replyBytes.length, decoded.getPosition());
-        boolean isRequest = vector.get("command").asText().equals("photon.request");
+        boolean isRequest = vector.get("command").asText().equals("aws.request");
 
         if (vector.has("error")) {
             Executable parse =
                     isRequest
-                            ? () -> PhotonProtocol.parseRequestResponse(decoded.getValue())
-                            : () -> PhotonProtocol.parseConfigResponse(decoded.getValue());
-            PhotonError error = assertThrows(PhotonError.class, parse);
-            // "error" accepts any PhotonError; the other kinds name an exact class.
+                            ? () -> ElastiCacheIntegrationsProtocol.parseRequestResponse(decoded.getValue())
+                            : () -> ElastiCacheIntegrationsProtocol.parseConfigResponse(decoded.getValue());
+            ElastiCacheIntegrationsError error = assertThrows(ElastiCacheIntegrationsError.class, parse);
+            // "error" accepts any ElastiCacheIntegrationsError; the other kinds name an exact class.
             if (!vector.get("error").asText().equals("error")) {
                 assertEquals(ERRORS.get(vector.get("error").asText()), error.getClass());
             }
             if (vector.has("code")) {
-                assertEquals(vector.get("code").asText(), ((PhotonRejectedError) error).getCode());
+                assertEquals(
+                        vector.get("code").asText(), ((ElastiCacheIntegrationsRejectedError) error).getCode());
             }
         } else if (vector.has("response")) {
             JsonNode expected = vector.get("response");
-            PhotonResponse response = PhotonProtocol.parseRequestResponse(decoded.getValue());
+            ElastiCacheIntegrationsResponse response =
+                    ElastiCacheIntegrationsProtocol.parseRequestResponse(decoded.getValue());
             assertEquals(expected.get("status").asInt(), response.getStatusCode());
             assertEquals(MAPPER.convertValue(expected.get("headers"), Map.class), response.getHeaders());
             assertArrayEquals(utf8(expected.get("body").asText()), response.getBody());
         } else {
             JsonNode expected = vector.get("config");
-            ResolvedConfig config = PhotonProtocol.parseConfigResponse(decoded.getValue());
+            ResolvedConfig config =
+                    ElastiCacheIntegrationsProtocol.parseConfigResponse(decoded.getValue());
             JsonNode version =
                     config.getVersion() == null
                             ? NullNode.getInstance()
