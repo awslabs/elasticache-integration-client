@@ -46,6 +46,7 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
 
     @Override
     public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
+        boolean passThrough = requestContext.takePassThrough();
         ElastiCacheIntegrationsRequest capturedRequest = requestContext.takeAttempt();
         return new ExecutableHttpRequest() {
             private final AtomicReference<ExecutableHttpRequest> activeOriginRequest =
@@ -60,6 +61,9 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
                     throw new IOException("Request was aborted");
                 }
 
+                if (passThrough) {
+                    return callOrigin();
+                }
                 if (capturedRequest == null) {
                     throw new IllegalStateException("Cache request was not captured before HTTP execution");
                 }

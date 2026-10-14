@@ -112,6 +112,12 @@ try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result = ElastiCacheIn
 The default synchronous origin transport is the SDK Apache HTTP client. Supply
 a caller-managed transport with `originHttpClient(SdkHttpClient)` when needed.
 
+A request whose body comes from an `InputStream` or a file, such as
+`RequestBody.fromInputStream` or `RequestBody.fromFile`, passes through to the
+origin transport without Cache. Reading a stream for Cache would consume it
+before the origin send, and a file would be buffered whole. Other bodies,
+including DynamoDB requests, are read for Cache.
+
 ## Asynchronous client
 
 ```java
