@@ -6,7 +6,7 @@ import org.gradle.api.tasks.bundling.AbstractArchiveTask
 plugins {
     `java-library`
     jacoco
-    id("com.diffplug.spotless") version "8.10.3"
+    id("com.diffplug.spotless") version "8.10.4"
     id("net.ltgt.errorprone") version "5.1.1"
 }
 
