@@ -48,6 +48,12 @@ sourceSets {
             include("idempotent-operations.json")
         }
     }
+    test {
+        resources {
+            srcDir("../shared")
+            include("protocol-vectors.json", "sdk-request-cases.json")
+        }
+    }
 }
 
 val iamToolkitRoot = layout.projectDirectory.dir("vendor/developer-toolkit-elasticache/java")

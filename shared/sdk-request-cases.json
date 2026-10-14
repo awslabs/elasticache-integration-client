@@ -1,0 +1,127 @@
+{
+  "description": "Cross-client SDK request cases. Each client sends the call through its real AWS SDK (region us-east-1, no endpoint override) into its mock cache, which serves `config`. The client then checks the photon.request the mock received: the body must equal `params` as parsed JSON, only the listed headers are compared, and the five excluded headers must be absent. Python is the reference client.",
+  "config": {
+    "version": "1.0",
+    "refresh_interval": 60,
+    "predicates": [
+      {
+        "expr": "service == 'dynamodb' && operation in ops",
+        "vars": {
+          "ops": [
+            "BatchGetItem",
+            "GetItem",
+            "PutItem",
+            "Query"
+          ]
+        }
+      }
+    ]
+  },
+  "excluded_headers": [
+    "authorization",
+    "x-amz-date",
+    "x-amz-security-token",
+    "x-amz-request-id",
+    "amz-sdk-request"
+  ],
+  "cases": [
+    {
+      "name": "dynamodb_get_item",
+      "service": "dynamodb",
+      "operation": "GetItem",
+      "params": {
+        "TableName": "Music",
+        "Key": {
+          "Artist": {
+            "S": "Acme"
+          }
+        }
+      },
+      "expected": {
+        "method": "POST",
+        "url": "https://dynamodb.us-east-1.amazonaws.com/",
+        "metadata": "service=dynamodb&op=GetItem",
+        "headers": {
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "DynamoDB_20120810.GetItem"
+        }
+      }
+    },
+    {
+      "name": "dynamodb_query_with_expression_values",
+      "service": "dynamodb",
+      "operation": "Query",
+      "params": {
+        "TableName": "Music",
+        "KeyConditionExpression": "Artist = :a",
+        "ExpressionAttributeValues": {
+          ":a": {
+            "S": "Acme"
+          }
+        },
+        "Limit": 10
+      },
+      "expected": {
+        "method": "POST",
+        "url": "https://dynamodb.us-east-1.amazonaws.com/",
+        "metadata": "service=dynamodb&op=Query",
+        "headers": {
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "DynamoDB_20120810.Query"
+        }
+      }
+    },
+    {
+      "name": "dynamodb_batch_get_item",
+      "service": "dynamodb",
+      "operation": "BatchGetItem",
+      "params": {
+        "RequestItems": {
+          "Music": {
+            "Keys": [
+              {
+                "Artist": {
+                  "S": "Acme"
+                }
+              }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "method": "POST",
+        "url": "https://dynamodb.us-east-1.amazonaws.com/",
+        "metadata": "service=dynamodb&op=BatchGetItem",
+        "headers": {
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "DynamoDB_20120810.BatchGetItem"
+        }
+      }
+    },
+    {
+      "name": "dynamodb_put_item",
+      "service": "dynamodb",
+      "operation": "PutItem",
+      "params": {
+        "TableName": "Music",
+        "Item": {
+          "Artist": {
+            "S": "Acme"
+          },
+          "Year": {
+            "N": "2020"
+          }
+        }
+      },
+      "expected": {
+        "method": "POST",
+        "url": "https://dynamodb.us-east-1.amazonaws.com/",
+        "metadata": "service=dynamodb&op=PutItem",
+        "headers": {
+          "content-type": "application/x-amz-json-1.0",
+          "x-amz-target": "DynamoDB_20120810.PutItem"
+        }
+      }
+    }
+  ]
+}

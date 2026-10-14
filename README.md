@@ -21,6 +21,20 @@ connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
 request through while reconnecting. Other RESP errors are non-retryable and do
 not trigger origin fallback.
 
+`shared/protocol-vectors.json` holds wire vectors: the exact RESP bytes each
+client must send for a given request or config, and the response or error type
+each client must produce for a given reply. Every client's test suite runs all
+of them, and Python, the reference client, defines the expected values. The
+Node and Java vector tests list the vectors they do not match yet in
+`KNOWN_GAPS`, and each listed vector must keep failing until it is fixed and
+removed.
+
+`shared/sdk-request-cases.json` holds SDK-level cases: a DynamoDB call and the
+`photon.request` it must produce. Each client sends the call through its real
+AWS SDK into its mock cache and checks the method, URL, metadata, and listed
+headers. It also checks that the body, as parsed JSON, equals the call's
+`params`, and that no excluded header is sent.
+
 ## Repository layout
 
 ```text
