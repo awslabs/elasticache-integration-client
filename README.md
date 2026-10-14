@@ -36,6 +36,11 @@ AWS SDK into its mock cache and checks the method, URL, metadata, and listed
 headers. It also checks that the body, as parsed JSON, equals the call's
 `params`, and that no excluded header is sent.
 
+Local test runs include both sets of tests. CI runs them in a separate
+`alignment` job for each changed client and excludes them from the client jobs,
+so `CI / alignment / <client>` reports drift from the shared fixtures on its
+own.
+
 ## Repository layout
 
 ```text

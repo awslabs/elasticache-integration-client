@@ -38,11 +38,13 @@ jobs:
         working-directory: java
         run: chmod +x gradlew
 
+      # The alignment tests run in alignment-ci.yml.
       - name: Build and test on Java ${{ matrix.java-version }}
         working-directory: java
         run: >-
           ./gradlew build --console=colored
           -PtestJavaVersion=${{ matrix.java-version }}
+          -PtestExcludeTags=alignment
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
           -Porg.gradle.java.installations.auto-download=false
 

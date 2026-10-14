@@ -144,8 +144,16 @@ tasks.withType<AbstractArchiveTask>().configureEach {
 // installed JDK, which is how CI covers every supported Java version.
 val testJavaVersion = providers.gradleProperty("testJavaVersion")
 
+// CI runs the cross-client tests tagged "alignment" in their own job. Pass
+// -PtestIncludeTags=alignment or -PtestExcludeTags=alignment to select them.
+val testIncludeTags = providers.gradleProperty("testIncludeTags")
+val testExcludeTags = providers.gradleProperty("testExcludeTags")
+
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        if (testIncludeTags.isPresent) includeTags(testIncludeTags.get())
+        if (testExcludeTags.isPresent) excludeTags(testExcludeTags.get())
+    }
     if (testJavaVersion.isPresent) {
         javaLauncher.set(javaToolchains.launcherFor {
             languageVersion.set(JavaLanguageVersion.of(testJavaVersion.get().toInt()))

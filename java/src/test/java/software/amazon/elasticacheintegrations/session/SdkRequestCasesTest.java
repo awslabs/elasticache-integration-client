@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
@@ -42,6 +43,7 @@ import software.amazon.photon.mock.Reply;
  * the real AWS SDK into the mock cache. Python and Node run the same file through their own SDKs,
  * so a client whose adapter builds a different request fails its own gate.
  */
+@Tag("alignment")
 class SdkRequestCasesTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();

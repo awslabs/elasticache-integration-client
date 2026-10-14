@@ -23,6 +23,8 @@ from photon.protocol import (
 )
 from photon.resp import decode_resp, encode_resp
 
+pytestmark = pytest.mark.alignment
+
 VECTORS = json.loads(
     (Path(__file__).parents[2] / "shared" / "protocol-vectors.json").read_text(encoding="utf-8")
 )

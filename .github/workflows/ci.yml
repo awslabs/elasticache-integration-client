@@ -48,8 +48,9 @@ jobs:
           changed=$(git diff --name-only HEAD^1 HEAD)
           echo "$changed"
 
-          # Shared contracts and this workflow affect every client.
-          shared='^(shared/|\.github/workflows/ci\.yml$)'
+          # Shared contracts, this workflow, and the alignment workflow affect
+          # every client.
+          shared='^(shared/|\.github/workflows/(ci|alignment-ci)\.yml$)'
           for client in python java node; do
             if echo "$changed" | grep -Eq \
               "$shared|^$client/|^\.github/workflows/$client-(ci|release)\.yml$"; then
@@ -73,6 +74,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.node == 'true'
     uses: ./.github/workflows/node-ci.yml
+
+  # Cross-client alignment tests, one job per changed client. The client
+  # workflows above exclude them.
+  alignment:
+    needs: changes
+    if: >-
+      needs.changes.outputs.python == 'true' ||
+      needs.changes.outputs.java == 'true' ||
+      needs.changes.outputs.node == 'true'
+    uses: ./.github/workflows/alignment-ci.yml
+    with:
+      python: ${{ needs.changes.outputs.python == 'true' }}
+      java: ${{ needs.changes.outputs.java == 'true' }}
+      node: ${{ needs.changes.outputs.node == 'true' }}
 
   # GitHub can't read Gradle dependencies from build.gradle.kts, so submit the
   # resolved graph. Dependabot alerts use the graph from main, and dependency
@@ -125,7 +140,7 @@ jobs:
   # Stable aggregate check for branch protection.
   ci:
     if: always()
-    needs: [changes, python, java, node, java-dependency-graph, dependency-review]
+    needs: [changes, python, java, node, alignment, java-dependency-graph, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

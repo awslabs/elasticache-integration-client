@@ -13,6 +13,8 @@ from botocore import xform_name
 import photon
 from tests.mock import MockCache
 
+pytestmark = pytest.mark.alignment
+
 CASES = json.loads(
     (Path(__file__).parents[2] / "shared" / "sdk-request-cases.json").read_text(encoding="utf-8")
 )

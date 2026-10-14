@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.function.Executable;
@@ -40,6 +41,7 @@ import software.amazon.photon.resp.RespCodec;
  * Runs the cross-client wire vectors in shared/protocol-vectors.json. Python and Node run the same
  * file, so a client that drifts from the shared bytes fails its own gate.
  */
+@Tag("alignment")
 class ProtocolVectorsTest {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
