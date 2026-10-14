@@ -8,8 +8,7 @@ failures into its public error taxonomy.
 
 from __future__ import annotations
 
-import botocore.session
-from botocore.session import Session as BotocoreSession
+from botocore.credentials import Credentials
 from developer_toolkit_elasticache import (
     ElastiCacheIAMAuthTokenManager,
     ToolkitInputError,
@@ -65,20 +64,24 @@ class ManagedIamAuthTokenProvider:
 def build_cache_auth_provider(
     *,
     cache_name: str | None,
+    credentials: Credentials,
     user_id: str | None = None,
     region: str | None = None,
-    botocore_session: BotocoreSession | None = None,
     token_refresh_delay: float | None = None,
 ) -> ManagedIamAuthTokenProvider:
-    """Build the managed cache auth provider."""
+    """Build the managed cache auth provider.
+
+    Signs with ``credentials``, the live object behind the application's own client, so the
+    cache is authenticated as the same principal and rotation is preserved: the toolkit
+    re-reads them for every token it signs.
+    """
     if not cache_name:
         raise ElastiCacheIntegrationsError("cache_name is required for IAM authentication.")
-    session = botocore_session or botocore.session.Session()
     kwargs = {
         "serverless_cache_name": cache_name,
         "user_id": user_id or DEFAULT_USER_ID,
         "region": region,
-        "session": session,
+        "credentials": credentials,
     }
     if token_refresh_delay is not None:
         kwargs["refresh_after"] = token_refresh_delay

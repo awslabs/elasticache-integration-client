@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.credentials import Credentials
-from botocore.session import Session as BotocoreSession
 from developer_toolkit_elasticache import ConfigurationError, InvalidParameterError
 
 from elasticache_integrations.auth import (
@@ -21,30 +20,24 @@ FIRST_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
 ROTATED_ACCESS_KEY = "ASIAROTATEDCREDENTIAL"
 
 
-def fake_session(*, access_keys=(FIRST_ACCESS_KEY,), region="us-east-1"):
-    """Return a botocore session double that can rotate frozen credentials."""
-    session = MagicMock(spec=BotocoreSession)
-    credentials = [
-        MagicMock(
-            get_frozen_credentials=MagicMock(
-                return_value=Credentials(access_key, f"{access_key}-secret", "session-token")
-            )
-        )
+def fake_credentials(*, access_keys=(FIRST_ACCESS_KEY,)):
+    """A credentials double that vends rotated keys, as a refreshable object does when read."""
+    credentials = MagicMock()
+    credentials.get_frozen_credentials.side_effect = [
+        Credentials(access_key, f"{access_key}-secret", "session-token")
         for access_key in access_keys
     ]
-    session.get_credentials.side_effect = credentials
-    session.get_config_variable.side_effect = lambda name: region if name == "region" else None
-    return session
+    return credentials
 
 
 class TestManagedIamAuthTokenProvider:
     def test_caches_and_force_refreshes_rotated_credentials(self):
-        session = fake_session(access_keys=(FIRST_ACCESS_KEY, ROTATED_ACCESS_KEY))
+        credentials = fake_credentials(access_keys=(FIRST_ACCESS_KEY, ROTATED_ACCESS_KEY))
         provider = build_cache_auth_provider(
             cache_name="My-Cache",
             user_id="IAM-User",
             region="us-east-1",
-            botocore_session=session,
+            credentials=credentials,
         )
         try:
             first = provider()
@@ -56,7 +49,7 @@ class TestManagedIamAuthTokenProvider:
             assert first[0] == refreshed[0] == "iam-user"
             assert FIRST_ACCESS_KEY in first[1]
             assert ROTATED_ACCESS_KEY in refreshed[1]
-            assert session.get_credentials.call_count == 2
+            assert credentials.get_frozen_credentials.call_count == 2
         finally:
             provider.close()
 
@@ -64,7 +57,7 @@ class TestManagedIamAuthTokenProvider:
         provider = build_cache_auth_provider(
             cache_name="my-cache",
             region="us-east-1",
-            botocore_session=fake_session(),
+            credentials=fake_credentials(),
         )
         provider.close()
 
@@ -78,13 +71,13 @@ class TestBuildCacheAuthProvider:
     @patch("elasticache_integrations.auth.ElastiCacheIAMAuthTokenManager")
     def test_passes_configuration_to_toolkit_manager(self, manager_class):
         manager_class.return_value = MagicMock()
-        session = fake_session()
+        credentials = fake_credentials()
 
         provider = build_cache_auth_provider(
             cache_name="My-Cache",
             user_id="IAM-User",
             region="eu-west-1",
-            botocore_session=session,
+            credentials=credentials,
             token_refresh_delay=120,
         )
 
@@ -93,15 +86,16 @@ class TestBuildCacheAuthProvider:
             serverless_cache_name="My-Cache",
             user_id="IAM-User",
             region="eu-west-1",
-            session=session,
+            credentials=credentials,
             refresh_after=120,
         )
 
-    @patch.dict(os.environ, {"AWS_DEFAULT_REGION": "us-east-1"}, clear=True)
-    def test_supplied_session_region_wins_over_environment(self):
+    @patch.dict(os.environ, {"AWS_REGION": "us-east-2"}, clear=True)
+    def test_region_falls_back_to_the_environment(self):
+        """install() always passes a region; the toolkit's own fallback still applies if it does not."""
         provider = build_cache_auth_provider(
             cache_name="my-cache",
-            botocore_session=fake_session(region="us-east-2"),
+            credentials=fake_credentials(),
         )
         try:
             user_id, token = provider()
@@ -112,14 +106,16 @@ class TestBuildCacheAuthProvider:
 
     def test_missing_cache_name_raises(self):
         with pytest.raises(ElastiCacheIntegrationsError, match="cache_name is required"):
-            build_cache_auth_provider(cache_name=None, region="us-east-1")
+            build_cache_auth_provider(
+                cache_name=None, region="us-east-1", credentials=fake_credentials()
+            )
 
     def test_rejects_refresh_outside_toolkit_safety_margin(self):
         with pytest.raises(ElastiCacheIntegrationsError, match="refresh_after"):
             build_cache_auth_provider(
                 cache_name="my-cache",
                 region="us-east-1",
-                botocore_session=fake_session(),
+                credentials=fake_credentials(),
                 token_refresh_delay=880,
             )
 
@@ -132,7 +128,7 @@ class TestBuildCacheAuthProvider:
             build_cache_auth_provider,
             cache_name="my-cache",
             region="us-east-1",
-            botocore_session=fake_session(),
+            credentials=fake_credentials(),
         ).value
 
         assert str(error) == "Failed to initialize IAM token auto-refresh"
@@ -158,7 +154,7 @@ def test_toolkit_input_errors_reach_the_caller(manager_class, toolkit_error):
         build_cache_auth_provider,
         cache_name="my-cache",
         region="us-east-1",
-        botocore_session=fake_session(),
+        credentials=fake_credentials(),
     ).value
 
     assert str(error) == str(toolkit_error)

@@ -80,15 +80,15 @@ def test_public_api_surface():
 
     Three errors are reachable by an application and so are named here: ``ElastiCacheIntegrationsCacheUnavailable``
     when a request cannot be served and fallback has closed, ``ElastiCacheIntegrationsConfigError`` when
-    ``elasticache_integrations.client()`` is given something unusable, and ``ElastiCacheIntegrationsError`` as the base for anything
-    else that creating a client can raise. The per-failure-mode classes stay internal in
+    ``elasticache_integrations.install()`` is given something unusable, and ``ElastiCacheIntegrationsError`` as the base for anything
+    else that installing can raise. The per-failure-mode classes stay internal in
     ``elasticache_integrations.exceptions``, because the request path converts them to botocore's transport errors
     before an application ever sees them.
     """
     import elasticache_integrations
 
     assert elasticache_integrations.__all__ == [
-        "client",
+        "install",
         "ElastiCacheIntegrationsClientConfiguration",
         "ElastiCacheIntegrationsCacheUnavailable",
         "ElastiCacheIntegrationsConfigError",

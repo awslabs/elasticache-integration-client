@@ -5,11 +5,14 @@ Serverless cache.
 
 Customer entry point::
 
+    import boto3
     import elasticache_integrations
-    ddb = elasticache_integrations.client("dynamodb", region_name="us-east-1", endpoint="my-cache:6379")
+
+    ddb = boto3.Session(region_name="us-east-1").client("dynamodb")
+    elasticache_integrations.install(client=ddb, endpoint="my-cache:6379", cache_name="my-cache")
     ddb.get_item(TableName="t", Key={"id": {"S": "1"}})  # transparently cached
 
-The returned object is an ordinary boto3 client with an identical API; a ``before-send`` hook
+The client stays an ordinary boto3 client with an identical API; a ``before-send`` hook
 routes eligible requests through the cache.
 """
 
@@ -18,7 +21,10 @@ from __future__ import annotations
 import logging
 from importlib.metadata import version
 
-from elasticache_integrations.client import ElastiCacheIntegrationsClientConfiguration, client
+from elasticache_integrations.client import (
+    ElastiCacheIntegrationsClientConfiguration,
+    install,
+)
 from elasticache_integrations.exceptions import (
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConfigError,
@@ -33,7 +39,7 @@ __version__ = version("elasticache-integrations")
 logging.getLogger("elasticache_integrations").addHandler(logging.NullHandler())
 
 __all__ = [
-    "client",
+    "install",
     "ElastiCacheIntegrationsClientConfiguration",
     "ElastiCacheIntegrationsCacheUnavailable",
     "ElastiCacheIntegrationsConfigError",

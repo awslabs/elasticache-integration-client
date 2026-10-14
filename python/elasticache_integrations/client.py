@@ -1,4 +1,4 @@
-"""Public entry point: the :func:`elasticache_integrations.client` factory."""
+"""Public entry point: the :func:`elasticache_integrations.install` function."""
 
 from __future__ import annotations
 
@@ -6,7 +6,8 @@ import math
 from copy import deepcopy
 from dataclasses import dataclass
 
-import boto3
+from botocore.client import BaseClient
+from botocore.credentials import Credentials
 
 from elasticache_integrations.auth import build_cache_auth_provider
 from elasticache_integrations.config_policy import DEFAULT_STALENESS_DURATION, ConfigPolicy
@@ -91,45 +92,90 @@ class ElastiCacheIntegrationsClientConfiguration:
             )
 
 
-def client(
-    service: str,
+def _client_credentials(sdk_client: BaseClient) -> Credentials:
+    """Return the live credentials object the client signs its own requests with.
+
+    The object refreshes itself, so holding it keeps rotated credentials current.
+    """
+    credentials = getattr(getattr(sdk_client, "_request_signer", None), "_credentials", None)
+    if not credentials or not hasattr(credentials, "get_frozen_credentials"):
+        raise ElastiCacheIntegrationsConfigError(
+            "This boto3 client carries no credentials, so the cache cannot be authenticated. "
+            "A client built with signature_version=UNSIGNED is not supported."
+        )
+    return credentials
+
+
+def install(
     *,
+    client: BaseClient,
     endpoint: str,
     cache_name: str,
-    region_name: str | None = None,
     user_id: str | None = None,
     verify: bool = True,
     ca_certs: str | None = None,
     client_configuration: ElastiCacheIntegrationsClientConfiguration | None = None,
 ):
-    """Create a boto3 client for ``service`` wired up with ElastiCacheIntegrations.
+    """Install ElastiCacheIntegrations into an application's boto3 client.
 
-    Returns the boto3 client (identical API). Calling ``close()`` on it disconnects
-    ElastiCacheIntegrations before closing the client as usual.
+    The client keeps its identical API and starts serving eligible requests from the cache;
+    calling ``close()`` on it disconnects the cache before closing the client as usual.
 
     Args:
-        service: AWS service name (e.g., "dynamodb").
+        client: The boto3 client to route through the cache. It keeps all of its own
+            configuration, and its region and credentials are the ones the cache is
+            authenticated with.
         endpoint: Cache endpoint as ``host:port``.
         cache_name: Required. The ElastiCache Serverless cache name.
-        region_name: AWS region. If not provided, resolved from the environment (same as boto3).
         user_id: Optional ElastiCache IAM user id (defaults to ``default.iam-user``).
         verify: Verify the cache's TLS certificate. False is for self-signed test rigs only.
         ca_certs: CA bundle to verify against instead of the system trust store.
-        client_configuration: How ElastiCacheIntegrations behaves and its optional cache policy overrides. See
-            :class:`~elasticache_integrations.ElastiCacheIntegrationsClientConfiguration`; omitted means all defaults.
+        client_configuration: How the cache behaves and its optional cache policy overrides.
+            See :class:`~elasticache_integrations.ElastiCacheIntegrationsClientConfiguration`;
+            omitted means all defaults.
 
-    Example::
+    Examples:
 
-        ddb = elasticache_integrations.client("dynamodb", endpoint="my-cache:6379",
-                            cache_name="my-cache", region_name="us-east-1",
-                            client_configuration=elasticache_integrations.ElastiCacheIntegrationsClientConfiguration(
-                                fallback_duration=60,
-                                cache_policy_overrides={"exclude_tables": ["audit-log"]}))
+        The simplest form, with a client built however the application already builds one::
+
+            ddb = boto3.client("dynamodb", region_name="us-east-1")
+            elasticache_integrations.install(
+                client=ddb, endpoint="my-cache:6379", cache_name="my-cache"
+            )
+
+            ddb.get_item(TableName="my-table", Key={"id": {"S": "1"}})  # unchanged
+
+        A client with its own profile and configuration, which carry over untouched, and the
+        cache tuned away from its defaults::
+
+            session = boto3.Session(profile_name="prod", region_name="us-east-1")
+            ddb = session.client("dynamodb", config=Config(connect_timeout=3))
+
+            elasticache_integrations.install(
+                client=ddb,
+                endpoint="my-cache:6379",
+                cache_name="my-cache",
+                client_configuration=ElastiCacheIntegrationsClientConfiguration(
+                    cache_request_timeout=2.0,
+                    fallback_duration=60,
+                    cache_policy_overrides={"tables": ["Users", "Sessions"]},
+                ),
+            )
     """
+    if not isinstance(client, BaseClient):
+        raise ElastiCacheIntegrationsConfigError(
+            f"client must be a boto3 client, got {type(client).__name__}. Create one with "
+            "boto3.client(service) or boto3.Session(...).client(service)"
+        )
+
     configuration = client_configuration or ElastiCacheIntegrationsClientConfiguration()
-    boto3_session = boto3.Session(region_name=region_name)
-    sdk_client = boto3_session.client(service)
-    resolved_region = boto3_session.region_name
+    region = client.meta.region_name
+    if not region:
+        raise ElastiCacheIntegrationsConfigError(
+            "The boto3 client has no region, so the cache's IAM token cannot be signed. "
+            "Create the client with a region."
+        )
+    credentials = _client_credentials(client)
     auth_provider = None
 
     try:
@@ -137,8 +183,8 @@ def client(
         auth_provider = build_cache_auth_provider(
             cache_name=cache_name,
             user_id=user_id,
-            region=resolved_region,
-            botocore_session=boto3_session._session,
+            region=region,
+            credentials=credentials,
             token_refresh_delay=configuration.iam_token_refresh_delay,
         )
 
@@ -152,8 +198,8 @@ def client(
                 request_timeout=configuration.cache_request_timeout,
             )
 
-        # The session connects (HELLO 3 handshake + aws.config exchange) before the hook is installed,
-        # so the first intercepted request already has a ready session.
+        # The session connects (HELLO 3 handshake + aws.config exchange) before the hook is
+        # installed, so the first intercepted request already has a ready session.
         session = ElastiCacheIntegrationsSession(
             connector_factory,
             overrides=deepcopy(configuration.cache_policy_overrides),
@@ -161,20 +207,14 @@ def client(
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
             close_callback=auth_provider.close,
         )
-        ElastiCacheIntegrationsHandle(sdk_client, session)
+        ElastiCacheIntegrationsHandle(client, session)
     except BaseException:
-        # Bring-up failed (auth, the config handshake, or wiring). Close the boto3 client
-        # we already created so its connection pool does not leak, then re-raise the original
-        # error.
+        # Bring-up failed (auth, the config handshake, or wiring). Close what we created and
+        # re-raise the original error. The client is the application's: it stays open, and
+        # stays usable without the cache.
         if auth_provider is not None:
             try:
                 auth_provider.close()
             except Exception:
                 pass
-        try:
-            sdk_client.close()
-        except Exception:
-            pass  # preserve the original bring-up error
         raise
-
-    return sdk_client
