@@ -6,7 +6,6 @@
  * keeps ElastiCacheIntegrations's connector-facing `(userId, token)` provider contract and
  * error taxonomy.
  */
-import { fromNodeProviderChain } from "@aws-sdk/credential-providers";
 import type {
   ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
   TokenGeneratorDependencies,
@@ -177,15 +176,21 @@ export class IamAuthTokenProvider {
   }
 }
 
-/** Assemble a ready-to-use authentication provider for a cache connector. */
+/**
+ * Assemble a ready-to-use authentication provider for a cache connector.
+ *
+ * Signs with `credentials`, the provider behind the application's own client, so the cache is
+ * authenticated as the same principal and rotation is preserved: the toolkit re-reads them for
+ * every token it signs.
+ */
 export async function buildCacheAuthProvider(
   input: AuthParamsInput & {
-    credentials?: CredentialsProvider;
+    credentials: CredentialsProvider;
     refreshAfterSeconds?: number;
   },
 ): Promise<CacheAuthProvider> {
   const toolkit = await loadToolkit();
-  const credentials = input.credentials ?? fromNodeProviderChain();
+  const { credentials } = input;
 
   try {
     const manager = await toolkit.ElastiCacheIAMAuthTokenManager.create(

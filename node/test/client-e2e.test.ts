@@ -200,13 +200,12 @@ describe("public DynamoDB client", () => {
       },
       maxAttempts: 2,
     });
-    const installed = await install({
+    await install({
       client: dynamodb,
       endpoint: cache.endpoint,
       cacheName: "test-cache",
       connectorOptions: { tls: false },
     });
-    expect(installed).toBe(dynamodb);
 
     const preCacheRequests: HttpRequest[] = [];
     dynamodb.middlewareStack.addRelativeTo(
@@ -314,17 +313,18 @@ describe("public DynamoDB client", () => {
       failure: "hang",
     });
     await hangingCache.start();
-    const dynamodb = await install({
-      client: new DynamoDBClient({
-        region: "us-east-1",
-        endpoint: "http://127.0.0.1:1",
-        credentials: {
-          accessKeyId: "AKIAEXAMPLE",
-          secretAccessKey: "secret-example",
-          sessionToken: "token-example",
-        },
-        maxAttempts: 1,
-      }),
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 1,
+    });
+    await install({
+      client: dynamodb,
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
       connectorOptions: { tls: false, requestTimeout: 5_000 },

@@ -89,14 +89,16 @@ try {
 ```
 
 `install()` completes the authenticated `HELLO 3` and `aws.config` handshakes
-before installing middleware, then returns the same client. Every SDK setting
-on the client stays as configured. ElastiCacheIntegrations reads three things
+before installing middleware into the client, and resolves once it is ready.
+The client keeps its identical API, and every SDK setting on it stays as
+configured. ElastiCacheIntegrations reads three things
 from it: the region, which also signs the cache's IAM token; the credentials,
 which sign that token; and the service id, lowercased with spaces replaced by
 `-` (`DynamoDB` becomes `dynamodb`) to match the `service` in request
-predicates. A client whose region cannot be resolved raises
-`ElastiCacheIntegrationsConfigError`. If installation fails,
-ElastiCacheIntegrations releases what it opened and leaves the client usable.
+predicates. A value that is not an AWS SDK v3 client, or a client without a
+region or credentials, raises `ElastiCacheIntegrationsConfigError`. If
+installation fails, ElastiCacheIntegrations releases what it opened, and the
+client stays open and usable without the cache.
 Wrapped AWS requests are fully serialized and signed by the SDK before
 ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
 SigV4 headers only from its copied request model;

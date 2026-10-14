@@ -174,17 +174,36 @@ function fallbackDurationMs(value: number | null): number | null {
   return milliseconds;
 }
 
+/** Whether `value` has the parts of an AWS SDK v3 client that install() uses. */
+function isSdkClient(value: unknown): value is InstallableClient {
+  const candidate = value as Partial<InstallableClient> | null;
+  return (
+    typeof candidate === "object" &&
+    candidate !== null &&
+    typeof candidate.destroy === "function" &&
+    typeof candidate.middlewareStack?.add === "function" &&
+    typeof candidate.config?.serviceId === "string" &&
+    typeof candidate.config.region === "function"
+  );
+}
+
+function typeName(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value !== "object") return typeof value;
+  return value.constructor?.name ?? "Object";
+}
+
 /**
- * Install ElastiCacheIntegrations into an AWS SDK v3 client the application already built.
+ * Install ElastiCacheIntegrations into an application's AWS SDK v3 client.
  *
- * Returns the same client once the cache connection, authentication, and aws.config exchange
- * complete. Calling destroy() on it disconnects ElastiCacheIntegrations before destroying the SDK
- * client as usual. If installation fails, ElastiCacheIntegrations releases what it opened and
- * leaves the client untouched.
+ * The client keeps its identical API and starts serving eligible requests from the cache once the
+ * cache connection, authentication, and aws.config exchange complete. Calling destroy() on it
+ * disconnects the cache before destroying the client as usual. If installation fails,
+ * ElastiCacheIntegrations releases what it opened and the client stays usable without the cache.
  */
 export async function install<TClient extends InstallableClient>(
   options: ElastiCacheIntegrationsClientOptions<TClient>,
-): Promise<TClient> {
+): Promise<void> {
   const {
     client: sdkClient,
     endpoint,
@@ -197,17 +216,33 @@ export async function install<TClient extends InstallableClient>(
     overrides = {},
     stalenessDuration,
   } = options;
+  if (!isSdkClient(sdkClient)) {
+    throw new ElastiCacheIntegrationsConfigError(
+      `client must be an AWS SDK v3 client, got ${typeName(sdkClient)}. Create one with ` +
+        "new DynamoDBClient(...) or another @aws-sdk client constructor",
+    );
+  }
   const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
   // botocore names a service by lowercasing its service id and hyphenating spaces; the proxy's
   // predicates match that name, so Node derives it the same way.
   const service = sdkClient.config.serviceId.toLowerCase().replace(/ /g, "-");
-  let region: string;
+  let region: string | undefined;
+  let regionError: unknown;
   try {
     region = await sdkClient.config.region();
   } catch (error) {
+    regionError = error;
+  }
+  if (!region) {
     throw new ElastiCacheIntegrationsConfigError(
-      "Could not resolve the AWS region of the SDK client",
-      { cause: error },
+      "The AWS SDK client has no region, so the cache's IAM token cannot be signed. " +
+        "Create the client with a region.",
+      regionError === undefined ? undefined : { cause: regionError },
+    );
+  }
+  if (typeof sdkClient.config.credentials !== "function") {
+    throw new ElastiCacheIntegrationsConfigError(
+      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
     );
   }
   await initialize(sdkClient, service, endpoint, {
@@ -221,5 +256,4 @@ export async function install<TClient extends InstallableClient>(
     overrides,
     stalenessDurationMs: resolvedStalenessDurationMs,
   });
-  return sdkClient;
 }
