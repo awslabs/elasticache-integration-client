@@ -73,6 +73,58 @@ def test_client_wires_up_the_supplied_client(monkeypatch):
     assert handles[0][0] is sdk_client
 
 
+def test_client_refuses_a_second_install(monkeypatch):
+    """botocore ignores a duplicate handler, so a second session would run unused."""
+    _patch_common(monkeypatch)
+    sessions: list = []
+    monkeypatch.setattr(
+        client_mod,
+        "ElastiCacheIntegrationsSession",
+        lambda *a, **k: sessions.append(k) or MagicMock(),
+    )
+    sdk_client = _sdk_client()
+    _call(sdk_client)
+
+    with pytest.raises(ElastiCacheIntegrationsConfigError, match="already has"):
+        _call(sdk_client)
+
+    assert len(sessions) == 1  # the refused install built nothing
+
+
+def test_client_can_be_installed_again_after_close(monkeypatch):
+    """Closing detaches, so the client is installable again, as an uninstalled one is."""
+    _patch_common(monkeypatch)
+    monkeypatch.setattr(client_mod, "ElastiCacheIntegrationsSession", lambda *a, **k: MagicMock())
+    sdk_client = _sdk_client()
+    boto3_close = sdk_client.close
+
+    _call(sdk_client)
+    sdk_client.close()  # the handle's _close, which detaches
+
+    # boto3's own close is back, so the next install cannot save ours as "the original"
+    # and stack another layer onto every close after it.
+    assert sdk_client.close is boto3_close
+    _call(sdk_client)  # must not raise
+
+
+def test_client_closes_the_session_when_installing_the_hook_fails(monkeypatch):
+    """A session owns a connection and background threads; a failed install must not leak them."""
+    _, auth_provider = _patch_common(monkeypatch)
+    session = MagicMock()
+    monkeypatch.setattr(client_mod, "ElastiCacheIntegrationsSession", lambda *a, **k: session)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("hook install failed")
+
+    monkeypatch.setattr(client_mod, "ElastiCacheIntegrationsHandle", boom)
+
+    with pytest.raises(RuntimeError):
+        _call(_sdk_client())
+
+    session.close.assert_called_once()
+    auth_provider.close.assert_called()
+
+
 def test_client_keeps_the_supplied_client_open_when_bringup_fails(monkeypatch):
     """The caller owns the client, so a failed bring-up closes only what the library created."""
     _, auth_provider = _patch_common(monkeypatch)

@@ -7,6 +7,7 @@ file through their own SDKs, so a client whose adapter builds a different reques
 import json
 from pathlib import Path
 
+import boto3
 import pytest
 from botocore import xform_name
 from botocore.compat import HAS_CRT
@@ -56,8 +57,9 @@ def cache(monkeypatch):
 
 @pytest.mark.parametrize("case", CASES["cases"], ids=lambda c: c["name"])
 def test_sdk_request_case(cache, case):
-    client = elasticache_integrations.client(
-        case["service"], region_name="us-east-1", endpoint=cache.endpoint, cache_name="test-cache"
+    client = boto3.client(case["service"], region_name="us-east-1")
+    elasticache_integrations.install(
+        client=client, endpoint=cache.endpoint, cache_name="test-cache"
     )
     try:
         getattr(client, xform_name(case["operation"]))(**case["params"])

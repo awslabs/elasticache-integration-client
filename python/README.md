@@ -46,6 +46,41 @@ session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
 Its per-request timeout defaults to 5 seconds and can be changed with the
 `cache_request_timeout` field (see below).
 
+## Installing into a client
+
+`install()` takes a boto3 client the application already built, so the client keeps its own
+profile, `botocore.config.Config`, endpoint and everything else, and its region and credentials
+are the ones the cache is authenticated with.
+
+```python
+import boto3
+import elasticache_integrations
+
+ddb = boto3.client("dynamodb", region_name="us-east-1")
+
+elasticache_integrations.install(client=ddb, endpoint="my-cache:6379", cache_name="my-cache")
+
+ddb.get_item(TableName="my-table", Key={"id": {"S": "1"}})  # unchanged
+```
+
+| Argument | Default | Meaning |
+|---|---|---|
+| `client` | required | The boto3 client to route through the cache. |
+| `endpoint` | required | Cache endpoint as `host:port`. |
+| `cache_name` | required | The ElastiCache Serverless cache name. |
+| `user_id` | `default.iam-user` | ElastiCache IAM user id. |
+| `verify` | `True` | Verify the cache's TLS certificate. `False` is for self-signed test rigs only. |
+| `ca_certs` | `None` | CA bundle for the cache's certificate, instead of the system trust store. |
+| `client_configuration` | all defaults | See [Configuration](#configuration). |
+
+Everything above describes the connection to the **cache**, which the boto3 client knows nothing
+about. TLS to AWS, and everything else about reaching the service, stays the client's own
+configuration.
+
+Closing the client disconnects the cache first, then closes the client as usual. A client can
+have the cache installed once; a second `install()` on the same client raises
+`ElastiCacheIntegrationsConfigError`.
+
 ## Configuration
 
 Optional ElastiCacheIntegrations settings go in one `elasticache_integrations.ElastiCacheIntegrationsClientConfiguration`, passed as
@@ -53,14 +88,14 @@ Optional ElastiCacheIntegrations settings go in one `elasticache_integrations.El
 settings are sent to the cache through `aws.config`.
 
 ```python
-ddb = elasticache_integrations.client(
-    "dynamodb",
+elasticache_integrations.install(
+    client=ddb,
     endpoint="my-cache:6379",
     cache_name="my-cache",
     client_configuration=elasticache_integrations.ElastiCacheIntegrationsClientConfiguration(
         cache_request_timeout=2.0,
         fallback_duration=60,
-        cache_policy_overrides={"exclude_tables": ["audit-log"]},
+        cache_policy_overrides={"tables": ["Users", "Sessions"]},
         iam_token_refresh_delay=300,
     ),
 )
@@ -79,11 +114,16 @@ Building `ElastiCacheIntegrationsClientConfiguration` raises `ElastiCacheIntegra
 ## IAM authentication
 
 IAM token generation and refresh are provided by the Amazon ElastiCache developer toolkit.
-The toolkit validates and lowercases cache names and user IDs, resolves fresh AWS credentials
-for every newly signed token, and owns the SigV4 signing contract. ElastiCacheIntegrations sends the bearer token
+The toolkit validates and lowercases cache names and user IDs, re-reads the credentials for
+every newly signed token, and owns the SigV4 signing contract. ElastiCacheIntegrations sends the bearer token
 only in the TLS-protected `HELLO 3 AUTH` exchange; origin request signing remains owned by boto3.
 
-The `client()` factory creates a toolkit token manager. It caches the current token, signs a
+The credentials are the ones behind the boto3 client, so the cache is authenticated as the same
+principal as the requests, and rotation (SSO, assume-role, container, instance metadata) keeps
+working because the credentials object refreshes itself. A client built with
+`signature_version=UNSIGNED` carries none and is rejected.
+
+`install()` creates a toolkit token manager. It caches the current token, signs a
 replacement in the background after 300 seconds by default, and force-refreshes when a live
 connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to customize that
 background signing point through `ElastiCacheIntegrationsClientConfiguration`; it must be greater than 0 and less

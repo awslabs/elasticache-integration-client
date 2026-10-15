@@ -13,7 +13,7 @@ from elasticache_integrations.auth import build_cache_auth_provider
 from elasticache_integrations.config_policy import DEFAULT_STALENESS_DURATION, ConfigPolicy
 from elasticache_integrations.connection import ElastiCacheIntegrationsConnector
 from elasticache_integrations.exceptions import ElastiCacheIntegrationsConfigError
-from elasticache_integrations.hooks import ElastiCacheIntegrationsHandle
+from elasticache_integrations.hooks import ElastiCacheIntegrationsHandle, installed_handle
 from elasticache_integrations.reconnect_policy import ReconnectPolicy
 from elasticache_integrations.session import ElastiCacheIntegrationsSession, parse_endpoint
 
@@ -98,6 +98,8 @@ def _client_credentials(sdk_client: BaseClient) -> Credentials:
     The object refreshes itself, so holding it keeps rotated credentials current.
     """
     credentials = getattr(getattr(sdk_client, "_request_signer", None), "_credentials", None)
+    # get_frozen_credentials is what the IAM toolkit calls for every token it signs, so an
+    # object without it could not be used even though it is not None.
     if not credentials or not hasattr(credentials, "get_frozen_credentials"):
         raise ElastiCacheIntegrationsConfigError(
             "This boto3 client carries no credentials, so the cache cannot be authenticated. "
@@ -129,7 +131,7 @@ def install(
         cache_name: Required. The ElastiCache Serverless cache name.
         user_id: Optional ElastiCache IAM user id (defaults to ``default.iam-user``).
         verify: Verify the cache's TLS certificate. False is for self-signed test rigs only.
-        ca_certs: CA bundle to verify against instead of the system trust store.
+        ca_certs: CA bundle for the cache's certificate, instead of the system trust store.
         client_configuration: How the cache behaves and its optional cache policy overrides.
             See :class:`~elasticache_integrations.ElastiCacheIntegrationsClientConfiguration`;
             omitted means all defaults.
@@ -168,6 +170,12 @@ def install(
             "boto3.client(service) or boto3.Session(...).client(service)"
         )
 
+    if installed_handle(client):
+        raise ElastiCacheIntegrationsConfigError(
+            "This boto3 client already has ElastiCache Integrations installed; install once "
+            "per client."
+        )
+
     configuration = client_configuration or ElastiCacheIntegrationsClientConfiguration()
     region = client.meta.region_name
     if not region:
@@ -177,6 +185,7 @@ def install(
         )
     credentials = _client_credentials(client)
     auth_provider = None
+    session = None
 
     try:
         host, port = parse_endpoint(endpoint)
@@ -209,10 +218,15 @@ def install(
         )
         ElastiCacheIntegrationsHandle(client, session)
     except BaseException:
-        # Bring-up failed (auth, the config handshake, or wiring). Close what we created and
-        # re-raise the original error. The client is the application's: it stays open, and
-        # stays usable without the cache.
-        if auth_provider is not None:
+        # Bring-up failed (auth, the config handshake, or wiring). Close what we created — a
+        # session owns a connection and background threads — and re-raise the original error.
+        # The client is the application's: it stays open, and stays usable without the cache.
+        if session:
+            try:
+                session.close()
+            except Exception:
+                pass
+        if auth_provider:
             try:
                 auth_provider.close()
             except Exception:

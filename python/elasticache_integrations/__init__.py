@@ -8,7 +8,7 @@ Customer entry point::
     import boto3
     import elasticache_integrations
 
-    ddb = boto3.Session(region_name="us-east-1").client("dynamodb")
+    ddb = boto3.client("dynamodb", region_name="us-east-1")
     elasticache_integrations.install(client=ddb, endpoint="my-cache:6379", cache_name="my-cache")
     ddb.get_item(TableName="t", Key={"id": {"S": "1"}})  # transparently cached
 
