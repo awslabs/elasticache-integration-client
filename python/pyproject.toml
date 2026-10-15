@@ -41,6 +41,9 @@ testpaths = ["tests"]
 pythonpath = ["."]
 python_files = ["test_*.py"]
 addopts = "--cov=elasticache_integrations --cov-report=term-missing"
+markers = [
+    "alignment: cross-client tests that run the shared/ fixtures; CI runs them in the alignment job",
+]
 
 [tool.coverage.run]
 source = ["elasticache_integrations"]

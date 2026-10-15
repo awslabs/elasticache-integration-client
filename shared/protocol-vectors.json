@@ -1,0 +1,302 @@
+{
+  "description": "Cross-client ElastiCache Integrations wire vectors. Every string is compared as its UTF-8 bytes. Python is the reference client: its output defines each expected value.",
+  "encode": [
+    {
+      "name": "request_dynamodb_get_item",
+      "request": {
+        "method": "POST",
+        "url": "https://dynamodb.us-east-1.amazonaws.com/",
+        "headers": {
+          "Content-Type": "application/x-amz-json-1.0",
+          "X-Amz-Target": "DynamoDB_20120810.GetItem",
+          "Host": "dynamodb.us-east-1.amazonaws.com",
+          "Authorization": "AWS4-HMAC-SHA256 Credential=EXAMPLE",
+          "X-Amz-Date": "20260101T000000Z",
+          "X-Amz-Security-Token": "EXAMPLE",
+          "X-Amz-Request-Id": "abc",
+          "amz-sdk-request": "attempt=1; max=3"
+        },
+        "body": "{\"TableName\":\"t\",\"Key\":{\"pk\":{\"S\":\"1\"}}}",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "GetItem"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$4\r\nPOST\r\n$41\r\nhttps://dynamodb.us-east-1.amazonaws.com/\r\n$116\r\ncontent-type:application/x-amz-json-1.0\nhost:dynamodb.us-east-1.amazonaws.com\nx-amz-target:DynamoDB_20120810.GetItem\r\n$40\r\n{\"TableName\":\"t\",\"Key\":{\"pk\":{\"S\":\"1\"}}}\r\n$27\r\nservice=dynamodb&op=GetItem\r\n"
+    },
+    {
+      "name": "request_header_names_lowercased_and_values_trimmed",
+      "request": {
+        "method": "POST",
+        "url": "https://example.com/",
+        "headers": {
+          "  X-Custom  ": "  value  ",
+          "Accept": "*/*"
+        },
+        "body": "",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "Query"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$4\r\nPOST\r\n$20\r\nhttps://example.com/\r\n$25\r\naccept:*/*\nx-custom:value\r\n$0\r\n\r\n$25\r\nservice=dynamodb&op=Query\r\n"
+    },
+    {
+      "name": "request_empty_headers_and_body",
+      "request": {
+        "method": "GET",
+        "url": "https://example.com/path?x=1",
+        "headers": {},
+        "body": "",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "ListTables"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$3\r\nGET\r\n$28\r\nhttps://example.com/path?x=1\r\n$0\r\n\r\n$0\r\n\r\n$30\r\nservice=dynamodb&op=ListTables\r\n"
+    },
+    {
+      "name": "request_only_excluded_headers",
+      "request": {
+        "method": "POST",
+        "url": "https://example.com/",
+        "headers": {
+          "AUTHORIZATION": "secret",
+          "x-amz-date": "20260101T000000Z"
+        },
+        "body": "",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "GetItem"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$4\r\nPOST\r\n$20\r\nhttps://example.com/\r\n$0\r\n\r\n$0\r\n\r\n$27\r\nservice=dynamodb&op=GetItem\r\n"
+    },
+    {
+      "name": "request_utf8_header_value_and_body",
+      "request": {
+        "method": "POST",
+        "url": "https://example.com/",
+        "headers": {
+          "X-Name": "café"
+        },
+        "body": "{\"k\":\"é\"}",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "PutItem"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$4\r\nPOST\r\n$20\r\nhttps://example.com/\r\n$12\r\nx-name:café\r\n$10\r\n{\"k\":\"é\"}\r\n$27\r\nservice=dynamodb&op=PutItem\r\n"
+    },
+    {
+      "name": "request_duplicate_header_names_after_lowercasing",
+      "request": {
+        "method": "POST",
+        "url": "https://example.com/",
+        "headers": {
+          "X-A": "2",
+          "x-a": "1"
+        },
+        "body": "",
+        "metadata": {
+          "service": "dynamodb",
+          "operation": "GetItem"
+        }
+      },
+      "frame": "*6\r\n$11\r\naws.request\r\n$4\r\nPOST\r\n$20\r\nhttps://example.com/\r\n$11\r\nx-a:1\nx-a:2\r\n$0\r\n\r\n$27\r\nservice=dynamodb&op=GetItem\r\n"
+    },
+    {
+      "name": "config_unchanged",
+      "overrides": null,
+      "frame": "*1\r\n$10\r\naws.config\r\n"
+    },
+    {
+      "name": "config_reset_to_defaults",
+      "overrides": {},
+      "frame": "*2\r\n$10\r\naws.config\r\n$17\r\n{\"version\":\"1.0\"}\r\n"
+    },
+    {
+      "name": "config_overrides",
+      "overrides": {
+        "ttl": 60,
+        "enabled": true,
+        "tables": [
+          "a",
+          "b"
+        ],
+        "nested": {
+          "k": "v"
+        }
+      },
+      "frame": "*2\r\n$10\r\naws.config\r\n$79\r\n{\"version\":\"1.0\",\"ttl\":60,\"enabled\":true,\"tables\":[\"a\",\"b\"],\"nested\":{\"k\":\"v\"}}\r\n"
+    },
+    {
+      "name": "config_non_ascii_escaped",
+      "overrides": {
+        "name": "café"
+      },
+      "frame": "*2\r\n$10\r\naws.config\r\n$36\r\n{\"version\":\"1.0\",\"name\":\"caf\\u00e9\"}\r\n"
+    }
+  ],
+  "decode": [
+    {
+      "name": "response_ok",
+      "command": "aws.request",
+      "reply": "*3\r\n:200\r\n$51\r\ncontent-type:application/x-amz-json-1.0\nx-cache:hit\r\n$11\r\n{\"Item\":{}}\r\n",
+      "response": {
+        "status": 200,
+        "headers": {
+          "content-type": "application/x-amz-json-1.0",
+          "x-cache": "hit"
+        },
+        "body": "{\"Item\":{}}"
+      }
+    },
+    {
+      "name": "response_status_as_bulk_string",
+      "command": "aws.request",
+      "reply": "*3\r\n$3\r\n404\r\n$0\r\n\r\n$0\r\n\r\n",
+      "response": {
+        "status": 404,
+        "headers": {},
+        "body": ""
+      }
+    },
+    {
+      "name": "response_header_lines_without_colon_skipped",
+      "command": "aws.request",
+      "reply": "*3\r\n:200\r\n$13\r\na:1\ngarbage\nb\r\n$0\r\n\r\n",
+      "response": {
+        "status": 200,
+        "headers": {
+          "a": "1"
+        },
+        "body": ""
+      }
+    },
+    {
+      "name": "response_status_out_of_range",
+      "command": "aws.request",
+      "reply": "*3\r\n:600\r\n$0\r\n\r\n$0\r\n\r\n",
+      "error": "protocol"
+    },
+    {
+      "name": "response_wrong_element_count",
+      "command": "aws.request",
+      "reply": "*2\r\n:200\r\n$0\r\n\r\n",
+      "error": "protocol"
+    },
+    {
+      "name": "response_null_body",
+      "command": "aws.request",
+      "reply": "*3\r\n:200\r\n$0\r\n\r\n_\r\n",
+      "error": "protocol"
+    },
+    {
+      "name": "response_null_headers",
+      "command": "aws.request",
+      "reply": "*3\r\n:200\r\n_\r\n$0\r\n\r\n",
+      "error": "protocol"
+    },
+    {
+      "name": "response_simple_string_body",
+      "command": "aws.request",
+      "reply": "*3\r\n:200\r\n$0\r\n\r\n+ok\r\n",
+      "error": "protocol"
+    },
+    {
+      "name": "response_resp_error",
+      "command": "aws.request",
+      "reply": "-ORIGIN_ERROR upstream failed\r\n",
+      "error": "rejected",
+      "code": "ORIGIN_ERROR"
+    },
+    {
+      "name": "config_ok",
+      "command": "aws.config",
+      "reply": "$44\r\n{\"version\":\"v1\",\"refresh_interval\":60,\"x\":1}\r\n",
+      "config": {
+        "version": "v1",
+        "refresh_interval": 60,
+        "raw": {
+          "version": "v1",
+          "refresh_interval": 60,
+          "x": 1
+        }
+      }
+    },
+    {
+      "name": "config_missing_version",
+      "command": "aws.config",
+      "reply": "$23\r\n{\"refresh_interval\":60}\r\n",
+      "config": {
+        "version": null,
+        "refresh_interval": 60,
+        "raw": {
+          "refresh_interval": 60
+        }
+      }
+    },
+    {
+      "name": "config_null_version",
+      "command": "aws.config",
+      "reply": "$38\r\n{\"version\":null,\"refresh_interval\":60}\r\n",
+      "config": {
+        "version": null,
+        "refresh_interval": 60,
+        "raw": {
+          "version": null,
+          "refresh_interval": 60
+        }
+      }
+    },
+    {
+      "name": "config_invalid",
+      "command": "aws.config",
+      "reply": "-CONFIG_INVALID unknown key ttl\r\n",
+      "error": "overrides_rejected"
+    },
+    {
+      "name": "config_other_resp_error",
+      "command": "aws.config",
+      "reply": "-ERR boom\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_array_reply",
+      "command": "aws.config",
+      "reply": "*1\r\n$2\r\n{}\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_malformed_json",
+      "command": "aws.config",
+      "reply": "$7\r\n{\"a\":1,\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_missing_refresh_interval",
+      "command": "aws.config",
+      "reply": "$16\r\n{\"version\":\"v1\"}\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_fractional_refresh_interval",
+      "command": "aws.config",
+      "reply": "$25\r\n{\"refresh_interval\":60.5}\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_integral_float_refresh_interval",
+      "command": "aws.config",
+      "reply": "$25\r\n{\"refresh_interval\":60.0}\r\n",
+      "error": "error"
+    },
+    {
+      "name": "config_non_positive_refresh_interval",
+      "command": "aws.config",
+      "reply": "$22\r\n{\"refresh_interval\":0}\r\n",
+      "error": "error"
+    }
+  ]
+}

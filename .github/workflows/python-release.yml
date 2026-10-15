@@ -98,6 +98,15 @@ jobs:
     name: Run Python CI
     uses: ./.github/workflows/python-ci.yml
 
+  # python-ci.yml excludes the cross-client alignment tests, so run them here.
+  alignment:
+    name: Run Python alignment tests
+    uses: ./.github/workflows/alignment-ci.yml
+    with:
+      python: true
+      java: false
+      node: false
+
   smoke:
     name: Smoke test wheel on Python ${{ matrix.python-version }}
     needs: build
@@ -142,7 +151,7 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    needs: [build, validate, smoke]
+    needs: [build, validate, alignment, smoke]
     if: needs.build.outputs.should-publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15

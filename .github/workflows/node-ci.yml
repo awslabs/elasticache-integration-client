@@ -38,7 +38,12 @@ jobs:
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test -- --reporter=default --reporter=junit --outputFile.junit=test-results.xml
+      # The alignment tests run in alignment-ci.yml.
+      - run: >-
+          npm test --
+          --exclude test/protocol-vectors.test.ts
+          --exclude test/sdk-request-cases.test.ts
+          --reporter=default --reporter=junit --outputFile.junit=test-results.xml
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

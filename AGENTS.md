@@ -13,7 +13,15 @@
 - `node/`: TypeScript/Node.js ElastiCache Integrations client.
 - `java/`: Java/AWS SDK v2 ElastiCache Integrations client.
 - `python/`: Python/boto3 ElastiCache Integrations client.
-- `shared/`: language-neutral client contracts mirrored into packaged clients.
+- `shared/`: language-neutral client contracts. `idempotent-operations.json`
+  is packaged into each client. `protocol-vectors.json` and
+  `sdk-request-cases.json` are test fixtures that every client's tests run and
+  that are not packaged. A change to the wire format or to how an SDK adapter
+  builds a request updates the fixtures in the same change. The tests that run
+  them are tagged `alignment` (a pytest marker, a JUnit tag, and the two Vitest
+  files). Pull request CI runs them in `.github/workflows/alignment-ci.yml` and
+  excludes them from the client CI workflows. The release workflows still run
+  them before publishing.
 - `README.md`: repository-wide overview and client scope.
 - `.github/workflows/`: CI contracts for each client.
 
