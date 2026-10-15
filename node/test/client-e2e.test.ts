@@ -6,7 +6,10 @@ import { HttpRequest } from "@smithy/core/protocols";
 import { createServer, type Server } from "node:http";
 
 import { install } from "../src/index.js";
-import { ElastiCacheIntegrationsConnectionLost } from "../src/errors.js";
+import {
+  ElastiCacheIntegrationsConfigError,
+  ElastiCacheIntegrationsConnectionLost,
+} from "../src/errors.js";
 import { MockCache, Reply } from "./mock-cache.js";
 
 const retryableResponse = Buffer.from(`<?xml version="1.0"?>
@@ -302,6 +305,56 @@ describe("public DynamoDB client", () => {
     } finally {
       dynamodb.destroy();
       await cachingCache.stop();
+    }
+  });
+
+  it("refuses a second install and keeps serving through the first", async () => {
+    const onceCache = new MockCache({
+      config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
+      responseFn: () =>
+        Reply.ok(
+          200,
+          "content-type:application/x-amz-json-1.0",
+          Buffer.from('{"Item":{"id":{"S":"value"}}}'),
+        ),
+    });
+    await onceCache.start();
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret-example" },
+      maxAttempts: 1,
+    });
+    const installOptions = {
+      client: dynamodb,
+      endpoint: onceCache.endpoint,
+      cacheName: "test-cache",
+      connectorOptions: { tls: false },
+    };
+    const getItem = () =>
+      dynamodb.send(
+        new GetItemCommand({ TableName: "ElastiCacheIntegrationsTest", Key: { id: { S: "key" } } }),
+      );
+
+    try {
+      await install(installOptions);
+      const install2 = install(installOptions);
+      await expect(install2).rejects.toBeInstanceOf(ElastiCacheIntegrationsConfigError);
+      await expect(install2).rejects.toThrow("already has ElastiCache Integrations installed");
+      // The refused install opened no second connection.
+      expect(onceCache.cacheCommandLog).toEqual(["hello", "aws.config"]);
+
+      await expect(getItem()).resolves.toMatchObject({ Item: { id: { S: "value" } } });
+      expect(onceCache.requests).toHaveLength(1);
+
+      // destroy() detaches, so the client can be installed into again.
+      dynamodb.destroy();
+      await install(installOptions);
+      await expect(getItem()).resolves.toMatchObject({ Item: { id: { S: "value" } } });
+      expect(onceCache.requests).toHaveLength(2);
+    } finally {
+      dynamodb.destroy();
+      await onceCache.stop();
     }
   });
 

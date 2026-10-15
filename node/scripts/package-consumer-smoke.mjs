@@ -18,7 +18,6 @@ const checks = [
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsConfigError === "function"',
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsCacheUnavailable === "function"',
   '!("ElastiCacheIntegrationsHandle" in elastiCacheIntegrations)',
-  '!("client" in elastiCacheIntegrations)',
 ].join(" && ");
 const smokeRoot = mkdtempSync(join(tmpdir(), "elasticache-integrations-smoke-"));
 

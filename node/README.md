@@ -110,7 +110,9 @@ SDK-retryable. Other RESP errors, non-idempotent failures, and request
 validation errors and fallback-window exhaustion propagate. Calling `destroy()`
 detaches ElastiCacheIntegrations before SDK teardown, rejects in-flight ElastiCacheIntegrations requests without
 passing shutdown failures to the origin, stops reconnect activity, and is safe
-to repeat.
+to repeat. A client can have the cache installed once; a second `install()` on
+the same client raises `ElastiCacheIntegrationsConfigError`. After `destroy()`,
+the client can be installed into again.
 `userId` defaults to `default.iam-user`. `connectorOptions` is Node-specific;
 all `aws.config` overrides are passed through `overrides`.
 `stalenessDuration` is described under [Config staleness](#config-staleness).

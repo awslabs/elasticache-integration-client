@@ -42,6 +42,7 @@ vi.mock("../src/session.js", async () => {
 });
 
 vi.mock("../src/middleware.js", () => ({
+  installedHandle: () => undefined,
   ElastiCacheIntegrationsHandle: class {
     constructor(...args: unknown[]) {
       mocks.handleConstructor(...args);

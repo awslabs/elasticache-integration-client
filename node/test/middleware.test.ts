@@ -201,7 +201,8 @@ describe("ElastiCacheIntegrationsHandle", () => {
     sdkClient.destroy();
     sdkClient.destroy();
 
-    expect(order).toEqual(["elastiCacheIntegrations", "sdk"]);
+    // The second destroy() is the SDK's own again, as on a client that never had a handle.
+    expect(order).toEqual(["elastiCacheIntegrations", "sdk", "sdk"]);
     expect(handle.installed).toBe(false);
     expect(session.destroy).toHaveBeenCalledOnce();
     expect(sdkClient.middlewareStack.remove("elastiCacheIntegrations")).toBe(false);
@@ -220,8 +221,29 @@ describe("ElastiCacheIntegrationsHandle", () => {
     );
 
     expect(session.destroy).toHaveBeenCalledOnce();
-    expect(originalDestroy).toHaveBeenCalledOnce();
+    expect(originalDestroy).toHaveBeenCalledTimes(32);
     expect(handle.installed).toBe(false);
+  });
+
+  it("can be installed again after destroy", () => {
+    const originalDestroy = vi.fn();
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: originalDestroy,
+    };
+    const firstSession = fakeSession();
+    const secondSession = fakeSession();
+
+    new ElastiCacheIntegrationsHandle(sdkClient, firstSession, "svc");
+    sdkClient.destroy();
+    expect(sdkClient.destroy).toBe(originalDestroy);
+
+    new ElastiCacheIntegrationsHandle(sdkClient, secondSession, "svc");
+    sdkClient.destroy();
+
+    expect(secondSession.destroy).toHaveBeenCalledOnce();
+    expect(originalDestroy).toHaveBeenCalledTimes(2);
+    expect(sdkClient.destroy).toBe(originalDestroy);
   });
 
   it("shutdown detaches ElastiCacheIntegrations without destroying the SDK client", () => {

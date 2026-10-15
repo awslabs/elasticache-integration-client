@@ -205,6 +205,14 @@ function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): v
   Reflect.deleteProperty(client, "handlers");
 }
 
+/** The handle attached to each client, so a second install can be refused. */
+const handles = new WeakMap<object, ElastiCacheIntegrationsHandle>();
+
+/** Return the handle already attached to `sdkClient`, or undefined if there is none. */
+export function installedHandle(sdkClient: object): ElastiCacheIntegrationsHandle | undefined {
+  return handles.get(sdkClient);
+}
+
 /** Attaches ElastiCacheIntegrations to one AWS SDK client and detaches it cleanly. */
 export class ElastiCacheIntegrationsHandle {
   installed = false;
@@ -224,8 +232,9 @@ export class ElastiCacheIntegrationsHandle {
     if (this.installed || this.destroyed) return;
     installCacheMiddleware(this.sdkClient, this.service, this.session);
     clearCachedHandlers(this.sdkClient);
-    this.sdkDestroy = this.sdkClient.destroy.bind(this.sdkClient);
+    this.sdkDestroy = this.sdkClient.destroy;
     this.sdkClient.destroy = this.destroy;
+    handles.set(this.sdkClient, this);
     this.installed = true;
   }
 
@@ -234,6 +243,7 @@ export class ElastiCacheIntegrationsHandle {
     if (!this.installed) return;
     this.sdkClient.middlewareStack.remove(CACHE_MIDDLEWARE);
     this.sdkClient.destroy = this.sdkDestroy!;
+    handles.delete(this.sdkClient);
     this.session.destroy();
     this.installed = false;
   }
@@ -247,9 +257,11 @@ export class ElastiCacheIntegrationsHandle {
       this.shutdown();
     } finally {
       try {
-        sdkDestroy();
+        sdkDestroy.call(this.sdkClient);
       } finally {
-        this.sdkClient.destroy = this.destroy;
+        // Put the SDK's own destroy() back, so a later install does not save this inert one as
+        // "the SDK's" and stop the SDK client from ever being destroyed.
+        this.sdkClient.destroy = sdkDestroy;
       }
     }
   };

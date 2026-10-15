@@ -6,6 +6,7 @@ import {
 import { ElastiCacheIntegrationsConfigError } from "./errors.js";
 import {
   ElastiCacheIntegrationsHandle,
+  installedHandle,
   type ElastiCacheIntegrationsCompatibleClient,
 } from "./middleware.js";
 import {
@@ -220,6 +221,11 @@ export async function install<TClient extends InstallableClient>(
     throw new ElastiCacheIntegrationsConfigError(
       `client must be an AWS SDK v3 client, got ${typeName(sdkClient)}. Create one with ` +
         "new DynamoDBClient(...) or another @aws-sdk client constructor",
+    );
+  }
+  if (installedHandle(sdkClient)) {
+    throw new ElastiCacheIntegrationsConfigError(
+      "This AWS SDK client already has ElastiCache Integrations installed; install once per client.",
     );
   }
   const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
