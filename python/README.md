@@ -46,6 +46,13 @@ session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
 Its per-request timeout defaults to 5 seconds and can be changed with the
 `cache_request_timeout` field (see below).
 
+Cache requests may complete out of order when the cache returns a request ID and later delivers
+the result in a `aws.response` RESP3 push. Deferred requests do not block later FIFO replies. If a
+deferred request times out, only that request is abandoned, and a late push for its ID is dropped.
+A timeout while a request is still FIFO-correlated closes the connection to prevent reply
+misrouting. A RESP3 push with an unrecognized kind is treated as protocol corruption and closes
+the connection.
+
 ## Installing into a client
 
 `install()` takes a boto3 client the application already built, so the client keeps its own
@@ -213,9 +220,6 @@ rules while the connection is being replaced.
   when the next request times out. Closing that gap needs a periodic health check.
 - **IAM authentication validation.** Exercise the toolkit-backed flow against a real IAM-enabled
   cache in addition to the hermetic mock-cache coverage.
-- **Asynchronous / out-of-band responses.** Only the synchronous reply is handled. A follow-up
-  handles the out-of-band response (request-id followed by a later push) so a slow cache miss does
-  not block pipelined hits.
 - **Public TTL / NTTL controls.** TTL/NTTL policy is resolved server-side from the
   `aws.config` overrides; the public API does not expose per-table or per-request TTL
   overrides yet.
