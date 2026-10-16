@@ -243,17 +243,18 @@ function decodeMap(
   return [entries, position];
 }
 
-// Prefix -> decoder dispatch.
-const DECODERS: Record<string, Decoder> = {
-  "+": decodeSimpleString,
-  ":": decodeInteger,
-  "-": decodeError,
-  $: decodeBulkString,
-  _: decodeNull,
-  "*": decodeArray,
-  ">": decodePush,
-  "%": decodeMap,
-};
+// Prefix -> decoder dispatch. A Map, so a prefix read off the wire can only select one of these
+// entries and never a property inherited from Object.prototype.
+const DECODERS = new Map<string, Decoder>([
+  ["+", decodeSimpleString],
+  [":", decodeInteger],
+  ["-", decodeError],
+  ["$", decodeBulkString],
+  ["_", decodeNull],
+  ["*", decodeArray],
+  [">", decodePush],
+  ["%", decodeMap],
+]);
 
 /**
  * Decode a single RESP3 value beginning at `start`. `depth` is the nesting level of that value;
@@ -284,7 +285,7 @@ export function decodeResp(data: Buffer, start = 0, depth = 1): [RespValue, numb
   }
 
   // Pick the decoder for this type and decode
-  const decoder = DECODERS[prefix];
+  const decoder = DECODERS.get(prefix);
   if (decoder === undefined) {
     throw new ElastiCacheIntegrationsProtocolError(
       `Unsupported RESP prefix: ${JSON.stringify(prefix)}`,
