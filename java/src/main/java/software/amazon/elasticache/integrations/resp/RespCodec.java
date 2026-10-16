@@ -13,6 +13,9 @@ public final class RespCodec {
 
     private static final byte[] CRLF = new byte[] {'\r', '\n'};
 
+    /** Deepest aggregate nesting the decoder accepts. The top-level value is level 1. */
+    private static final int MAX_NESTING_DEPTH = 100;
+
     private RespCodec() {}
 
     /**
@@ -96,6 +99,11 @@ public final class RespCodec {
      * @throws IndexOutOfBoundsException unless {@code 0 <= start <= end <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start, int end) throws IncompleteFrame {
+        return decode(data, start, end, 1);
+    }
+
+    private static DecodeResult decode(byte[] data, int start, int end, int depth)
+            throws IncompleteFrame {
         if (start < 0 || start > end || end > data.length) {
             throw new IndexOutOfBoundsException(
                     "Range [" + start + ", " + end + ") out of bounds for length " + data.length);
@@ -115,11 +123,11 @@ public final class RespCodec {
             case '$':
                 return decodeBulkString(data, start, end);
             case '*':
-                return decodeArray(data, start, end);
+                return decodeArray(data, start, end, depth);
             case '>':
-                return decodePush(data, start, end);
+                return decodePush(data, start, end, depth);
             case '%':
-                return decodeMap(data, start, end);
+                return decodeMap(data, start, end, depth);
             case '_':
                 return decodeNull(data, start, end);
             default:
@@ -239,11 +247,13 @@ public final class RespCodec {
         return new DecodeResult(RespNull.INSTANCE, crlfPos + 2);
     }
 
-    private static DecodeResult decodeArray(byte[] data, int start, int end) throws IncompleteFrame {
+    private static DecodeResult decodeArray(byte[] data, int start, int end, int depth)
+            throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete array length");
         }
+        checkDepth(depth);
         String countStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
         int count;
         try {
@@ -263,15 +273,16 @@ public final class RespCodec {
         List<RespValue> elements = new ArrayList<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
-            DecodeResult element = decode(data, pos, end);
+            DecodeResult element = decode(data, pos, end, depth + 1);
             elements.add(element.getValue());
             pos = element.getPosition();
         }
         return new DecodeResult(new RespArray(elements), pos);
     }
 
-    private static DecodeResult decodePush(byte[] data, int start, int end) throws IncompleteFrame {
-        DecodeResult result = decodeArray(data, start, end);
+    private static DecodeResult decodePush(byte[] data, int start, int end, int depth)
+            throws IncompleteFrame {
+        DecodeResult result = decodeArray(data, start, end, depth);
         if (!(result.getValue() instanceof RespArray)) {
             throw new ElastiCacheIntegrationsProtocolError(
                     "Invalid RESP3 push payload: expected a non-null element list");
@@ -280,11 +291,13 @@ public final class RespCodec {
         return new DecodeResult(new RespPush(array.getElements()), result.getPosition());
     }
 
-    private static DecodeResult decodeMap(byte[] data, int start, int end) throws IncompleteFrame {
+    private static DecodeResult decodeMap(byte[] data, int start, int end, int depth)
+            throws IncompleteFrame {
         int crlfPos = findCrlf(data, start + 1, end);
         if (crlfPos < 0) {
             throw new IncompleteFrame("Incomplete map length");
         }
+        checkDepth(depth);
         String countStr = new String(data, start + 1, crlfPos - (start + 1), StandardCharsets.US_ASCII);
         int count;
         try {
@@ -299,12 +312,19 @@ public final class RespCodec {
         Map<RespValue, RespValue> entries = new LinkedHashMap<>();
         int pos = crlfPos + 2;
         for (int i = 0; i < count; i++) {
-            DecodeResult key = decode(data, pos, end);
-            DecodeResult value = decode(data, key.getPosition(), end);
+            DecodeResult key = decode(data, pos, end, depth + 1);
+            DecodeResult value = decode(data, key.getPosition(), end, depth + 1);
             entries.put(key.getValue(), value.getValue());
             pos = value.getPosition();
         }
         return new DecodeResult(new RespMap(entries), pos);
+    }
+
+    private static void checkDepth(int depth) {
+        if (depth > MAX_NESTING_DEPTH) {
+            throw new ElastiCacheIntegrationsProtocolError(
+                    "RESP nesting exceeds " + MAX_NESTING_DEPTH + " levels");
+        }
     }
 
     /** Find the position of CRLF in {@code data[from, end)}. Returns -1 if not found. */

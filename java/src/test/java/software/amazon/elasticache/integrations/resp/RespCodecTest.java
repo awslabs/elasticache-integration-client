@@ -7,6 +7,8 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 
 class RespCodecTest {
@@ -447,5 +449,79 @@ class RespCodecTest {
         assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, -1, 5));
         assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 3, 2));
         assertThrows(IndexOutOfBoundsException.class, () -> RespCodec.decode(data, 0, 6));
+    }
+
+    // === Nesting depth cap ===
+
+    /** Wraps a single {@code :1} integer in {@code levels} aggregates of the given prefix. */
+    private static byte[] nestedFrame(char prefix, int levels) {
+        String unit;
+        switch (prefix) {
+            case '*':
+                unit = "*1\r\n";
+                break;
+            case '%':
+                unit = "%1\r\n:0\r\n";
+                break;
+            default:
+                unit = ">2\r\n+kind\r\n";
+                break;
+        }
+        StringBuilder frame = new StringBuilder();
+        for (int i = 0; i < levels; i++) {
+            frame.append(unit);
+        }
+        frame.append(":1\r\n");
+        return frame.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private static RespValue unwrap(RespValue value) {
+        if (value instanceof RespArray) {
+            return ((RespArray) value).getElements().get(0);
+        }
+        if (value instanceof RespPush) {
+            return ((RespPush) value).getElements().get(1);
+        }
+        return ((RespMap) value).getEntries().values().iterator().next();
+    }
+
+    @ParameterizedTest
+    @ValueSource(chars = {'*', '%', '>'})
+    void decodeNestingPastTheCapRaisesProtocolError(char prefix) {
+        byte[] data = nestedFrame(prefix, 101);
+        ElastiCacheIntegrationsProtocolError e =
+                assertThrows(ElastiCacheIntegrationsProtocolError.class, () -> RespCodec.decode(data));
+        assertEquals("RESP nesting exceeds 100 levels", e.getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(chars = {'*', '%', '>'})
+    void decodeNestingAtTheCapDecodes(char prefix) throws IncompleteFrame {
+        byte[] data = nestedFrame(prefix, 100);
+        DecodeResult result = RespCodec.decode(data);
+        RespValue value = result.getValue();
+        for (int i = 0; i < 100; i++) {
+            value = unwrap(value);
+        }
+        assertEquals(1L, ((RespInteger) value).getValue());
+        assertEquals(data.length, result.getPosition());
+    }
+
+    @Test
+    void decodeNestingPastTheCapRaisesFarPastTheStackLimit() {
+        byte[] data = nestedFrame('*', 5000);
+        ElastiCacheIntegrationsProtocolError e =
+                assertThrows(ElastiCacheIntegrationsProtocolError.class, () -> RespCodec.decode(data));
+        assertEquals("RESP nesting exceeds 100 levels", e.getMessage());
+    }
+
+    @Test
+    void decodeTruncatedNestingUnderTheCapRaisesIncompleteFrame() {
+        StringBuilder frame = new StringBuilder();
+        for (int i = 0; i < 50; i++) {
+            frame.append("*1\r\n");
+        }
+        byte[] data = frame.toString().getBytes(StandardCharsets.UTF_8);
+        assertThrows(IncompleteFrame.class, () -> RespCodec.decode(data));
     }
 }

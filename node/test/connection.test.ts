@@ -690,6 +690,27 @@ describe("ElastiCacheIntegrationsConnector", () => {
     }
   });
 
+  it("deeply nested reply fails caller as connection lost", async () => {
+    const frame = Buffer.from(`${"*1\r\n".repeat(5_000)}:1\r\n`);
+    const cache = await startCache({ response: new Reply(frame) });
+    const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, { tls: false });
+    await connector.connect();
+
+    try {
+      const failure = await connector
+        .execute("aws.request", ...requestArgs("deep"))
+        .catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ElastiCacheIntegrationsConnectionLost);
+      expect((failure as Error).cause).toBeInstanceOf(ElastiCacheIntegrationsProtocolError);
+      expect(((failure as Error).cause as Error).message).toBe("RESP nesting exceeds 100 levels");
+      await expect(
+        connector.execute("aws.request", ...requestArgs("after-failure")),
+      ).rejects.toBeInstanceOf(ElastiCacheIntegrationsConnectionLost);
+    } finally {
+      await connector.close();
+    }
+  });
+
   it("preserves the connection when a deferred request times out", async () => {
     let requestCount = 0;
     const cache = await startCache({

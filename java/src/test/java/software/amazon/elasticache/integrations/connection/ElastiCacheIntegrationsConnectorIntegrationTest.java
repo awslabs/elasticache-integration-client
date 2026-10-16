@@ -612,6 +612,51 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
+    void deeplyNestedReplyFailsCallerAsConnectionLost() throws Exception {
+        CountDownLatch requestIdSent = new CountDownLatch(1);
+        cache.setReplyFunction(
+                request -> {
+                    requestIdSent.countDown();
+                    return Reply.requestId(42);
+                });
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost",
+                        server.getPort(),
+                        clientSslContext,
+                        5000,
+                        5000,
+                        2000,
+                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<ElastiCacheIntegrationsResponse> deferred =
+                    executor.submit(() -> conn.request(testRequest()));
+            assertTrue(requestIdSent.await(2, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            StringBuilder frame = new StringBuilder();
+            for (int i = 0; i < 5000; i++) {
+                frame.append("*1\r\n");
+            }
+            frame.append(":1\r\n");
+            server.sendRaw(frame.toString().getBytes(StandardCharsets.UTF_8));
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> deferred.get(2, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsConnectionLost);
+            Throwable cause = failure.getCause().getCause();
+            assertTrue(cause instanceof ElastiCacheIntegrationsProtocolError);
+            assertEquals("RESP nesting exceeds 100 levels", cause.getMessage());
+            assertTrue(conn.isDead());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
     void request_deferredTimeoutKeepsConnectionAliveAndDropsLatePush() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
         CountDownLatch requestIdSent = new CountDownLatch(1);

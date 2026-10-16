@@ -5,7 +5,14 @@ import {
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
 } from "../src/errors.js";
-import { decodeResp, encodeResp, IncompleteFrame, RespError, RespPush } from "../src/resp.js";
+import {
+  decodeResp,
+  encodeResp,
+  IncompleteFrame,
+  RespError,
+  RespPush,
+  type RespValue,
+} from "../src/resp.js";
 
 const CRLF = "\r\n";
 
@@ -188,5 +195,64 @@ describe("RESP codec", () => {
   ])("decode garbage raises ElastiCacheIntegrationsProtocolError: %j", (garbage) => {
     // Genuinely corrupt input raises ElastiCacheIntegrationsProtocolError.
     expect(() => decodeResp(garbage)).toThrow(ElastiCacheIntegrationsProtocolError);
+  });
+
+  describe("nesting depth", () => {
+    const NESTING_MESSAGE = "RESP nesting exceeds 100 levels";
+
+    /** `levels` aggregates of the given prefix around a single `:1` integer. */
+    function nested(prefix: "*" | "%" | ">", levels: number): Buffer {
+      const unit = {
+        "*": `*1${CRLF}`,
+        "%": `%1${CRLF}:0${CRLF}`,
+        ">": `>2${CRLF}+kind${CRLF}`,
+      }[prefix];
+      return Buffer.from(`${unit.repeat(levels)}:1${CRLF}`);
+    }
+
+    /** Walk down `levels` aggregates to the innermost value. */
+    function unwrap(value: RespValue, prefix: "*" | "%" | ">", levels: number): RespValue {
+      let current = value;
+      for (let level = 0; level < levels; level += 1) {
+        if (prefix === "*") {
+          current = (current as RespValue[])[0]!;
+        } else if (prefix === "%") {
+          current = [...(current as Map<RespValue, RespValue>).values()][0]!;
+        } else {
+          current = (current as RespPush).items[1]!;
+        }
+      }
+      return current;
+    }
+
+    it.each(["*", "%", ">"] as const)(
+      "decode nesting past the cap raises protocol error: %s",
+      (prefix) => {
+        const frame = nested(prefix, 101);
+
+        expect(() => decodeResp(frame)).toThrow(ElastiCacheIntegrationsProtocolError);
+        expect(() => decodeResp(frame)).toThrow(NESTING_MESSAGE);
+      },
+    );
+
+    it.each(["*", "%", ">"] as const)("decode nesting at the cap decodes: %s", (prefix) => {
+      const frame = nested(prefix, 100);
+
+      const [value, consumed] = decodeResp(frame);
+
+      expect(consumed).toBe(frame.length);
+      expect(unwrap(value, prefix, 100)).toBe(1);
+    });
+
+    it("decode nesting past the cap raises far past the stack limit", () => {
+      const frame = nested("*", 5000);
+
+      expect(() => decodeResp(frame)).toThrow(ElastiCacheIntegrationsProtocolError);
+      expect(() => decodeResp(frame)).toThrow(NESTING_MESSAGE);
+    });
+
+    it("decode truncated nesting under the cap raises IncompleteFrame", () => {
+      expect(() => decodeResp(Buffer.from(`*1${CRLF}`.repeat(50)))).toThrow(IncompleteFrame);
+    });
   });
 });

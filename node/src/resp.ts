@@ -47,7 +47,17 @@ export type RespValue =
   | RespPush
   | null;
 
-type Decoder = (data: Buffer, header: Buffer, afterHeader: number) => [RespValue, number];
+type Decoder = (
+  data: Buffer,
+  header: Buffer,
+  afterHeader: number,
+  depth: number,
+) => [RespValue, number];
+
+// Aggregate nesting cap; the top-level value is level 1. Bounds recursion so a hostile reply
+// raises a protocol error instead of overflowing the stack.
+const MAX_NESTING_DEPTH = 100;
+const AGGREGATE_PREFIXES = new Set(["*", ">", "%"]);
 
 /** Raised by `decodeResp` when the buffer holds only a partial frame (need more bytes). */
 export class IncompleteFrame extends Error {
@@ -165,7 +175,12 @@ function decodeNull(_data: Buffer, header: Buffer, afterHeader: number): [RespVa
 }
 
 /** Decode a `*` array, or `null` for the `*-1` null array. */
-function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+function decodeArray(
+  data: Buffer,
+  header: Buffer,
+  afterHeader: number,
+  depth: number,
+): [RespValue, number] {
   const count = parseLength(header, "array length");
   if (count === -1) {
     return [null, afterHeader];
@@ -180,7 +195,7 @@ function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespVa
   let position = afterHeader;
   for (let index = 0; index < count; index += 1) {
     // inner IncompleteFrame propagates
-    const [item, nextPosition] = decodeResp(data, position);
+    const [item, nextPosition] = decodeResp(data, position, depth + 1);
     items.push(item);
     position = nextPosition;
   }
@@ -188,8 +203,13 @@ function decodeArray(data: Buffer, header: Buffer, afterHeader: number): [RespVa
 }
 
 /** Decode a `>` push. Pushes cannot be null; their frame type remains observable to the reader. */
-function decodePush(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
-  const [items, position] = decodeArray(data, header, afterHeader);
+function decodePush(
+  data: Buffer,
+  header: Buffer,
+  afterHeader: number,
+  depth: number,
+): [RespValue, number] {
+  const [items, position] = decodeArray(data, header, afterHeader, depth);
   if (!Array.isArray(items)) {
     throw new ElastiCacheIntegrationsProtocolError(
       `Malformed RESP push length: ${header.toString()}`,
@@ -199,7 +219,12 @@ function decodePush(data: Buffer, header: Buffer, afterHeader: number): [RespVal
 }
 
 /** Decode a `%` map. Keys and values may each be any RESP value. */
-function decodeMap(data: Buffer, header: Buffer, afterHeader: number): [RespValue, number] {
+function decodeMap(
+  data: Buffer,
+  header: Buffer,
+  afterHeader: number,
+  depth: number,
+): [RespValue, number] {
   const count = parseLength(header, "map length");
   if (count < 0) {
     throw new ElastiCacheIntegrationsProtocolError(
@@ -210,8 +235,8 @@ function decodeMap(data: Buffer, header: Buffer, afterHeader: number): [RespValu
   const entries = new Map<RespValue, RespValue>();
   let position = afterHeader;
   for (let index = 0; index < count; index += 1) {
-    const [key, afterKey] = decodeResp(data, position);
-    const [value, afterValue] = decodeResp(data, afterKey);
+    const [key, afterKey] = decodeResp(data, position, depth + 1);
+    const [value, afterValue] = decodeResp(data, afterKey, depth + 1);
     entries.set(key, value);
     position = afterValue;
   }
@@ -230,8 +255,11 @@ const DECODERS: Record<string, Decoder> = {
   "%": decodeMap,
 };
 
-/** Decode a single RESP3 value beginning at `start`. */
-export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
+/**
+ * Decode a single RESP3 value beginning at `start`. `depth` is the nesting level of that value;
+ * callers leave it at 1, and the aggregate decoders pass `depth + 1` for their children.
+ */
+export function decodeResp(data: Buffer, start = 0, depth = 1): [RespValue, number] {
   if (start >= data.length) {
     throw new IncompleteFrame("empty buffer");
   }
@@ -248,6 +276,13 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
   const header = data.subarray(start + 1, lineEnd);
   const afterHeader = lineEnd + CRLF.length;
 
+  // The header line is complete, so a too-deep aggregate is garbage rather than truncated.
+  if (depth > MAX_NESTING_DEPTH && AGGREGATE_PREFIXES.has(prefix)) {
+    throw new ElastiCacheIntegrationsProtocolError(
+      `RESP nesting exceeds ${MAX_NESTING_DEPTH} levels`,
+    );
+  }
+
   // Pick the decoder for this type and decode
   const decoder = DECODERS[prefix];
   if (decoder === undefined) {
@@ -255,5 +290,5 @@ export function decodeResp(data: Buffer, start = 0): [RespValue, number] {
       `Unsupported RESP prefix: ${JSON.stringify(prefix)}`,
     );
   }
-  return decoder(data, header, afterHeader);
+  return decoder(data, header, afterHeader, depth);
 }
