@@ -286,7 +286,7 @@ export function decodeResp(data: Buffer, start = 0, depth = 1): [RespValue, numb
 
   // Pick the decoder for this type and decode
   const decoder = DECODERS.get(prefix);
-  if (decoder === undefined) {
+  if (typeof decoder !== "function") {
     throw new ElastiCacheIntegrationsProtocolError(
       `Unsupported RESP prefix: ${JSON.stringify(prefix)}`,
     );
