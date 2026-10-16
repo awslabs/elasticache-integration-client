@@ -58,11 +58,7 @@ const ERRORS = {
  * with today. A gap passes only when it fails with that message; when a fix makes it pass, the
  * test fails until the name is removed here.
  */
-const KNOWN_GAPS = new Map([
-  // parseRefreshInterval checks Number.isInteger, and JSON.parse reads 60.0 as 60. Delete
-  // protocol.test.ts "accepts integer-valued JSON numbers such as 56.0" with the fix.
-  ["config_integral_float_refresh_interval", "to be an instance of ElastiCacheIntegrationsError"],
-]);
+const KNOWN_GAPS = new Map<string, string>();
 
 function knownGap(name: string, fragment: string, check: () => void): () => void {
   return () => {

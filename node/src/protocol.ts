@@ -291,9 +291,19 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   } catch (cause) {
     throw new ElastiCacheIntegrationsError("Malformed config JSON: invalid UTF-8", { cause });
   }
+  // JSON.parse reads 60.0 as 60, so only the source text tells a JSON real from an integer.
+  const intervalSources = new WeakMap<object, string>();
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = JSON.parse(
+      text,
+      function (this: object, key: string, value: unknown, context?: { source?: string }) {
+        if (key === "refresh_interval" && context?.source !== undefined) {
+          intervalSources.set(this, context.source);
+        }
+        return value;
+      },
+    );
   } catch (cause) {
     throw new ElastiCacheIntegrationsError(`Malformed config JSON: ${text}`, { cause });
   }
@@ -307,7 +317,7 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   const object = raw as Record<string, unknown>;
   return new ResolvedConfig({
     version: object.version,
-    refreshInterval: parseRefreshInterval(object.refresh_interval),
+    refreshInterval: parseRefreshInterval(object.refresh_interval, intervalSources.get(object)),
     raw: object,
   });
 }
@@ -317,15 +327,16 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
  *
  * The value feeds the config refresher's jittered delay arithmetic, so a
  * missing, wrongly typed, or non-positive value is treated as a malformed config rather than
- * deferred to a background timer.
+ * deferred to a background timer. `source` is the value's JSON text: a JSON real such as `60.0`
+ * or `6e1` is rejected even though it parses to an integer.
  */
-function parseRefreshInterval(value: unknown): number {
+function parseRefreshInterval(value: unknown, source: string | undefined): number {
   if (value === undefined || value === null) {
     throw new ElastiCacheIntegrationsError("Config JSON missing required field 'refresh_interval'");
   }
-  if (typeof value !== "number" || !Number.isInteger(value)) {
+  if (typeof value !== "number" || !Number.isInteger(value) || /[.eE]/.test(source ?? "")) {
     throw new ElastiCacheIntegrationsError(
-      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${JSON.stringify(value) ?? String(value)}`,
+      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${source ?? JSON.stringify(value) ?? String(value)}`,
     );
   }
   if (value <= 0) {
