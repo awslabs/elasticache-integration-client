@@ -19,6 +19,10 @@ _CRLF = b"\r\n"
 #: Decoded values are always normalized to bytes, so this never leaks to a caller.
 RespBuffer = bytes | bytearray
 
+#: Deepest aggregate nesting a reply may have. The deepest legitimate frame nests about two
+#: levels, so this is generous; it exists so a corrupt frame cannot exhaust the stack.
+_MAX_NESTING_DEPTH = 100
+
 
 @dataclass(slots=True, frozen=True)
 class RespError:
@@ -87,25 +91,31 @@ def _parse_int(header: bytes, what: str) -> int:
 
 
 def _decode_simple_string(
-    data: RespBuffer, header: bytes, after_header: int
+    data: RespBuffer, header: bytes, after_header: int, depth: int
 ) -> tuple[RespValue, int]:
     """Decode a ``+`` simple string to ``str``. Bulk strings stay ``bytes``."""
     return header.decode(), after_header
 
 
-def _decode_integer(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_integer(
+    data: RespBuffer, header: bytes, after_header: int, depth: int
+) -> tuple[RespValue, int]:
     """Decode a ``:`` integer."""
     return _parse_int(header, "integer"), after_header
 
 
-def _decode_error(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_error(
+    data: RespBuffer, header: bytes, after_header: int, depth: int
+) -> tuple[RespValue, int]:
     """Decode a ``-`` error into a :class:`RespError` (``-CODE message``)."""
     text = header.decode("utf-8", errors="replace")
     code, _, message = text.partition(" ")
     return RespError(code=code, message=message), after_header
 
 
-def _decode_null(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_null(
+    data: RespBuffer, header: bytes, after_header: int, depth: int
+) -> tuple[RespValue, int]:
     """Decode a ``_`` null, the RESP3 form. A valid one carries no body, so a payload is
     rejected rather than ignored: a garbled null would otherwise pass as a real one."""
     if header:
@@ -114,7 +124,7 @@ def _decode_null(data: RespBuffer, header: bytes, after_header: int) -> tuple[Re
 
 
 def _decode_bulk_string(
-    data: RespBuffer, header: bytes, after_header: int
+    data: RespBuffer, header: bytes, after_header: int, depth: int
 ) -> tuple[RespValue, int]:
     """Decode a ``$`` bulk string, or ``None`` for the ``$-1`` null bulk."""
     length = _parse_int(header, "bulk length")
@@ -127,7 +137,7 @@ def _decode_bulk_string(
 
 
 def _decode_array(
-    data: RespBuffer, header: bytes, after_header: int
+    data: RespBuffer, header: bytes, after_header: int, depth: int
 ) -> tuple[list[RespValue] | None, int]:
     """Decode a ``*`` array, or ``None`` for the ``*-1`` null array."""
     count = _parse_int(header, "array length")
@@ -136,14 +146,16 @@ def _decode_array(
     items: list[RespValue] = []
     pos = after_header
     for _ in range(count):
-        item, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
+        item, pos = decode_resp(data, pos, depth + 1)  # inner IncompleteFrame propagates
         items.append(item)
     return items, pos
 
 
-def _decode_push(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_push(
+    data: RespBuffer, header: bytes, after_header: int, depth: int
+) -> tuple[RespValue, int]:
     """Decode a ``>`` push: array element semantics, first element is the kind, rest are items."""
-    elements, pos = _decode_array(data, header, after_header)
+    elements, pos = _decode_array(data, header, after_header, depth)
     if not elements:  # ``>0`` or the null ``>-1``
         return RespPush(kind=b"", items=[]), pos
     kind, *items = elements
@@ -154,7 +166,9 @@ def _decode_push(data: RespBuffer, header: bytes, after_header: int) -> tuple[Re
     return RespPush(kind=kind, items=items), pos
 
 
-def _decode_map(data: RespBuffer, header: bytes, after_header: int) -> tuple[RespValue, int]:
+def _decode_map(
+    data: RespBuffer, header: bytes, after_header: int, depth: int
+) -> tuple[RespValue, int]:
     """Decode a ``%`` map into a ``dict``. Keys and values are each any RESP value."""
     count = _parse_int(header, "map length")
     if count < 0:
@@ -162,14 +176,17 @@ def _decode_map(data: RespBuffer, header: bytes, after_header: int) -> tuple[Res
     items: dict[RespValue, RespValue] = {}
     pos = after_header
     for _ in range(count):
-        key, pos = decode_resp(data, pos)  # inner IncompleteFrame propagates
-        value, pos = decode_resp(data, pos)
+        key, pos = decode_resp(data, pos, depth + 1)  # inner IncompleteFrame propagates
+        value, pos = decode_resp(data, pos, depth + 1)
         try:
             items[key] = value
         except TypeError as exc:  # aggregate key: legal RESP3, unusable as a dict key
             raise ElastiCacheIntegrationsProtocolError(f"Unhashable RESP map key: {key!r}") from exc
     return items, pos
 
+
+# Prefixes whose decoders recurse into child values.
+_AGGREGATE_PREFIXES = frozenset({b"*", b">", b"%"})
 
 # Prefix → decoder dispatch.
 _DECODERS = {
@@ -184,8 +201,11 @@ _DECODERS = {
 }
 
 
-def decode_resp(data: RespBuffer, start: int = 0) -> tuple[RespValue, int]:
+def decode_resp(data: RespBuffer, start: int = 0, depth: int = 1) -> tuple[RespValue, int]:
     """Decode a single RESP3 value beginning at ``start``.
+
+    ``depth`` is the nesting level of that value. Callers leave it at 1; the aggregate decoders
+    pass ``depth + 1`` for their children.
 
     Returns ``(value, next_pos)`` where ``next_pos`` is the index immediately after the
     consumed frame — pass it back as ``start`` to read the next frame::
@@ -197,8 +217,9 @@ def decode_resp(data: RespBuffer, start: int = 0) -> tuple[RespValue, int]:
     Raises:
         IncompleteFrame: not an error — the frame is valid so far but the rest of its
             bytes have not arrived yet. Read more from the socket and call again.
-        ElastiCacheIntegrationsProtocolError: the bytes can never form a valid frame; the stream is
-            corrupt and the connection should be closed.
+        ElastiCacheIntegrationsProtocolError: the bytes can never form a valid frame, or they
+            nest aggregates more than ``_MAX_NESTING_DEPTH`` levels deep; the stream is corrupt
+            and the connection should be closed.
     """
     header_end = data.find(_CRLF, start)
     if header_end == -1:
@@ -207,5 +228,9 @@ def decode_resp(data: RespBuffer, start: int = 0) -> tuple[RespValue, int]:
     decoder = _DECODERS.get(prefix)
     if decoder is None:
         raise ElastiCacheIntegrationsProtocolError(f"Unsupported RESP prefix: {prefix!r}")
+    if depth > _MAX_NESTING_DEPTH and prefix in _AGGREGATE_PREFIXES:
+        raise ElastiCacheIntegrationsProtocolError(
+            f"RESP nesting exceeds {_MAX_NESTING_DEPTH} levels"
+        )
     header = bytes(data[start + 1 : header_end])
-    return decoder(data, header, header_end + len(_CRLF))
+    return decoder(data, header, header_end + len(_CRLF), depth)

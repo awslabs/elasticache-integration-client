@@ -574,6 +574,17 @@ class TestElastiCacheIntegrationsConnector:
         assert isinstance(exc_info.value.__cause__, ElastiCacheIntegrationsProtocolError)
         assert self.conn._closed is True
 
+    def test_deeply_nested_reply_fails_caller_as_connection_lost(self):
+        """A reply nested past the RESP depth cap kills the connection like any garbage reply,
+        so the waiting caller fails at once instead of waiting out its timeout."""
+        self.start_cache(response=Reply(frame=b"*1\r\n" * 5000 + b":1\r\n"))
+        self.connect_and_handshake()
+        with pytest.raises(ElastiCacheIntegrationsConnectionLost) as exc_info:
+            self.send_request()
+        assert isinstance(exc_info.value.__cause__, ElastiCacheIntegrationsProtocolError)
+        assert str(exc_info.value.__cause__) == "RESP nesting exceeds 100 levels"
+        assert self.conn._closed is True
+
     def test_reader_eof_raises_connection_lost(self):
         """Clean EOF mid-frame surfaces as ElastiCacheIntegrationsConnectionLost, not a decode error.
         Internals: _SocketReader on an in-memory stream."""
