@@ -291,7 +291,7 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
 
 
 @pytest.mark.parametrize("requested,expected", [(None, 2.0), (0.5, 0.5)])
-def test_client_passes_reconnect_timeout_to_the_session(monkeypatch, requested, expected):
+def test_client_passes_connection_timeout_to_the_session(monkeypatch, requested, expected):
     _patch_common(monkeypatch)
     built: dict = {}
     monkeypatch.setattr(
@@ -302,17 +302,17 @@ def test_client_passes_reconnect_timeout_to_the_session(monkeypatch, requested, 
     configuration = (
         ElastiCacheIntegrationsClientConfiguration()
         if requested is None
-        else ElastiCacheIntegrationsClientConfiguration(reconnect_timeout=requested)
+        else ElastiCacheIntegrationsClientConfiguration(connection_timeout=requested)
     )
     _call(_sdk_client(), client_configuration=configuration)
 
-    assert built["policy"].reconnect_timeout == expected
+    assert built["policy"].connection_timeout == expected
 
 
 @pytest.mark.parametrize("bad", [0, True, float("nan"), float("inf"), "2"])
-def test_client_configuration_rejects_unusable_reconnect_timeout(bad):
+def test_client_configuration_rejects_unusable_connection_timeout(bad):
     with pytest.raises(ElastiCacheIntegrationsConfigError):
-        ElastiCacheIntegrationsClientConfiguration(reconnect_timeout=bad)
+        ElastiCacheIntegrationsClientConfiguration(connection_timeout=bad)
 
 
 @pytest.mark.parametrize(

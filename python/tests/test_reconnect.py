@@ -26,6 +26,7 @@ from elasticache_integrations.exceptions import (
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsOverridesRejected,
 )
 from elasticache_integrations.models import (
     ElastiCacheIntegrationsRequest,
@@ -451,7 +452,7 @@ def test_unbounded_window_passes_through_indefinitely(rig):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            reconnect_timeout=0.01,
+            connection_timeout=0.01,
         )
     )
     set_as_reconnecting(r)
@@ -475,7 +476,7 @@ def test_finite_window_passes_through_then_escalates(rig, monkeypatch):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            reconnect_timeout=0.01,
+            connection_timeout=0.01,
         )
     )
     set_as_reconnecting(r)
@@ -503,7 +504,7 @@ def test_zero_window_escalates_until_reconnected(rig):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            reconnect_timeout=0.01,
+            connection_timeout=0.01,
         )
     )
     set_as_reconnecting(r)
@@ -599,7 +600,7 @@ def test_policy_rejects_incoherent_settings():
     with pytest.raises(ElastiCacheIntegrationsConfigError):
         ReconnectPolicy(jitter=1.0)
     with pytest.raises(ElastiCacheIntegrationsConfigError):
-        ReconnectPolicy(reconnect_timeout=0)
+        ReconnectPolicy(connection_timeout=0)
     with pytest.raises(ElastiCacheIntegrationsConfigError):
         ReconnectPolicy(fallback_duration="60")
     with pytest.raises(ElastiCacheIntegrationsConfigError):
@@ -700,13 +701,13 @@ def test_init_still_fails_loudly():
 
     with pytest.raises(ElastiCacheIntegrationsConnectionError):
         ElastiCacheIntegrationsSession(
-            lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
+            lambda: connector, policy=ReconnectPolicy(connection_timeout=0.05)
         )
     connector.close.assert_called_once_with()
 
 
 def test_creating_a_session_retries_before_giving_up():
-    """An initial connection failure is retried until ``reconnect_timeout`` has passed.
+    """An initial connection failure is retried until ``connection_timeout`` has passed.
 
     Unlike reconnects, session creation must either establish a connection or raise, so the caller
     can handle a startup failure.
@@ -733,8 +734,8 @@ def test_creating_a_session_retries_before_giving_up():
         session.close()
 
 
-def test_creating_a_session_gives_up_after_reconnect_timeout():
-    """Session creation raises once ``reconnect_timeout`` has passed, after retrying inside it.
+def test_creating_a_session_gives_up_after_connection_timeout():
+    """Session creation raises once ``connection_timeout`` has passed, after retrying inside it.
 
     Real connectors against a port nobody is listening on, so the failure is a real refused
     connection rather than a scripted one — the way a wrong endpoint or a cache that is simply not
@@ -744,7 +745,7 @@ def test_creating_a_session_gives_up_after_reconnect_timeout():
 
     started = time.monotonic()
     with pytest.raises(ElastiCacheIntegrationsConnectionError):
-        ElastiCacheIntegrationsSession(connectors, policy=_fast(reconnect_timeout=0.2))
+        ElastiCacheIntegrationsSession(connectors, policy=_fast(connection_timeout=0.2))
     elapsed = time.monotonic() - started
 
     assert len(connectors.built) >= 2, "a refused connection is retried inside the budget"
@@ -752,7 +753,7 @@ def test_creating_a_session_gives_up_after_reconnect_timeout():
     assert not any(connector.is_alive for connector in connectors.built)
 
 
-def test_creating_a_session_uses_full_reconnect_timeout(monkeypatch):
+def test_creating_a_session_uses_full_connection_timeout(monkeypatch):
     clock = _FakeClock()
     monkeypatch.setattr(clock, "sleep", clock.advance)
     monkeypatch.setattr(connection_manager, "time", clock)
@@ -771,7 +772,7 @@ def test_creating_a_session_uses_full_reconnect_timeout(monkeypatch):
         factory,
         reject,
         ReconnectPolicy(
-            reconnect_timeout=timeout,
+            connection_timeout=timeout,
             base_delay=0.1,
             max_delay=3.2,
             jitter=0.0,
@@ -788,6 +789,44 @@ def test_creating_a_session_uses_full_reconnect_timeout(monkeypatch):
     assert all(connector.close.call_count == 1 for connector in built)
 
 
+def test_creating_a_session_preserves_non_connection_setup_error(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr(clock, "sleep", clock.advance)
+    monkeypatch.setattr(connection_manager, "time", clock)
+    built = []
+
+    def factory():
+        connector = mock_connector()
+        built.append(connector)
+        return connector
+
+    def reject(_connector):
+        raise ElastiCacheIntegrationsOverridesRejected("aws.config rejected: CONFIG_INVALID")
+
+    timeout = 2.0
+    manager = connection_manager.ConnectionManager(
+        factory,
+        reject,
+        ReconnectPolicy(
+            connection_timeout=timeout,
+            base_delay=0.1,
+            max_delay=3.2,
+            jitter=0.0,
+        ),
+    )
+
+    started = clock.monotonic()
+    with pytest.raises(
+        ElastiCacheIntegrationsOverridesRejected,
+        match="aws.config rejected: CONFIG_INVALID",
+    ):
+        manager.init_connection()
+
+    assert clock.monotonic() - started == pytest.approx(timeout)
+    assert len(built) == 5
+    assert all(connector.close.call_count == 1 for connector in built)
+
+
 def _unused_port() -> tuple[str, int]:
     """An address with nothing listening on it, so connecting to it is refused."""
     with socket.socket() as sock:
@@ -795,8 +834,8 @@ def _unused_port() -> tuple[str, int]:
         return sock.getsockname()
 
 
-def test_reconnect_timeout_bounds_connect_and_configure():
-    """``reconnect_timeout`` bounds connect plus configure, not just the decision to retry again.
+def test_connection_timeout_bounds_connect_and_configure():
+    """``connection_timeout`` bounds connect plus configure, not just the decision to retry again.
 
     The cache accepts the connection and then never answers the HELLO, so the timeout has to cover
     the configure step and not only the connect. Bounding attempts alone would wait the connector's
@@ -809,7 +848,7 @@ def test_reconnect_timeout_bounds_connect_and_configure():
         timeout = 0.3
         started = time.monotonic()
         with pytest.raises(ElastiCacheIntegrationsConnectionError) as exc_info:
-            ElastiCacheIntegrationsSession(connectors, policy=_fast(reconnect_timeout=timeout))
+            ElastiCacheIntegrationsSession(connectors, policy=_fast(connection_timeout=timeout))
         elapsed = time.monotonic() - started
 
         assert str(exc_info.value) == f"opening a connection timed out after {timeout}s"

@@ -14,7 +14,7 @@ class ReconnectPolicy:
     """Configure reconnect backoff and fallback.
 
     ``fallback_duration`` controls how long requests may fall back to the
-    origin after waiting up to ``reconnect_timeout`` for a connection:
+    origin after waiting up to ``connection_timeout`` for a connection:
 
     * ``None`` or a negative value: fall back indefinitely.
     * ``0``: never fall back; raise if the reconnect wait ends without a connection.
@@ -26,7 +26,7 @@ class ReconnectPolicy:
     fallback_duration: int | None = None
     # How long to keep trying to get a connection: at startup before raising, and after a drop
     # before a waiting request falls back. Attempts back off inside it.
-    reconnect_timeout: float = 2.0
+    connection_timeout: float = 2.0
     # How often to re-run AUTH in the background to refresh the connection's FAS.
     auth_refresh_interval: float = 900.0
     base_delay: float = 0.1
@@ -40,15 +40,8 @@ class ReconnectPolicy:
             raise ElastiCacheIntegrationsConfigError(
                 "fallback_duration must be a whole number of seconds or None"
             )
-        if (
-            isinstance(self.reconnect_timeout, bool)
-            or not isinstance(self.reconnect_timeout, (int, float))
-            or not math.isfinite(self.reconnect_timeout)
-            or self.reconnect_timeout <= 0
-        ):
-            raise ElastiCacheIntegrationsConfigError(
-                "reconnect_timeout must be a positive number of seconds"
-            )
+        if self.connection_timeout <= 0:
+            raise ElastiCacheIntegrationsConfigError("connection_timeout must be > 0")
         if self.auth_refresh_interval <= 0:
             raise ElastiCacheIntegrationsConfigError("auth_refresh_interval must be > 0")
         if self.base_delay <= 0:

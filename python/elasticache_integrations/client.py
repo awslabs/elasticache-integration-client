@@ -29,14 +29,17 @@ class ElastiCacheIntegrationsClientConfiguration:
     Attributes:
         cache_request_timeout: Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
             Defaults to 5 seconds.
-        reconnect_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
+        connection_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
             request waits for reconnection after a connection is lost. Defaults to 2 seconds.
-        fallback_duration: How long, in seconds, requests may be served directly by the origin
-            service after ``reconnect_timeout`` ends without a cache connection. ``None`` (the
-            default) or any negative value means indefinitely, so a cache outage never becomes an
-            application outage. ``0`` means never — a request that still has no connection after
-            ``reconnect_timeout`` raises
-            :class:`~elasticache_integrations.exceptions.ElastiCacheIntegrationsCacheUnavailable`.
+        fallback_duration: How long, in seconds, routed requests may use the origin
+            service after an outage's reconnect wait ends without a connection.
+            ``None`` (the default) or any negative value allows this for the rest
+            of the outage. ``0`` disables fallback for requests that find no cache
+            connection; they raise
+            :class:`~elasticache_integrations.exceptions.ElastiCacheIntegrationsCacheUnavailable`
+            when the reconnect wait ends. The window is shared by requests during
+            one outage. A later outage gets a new window after the connection has
+            recovered.
         cache_policy_overrides: Optional settings that change what ElastiCacheIntegrations caches:
             which tables and operations to cache, and the cache entry lifetimes. ``cached_tables``
             and ``cached_operations`` are allowlists — each empty or absent means everything, so
@@ -55,7 +58,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     """
 
     cache_request_timeout: float = 5.0
-    reconnect_timeout: float = 2.0
+    connection_timeout: float = 2.0
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
@@ -72,13 +75,13 @@ class ElastiCacheIntegrationsClientConfiguration:
                 "cache_request_timeout must be a positive number of seconds"
             )
         if (
-            isinstance(self.reconnect_timeout, bool)
-            or not isinstance(self.reconnect_timeout, (int, float))
-            or not math.isfinite(self.reconnect_timeout)
-            or self.reconnect_timeout <= 0
+            isinstance(self.connection_timeout, bool)
+            or not isinstance(self.connection_timeout, (int, float))
+            or not math.isfinite(self.connection_timeout)
+            or self.connection_timeout <= 0
         ):
             raise ElastiCacheIntegrationsConfigError(
-                "reconnect_timeout must be a positive number of seconds"
+                "connection_timeout must be a positive number of seconds"
             )
         if self.fallback_duration is not None and (
             isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
@@ -230,7 +233,7 @@ def install(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(
                 fallback_duration=configuration.fallback_duration,
-                reconnect_timeout=configuration.reconnect_timeout,
+                connection_timeout=configuration.connection_timeout,
             ),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
             close_callback=auth_provider.close,

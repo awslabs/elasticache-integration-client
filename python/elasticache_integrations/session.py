@@ -325,7 +325,7 @@ class ElastiCacheIntegrationsSession:
         In both cases, the request has not been sent, so falling back is safe.
 
         Right after a drop, a request with no connector waits up to the configured
-        ``reconnect_timeout`` for the reconnect to land before falling back. This gives a quick
+        ``connection_timeout`` for the reconnect to land before falling back. This gives a quick
         reconnect time to finish rather than sending the request to the origin.
 
         Once a request is sent to ElastiCacheIntegrations, failures propagate to the hook. For a

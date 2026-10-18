@@ -117,7 +117,7 @@ def test_a_failed_configure_closes_everything(failing_step):
     # One attempt, so the assertion is about closing rather than about how often we retry.
     with pytest.raises(ElastiCacheIntegrationsError):
         ElastiCacheIntegrationsSession(
-            lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
+            lambda: connector, policy=ReconnectPolicy(connection_timeout=0.05)
         )
     connector.close.assert_called_once_with()
 
@@ -133,7 +133,7 @@ def test_failed_initialization_releases_owned_resource():
     ) as exc_info:
         ElastiCacheIntegrationsSession(
             lambda: connector,
-            policy=ReconnectPolicy(reconnect_timeout=0.05),
+            policy=ReconnectPolicy(connection_timeout=0.05),
             close_callback=close_callback,
         )
 
@@ -156,7 +156,7 @@ def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog
             match="opening a connection timed out after 0.05s",
         ) as exc_info:
             ElastiCacheIntegrationsSession(
-                lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
+                lambda: connector, policy=ReconnectPolicy(connection_timeout=0.05)
             )
 
     assert str(exc_info.value.__cause__) == "bring-up rejected"
