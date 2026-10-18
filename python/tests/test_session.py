@@ -127,13 +127,17 @@ def test_failed_initialization_releases_owned_resource():
     connector.handshake.side_effect = ElastiCacheIntegrationsConnectionError("rejected")
     close_callback = mock.Mock()
 
-    with pytest.raises(ElastiCacheIntegrationsConnectionError, match="rejected"):
+    with pytest.raises(
+        ElastiCacheIntegrationsConnectionError,
+        match="opening a connection timed out after 0.05s",
+    ) as exc_info:
         ElastiCacheIntegrationsSession(
             lambda: connector,
             policy=ReconnectPolicy(reconnect_timeout=0.05),
             close_callback=close_callback,
         )
 
+    assert str(exc_info.value.__cause__) == "rejected"
     close_callback.assert_called_once()
 
 
@@ -147,11 +151,15 @@ def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog
         ),
         caplog.at_level("WARNING", logger="elasticache_integrations.session"),
     ):
-        with pytest.raises(ElastiCacheIntegrationsConnectionError, match="bring-up rejected"):
+        with pytest.raises(
+            ElastiCacheIntegrationsConnectionError,
+            match="opening a connection timed out after 0.05s",
+        ) as exc_info:
             ElastiCacheIntegrationsSession(
                 lambda: connector, policy=ReconnectPolicy(reconnect_timeout=0.05)
             )
 
+    assert str(exc_info.value.__cause__) == "bring-up rejected"
     assert "cleanup failed during initialization" in caplog.text
 
 

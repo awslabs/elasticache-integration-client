@@ -170,33 +170,33 @@ class ConnectionManager:
         has passed, each one capped by the time left, so the caller's startup path cannot hang.
 
         Raises:
-            ElastiCacheIntegrationsError: No attempt succeeded. Starting fails loudly rather than handing back a
-                manager that never caches. Whatever the last attempt raised propagates unchanged,
-                so a ``configure`` that raises something else surfaces that instead.
+            ElastiCacheIntegrationsError: No attempt succeeded before the configured timeout.
+                The last connection error is retained as the cause.
         """
         self._ready_deadline = time.monotonic() + self._policy.reconnect_timeout
         attempt = 0
+        last_error: BaseException | None = None
         while True:
-            attempt += 1
-            try:
-                self._connector = self._open_connection(
-                    max(self._ready_deadline - time.monotonic(), 0.0)
-                )
-                break
-            except _ReadyDeadlineExpired as exc:
+            remaining = self._ready_deadline - time.monotonic()
+            if remaining <= 0:
                 self.close()
                 raise ElastiCacheIntegrationsConnectionError(
                     f"opening a connection timed out after {self._policy.reconnect_timeout}s"
-                ) from exc
+                ) from last_error
+            attempt += 1
+            try:
+                self._connector = self._open_connection(remaining)
+                break
+            except _ReadyDeadlineExpired as exc:
+                last_error = exc
             except BaseException as exc:
-                delay = self._policy.delay_for(attempt)
                 # Not an Exception (KeyboardInterrupt, SystemExit): never retried.
-                if (
-                    not isinstance(exc, Exception)
-                    or time.monotonic() + delay >= self._ready_deadline
-                ):
+                if not isinstance(exc, Exception):
                     self.close()
                     raise
+                last_error = exc
+                remaining = max(self._ready_deadline - time.monotonic(), 0.0)
+                delay = min(self._policy.delay_for(attempt), remaining)
                 logger.debug(
                     "elasticache_integrations connect attempt %d failed (%s); retrying",
                     attempt,

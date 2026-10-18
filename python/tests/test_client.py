@@ -292,7 +292,7 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
 
 @pytest.mark.parametrize("requested,expected", [(None, 2.0), (0.5, 0.5)])
 def test_client_passes_reconnect_timeout_to_the_session(monkeypatch, requested, expected):
-    _patch_common(monkeypatch, MagicMock())
+    _patch_common(monkeypatch)
     built: dict = {}
     monkeypatch.setattr(
         client_mod, "ElastiCacheIntegrationsSession", lambda *a, **k: built.update(k) or MagicMock()
@@ -304,9 +304,7 @@ def test_client_passes_reconnect_timeout_to_the_session(monkeypatch, requested, 
         if requested is None
         else ElastiCacheIntegrationsClientConfiguration(reconnect_timeout=requested)
     )
-    client_mod.client(
-        "dynamodb", endpoint="cache:6379", cache_name="c", client_configuration=configuration
-    )
+    _call(_sdk_client(), client_configuration=configuration)
 
     assert built["policy"].reconnect_timeout == expected
 

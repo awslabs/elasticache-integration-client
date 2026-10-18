@@ -184,7 +184,7 @@ How long requests may fall back, counted from the end of `reconnect_timeout`, is
 |---|---|
 | `None` (default), or negative | Serve from the origin service indefinitely, so a cache outage never becomes an application outage. |
 | `N > 0` | Serve from the origin service for N seconds, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
-| `0` | Never fall back — the first request after a connection is lost raises. |
+| `0` | Never fall back — wait up to `reconnect_timeout` for a connection, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
 
 The window is **per outage, not a total budget**: `fallback_duration=60` allows 60 seconds of
 fallback each time the connection is lost, and a connection that keeps flapping gets a fresh 60
@@ -193,8 +193,9 @@ seconds after every successful reconnect.
 `elasticache_integrations.ElastiCacheIntegrationsCacheUnavailable` subclasses botocore's `ConnectionClosedError`, so it is retryable and
 an application's existing `except botocore...` blocks already catch it. Retryable cuts both ways:
 under the SDK's default retry mode a raised request is retried, which is usually what you want — a
-retry after backoff can land once the connection is back — but with `fallback_duration=0` it turns
-one fast failure into several.
+retry after backoff can land once the connection is back. With `fallback_duration=0`, a routed
+request waits only for the part of `reconnect_timeout` left in the current outage. Later retries in
+the same outage do not restart that wait.
 
 When there is no live cache connection, the request has not been sent and can safely pass through
 for any operation while the fallback window remains open. After a request is sent, origin fallback

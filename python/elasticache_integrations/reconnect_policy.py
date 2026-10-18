@@ -14,10 +14,10 @@ class ReconnectPolicy:
     """Configure reconnect backoff and fallback.
 
     ``fallback_duration`` controls how long requests may fall back to the
-    origin while the cache is disconnected:
+    origin after waiting up to ``reconnect_timeout`` for a connection:
 
     * ``None`` or a negative value: fall back indefinitely.
-    * ``0``: never fall back; raise immediately.
+    * ``0``: never fall back; raise if the reconnect wait ends without a connection.
     * A positive value: fall back for that many seconds, then raise.
 
     Reconnects continue until the connection is restored or the session closes.

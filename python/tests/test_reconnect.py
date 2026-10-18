@@ -752,6 +752,42 @@ def test_creating_a_session_gives_up_after_reconnect_timeout():
     assert not any(connector.is_alive for connector in connectors.built)
 
 
+def test_creating_a_session_uses_full_reconnect_timeout(monkeypatch):
+    clock = _FakeClock()
+    monkeypatch.setattr(clock, "sleep", clock.advance)
+    monkeypatch.setattr(connection_manager, "time", clock)
+    built = []
+
+    def factory():
+        connector = mock_connector()
+        built.append(connector)
+        return connector
+
+    def reject(_connector):
+        raise ElastiCacheIntegrationsConnectionError("cache unreachable")
+
+    timeout = 2.0
+    manager = connection_manager.ConnectionManager(
+        factory,
+        reject,
+        ReconnectPolicy(
+            reconnect_timeout=timeout,
+            base_delay=0.1,
+            max_delay=3.2,
+            jitter=0.0,
+        ),
+    )
+    started = clock.monotonic()
+
+    with pytest.raises(ElastiCacheIntegrationsConnectionError) as exc_info:
+        manager.init_connection()
+
+    assert str(exc_info.value) == f"opening a connection timed out after {timeout}s"
+    assert clock.monotonic() - started == pytest.approx(timeout)
+    assert len(built) == 5
+    assert all(connector.close.call_count == 1 for connector in built)
+
+
 def _unused_port() -> tuple[str, int]:
     """An address with nothing listening on it, so connecting to it is refused."""
     with socket.socket() as sock:
