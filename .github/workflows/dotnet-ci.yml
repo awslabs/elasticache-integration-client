@@ -1,0 +1,79 @@
+name: .NET CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "dotnet/**"
+      - ".github/workflows/dotnet-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "dotnet/**"
+      - ".github/workflows/dotnet-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dotnet-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dotnet
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: dotnet/global.json
+          cache: true
+          cache-dependency-path: dotnet/**/packages.lock.json
+      - run: dotnet restore
+      - run: dotnet format --verify-no-changes --no-restore
+      - run: dotnet build -warnaserror --no-restore -c Release
+      - run: dotnet test --no-build -c Release --logger trx --results-directory TestResults
+      - run: scripts/pack-smoke.sh --no-build
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-dotnet
+          path: dotnet/TestResults/
+          retention-days: 7
+      - name: Upload the built tests for the .NET 10 job
+        uses: actions/upload-artifact@v4
+        with:
+          name: tests-net8.0-dotnet
+          path: dotnet/test/Amazon.Photon.Tests/bin/Release/net8.0/
+          retention-days: 1
+
+  # .NET 8 support ends 2026-11-10. Runs the net8.0 tests on an image that has only the .NET 10 runtime.
+  net10-runtime:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container: mcr.microsoft.com/dotnet/runtime:10.0
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+      DOTNET_ROLL_FORWARD: Major
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: tests-net8.0-dotnet
+          path: tests
+      - name: Test on .NET 10
+        shell: bash
+        working-directory: tests
+        run: |
+          dotnet --list-runtimes
+          dotnet Amazon.Photon.Tests.dll | tee "$RUNNER_TEMP/run.log"
+          grep -q '64-bit \.NET 10\.' "$RUNNER_TEMP/run.log"

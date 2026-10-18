@@ -1,0 +1,17 @@
+# Build output
+bin/
+obj/
+artifacts/
+TestResults/
+
+# Packages
+*.nupkg
+*.snupkg
+
+# IDE and local state
+.vs/
+.idea/
+*.user
+*.suo
+*.swp
+.DS_Store

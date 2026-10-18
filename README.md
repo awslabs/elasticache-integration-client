@@ -16,6 +16,7 @@ includes a set of test examples.
 | Java | [`software.amazon.elasticache:aws-elasticache-integration-client`](https://central.sonatype.com/artifact/software.amazon.elasticache/aws-elasticache-integration-client) | JDK 8, AWS SDK for Java v2 2.21.0 | [java/README.md](java/README.md) |
 | Python | [`aws-elasticache-integration-client`](https://pypi.org/project/aws-elasticache-integration-client/) | Python 3.10, boto3 1.43 | [python/README.md](python/README.md) |
 | Node.js | [`@aws-sdk/aws-elasticache-integration-client`](https://www.npmjs.com/package/@aws-sdk/aws-elasticache-integration-client) | Node.js 22, AWS SDK for JavaScript v3 | [node/README.md](node/README.md) |
+| .NET | `Amazon.ElastiCache.Integrations` (preview) | .NET 8, AWS SDK for .NET v4 | [dotnet/README.md](dotnet/README.md) |
 
 ## Getting started
 
@@ -38,6 +39,30 @@ DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
         .install(DynamoDbClient.builder().region(Region.US_EAST_1));
 
 ddb.getItem(r -> r.tableName("Users").key(Collections.singletonMap("id", AttributeValue.fromS("42")))); // unchanged
+```
+
+**.NET**
+
+```csharp
+using Amazon;
+using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.Model;
+using Amazon.ElastiCache.Integrations;
+
+await using var ddb = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(
+    new ElastiCacheIntegrationsClientOptions
+    {
+        Endpoint = "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+        CacheName = "my-cache",
+        Region = "us-east-1",
+    },
+    new AmazonDynamoDBConfig { RegionEndpoint = RegionEndpoint.USEast1 });
+
+await ddb.GetItemAsync(new GetItemRequest
+{
+    TableName = "Users",
+    Key = new() { ["id"] = new AttributeValue { S = "42" } },
+}); // unchanged
 ```
 
 **Python**
