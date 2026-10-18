@@ -61,6 +61,22 @@ def test_close_tears_down_the_cache_session():
     session.request.assert_not_called()
 
 
+def test_close_closes_the_client_even_if_the_session_close_raises():
+    """A failing session close must not leave the client open with our close still installed."""
+    sdk = MockClient()
+    boto3_close = sdk.close
+    session = mock_session()
+    session.close.side_effect = RuntimeError("connector close failed")
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+
+    with pytest.raises(RuntimeError, match="connector close failed"):
+        sdk.close()
+
+    assert sdk.closed is True  # the client was closed anyway
+    assert sdk.close == boto3_close  # and its own close is back
+    assert _emit(sdk) is None  # the handler was detached before the failure
+
+
 def test__aws_to_cache_request_maps_fields():
     """Maps a botocore prepared request to a ElastiCacheIntegrationsRequest, normalizing a None body to empty bytes."""
     request = mock.Mock(method="GET", url="https://host/path", headers={"Host": "host"}, body=None)
