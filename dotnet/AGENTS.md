@@ -28,10 +28,12 @@
   minimum versions, because they are written into the package; test-only
   packages are exact. The lock files fix what every restore resolves.
 - `global.json`: pins the .NET SDK 8.0.4xx band, 8.0.426 or a later patch.
-- `.github/workflows/dotnet-ci.yml` (repository root): CI validation. The
-  `verify` job runs the full gate and the pack smoke test on the .NET 8 SDK.
-  The `net10-runtime` job runs the same `net8.0` test build on an image that
-  has only the .NET 10 runtime, with `DOTNET_ROLL_FORWARD=Major`.
+- `.github/workflows/dotnet-ci.yml` (repository root): CI validation, called by
+  `ci.yml` on every push to `main` and when a pull request touches `dotnet/`,
+  `shared/`, `ci.yml`, `alignment-ci.yml` or a `dotnet-ci`/`dotnet-release`
+  workflow. The `verify` job runs the full gate and the pack smoke test on the
+  .NET 8 SDK. The `net10-runtime` job runs the same `net8.0` test build on an
+  image that has only the .NET 10 runtime, with `DOTNET_ROLL_FORWARD=Major`.
 
 ## Validation
 
