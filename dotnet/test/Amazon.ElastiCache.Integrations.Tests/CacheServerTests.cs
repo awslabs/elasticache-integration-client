@@ -36,10 +36,10 @@ public class CacheServerTests
     {
         await using var server = new CacheServer();
 
-        server.Handle(["aws.config", """{"version":"1.0","ttl":300}"""]);
+        server.Handle(["aws.config", """{"version":"1.0","item_ttl":300}"""]);
         server.Handle(["aws.config", """{"version":"1.0"}"""]);
 
-        Assert.Equal(["""{"version":"1.0","ttl":300}""", """{"version":"1.0"}"""], server.Overrides);
+        Assert.Equal(["""{"version":"1.0","item_ttl":300}""", """{"version":"1.0"}"""], server.Overrides);
     }
 
     [Fact]

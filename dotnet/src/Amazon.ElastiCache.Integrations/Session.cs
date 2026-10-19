@@ -437,7 +437,7 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
             retired = ApplyConfig(connection.Config, predicates);
             _confirmedAt = _time.GetTimestamp();
 
-            // A new generation before the connection is visible, so every request on it reads the new one.
+            // Clears staleness before the connection is visible, so no request on it sees the old AUTH.
             _reauth.OnAuthenticated();
             outage = _state.Outage;
             Volatile.Write(ref _state, new State(connection, null));
@@ -453,8 +453,10 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         return true;
     }
 
-    /// <summary>The live connection died: start an outage and reconnect in the background. Runs once per connection.</summary>
-    /// <summary>Starts the reconnect if <paramref name="connection"/> is the live one. True when it was.</summary>
+    /// <summary>
+    /// The live connection died or must be replaced: start an outage and reconnect in the background.
+    /// True only for the first call for the live connection.
+    /// </summary>
     private bool OnClosed(ICacheConnection connection)
     {
         lock (_gate)

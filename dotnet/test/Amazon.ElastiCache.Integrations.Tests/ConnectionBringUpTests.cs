@@ -6,7 +6,7 @@ namespace Amazon.ElastiCache.Integrations.Tests;
 public class ConnectionBringUpTests
 {
     private const string ConfigJson = """{"version":"1.0","refresh_interval":60,"predicates":[]}""";
-    private static readonly byte[] Overrides = Encoding.ASCII.GetBytes("""{"version":"1.0","ttl":30}""");
+    private static readonly byte[] Overrides = Encoding.ASCII.GetBytes("""{"version":"1.0","item_ttl":30}""");
     private static readonly RespValue HelloReply =
         new RespMap([new(new RespBlobString("proto"u8.ToArray()), new RespInteger(3))]);
 

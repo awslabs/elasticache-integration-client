@@ -66,9 +66,9 @@ public class SessionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task AFullConnectionIsRetryableAndStaysUp(bool strict)
+    public async Task AFullConnectionIsRetryableAndStaysUp(bool noFallback)
     {
-        await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: strict ? TimeSpan.Zero : null));
+        await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: noFallback ? TimeSpan.Zero : null));
         rig.Connection.OnRequest = (_, _) => Task.FromException<RequestReply>(new ElastiCacheIntegrationsPendingLimitException("full"));
 
         var outcome = await rig.SendAsync();
@@ -229,6 +229,23 @@ public class SessionTests
         await rig.EventuallyAsync(() => rig.Session.IsOpen);
         Assert.Equal(OutcomeKind.Served, (await rig.SendAsync()).Kind);
         Assert.Equal(1, next.Requests);
+    }
+
+    [Fact]
+    public async Task ConcurrentAuthErrorsOnOneConnectionCloseItOnceAndLogOnce()
+    {
+        await using var rig = await SessionRig.StartAsync();
+        var reply = new TaskCompletionSource<RequestReply>(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Connection.OnRequest = (_, _) => reply.Task;
+
+        var calls = Enumerable.Range(0, 8).Select(_ => rig.SendAsync()).ToList();
+        await rig.EventuallyAsync(() => rig.Connection.Requests == 8);
+        reply.SetResult(Rejected("AUTH_ERROR"));
+
+        Assert.All(await Task.WhenAll(calls), outcome => Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, outcome));
+        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.AuthDegraded);
+        (await rig.Connector.NextAsync()).Succeed();
+        await rig.EventuallyAsync(() => rig.Session.IsOpen);
     }
 
     [Fact]

@@ -104,7 +104,7 @@ public class SessionReconnectTests
     }
 
     [Fact]
-    public async Task StrictModeFailsAtOnceWithNoConnection()
+    public async Task WithNoFallbackACallFailsAtOnceWithNoConnection()
     {
         await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: TimeSpan.Zero, reconnectWait: TimeSpan.Zero));
         rig.Connection.Drop();
@@ -191,7 +191,7 @@ public class SessionReconnectTests
     }
 
     [Fact]
-    public async Task AMovedReplyFailsInStrictModeWhenNoConnectionIsBack()
+    public async Task WithNoFallbackAMovedReplyFailsWhenNoConnectionIsBack()
     {
         await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: TimeSpan.Zero, reconnectWait: TimeSpan.Zero));
         rig.Connection.OnRequest = (_, _) => Task.FromResult<RequestReply>(new RequestReply.Rejected(new ElastiCacheIntegrationsServerException("MOVED", "1 10.0.0.1:6379")));

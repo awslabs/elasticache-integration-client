@@ -98,7 +98,7 @@ public class HttpHandlerTests
         {
             "unavailable" => new ElastiCacheIntegrationsCacheUnavailableException("down"),
             "disposed" => new ObjectDisposedException("ElastiCacheIntegrationsSession"),
-            _ => new ElastiCacheIntegrationsServerException("UNSUPPORTED", "strict"),
+            _ => new ElastiCacheIntegrationsServerException("UNSUPPORTED", "not cached"),
         };
         var sends = 0;
         var origin = new RecordingOrigin();

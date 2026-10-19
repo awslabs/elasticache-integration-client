@@ -11,7 +11,12 @@ public class ProtocolVectorTests
     private static readonly JsonElement Vectors = SharedFixtures.Load("protocol-vectors.json");
 
     /// <summary>Vectors this client does not match yet, each with a fragment of the failure message it gives today.</summary>
-    private static readonly Dictionary<string, string> KnownGaps = new();
+    private static readonly Dictionary<string, string> KnownGaps = new()
+    {
+        // Typed overrides are written in schema order (cached_tables before item_ttl), not in the
+        // vector's key order. The payloads are equal as JSON, which AssertEncodes checks first.
+        ["config_overrides"] = "Strings differ",
+    };
 
     public static TheoryData<string> EncodeVectors => SharedFixtures.Names(Vectors, "encode");
 
@@ -84,14 +89,29 @@ public class ProtocolVectorTests
         }
         else
         {
-            var overrides = new ElastiCacheIntegrationsOverrides
+            // The typed path a caller uses: modeled names bind to properties, the rest to Extra.
+            var raw = vector.GetProperty("overrides");
+            var overrides = raw.Deserialize<ElastiCacheIntegrationsOverrides>()!;
+            OptionsValidator.Validate(new ElastiCacheIntegrationsClientOptions { Endpoint = "h:1", CacheName = "c", Overrides = overrides });
+            var payload = ElastiCacheIntegrationsProtocol.SerializeOverrides(overrides);
+            using (var sent = JsonDocument.Parse(payload))
+            using (var expected = JsonDocument.Parse(ExpectedPayload(vector)))
             {
-                Extra = vector.GetProperty("overrides").EnumerateObject().ToDictionary(p => p.Name, p => p.Value.Clone()),
-            };
-            ElastiCacheIntegrationsProtocol.WriteConfig(frame, ElastiCacheIntegrationsProtocol.SerializeOverrides(overrides));
+                Assert.True(SharedFixtures.JsonEquals(expected.RootElement, sent.RootElement), $"payload {Encoding.UTF8.GetString(payload)}");
+            }
+
+            ElastiCacheIntegrationsProtocol.WriteConfig(frame, payload);
         }
 
         Assert.Equal(vector.GetProperty("frame").GetString(), Encoding.UTF8.GetString(frame.WrittenSpan));
+    }
+
+    /// <summary>The JSON argument of an <c>aws.config</c> frame: the last line before the final CRLF.</summary>
+    private static string ExpectedPayload(JsonElement vector)
+    {
+        var frame = vector.GetProperty("frame").GetString()!;
+        var lines = frame.Split("\r\n");
+        return lines[^2];
     }
 
     private static void AssertDecodes(JsonElement vector)

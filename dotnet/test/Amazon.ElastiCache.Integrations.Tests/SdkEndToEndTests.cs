@@ -161,7 +161,7 @@ public class SdkEndToEndTests
     }
 
     [Fact]
-    public async Task StrictModeSurfacesTheOutageToTheCaller()
+    public async Task WithNoFallbackAnOutageReachesTheCaller()
     {
         await using var server = new CacheServer { OnRequest = _ => Cached("{}") };
         var origin = new HttpHandlerTests.RecordingOrigin();

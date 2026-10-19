@@ -42,16 +42,16 @@ public class SessionStalenessTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task AFailurePastTheTimeoutReconnectsForACurrentConfig(bool strict)
+    public async Task AFailurePastTheTimeoutReconnectsForACurrentConfig(bool noFallback)
     {
-        await using var rig = await StartAsync(timeoutSeconds: 90, strict ? TimeSpan.Zero : null);
+        await using var rig = await StartAsync(timeoutSeconds: 90, noFallback ? TimeSpan.Zero : null);
         rig.Connection.OnRefresh = Fail;
 
         await rig.EventuallyAsync(() => rig.Connection.Disposed, Step);
 
         Assert.Single(rig.Logger.Ids, ElastiCacheIntegrationsEvents.ConfigStale);
         var outcome = await rig.SendAsync();
-        Assert.Equal(strict ? OutcomeKind.Terminal : OutcomeKind.Origin, outcome.Kind);
+        Assert.Equal(noFallback ? OutcomeKind.Terminal : OutcomeKind.Origin, outcome.Kind);
 
         (await rig.Connector.NextAsync()).Succeed(SessionRig.Config("""[{"expr":"operation == 'Query'"}]""", 60));
         await rig.EventuallyAsync(() => rig.Session.IsOpen && Applied(rig) == 2);
