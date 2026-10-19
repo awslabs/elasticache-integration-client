@@ -1,6 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Copied to a temporary directory by pack-smoke.sh; never built in place. -->
+  <!-- Copied to a temporary directory by pack-smoke.sh, which sets ElastiCacheIntegrationsVersion; never built in place. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Amazon.ElastiCache.Integrations" Version="[0.0.1]" />
+    <PackageReference Include="Amazon.ElastiCache.Integrations" Version="[$(ElastiCacheIntegrationsVersion)]" />
   </ItemGroup>
 
 </Project>
