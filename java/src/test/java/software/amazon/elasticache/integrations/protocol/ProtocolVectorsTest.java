@@ -53,25 +53,6 @@ class ProtocolVectorsTest {
      */
     private static final Map<String, String> KNOWN_GAPS = new HashMap<>();
 
-    static {
-        // normalizeHeaders keys a TreeMap by lowercased name, so one value is dropped.
-        KNOWN_GAPS.put("request_duplicate_header_names_after_lowercasing", "$5\r\nx-a:1\r\n");
-        // Jackson writes raw UTF-8; Python and Node escape non-ASCII as \\uXXXX.
-        KNOWN_GAPS.put("config_non_ascii_escaped", "$32\r\n{\"version\":\"1.0\",\"name\":\"caf");
-        // deserializeResponse reads a RESP null body as empty instead of rejecting it. Delete
-        // ElastiCacheIntegrationsProtocolTest.deserializeResponse_nullBody_treatedAsEmpty with the fix.
-        KNOWN_GAPS.put("response_null_body", "nothing was thrown");
-        // Null headers parse as {} and a simple-string body is accepted.
-        KNOWN_GAPS.put("response_null_headers", "nothing was thrown");
-        KNOWN_GAPS.put("response_simple_string_body", "nothing was thrown");
-        // parseConfigResponse converts the version with String.valueOf, so null becomes "null".
-        KNOWN_GAPS.put("config_null_version", "but was: <\"null\">");
-        // Jackson escapes a surrogate pair in uppercase hex; json.dumps writes lowercase.
-        KNOWN_GAPS.put("config_non_bmp_escaped", "\"name\":\"\\uD83D\\uDE80\"");
-        // JSON allows DEL raw, and Jackson writes it raw; json.dumps escapes it.
-        KNOWN_GAPS.put("config_del_escaped", "$30\r\n{\"version\":\"1.0\",\"name\":\"a");
-    }
-
     private static final Map<String, Class<? extends ElastiCacheIntegrationsError>> ERRORS =
             new HashMap<>();
 

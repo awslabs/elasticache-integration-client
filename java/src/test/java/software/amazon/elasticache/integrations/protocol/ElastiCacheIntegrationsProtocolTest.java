@@ -336,9 +336,12 @@ class ElastiCacheIntegrationsProtocolTest {
     @Test
     void deserializeResponse_wrongShape_tooFew() {
         List<RespValue> elements = Arrays.asList(new RespInteger(200));
-        assertThrows(
-                ElastiCacheIntegrationsProtocolError.class,
-                () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals(
+                "Malformed request response: expected 3-element array, got 1 elements", error.getMessage());
     }
 
     @Test
@@ -361,9 +364,11 @@ class ElastiCacheIntegrationsProtocolTest {
                         new RespBulkString("not_a_number".getBytes(StandardCharsets.UTF_8)),
                         new RespBulkString(new byte[0]),
                         new RespBulkString(new byte[0]));
-        assertThrows(
-                ElastiCacheIntegrationsProtocolError.class,
-                () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals("Invalid status code: not_a_number", error.getMessage());
     }
 
     @Test
@@ -371,9 +376,11 @@ class ElastiCacheIntegrationsProtocolTest {
         List<RespValue> elements =
                 Arrays.asList(
                         new RespInteger(99), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
-        assertThrows(
-                ElastiCacheIntegrationsProtocolError.class,
-                () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals("Status code out of range (100-599): 99", error.getMessage());
     }
 
     @Test
@@ -381,9 +388,11 @@ class ElastiCacheIntegrationsProtocolTest {
         List<RespValue> elements =
                 Arrays.asList(
                         new RespInteger(600), new RespBulkString(new byte[0]), new RespBulkString(new byte[0]));
-        assertThrows(
-                ElastiCacheIntegrationsProtocolError.class,
-                () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals("Status code out of range (100-599): 600", error.getMessage());
     }
 
     @Test
@@ -474,18 +483,6 @@ class ElastiCacheIntegrationsProtocolTest {
 
     // === serializeConfig tests ===
 
-    // Python and Node reject a null body. Delete this test when the shared vector
-    // response_null_body leaves KNOWN_GAPS in ProtocolVectorsTest.
-    @Test
-    void deserializeResponse_nullBody_treatedAsEmpty() {
-        List<RespValue> elements =
-                Arrays.asList(new RespInteger(200), new RespBulkString(new byte[0]), RespNull.INSTANCE);
-        ElastiCacheIntegrationsResponse response =
-                ElastiCacheIntegrationsProtocol.deserializeResponse(elements);
-        assertEquals(200, response.getStatusCode());
-        assertArrayEquals(new byte[0], response.getBody());
-    }
-
     @Test
     void deserializeResponse_unexpectedBodyType_throws() {
         List<RespValue> elements =
@@ -493,6 +490,48 @@ class ElastiCacheIntegrationsProtocolTest {
         assertThrows(
                 ElastiCacheIntegrationsProtocolError.class,
                 () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+    }
+
+    @Test
+    void deserializeResponse_simpleStringHeaders_throws() {
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(200),
+                        new RespSimpleString("x-a:1".getBytes(StandardCharsets.UTF_8)),
+                        new RespBulkString(new byte[0]));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals(
+                "Malformed request response elements: headers=RespSimpleString, body=RespBulkString",
+                error.getMessage());
+    }
+
+    @Test
+    void deserializeResponse_checksElementsBeforeStatus() {
+        List<RespValue> elements =
+                Arrays.asList(
+                        new RespInteger(999),
+                        new RespBulkString(new byte[0]),
+                        new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
+        ElastiCacheIntegrationsProtocolError error =
+                assertThrows(
+                        ElastiCacheIntegrationsProtocolError.class,
+                        () -> ElastiCacheIntegrationsProtocol.deserializeResponse(elements));
+        assertEquals(
+                "Malformed request response elements: headers=RespBulkString, body=RespSimpleString",
+                error.getMessage());
+    }
+
+    @Test
+    void serializeConfig_escapesControlCharactersInLowercaseHex() {
+        SerializedCommand command =
+                ElastiCacheIntegrationsProtocol.serializeConfig(
+                        Collections.singletonMap("name", (Object) "a\u001fb"));
+        assertEquals(
+                "{\"version\":\"1.0\",\"name\":\"a\\u001fb\"}",
+                new String(command.getArgs().get(0), StandardCharsets.UTF_8));
     }
 
     @Test
