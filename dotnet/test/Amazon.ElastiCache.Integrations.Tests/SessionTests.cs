@@ -51,7 +51,7 @@ public class SessionTests
         var connections = new List<FakeConnection>();
         for (var i = 0; i < 3; i++)
         {
-            connections.Add((await connector.NextAsync(time)).Succeed(new ResolvedConfig("1.0", null, System.Text.Json.JsonDocument.Parse("{}").RootElement)));
+            connections.Add((await connector.NextAsync(time)).Succeed(new ResolvedConfig("1.0", TimeSpan.FromSeconds(60), System.Text.Json.JsonDocument.Parse("{}").RootElement)));
         }
 
         var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionException>(() => open);

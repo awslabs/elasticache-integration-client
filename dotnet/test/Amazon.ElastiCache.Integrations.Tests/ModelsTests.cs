@@ -91,6 +91,14 @@ public class ModelsTests
     {
         using var document = JsonDocument.Parse("[]");
 
-        Assert.Throws<ArgumentException>(() => new ResolvedConfig(null, null, document.RootElement));
+        Assert.Throws<ArgumentException>(() => new ResolvedConfig(null, TimeSpan.FromSeconds(60), document.RootElement));
+    }
+
+    [Fact]
+    public void ConfigNeedsAPositiveRefreshInterval()
+    {
+        using var document = JsonDocument.Parse("{}");
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => new ResolvedConfig(null, TimeSpan.Zero, document.RootElement));
     }
 }

@@ -77,8 +77,9 @@ internal sealed class ElastiCacheIntegrationsResponse
 /// <summary>The config the cache resolved in reply to <c>aws.config</c>.</summary>
 internal sealed class ResolvedConfig
 {
-    public ResolvedConfig(string? version, TimeSpan? refreshInterval, JsonElement raw)
+    public ResolvedConfig(string? version, TimeSpan refreshInterval, JsonElement raw)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(refreshInterval, TimeSpan.Zero);
         if (raw.ValueKind != JsonValueKind.Object)
         {
             throw new ArgumentException($"Config must be a JSON object, got {raw.ValueKind}.", nameof(raw));
@@ -91,8 +92,8 @@ internal sealed class ResolvedConfig
 
     public string? Version { get; }
 
-    /// <summary>How often to refresh the config. Every parsed config has one; null means never.</summary>
-    public TimeSpan? RefreshInterval { get; }
+    /// <summary>How often to refresh the config. Always positive.</summary>
+    public TimeSpan RefreshInterval { get; }
 
     /// <summary>The whole reply object, detached from its source document.</summary>
     public JsonElement Raw { get; }

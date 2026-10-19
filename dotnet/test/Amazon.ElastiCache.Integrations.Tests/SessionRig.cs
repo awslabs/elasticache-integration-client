@@ -180,8 +180,9 @@ internal sealed class SessionRig : IAsyncDisposable
         Reconnect = reconnect ?? new ElastiCacheIntegrationsReconnectPolicy { Jitter = 0 },
     };
 
-    public static ResolvedConfig Config(string predicates = RouteAll, int? refreshSeconds = null) =>
-        new("1.0", refreshSeconds is { } s ? TimeSpan.FromSeconds(s) : null, JsonDocument.Parse($$"""{"version":"1.0","predicates":{{predicates}}}""").RootElement);
+    /// <summary>A config; the default interval is one day, so a test sees a refresh only when it asks for one.</summary>
+    public static ResolvedConfig Config(string predicates = RouteAll, int refreshSeconds = 86400) =>
+        new("1.0", TimeSpan.FromSeconds(refreshSeconds), JsonDocument.Parse($$"""{"version":"1.0","refresh_interval":{{refreshSeconds}},"predicates":{{predicates}}}""").RootElement);
 
     public static Task<ElastiCacheIntegrationsSession> OpenAsync(ElastiCacheIntegrationsClientOptions options, FakeConnector connector, FakeTimeProvider time, ListLogger logger) =>
         ElastiCacheIntegrationsSession.OpenAsync(options, connector.ConnectAsync, "DynamoDB", logger, time, new Random(1), TestContext.Current.CancellationToken);

@@ -470,7 +470,7 @@ public class PredicatesTests
     private static ResolvedConfig Resolved(string? version, string json)
     {
         using var document = JsonDocument.Parse(json);
-        return new ResolvedConfig(version, null, document.RootElement);
+        return new ResolvedConfig(version, TimeSpan.FromSeconds(60), document.RootElement);
     }
 
     private static string Config(params (string Expr, string Vars)[] predicates) =>

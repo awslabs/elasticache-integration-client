@@ -80,6 +80,26 @@ public class SessionRefreshTests
     }
 
     [Fact]
+    public async Task AMalformedRefreshReplyIsUnusableAndAnUnchangedReplyAfterItDoesNotConfirm()
+    {
+        await using var rig = await SessionRig.StartAsync(config: SessionRig.Config(refreshSeconds: 60));
+        var replies = 0;
+        rig.Connection.OnRefresh = _ => Interlocked.Increment(ref replies) switch
+        {
+            1 => Task.FromException<ResolvedConfig?>(new ElastiCacheIntegrationsProtocolException("Malformed aws.config reply: refresh_interval is missing.")),
+            2 => Task.FromResult<ResolvedConfig?>(null),
+            _ => Task.FromResult<ResolvedConfig?>(SessionRig.Config(refreshSeconds: 60)),
+        };
+
+        await rig.EventuallyAsync(() => rig.Logger.Ids.Count(id => id == ElastiCacheIntegrationsEvents.PeriodicFailed) == 2, Step);
+        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.ConfigUnusable);
+        Assert.Equal(1, Applied(rig));
+
+        await rig.EventuallyAsync(() => Applied(rig) == 2, Step);
+        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.ConfigUnusable);
+    }
+
+    [Fact]
     public async Task AConfigItCannotUsePastTheCachePolicyTimeoutReplacesTheConnection()
     {
         await using var rig = await SessionRig.StartAsync(
@@ -115,20 +135,6 @@ public class SessionRefreshTests
         }
 
         Assert.Equal(2, rig.Connection.Refreshes);
-    }
-
-    [Fact]
-    public async Task NoIntervalMeansNoRefresh()
-    {
-        await using var rig = await SessionRig.StartAsync();
-
-        for (var i = 0; i < 20; i++)
-        {
-            rig.Time.Advance(TimeSpan.FromMinutes(1));
-            await Task.Delay(5, TestContext.Current.CancellationToken);
-        }
-
-        Assert.Equal(0, rig.Connection.Refreshes);
     }
 
     [Fact]

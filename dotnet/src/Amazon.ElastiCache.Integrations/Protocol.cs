@@ -183,7 +183,10 @@ internal static class ElastiCacheIntegrationsProtocol
         return value.ValueKind == JsonValueKind.String ? value.GetString()! : throw MalformedConfig("version is not a string");
     }
 
-    /// <summary>Required: a positive whole number of seconds. <c>60.0</c> is refused, as Python does.</summary>
+    /// <summary>
+    /// Required: a positive whole number of seconds. <c>60.0</c> is refused, as Python does. A value
+    /// past the longest timer delay is capped to it.
+    /// </summary>
     private static TimeSpan ReadRefreshInterval(JsonElement root)
     {
         if (!root.TryGetProperty("refresh_interval", out var value))
@@ -191,12 +194,12 @@ internal static class ElastiCacheIntegrationsProtocol
             throw MalformedConfig("refresh_interval is missing");
         }
 
-        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var seconds) || seconds is <= 0 or > MaxRefreshSeconds)
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var seconds) || seconds <= 0)
         {
             throw MalformedConfig("refresh_interval must be a positive whole number of seconds");
         }
 
-        return TimeSpan.FromSeconds(seconds);
+        return TimeSpan.FromSeconds(Math.Min(seconds, MaxRefreshSeconds));
     }
 
     /// <summary>The longest delay a .NET timer takes, <see cref="int.MaxValue"/> milliseconds.</summary>

@@ -119,7 +119,7 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
     private State _state = new(null, null);
     private PredicateEvaluator _predicates = PredicateEvaluator.Empty;
     private PeriodicRunner? _refresh;
-    private TimeSpan? _refreshInterval;
+    private TimeSpan _refreshInterval;
     private long _confirmedAt;
     private long _pendingLimitHitAt = -1;
 
@@ -400,20 +400,25 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         }
         catch (ElastiCacheIntegrationsProtocolException e)
         {
-            bool first;
-            lock (_gate)
-            {
-                first = !_unusableConfig && (refreshed is null || ReferenceEquals(_state.Connection, refreshed));
-                _unusableConfig |= first;
-            }
-
-            if (first)
-            {
-                _logger.LogError(ElastiCacheIntegrationsEvents.ConfigUnusable, "The cache sent a config this client cannot use: {Reason} the client keeps asking for a usable one",
-                    e.Message);
-            }
-
+            OnUnusableConfig(e, refreshed);
             throw;
+        }
+    }
+
+    /// <summary>Marks the cache's config unusable and logs event 1307 once, until a usable one is applied.</summary>
+    private void OnUnusableConfig(ElastiCacheIntegrationsProtocolException error, ICacheConnection? refreshed)
+    {
+        bool first;
+        lock (_gate)
+        {
+            first = !_unusableConfig && (refreshed is null || ReferenceEquals(_state.Connection, refreshed));
+            _unusableConfig |= first;
+        }
+
+        if (first)
+        {
+            _logger.LogError(ElastiCacheIntegrationsEvents.ConfigUnusable, "The cache sent a config this client cannot use: {Reason} the client keeps asking for a usable one",
+                error.Message);
         }
     }
 
@@ -542,7 +547,16 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         PredicateEvaluator? predicates = null;
         try
         {
-            config = await connection.RefreshConfigAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                config = await connection.RefreshConfigAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (ElastiCacheIntegrationsProtocolException e)
+            {
+                OnUnusableConfig(e, connection);
+                throw;
+            }
+
             if (!ReferenceEquals(Volatile.Read(ref _state).Connection, connection))
             {
                 return false;
@@ -608,20 +622,17 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         Volatile.Write(ref _predicates, predicates);
         _unusableConfig = false;
         _logger.LogDebug(ElastiCacheIntegrationsEvents.ConfigApplied, "Applied config version {Version}, refresh every {Interval}", config.Version,
-            config.RefreshInterval?.ToString() ?? "never");
+            config.RefreshInterval);
 
-        var interval = config.RefreshInterval is { } i && i > TimeSpan.Zero ? i : (TimeSpan?)null;
-        if (interval == _refreshInterval)
+        if (config.RefreshInterval == _refreshInterval)
         {
             return null;
         }
 
         var old = _refresh;
-        _refreshInterval = interval;
-        _refresh = interval is { } every
-            ? new PeriodicRunner("Config refresh", every, _options.Reconnect, RefreshConfigAsync, _logger, _time, _random)
-            : null;
-        _refresh?.Start();
+        _refreshInterval = config.RefreshInterval;
+        _refresh = new PeriodicRunner("Config refresh", config.RefreshInterval, _options.Reconnect, RefreshConfigAsync, _logger, _time, _random);
+        _refresh.Start();
         return old;
     }
 

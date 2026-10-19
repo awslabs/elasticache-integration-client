@@ -107,6 +107,19 @@ public class ClientEndToEndTests
         Assert.Equal(3, server.Connections);
     }
 
+    [Theory]
+    [InlineData("""{"version":"1.0","predicates":[]}""", "refresh_interval is missing")]
+    [InlineData("""{"version":"1.0","refresh_interval":0,"predicates":[]}""", "refresh_interval must be a positive whole number of seconds")]
+    public async Task AConfigWithoutAUsableRefreshIntervalFailsEveryAttempt(string config, string reason)
+    {
+        await using var server = new CacheServer(config);
+
+        var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionException>(() => ClientAsync(server, new HttpHandlerTests.RecordingOrigin()));
+
+        Assert.Contains(reason, error.Message);
+        Assert.Equal(3, server.Connections);
+    }
+
     [Fact]
     public async Task MovedAfterTheCacheAcceptedACallIsRetriedByTheSdkOnANewConnection()
     {

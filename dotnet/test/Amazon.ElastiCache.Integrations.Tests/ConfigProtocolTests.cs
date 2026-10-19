@@ -120,6 +120,8 @@ public class ConfigProtocolTests
     [InlineData("{\"version\":\"1.7\",\"refresh_interval\":1}", "1.7", 1)]
     [InlineData("{\"version\":\"2.0\",\"refresh_interval\":5}", "2.0", 5)]
     [InlineData("{\"refresh_interval\":2147483}", null, 2147483)]
+    [InlineData("{\"refresh_interval\":2147484}", null, 2147483)]
+    [InlineData("{\"refresh_interval\":9999999999}", null, 2147483)]
     public void ReadsTheVersionAndRefreshInterval(string json, string? version, int seconds)
     {
         var config = ElastiCacheIntegrationsProtocol.ParseConfigReply(Blob(json), noArgumentForm: true)!;
@@ -166,8 +168,6 @@ public class ConfigProtocolTests
     [InlineData("{\"refresh_interval\":-1}")]
     [InlineData("{\"refresh_interval\":1.5}")]
     [InlineData("{\"refresh_interval\":\"60\"}")]
-    [InlineData("{\"refresh_interval\":2147484}")]
-    [InlineData("{\"refresh_interval\":9999999999}")]
     public void RejectsMalformedConfigJson(string json)
     {
         Assert.Throws<ElastiCacheIntegrationsProtocolException>(() => ElastiCacheIntegrationsProtocol.ParseConfigReply(Blob(json), noArgumentForm: false));
