@@ -56,7 +56,8 @@ Run from this directory:
   `dotnet run -c Release --project bench/Amazon.ElastiCache.Integrations.Benchmarks` before and
   after. Times vary with host load; compare runs on the same host.
 - `scripts/pack-smoke.sh` for changes to package metadata, the public API or
-  published contents. Pass `--no-build` to reuse a Release build.
+  published contents. Pass `--no-build` to reuse a Release build. The release
+  workflow passes `--published` to smoke test the package from nuget.org.
 - To check the .NET 10 runtime locally, run the Release test build in the
   `mcr.microsoft.com/dotnet/runtime:10.0` image with `DOTNET_ROLL_FORWARD=Major`
   (`dotnet Amazon.ElastiCache.Integrations.Tests.dll` from `test/Amazon.ElastiCache.Integrations.Tests/bin/Release/net8.0`).
@@ -81,8 +82,9 @@ Run from this directory:
 - A change to an option, a default, an exception or a log event updates the
   matching table in `README.md` in the same change.
 - Package metadata lives in `src/Amazon.ElastiCache.Integrations/Amazon.ElastiCache.Integrations.csproj`. The
-  version is `0.0.1`, as for the other clients; `scripts/pack-smoke.sh` checks
-  it. Source Link comes from the .NET SDK; the pack smoke test checks it only
+  version is `0.0.1`, as for the other clients. `scripts/pack-smoke.sh` reads
+  it from the csproj, and the release workflow checks the tag against it.
+  Source Link comes from the .NET SDK; the pack smoke test checks it only
   when `origin` is GitHub.
 
 ## Review bot
@@ -113,7 +115,9 @@ covered by `dotnet format`. If no concrete issue is found, say so plainly.
 
 - Do not commit `bin/`, `obj/`, `artifacts/`, `TestResults/`, `*.nupkg`,
   `*.snupkg`, or IDE files.
-- This prototype has no publish automation; do not add publishing behavior
-  unless explicitly requested.
+- `.github/workflows/dotnet-release.yml` publishes to nuget.org only for a
+  release tag and only when the repository variable `DOTNET_NUGET_PUBLISH` is
+  `true`. A manual run is a dry run. Do not change that gate unless explicitly
+  requested.
 
 Keep changes small and reviewable.
