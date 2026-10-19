@@ -21,9 +21,7 @@
   them are tagged `alignment` (a pytest marker, a JUnit tag, the two Vitest
   files, and an xUnit `Category=alignment` trait). Pull request CI runs them in
   `.github/workflows/alignment-ci.yml` and excludes them from the client CI
-  workflows. The release workflows still run them before publishing. The .NET
-  preview is not in `alignment-ci.yml` yet: `dotnet-ci.yml` runs them with the
-  other .NET tests, and also runs on changes under `shared/`.
+  workflows. The release workflows still run them before publishing.
 - `README.md`: repository-wide overview and client scope.
 - `.github/workflows/`: CI contracts for each client.
 

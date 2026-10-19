@@ -127,12 +127,14 @@ jobs:
     if: >-
       needs.changes.outputs.python == 'true' ||
       needs.changes.outputs.java == 'true' ||
-      needs.changes.outputs.node == 'true'
+      needs.changes.outputs.node == 'true' ||
+      needs.changes.outputs.dotnet == 'true'
     uses: ./.github/workflows/alignment-ci.yml
     with:
       python: ${{ needs.changes.outputs.python == 'true' }}
       java: ${{ needs.changes.outputs.java == 'true' }}
       node: ${{ needs.changes.outputs.node == 'true' }}
+      dotnet: ${{ needs.changes.outputs.dotnet == 'true' }}
 
   # GitHub can't read Gradle dependencies from build.gradle.kts, so submit the
   # resolved graph. Dependabot alerts use the graph from main, and dependency
