@@ -66,6 +66,10 @@ class ProtocolVectorsTest {
         KNOWN_GAPS.put("response_simple_string_body", "nothing was thrown");
         // parseConfigResponse converts the version with String.valueOf, so null becomes "null".
         KNOWN_GAPS.put("config_null_version", "but was: <\"null\">");
+        // Jackson escapes a surrogate pair in uppercase hex; json.dumps writes lowercase.
+        KNOWN_GAPS.put("config_non_bmp_escaped", "\"name\":\"\\uD83D\\uDE80\"");
+        // JSON allows DEL raw, and Jackson writes it raw; json.dumps escapes it.
+        KNOWN_GAPS.put("config_del_escaped", "$30\r\n{\"version\":\"1.0\",\"name\":\"a");
     }
 
     private static final Map<String, Class<? extends ElastiCacheIntegrationsError>> ERRORS =
