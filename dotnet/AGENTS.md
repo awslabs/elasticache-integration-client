@@ -34,6 +34,9 @@
   workflow. The `verify` job runs the full gate and the pack smoke test on the
   .NET 8 SDK. The `net10-runtime` job runs the same `net8.0` test build on an
   image that has only the .NET 10 runtime, with `DOTNET_ROLL_FORWARD=Major`.
+- `.github/workflows/compat.yml`: weekly, the `dotnet (latest dependencies)`
+  job floats every library dependency to its newest stable version, restores
+  without the lock files and runs the build, the tests and the pack smoke test.
 
 ## Validation
 
