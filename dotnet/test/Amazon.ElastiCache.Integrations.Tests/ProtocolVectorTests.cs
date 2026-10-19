@@ -48,6 +48,15 @@ public class ProtocolVectorTests
             {
                 "command,name,reply,response", "command,config,name,reply", "command,error,name,reply", "code,command,error,name,reply",
             });
+            if (vector.TryGetProperty("response", out var response))
+            {
+                Assert.Equal("body,headers,status", SharedFixtures.Keys(response));
+            }
+
+            if (vector.TryGetProperty("config", out var config))
+            {
+                Assert.Equal("raw,refresh_interval,version", SharedFixtures.Keys(config));
+            }
         }
 
         Assert.All(KnownGaps.Keys, name => Assert.Contains(Vectors.GetProperty("encode").EnumerateArray().Concat(Vectors.GetProperty("decode").EnumerateArray()),
