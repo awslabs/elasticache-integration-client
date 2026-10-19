@@ -13,8 +13,6 @@ internal static class ElastiCacheIntegrationsEvents
     public static readonly EventId PeriodicFailed = new(1101, nameof(PeriodicFailed));
     public static readonly EventId PeriodicRecovered = new(1102, nameof(PeriodicRecovered));
     public static readonly EventId AuthDegraded = new(1103, nameof(AuthDegraded));
-    public static readonly EventId AuthRecovered = new(1104, nameof(AuthRecovered));
-    public static readonly EventId AuthWindowExhausted = new(1105, nameof(AuthWindowExhausted));
     public static readonly EventId AuthStale = new(1106, nameof(AuthStale));
 
     // One connection uses the 1200 range.

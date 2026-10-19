@@ -7,7 +7,7 @@ namespace Amazon.ElastiCache.Integrations.LiveValidation;
 /// <summary>
 /// Measures how long the cache's FAS lasts: no re-AUTH, one miss per poll, until a miss fails. The
 /// cache may relay DynamoDB's <c>ExpiredTokenException</c>, or answer <c>-AUTH_ERROR</c>, which the
-/// client logs as event 1103 and sends to DynamoDB. The items are written up front, so polling needs
+/// client logs as event 1103, replacing the connection and sending the call to DynamoDB. The items are written up front, so polling needs
 /// no credentials of its own and can run past their expiry.
 /// </summary>
 internal sealed class FasScenario(LiveContext live)
@@ -85,8 +85,8 @@ internal sealed class FasScenario(LiveContext live)
             $"AUTH_ERROR (1103) {(live.Events.Count(1103) > 0 ? "logged" : "not logged")}");
         if (live.Events.Count(1103) > 0)
         {
-            var recovered = await live.WaitUntilAsync(() => live.Events.Count(1104) > 0, TimeSpan.FromSeconds(10));
-            live.Log($"re-AUTH after AUTH_ERROR {(recovered ? "succeeded" : "did not succeed within 10 s")}");
+            var recovered = await live.WaitUntilAsync(() => live.Events.Count(1304) > 0, TimeSpan.FromSeconds(10));
+            live.Log($"reconnect after AUTH_ERROR {(recovered ? "succeeded" : "did not succeed within 10 s")}");
         }
     }
 

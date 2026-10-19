@@ -7,59 +7,23 @@ public class SessionReauthStalenessTests
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan FirstBackoff = TimeSpan.FromMilliseconds(100);
 
-    [Fact]
-    public async Task ReauthFailingPastTheFasLifetimeSkipsTheCacheUntilAnAuthSucceeds()
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public async Task ReauthFailingPastTheFasLifetimeReplacesTheConnection(int? fallbackSeconds)
     {
         var time = new RecordingTimeProvider();
-        var failing = true;
-        await using var rig = await StaleAsync(time, SessionRig.Options(), () => Volatile.Read(ref failing));
+        await using var rig = await StaleAsync(time, SessionRig.Options(fallback: fallbackSeconds is { } s ? TimeSpan.FromSeconds(s) : null), () => true);
 
         Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await rig.SendAsync());
         Assert.Equal(1, rig.Connection.Requests);
+        Assert.True(rig.Connection.Disposed);
         Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.AuthStale);
         Assert.Equal(LogLevel.Error, rig.Logger.Levels[Array.IndexOf(rig.Logger.Ids, ElastiCacheIntegrationsEvents.AuthStale)]);
-        Assert.DoesNotContain(ElastiCacheIntegrationsEvents.AuthDegraded, rig.Logger.Ids);
 
-        Volatile.Write(ref failing, false);
-        await rig.EventuallyAsync(() => rig.Logger.Ids.Contains(ElastiCacheIntegrationsEvents.PeriodicRecovered), TimeSpan.FromSeconds(1));
-
-        Assert.Equal(OutcomeKind.Served, (await rig.SendAsync()).Kind);
-        Assert.Equal(2, rig.Connection.Requests);
-    }
-
-    [Fact]
-    public async Task StaleRequestsFailOnceFallbackDurationIsSpent()
-    {
-        var time = new RecordingTimeProvider();
-        await using var rig = await StaleAsync(time, SessionRig.Options(fallback: TimeSpan.FromMinutes(5)), () => true);
-
-        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await rig.SendAsync());
-        time.Advance(TimeSpan.FromMinutes(5));
-        var outcome = await rig.SendAsync();
-
-        Assert.Equal(OutcomeKind.Terminal, outcome.Kind);
-        Assert.IsType<ElastiCacheIntegrationsCacheUnavailableException>(outcome.Error);
-        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.AuthWindowExhausted);
-        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.AuthStale);
-        Assert.Equal(1, rig.Connection.Requests);
-    }
-
-    [Fact]
-    public async Task StrictModeFailsAStaleRequestAndAReconnectClearsIt()
-    {
-        var time = new RecordingTimeProvider();
-        await using var rig = await StaleAsync(time, SessionRig.Options(fallback: TimeSpan.Zero), () => true);
-
-        var outcome = await rig.SendAsync();
-
-        Assert.Equal(OutcomeKind.Terminal, outcome.Kind);
-        Assert.IsType<ElastiCacheIntegrationsCacheUnavailableException>(outcome.Error);
-        Assert.Equal(1, rig.Connection.Requests);
-
-        rig.Connection.Drop();
+        // The new connection's AUTH ends the staleness.
         var next = (await rig.Connector.NextAsync()).Succeed();
         await rig.EventuallyAsync(() => rig.Session.IsOpen);
-
         Assert.Equal(OutcomeKind.Served, (await rig.SendAsync()).Kind);
         Assert.Equal(1, next.Requests);
     }

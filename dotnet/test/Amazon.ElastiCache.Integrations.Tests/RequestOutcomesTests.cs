@@ -6,8 +6,8 @@ public class RequestOutcomesTests
 
     private static RequestReply Rejected(string code) => new RequestReply.Rejected(new ElastiCacheIntegrationsServerException(code, "no"));
 
-    private static ElastiCacheIntegrationsOutcome FromReply(RequestReply reply, bool strict = false, AuthErrorAction auth = AuthErrorAction.Origin) =>
-        RequestOutcomes.FromReply(reply, strict, () => auth);
+    private static ElastiCacheIntegrationsOutcome FromReply(RequestReply reply, bool strict = false) =>
+        RequestOutcomes.FromReply(reply, strict);
 
     [Fact]
     public void AServedReplyIsServedUnchanged()
@@ -34,30 +34,11 @@ public class RequestOutcomesTests
     }
 
     [Fact]
-    public void AnAuthErrorFollowsTheAuthWindow()
+    public void AnAuthErrorGoesToDynamoDBForEveryOperation()
     {
-        var calls = 0;
-        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, RequestOutcomes.FromReply(Rejected("AUTH_ERROR"), false, () =>
-        {
-            calls++;
-            return AuthErrorAction.Origin;
-        }));
-        Assert.Equal(1, calls);
-
-        var failed = FromReply(Rejected("AUTH_ERROR"), auth: AuthErrorAction.Fail);
-        Assert.Equal(OutcomeKind.Terminal, failed.Kind);
-        var error = Assert.IsType<ElastiCacheIntegrationsCacheUnavailableException>(failed.Error);
-        Assert.Equal("AUTH_ERROR", Assert.IsType<ElastiCacheIntegrationsServerException>(error.InnerException).Code);
+        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, FromReply(Rejected("AUTH_ERROR")));
+        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, FromReply(Rejected("AUTH_ERROR"), strict: true));
     }
-
-    [Theory]
-    [InlineData(null, false)]
-    [InlineData("UNSUPPORTED", false)]
-    [InlineData("UNSUPPORTED", true)]
-    [InlineData("ORIGIN_ERROR", false)]
-    [InlineData("MOVED", false)]
-    public void OnlyAnAuthErrorConsultsTheAuthWindow(string? code, bool strict) =>
-        RequestOutcomes.FromReply(code is null ? new RequestReply.Served(Response) : Rejected(code), strict, () => throw new InvalidOperationException("consulted"));
 
     [Theory]
     [InlineData("ORIGIN_ERROR")]
@@ -75,7 +56,7 @@ public class RequestOutcomesTests
     [Fact]
     public void ADeferredReplyIsRetryable()
     {
-        var outcome = RequestOutcomes.FromReply(new RequestReply.Deferred("7"), true, () => throw new InvalidOperationException("consulted"));
+        var outcome = FromReply(new RequestReply.Deferred("7"));
 
         Assert.Equal(OutcomeKind.Retryable, outcome.Kind);
         Assert.IsType<ElastiCacheIntegrationsProtocolException>(outcome.Error);

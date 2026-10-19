@@ -193,16 +193,16 @@ The credentials are read again for every `AUTH`, so rotated credentials are used
 
 The live connection re-authenticates every `ReauthInterval` in the background. A failed re-AUTH
 keeps the connection serving and retries on backoff. When the cache answers a call
-`-AUTH_ERROR`, the client re-authenticates at once, at most once per `Reconnect.MaxDelay`.
-Until that succeeds, such calls go to
-DynamoDB for up to `FallbackDuration` (events 1103 to 1105), then fail with
-`ElastiCacheIntegrationsCacheUnavailableException`.
+`-AUTH_ERROR`, it holds no valid credential for that connection. The client closes the
+connection (event 1103), sends that call to DynamoDB with the original signed request, and
+reconnects with a fresh `AUTH`. This is the same with `FallbackDuration = TimeSpan.Zero`. Calls
+made during the reconnect follow [Reconnect and fallback](#reconnect-and-fallback).
 
 The cache's credential for the client (FAS) is expected to last about one hour after the `AUTH`
 that vended it. If re-AUTH is still failing one hour after the last successful `AUTH`, the
-connection counts as unauthenticated (event 1106). Calls then skip the cache and take the
-`-AUTH_ERROR` path above, while re-AUTH keeps retrying. Any successful `AUTH`, including a
-reconnect, ends it. With the default `ReauthInterval` of 30 minutes, re-AUTH has 30 minutes to
+connection counts as unauthenticated (event 1106). The next call takes the `-AUTH_ERROR`
+path above without being sent to the cache: the connection is replaced, and the reconnect's
+`AUTH` ends it. With the default `ReauthInterval` of 30 minutes, re-AUTH has 30 minutes to
 recover before this happens.
 
 `AuthProvider` replaces token generation. Use it when you already hold a token, or for a local or
@@ -291,7 +291,7 @@ From a call:
 |-----------|------|
 | The modeled SDK exception, for example `ResourceNotFoundException` | DynamoDB returned that error, through the cache or directly. |
 | `HttpRequestException` | A call the SDK may retry failed in the client and the SDK's retries ran out. `InnerException` is the client error: `ElastiCacheIntegrationsTimeoutException`, `ElastiCacheIntegrationsConnectionLostException`, `ElastiCacheIntegrationsProtocolException`, `ElastiCacheIntegrationsPendingLimitException` (`MaxPending` calls were already in flight; this one was not sent), or a `ElastiCacheIntegrationsServerException` such as `ORIGIN_ERROR` or `INTERNAL_ERROR`. |
-| `ElastiCacheIntegrationsCacheUnavailableException` | No cache connection, or `-AUTH_ERROR`, and the fallback window is spent or strict mode is on. Not retried by the SDK. |
+| `ElastiCacheIntegrationsCacheUnavailableException` | No cache connection, and the fallback window is spent or strict mode is on. Not retried by the SDK. |
 | `ElastiCacheIntegrationsServerException` | Strict mode only: the cache rejected the call (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH`, `CONFIG_INVALID`). Outside strict mode these calls go to DynamoDB. `Code` holds the code. |
 | `TimeoutException` | The SDK's own `HttpClient` timeout fired while the call waited on the cache, as for a slow DynamoDB call. |
 | `OperationCanceledException` | The caller cancelled. |
@@ -335,9 +335,7 @@ configured logger is dropped, so a broken logging provider cannot stop the clien
 | 1002 | `SyncCallToOrigin` | Warning, once per handle |
 | 1101 | `PeriodicFailed` (re-AUTH, config refresh) | Warning on the first failure, then Debug |
 | 1102 | `PeriodicRecovered` | Information |
-| 1103 | `AuthDegraded` | Warning when the window opens, then Debug |
-| 1104 | `AuthRecovered` | Debug |
-| 1105 | `AuthWindowExhausted` | Warning |
+| 1103 | `AuthDegraded` | Warning, once per closed connection |
 | 1106 | `AuthStale` | Error, once until an `AUTH` succeeds |
 | 1201 | `ConnectionLost` | Information |
 | 1202 | `HeadStalled` | Warning |

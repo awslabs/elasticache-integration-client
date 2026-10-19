@@ -233,17 +233,6 @@ public class SessionReconnectTests
     }
 
     [Fact]
-    public async Task AReconnectAuthenticatesANewGeneration()
-    {
-        await using var rig = await SessionRig.StartAsync();
-        var before = rig.Session.AuthGeneration;
-        rig.Connection.Drop();
-        (await rig.Connector.NextAsync()).Succeed();
-
-        await rig.EventuallyAsync(() => rig.Session.AuthGeneration == before + 1);
-    }
-
-    [Fact]
     public async Task DisposeStopsTheReconnectLoop()
     {
         var rig = await SessionRig.StartAsync();

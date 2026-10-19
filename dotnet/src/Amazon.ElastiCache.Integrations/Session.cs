@@ -68,17 +68,15 @@ internal readonly record struct ElastiCacheIntegrationsOutcome
 /// <summary>The request outcome table: what a reply or a failure on a live connection means.</summary>
 internal static class RequestOutcomes
 {
-    /// <summary>Maps a reply. <paramref name="onAuthError"/> runs only for <c>-AUTH_ERROR</c>.</summary>
-    public static ElastiCacheIntegrationsOutcome FromReply(RequestReply reply, bool strict, Func<AuthErrorAction> onAuthError) => reply switch
+    /// <summary>Maps a reply from a live connection.</summary>
+    public static ElastiCacheIntegrationsOutcome FromReply(RequestReply reply, bool strict) => reply switch
     {
         RequestReply.Served served => ElastiCacheIntegrationsOutcome.Served(served.Response),
         RequestReply.Rejected { Error: var error } => ServerErrors.Classify(error.Code) switch
         {
             // Refused before any origin call, so a read or a write is safe to send to DynamoDB.
             ServerErrorKind.Deterministic => strict ? ElastiCacheIntegrationsOutcome.Terminal(error) : ElastiCacheIntegrationsOutcome.Origin,
-            ServerErrorKind.Auth => onAuthError() == AuthErrorAction.Origin
-                ? ElastiCacheIntegrationsOutcome.Origin
-                : ElastiCacheIntegrationsOutcome.Terminal(new ElastiCacheIntegrationsCacheUnavailableException("The cache holds no valid AWS credentials for this client.", error)),
+            ServerErrorKind.Auth => ElastiCacheIntegrationsOutcome.Origin,
             _ => ElastiCacheIntegrationsOutcome.Retryable(error),
         },
         _ => ElastiCacheIntegrationsOutcome.Retryable(new ElastiCacheIntegrationsProtocolException($"Unexpected reply {reply.GetType().Name} for a final aws.request reply.")),
@@ -146,8 +144,6 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
 
     /// <summary>True while a live connection is installed.</summary>
     public bool IsOpen => Volatile.Read(ref _state).Connection is { IsOpen: true };
-
-    internal long AuthGeneration => _reauth.Generation;
 
     private bool Strict => _options.FallbackDuration == TimeSpan.Zero;
 
@@ -232,14 +228,13 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
             }
 
             // Past the FAS lifetime with re-AUTH failing, the connection counts as unauthenticated.
-            if (_reauth.IsStale && _reauth.OnStale() is { } stale)
+            if (_reauth.IsStale)
             {
-                return stale == AuthErrorAction.Origin
-                    ? ElastiCacheIntegrationsOutcome.Origin
-                    : ElastiCacheIntegrationsOutcome.Terminal(new ElastiCacheIntegrationsCacheUnavailableException("Re-authentication with the cache has failed past the FAS lifetime."));
+                _reauth.LogStale();
+                OnClosed(connection);
+                return ElastiCacheIntegrationsOutcome.Origin;
             }
 
-            var generation = _reauth.Generation;
             RequestReply reply;
             try
             {
@@ -263,7 +258,14 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
                 continue;
             }
 
-            return RequestOutcomes.FromReply(reply, Strict, () => _reauth.OnAuthError(generation));
+            // The cache holds no FAS for this connection: replace it, as the other clients do.
+            if (reply is RequestReply.Rejected { Error.Code: ServerErrors.AuthError } && OnClosed(connection))
+            {
+                _logger.LogWarning(ElastiCacheIntegrationsEvents.AuthDegraded,
+                    "The cache has no valid AWS credentials for this connection; reconnecting, and the call goes to DynamoDB");
+            }
+
+            return RequestOutcomes.FromReply(reply, Strict);
         }
     }
 
@@ -447,13 +449,14 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
     }
 
     /// <summary>The live connection died: start an outage and reconnect in the background. Runs once per connection.</summary>
-    private void OnClosed(ICacheConnection connection)
+    /// <summary>Starts the reconnect if <paramref name="connection"/> is the live one. True when it was.</summary>
+    private bool OnClosed(ICacheConnection connection)
     {
         lock (_gate)
         {
             if (_disposed || !ReferenceEquals(_state.Connection, connection))
             {
-                return;
+                return false;
             }
 
             var outage = new Outage(_time.GetTimestamp());
@@ -465,6 +468,7 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         }
 
         connection.Dispose();
+        return true;
     }
 
     /// <summary>Retries bring-up with backoff, with no attempt limit, until one lands or the session closes.</summary>

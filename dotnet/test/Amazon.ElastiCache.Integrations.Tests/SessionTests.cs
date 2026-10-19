@@ -212,41 +212,41 @@ public class SessionTests
         await Assert.ThrowsAsync<ElastiCacheIntegrationsConfigurationException>(() => ElastiCacheIntegrationsSession.OpenAsync(
             new ElastiCacheIntegrationsClientOptions { Endpoint = "no-port", CacheName = "c" }, new ConnectionTests.StaticAuth("u", "t"), "dynamodb", Token));
 
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0)]
+    public async Task AnAuthErrorReplacesTheConnectionAndGoesToDynamoDB(int? fallbackSeconds)
+    {
+        await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: fallbackSeconds is { } s ? TimeSpan.FromSeconds(s) : null));
+        rig.Connection.OnRequest = (_, _) => Task.FromResult(Rejected("AUTH_ERROR"));
+
+        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await rig.SendAsync("PutItem"));
+        Assert.True(rig.Connection.Disposed);
+        Assert.Equal(0, rig.Connection.Reauths);
+        Assert.Single(rig.Logger.Ids, id => id == ElastiCacheIntegrationsEvents.AuthDegraded);
+
+        var next = (await rig.Connector.NextAsync()).Succeed();
+        await rig.EventuallyAsync(() => rig.Session.IsOpen);
+        Assert.Equal(OutcomeKind.Served, (await rig.SendAsync()).Kind);
+        Assert.Equal(1, next.Requests);
+    }
+
     [Fact]
-    public async Task AnAuthErrorReauthenticatesAndGoesToDynamoDB()
+    public async Task ALateAuthErrorFromAReplacedConnectionLogsNothing()
     {
         await using var rig = await SessionRig.StartAsync();
-        rig.Connection.OnRequest = (_, _) => Task.FromResult(Rejected("AUTH_ERROR"));
-
-        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await rig.SendAsync());
-        await rig.EventuallyAsync(() => rig.Connection.Reauths == 1);
-    }
-
-    [Fact]
-    public async Task AnAuthErrorFailsInStrictMode()
-    {
-        await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: TimeSpan.Zero));
-        rig.Connection.OnRequest = (_, _) => Task.FromResult(Rejected("AUTH_ERROR"));
-
-        var outcome = await rig.SendAsync();
-
-        Assert.Equal(OutcomeKind.Terminal, outcome.Kind);
-        Assert.IsType<ElastiCacheIntegrationsCacheUnavailableException>(outcome.Error);
-    }
-
-    [Fact]
-    public async Task AnAuthErrorOnARequestSentBeforeAReauthIsIgnored()
-    {
-        await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: TimeSpan.Zero));
         var reply = new TaskCompletionSource<RequestReply>();
         rig.Connection.OnRequest = (_, _) => reply.Task;
 
-        // Sent in the bring-up generation; a scheduled re-AUTH lands before its reply.
         var pending = rig.SendAsync();
-        await rig.EventuallyAsync(() => rig.Session.AuthGeneration >= 2, TimeSpan.FromMinutes(10));
+        rig.Connection.Drop();
+        (await rig.Connector.NextAsync()).Succeed();
+        await rig.EventuallyAsync(() => rig.Session.IsOpen);
         reply.SetResult(Rejected("AUTH_ERROR"));
 
         Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await pending);
+        Assert.True(rig.Session.IsOpen);
+        Assert.DoesNotContain(ElastiCacheIntegrationsEvents.AuthDegraded, rig.Logger.Ids);
     }
 
     [Fact]
