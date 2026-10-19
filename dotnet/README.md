@@ -378,7 +378,8 @@ scripts/pack-smoke.sh
 
 `scripts/pack-smoke.sh` packs the library, checks the package contents and metadata, installs
 the package into a throwaway console app and runs that app against the test suite's in-process
-mock cache. It needs no AWS access. Tests never use the host's `~/.aws` files, AWS environment
+mock cache. It needs no AWS access. `dotnet test --filter Category=alignment` runs only the
+cross-client fixtures in `../shared/`: the wire vectors and the SDK request cases. Tests never use the host's `~/.aws` files, AWS environment
 variables or instance metadata.
 
 [samples/Amazon.ElastiCache.Integrations.LiveValidation](samples/Amazon.ElastiCache.Integrations.LiveValidation/README.md) checks the

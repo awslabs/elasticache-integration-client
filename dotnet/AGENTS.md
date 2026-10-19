@@ -41,6 +41,12 @@ Run from this directory:
 - `dotnet build -warnaserror` and `dotnet test` for the complete local gate.
 - Run focused tests first when appropriate:
   `dotnet test --filter "FullyQualifiedName~<ClassName>"`.
+- The `shared/` fixtures run as tests with the `Category=alignment` trait
+  (`ProtocolVectorTests`, `SdkRequestCaseTests`); run them alone with
+  `dotnet test --filter Category=alignment`. A vector this client does not match
+  yet is listed in `KnownGaps` with a fragment of its failure, and an SDK header
+  difference in `AcceptedHeaderDifferences`. Both lists fail when an entry goes
+  stale.
 - For changes to the predicates, compare
   `dotnet run -c Release --project bench/Amazon.ElastiCache.Integrations.Benchmarks` before and
   after. Times vary with host load; compare runs on the same host.
