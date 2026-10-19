@@ -2,19 +2,19 @@ using System.Reflection;
 using Amazon;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
-using Amazon.Photon;
+using Amazon.ElastiCache.Integrations;
 using Amazon.Runtime;
 
-// A consumer of the installed Amazon.Photon package. args[0] is a plaintext mock cache endpoint.
+// A consumer of the installed Amazon.ElastiCache.Integrations package. args[0] is a plaintext mock cache endpoint.
 // Exit code 0 means the package loaded, connected and served a GetItem from the cache.
-var version = typeof(PhotonClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+var version = typeof(ElastiCacheIntegrationsClient).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
 if (version?.Split('+')[0] != "0.0.1")
 {
     Console.Error.WriteLine($"Unexpected package version: {version}");
     return 1;
 }
 
-var options = new PhotonClientOptions
+var options = new ElastiCacheIntegrationsClientOptions
 {
     Endpoint = args[0],
     CacheName = "pack-smoke",
@@ -25,12 +25,12 @@ var options = new PhotonClientOptions
 };
 var config = new AmazonDynamoDBConfig { RegionEndpoint = RegionEndpoint.USEast1, MaxErrorRetry = 0 };
 
-await using var client = await PhotonClient.CreateDynamoDBClientAsync(options, config, new BasicAWSCredentials("AKID", "SECRET"));
+await using var client = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(options, config, new BasicAWSCredentials("AKID", "SECRET"));
 var reply = await client.GetItemAsync(new GetItemRequest { TableName = "t", Key = new() { ["pk"] = new AttributeValue { S = "a" } } });
 Console.WriteLine($"served v={reply.Item["v"].N}");
 return 0;
 
-internal sealed class StaticAuth : IPhotonAuthProvider
+internal sealed class StaticAuth : IElastiCacheIntegrationsAuthProvider
 {
     public ValueTask<(string UserId, string Token)> GetAuthAsync(CancellationToken cancellationToken) =>
         ValueTask.FromResult(("user", "token"));

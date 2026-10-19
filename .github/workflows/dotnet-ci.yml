@@ -52,7 +52,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: tests-net8.0-dotnet
-          path: dotnet/test/Amazon.Photon.Tests/bin/Release/net8.0/
+          path: dotnet/test/Amazon.ElastiCache.Integrations.Tests/bin/Release/net8.0/
           retention-days: 1
 
   # .NET 8 support ends 2026-11-10. Runs the net8.0 tests on an image that has only the .NET 10 runtime.
@@ -75,5 +75,5 @@ jobs:
         working-directory: tests
         run: |
           dotnet --list-runtimes
-          dotnet Amazon.Photon.Tests.dll | tee "$RUNNER_TEMP/run.log"
+          dotnet Amazon.ElastiCache.Integrations.Tests.dll | tee "$RUNNER_TEMP/run.log"
           grep -q '64-bit \.NET 10\.' "$RUNNER_TEMP/run.log"

@@ -1,10 +1,10 @@
-# Photon .NET
+# ElastiCache Integrations .NET
 
-Thin Photon client for the AWS SDK for .NET v4 DynamoDB client (`AWSSDK.DynamoDBv2`), on
+Thin ElastiCache Integrations client for the AWS SDK for .NET v4 DynamoDB client (`AWSSDK.DynamoDBv2`), on
 `net8.0`.
 
-`PhotonClient.CreateDynamoDBClientAsync` returns an ordinary `AmazonDynamoDBClient`. Calls that
-the cache's routing predicates match are sent to the Photon cache over RESP3 and TLS. Every other
+`ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync` returns an ordinary `AmazonDynamoDBClient`. Calls that
+the cache's routing predicates match are sent to the cache over RESP3 and TLS. Every other
 call goes to DynamoDB through the SDK's normal HTTP path, unchanged. Application code keeps the
 same SDK API, retries, unmarshalling and exceptions.
 
@@ -13,7 +13,7 @@ same SDK API, retries, unmarshalling and exceptions.
 - The `net8.0` target framework. It is the only one. The test suite also runs on the .NET 10
   runtime (`DOTNET_ROLL_FORWARD=Major`) in CI, because .NET 8 support ends on 2026-11-10.
 - `AWSSDK.DynamoDBv2` 4.0.107.3 or later, `AWSSDK.Core` 4.0.102.11 or later.
-- An ElastiCache Serverless cache with Photon enabled, and credentials allowed to
+- An ElastiCache Serverless cache with ElastiCache Integrations enabled, and credentials allowed to
   `elasticache:Connect` to it and to call DynamoDB.
 
 ## Install
@@ -23,12 +23,12 @@ package source:
 
 ```sh
 cd dotnet
-dotnet pack src/Amazon.Photon -c Release -o ~/photon-packages
-dotnet nuget add source ~/photon-packages --name photon-local
+dotnet pack src/Amazon.ElastiCache.Integrations -c Release -o ~/eci-packages
+dotnet nuget add source ~/eci-packages --name eci-local
 ```
 
 ```xml
-<PackageReference Include="Amazon.Photon" Version="0.0.1" />
+<PackageReference Include="Amazon.ElastiCache.Integrations" Version="0.0.1" />
 ```
 
 The package has XML docs and a symbol package (`.snupkg`). Built from the GitHub repository, its
@@ -40,23 +40,23 @@ symbols carry Source Link, so a debugger can step into the client's sources.
 using Amazon;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
-using Amazon.Photon;
+using Amazon.ElastiCache.Integrations;
 
-var options = new PhotonClientOptions
+var options = new ElastiCacheIntegrationsClientOptions
 {
     Endpoint = "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
     CacheName = "my-cache",
     Region = "us-east-1",
-    // Overrides = new PhotonOverrides { Ttl = 30 },
+    // Overrides = new ElastiCacheIntegrationsOverrides { Ttl = 30 },
 };
 
-await using var dynamodb = await PhotonClient.CreateDynamoDBClientAsync(
+await using var dynamodb = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(
     options,
     new AmazonDynamoDBConfig { RegionEndpoint = RegionEndpoint.USEast1 });
 
 var item = await dynamodb.GetItemAsync(new GetItemRequest
 {
-    TableName = "photon-test",
+    TableName = "elasticache-integrations-test",
     Key = new() { ["pk"] = new AttributeValue { S = "k1" } },
 });
 ```
@@ -64,10 +64,10 @@ var item = await dynamodb.GetItemAsync(new GetItemRequest
 `CreateDynamoDBClientAsync` connects, authenticates with IAM and fetches the cache config before
 it returns. A failure there throws, and nothing is left open. The config and credentials are
 optional. Without credentials the SDK default chain is used, once, for both the cache and
-DynamoDB. Photon sets the config's `HttpClientFactory`, so a config that already has one is
+DynamoDB. The client sets the config's `HttpClientFactory`, so a config that already has one is
 refused.
 
-`PhotonDynamoDBClient` owns the Photon session. `DisposeAsync` drains calls in flight for up to
+`ElastiCacheIntegrationsDynamoDBClient` owns the cache session. `DisposeAsync` drains calls in flight for up to
 `ConfigTimeout`, then closes. `Dispose` closes at once.
 
 ## Request routing
@@ -101,8 +101,8 @@ A DynamoDB error in a cached or proxied reply, such as `ResourceNotFoundExceptio
 
 ## Options
 
-`PhotonClientOptions` is validated before any network I/O. A bad value throws
-`PhotonConfigurationException`.
+`ElastiCacheIntegrationsClientOptions` is validated before any network I/O. A bad value throws
+`ElastiCacheIntegrationsConfigurationException`.
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -120,7 +120,7 @@ A DynamoDB error in a cached or proxied reply, such as `ResourceNotFoundExceptio
 | `Reconnect` | see below | Connect retries and backoff. |
 | `MaxPending` | `100` | Calls in flight on the connection. A call over the limit is not sent and fails with a retryable error, so the SDK retries it (event 1308, once per burst). |
 | `MaxResponseSize` | 16 MiB | The largest reply accepted. A larger one closes the connection. |
-| `OriginHandler` | built from the SDK config | The `HttpMessageHandler` for calls that go to DynamoDB. It is never disposed by Photon. |
+| `OriginHandler` | built from the SDK config | The `HttpMessageHandler` for calls that go to DynamoDB. It is never disposed by the client. |
 | `LoggerFactory` | stderr, Information and up | Where the client logs. See [Logging](#logging). |
 
 ### Timeouts
@@ -140,7 +140,7 @@ and `ReconnectWait` are still under review and may change before GA.
 
 ### Reconnect policy
 
-`PhotonReconnectPolicy`, set through `Options.Reconnect`:
+`ElastiCacheIntegrationsReconnectPolicy`, set through `Options.Reconnect`:
 
 | Option | Default | Meaning |
 |--------|---------|---------|
@@ -152,10 +152,10 @@ and `ReconnectWait` are still under review and may change before GA.
 
 ### Overrides
 
-`PhotonOverrides` is sent once, with the first `aws.config` of each connection. A field left null
+`ElastiCacheIntegrationsOverrides` is sent once, with the first `aws.config` of each connection. A field left null
 uses the cache's value. The cache resolves the overrides and returns the predicates the client
 routes with. Overrides the cache rejects fail `CreateDynamoDBClientAsync` with
-`PhotonConfigurationException`.
+`ElastiCacheIntegrationsConfigurationException`.
 
 | Field | Wire name | Meaning |
 |-------|-----------|---------|
@@ -169,11 +169,11 @@ routes with. Overrides the cache rejects fail `CreateDynamoDBClientAsync` with
 | `Extra` | as given | Fields this client does not model, sent unchanged. |
 
 ```csharp
-Overrides = new PhotonOverrides
+Overrides = new ElastiCacheIntegrationsOverrides
 {
     Ttl = 60,
     ExcludeTables = ["audit-log"],
-    Tables = new Dictionary<string, PhotonTableOverrides> { ["users"] = new() { Ttl = 300 } },
+    Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["users"] = new() { Ttl = 300 } },
 },
 ```
 
@@ -182,9 +182,9 @@ Overrides = new PhotonOverrides
 The cache region is `Options.Region`, else the SDK config's region, else the SDK's default
 region chain. Reading the config's region also reads `AWS_REGION` and the profile. So a region
 found there counts as the config's region, and it must match `Options.Region` when both are set:
-a mismatch fails `CreateDynamoDBClientAsync` with `PhotonConfigurationException`. The Node.js
+a mismatch fails `CreateDynamoDBClientAsync` with `ElastiCacheIntegrationsConfigurationException`. The Node.js
 client lets the explicit region win instead. When the config has neither a region nor a
-`ServiceURL`, Photon sets its region to the cache region.
+`ServiceURL`, The client sets its region to the cache region.
 
 ## Authentication
 
@@ -196,7 +196,7 @@ keeps the connection serving and retries on backoff. When the cache answers a ca
 `-AUTH_ERROR`, the client re-authenticates at once, at most once per `Reconnect.MaxDelay`.
 Until that succeeds, such calls go to
 DynamoDB for up to `FallbackDuration` (events 1103 to 1105), then fail with
-`PhotonCacheUnavailableException`.
+`ElastiCacheIntegrationsCacheUnavailableException`.
 
 The cache's credential for the client (FAS) is expected to last about one hour after the `AUTH`
 that vended it. If re-AUTH is still failing one hour after the last successful `AUTH`, the
@@ -231,17 +231,17 @@ A call that finds no connection:
 2. Then goes to DynamoDB with the original signed request, while inside `FallbackDuration`. The
    fallback window starts when `ReconnectWait` ends, not at the drop, so the wait does not use it
    up.
-3. Once the window is spent, fails with `PhotonCacheUnavailableException` until the cache is back
+3. Once the window is spent, fails with `ElastiCacheIntegrationsCacheUnavailableException` until the cache is back
    (event 1305, once per outage).
 
 `FallbackDuration = TimeSpan.Zero` is strict mode: while the client is open, a call never falls
-back. It fails with `PhotonCacheUnavailableException` when there is no connection or the cache
-answers `-AUTH_ERROR`, and with `PhotonServerException` when the cache refuses it
+back. It fails with `ElastiCacheIntegrationsCacheUnavailableException` when there is no connection or the cache
+answers `-AUTH_ERROR`, and with `ElastiCacheIntegrationsServerException` when the cache refuses it
 (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH`, `CONFIG_INVALID`).
 
 A call already sent on a connection that then fails is never replayed to DynamoDB by the client,
 because the cache may have run it. It is returned to the SDK as an `HttpRequestException`, so the
-SDK's retry policy decides, and the retry re-enters Photon. This covers a reply timeout
+SDK's retry policy decides, and the retry re-enters the client. This covers a reply timeout
 (`RequestTimeout`), a lost connection and a corrupt reply.
 
 A reply timeout fails only that call; the connection stays open. Replies arrive in order, so a
@@ -253,7 +253,7 @@ or more, an in-band reply timeout closes the connection at once.
 A `MOVED` reply closes the connection and starts the reconnect. If it came in place of the reply,
 the cache did not run the call, so the call is sent once more the way a call with no connection
 goes. If it came after the cache accepted the call with a request id, the call fails with
-`HttpRequestException` wrapping `PhotonConnectionLostException`, and the SDK's retry policy
+`HttpRequestException` wrapping `ElastiCacheIntegrationsConnectionLostException`, and the SDK's retry policy
 decides. `NOAUTH` always counts as not run: the engine refuses the command before the cache
 sees it.
 
@@ -282,8 +282,8 @@ From `CreateDynamoDBClientAsync`:
 
 | Exception | When |
 |-----------|------|
-| `PhotonConfigurationException` | A bad option, a region mismatch, no region found, a config that already has an `HttpClientFactory`, no credentials, or overrides the cache rejects. |
-| `PhotonConnectionException` | Every bring-up attempt failed, including with a config the client cannot use. The exception is the last attempt's failure; its inner exception is the cause. |
+| `ElastiCacheIntegrationsConfigurationException` | A bad option, a region mismatch, no region found, a config that already has an `HttpClientFactory`, no credentials, or overrides the cache rejects. |
+| `ElastiCacheIntegrationsConnectionException` | Every bring-up attempt failed, including with a config the client cannot use. The exception is the last attempt's failure; its inner exception is the cause. |
 | `OperationCanceledException` | The caller cancelled. |
 
 From a call:
@@ -291,30 +291,30 @@ From a call:
 | Exception | When |
 |-----------|------|
 | The modeled SDK exception, for example `ResourceNotFoundException` | DynamoDB returned that error, through the cache or directly. |
-| `HttpRequestException` | A call the SDK may retry failed in Photon and the SDK's retries ran out. `InnerException` is the Photon error: `PhotonTimeoutException`, `PhotonConnectionLostException`, `PhotonProtocolException`, `PhotonPendingLimitException` (`MaxPending` calls were already in flight; this one was not sent), or a `PhotonServerException` such as `ORIGIN_ERROR` or `INTERNAL_ERROR`. |
-| `PhotonCacheUnavailableException` | No cache connection, or `-AUTH_ERROR`, and the fallback window is spent or strict mode is on. Not retried by the SDK. |
-| `PhotonServerException` | Strict mode only: the cache rejected the call (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH`, `CONFIG_INVALID`). Outside strict mode these calls go to DynamoDB. `Code` holds the code. |
-| `TimeoutException` | The SDK's own `HttpClient` timeout fired while the call waited on Photon, as for a slow DynamoDB call. |
+| `HttpRequestException` | A call the SDK may retry failed in the client and the SDK's retries ran out. `InnerException` is the client error: `ElastiCacheIntegrationsTimeoutException`, `ElastiCacheIntegrationsConnectionLostException`, `ElastiCacheIntegrationsProtocolException`, `ElastiCacheIntegrationsPendingLimitException` (`MaxPending` calls were already in flight; this one was not sent), or a `ElastiCacheIntegrationsServerException` such as `ORIGIN_ERROR` or `INTERNAL_ERROR`. |
+| `ElastiCacheIntegrationsCacheUnavailableException` | No cache connection, or `-AUTH_ERROR`, and the fallback window is spent or strict mode is on. Not retried by the SDK. |
+| `ElastiCacheIntegrationsServerException` | Strict mode only: the cache rejected the call (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH`, `CONFIG_INVALID`). Outside strict mode these calls go to DynamoDB. `Code` holds the code. |
+| `TimeoutException` | The SDK's own `HttpClient` timeout fired while the call waited on the cache, as for a slow DynamoDB call. |
 | `OperationCanceledException` | The caller cancelled. |
 | `ObjectDisposedException` | The client was closed before or during the call. |
 
-All Photon errors derive from `PhotonException`. Messages never hold tokens, presigned URLs or
+All client errors derive from `ElastiCacheIntegrationsException`. Messages never hold tokens, presigned URLs or
 credentials.
 
 ## Closing
 
 Close the client with `await using` or `DisposeAsync`. A call already sent to the cache when the
-client is closed fails with `HttpRequestException` wrapping `PhotonConnectionLostException`, or
+client is closed fails with `HttpRequestException` wrapping `ElastiCacheIntegrationsConnectionLostException`, or
 with `OperationCanceledException`. A call not yet sent, such as one waiting for a reconnect or
 retried by the SDK after the close, goes to DynamoDB while the SDK client is still open. Once the
 SDK client is disposed, it throws `ObjectDisposedException` itself. Close is idempotent.
 
 ## Manual lifecycle
 
-`PhotonHandle` is the session alone, for applications that build their own SDK clients:
+`ElastiCacheIntegrationsHandle` is the session alone, for applications that build their own SDK clients:
 
 ```csharp
-await using var handle = await PhotonHandle.OpenAsync(options, credentials, RegionEndpoint.USEast1);
+await using var handle = await ElastiCacheIntegrationsHandle.OpenAsync(options, credentials, RegionEndpoint.USEast1);
 var config = new AmazonDynamoDBConfig { RegionEndpoint = RegionEndpoint.USEast1 };
 handle.Attach(config);
 using var dynamodb = new AmazonDynamoDBClient(credentials, config);
@@ -326,7 +326,7 @@ as in the Node and Java clients. `IsOpen` is true while it has a live connection
 
 ## Logging
 
-The client logs through `Options.LoggerFactory`, under the category `Amazon.Photon`. Without one
+The client logs through `Options.LoggerFactory`, under the category `Amazon.ElastiCache.Integrations`. Without one
 it writes Information and higher to stderr, so warnings are never lost. An exception thrown by a
 configured logger is dropped, so a broken logging provider cannot stop the client. Event ids:
 
@@ -381,5 +381,5 @@ the package into a throwaway console app and runs that app against the test suit
 mock cache. It needs no AWS access. Tests never use the host's `~/.aws` files, AWS environment
 variables or instance metadata.
 
-[samples/Amazon.Photon.LiveValidation](samples/Amazon.Photon.LiveValidation/README.md) checks the
+[samples/Amazon.ElastiCache.Integrations.LiveValidation](samples/Amazon.ElastiCache.Integrations.LiveValidation/README.md) checks the
 client against a real cache and compares every result with DynamoDB.

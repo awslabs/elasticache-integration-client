@@ -10,7 +10,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Amazon.Photon" Version="[0.0.1]" />
+    <PackageReference Include="Amazon.ElastiCache.Integrations" Version="[0.0.1]" />
   </ItemGroup>
 
 </Project>
