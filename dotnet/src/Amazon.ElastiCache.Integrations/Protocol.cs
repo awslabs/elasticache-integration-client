@@ -93,7 +93,7 @@ internal static class ElastiCacheIntegrationsProtocol
 
     /// <summary>
     /// The overrides as compact JSON: <c>version</c> first, then the modeled fields, then
-    /// <see cref="ElastiCacheIntegrationsOverrides.Extra"/>. Non-ASCII is escaped as lowercase <c>\uXXXX</c>.
+    /// <see cref="ElastiCacheIntegrationsCachePolicy.Extra"/>. Non-ASCII is escaped as lowercase <c>\uXXXX</c>.
     /// </summary>
     /// <exception cref="ElastiCacheIntegrationsConfigurationException">Extra sets <c>version</c>.</exception>
     public static byte[] SerializeOverrides(ElastiCacheIntegrationsOverrides overrides)

@@ -150,75 +150,84 @@ public sealed class ElastiCacheIntegrationsReconnectPolicy
     public double Jitter { get; init; } = 0.2;
 }
 
-/// <summary>Overrides sent with <c>aws.config</c>. Null fields are left out.</summary>
-public sealed class ElastiCacheIntegrationsOverrides
+/// <summary>How a committed item write leaves the cache.</summary>
+/// <remarks>Sent as <c>INVALIDATE_ONLY</c>, <c>UPDATE_CACHED</c> or <c>UPDATE_CACHED_AND_STORE_FULL_ITEM</c>.</remarks>
+[JsonConverter(typeof(ItemWriteBehaviorConverter))]
+public enum ItemWriteBehavior
 {
-    /// <summary>Operations not to cache.</summary>
-    [JsonPropertyName("exclude_operations")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string>? ExcludeOperations { get; init; }
+    /// <summary>Drop the item's entry and store nothing.</summary>
+    InvalidateOnly,
 
-    /// <summary>Tables not to cache.</summary>
-    [JsonPropertyName("exclude_tables")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyList<string>? ExcludeTables { get; init; }
+    /// <summary>Refresh the projections already cached for the item, and create none.</summary>
+    UpdateCached,
 
-    /// <summary>Default cache TTL in seconds.</summary>
-    [JsonPropertyName("ttl")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? Ttl { get; init; }
+    /// <summary>Also store the full-item entry, even for an item that was not cached.</summary>
+    UpdateCachedAndStoreFullItem,
+}
 
-    /// <summary>Default negative-cache TTL in seconds.</summary>
-    [JsonPropertyName("nttl")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? Nttl { get; init; }
+internal sealed class ItemWriteBehaviorConverter() : JsonStringEnumConverter<ItemWriteBehavior>(JsonNamingPolicy.SnakeCaseUpper, allowIntegerValues: false);
 
-    /// <summary>Repopulate cached items from committed writes instead of only invalidating.</summary>
-    [JsonPropertyName("populate_on_write")]
+/// <summary>Cache policy settings, the same at the connection level and for one table. Null fields are left out.</summary>
+public abstract class ElastiCacheIntegrationsCachePolicy
+{
+    /// <summary>Lifetime of a cached item, in seconds. Applies to every operation except Query and Scan.</summary>
+    [JsonPropertyName("item_ttl")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? PopulateOnWrite { get; init; }
+    public long? ItemTtl { get; init; }
 
-    /// <summary>Also write the full-item entry when repopulating.</summary>
-    [JsonPropertyName("populate_full_item")]
+    /// <summary>Lifetime of a cached "item does not exist" answer, in seconds. 0 turns it off.</summary>
+    [JsonPropertyName("item_negative_ttl")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? PopulateFullItem { get; init; }
+    public long? ItemNegativeTtl { get; init; }
 
-    /// <summary>Per-table settings. When non-empty, only these tables are cached.</summary>
-    [JsonPropertyName("tables")]
+    /// <summary>Lifetime of a cached Query page, in seconds.</summary>
+    [JsonPropertyName("query_ttl")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public IReadOnlyDictionary<string, ElastiCacheIntegrationsTableOverrides>? Tables { get; init; }
+    public long? QueryTtl { get; init; }
+
+    /// <summary>Lifetime of a cached Scan page, in seconds.</summary>
+    [JsonPropertyName("scan_ttl")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? ScanTtl { get; init; }
+
+    /// <summary>How a committed item write leaves the cache.</summary>
+    [JsonPropertyName("item_write_behavior")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public ItemWriteBehavior? ItemWriteBehavior { get; init; }
 
     /// <summary>Fields this client does not model, sent unchanged. A key may not repeat a modeled field.</summary>
     [JsonExtensionData]
     public IDictionary<string, JsonElement>? Extra { get; init; }
 }
 
-/// <summary>Settings for one table in <see cref="ElastiCacheIntegrationsOverrides.Tables"/>.</summary>
-public sealed class ElastiCacheIntegrationsTableOverrides
+/// <summary>
+/// Overrides sent with <c>aws.config</c>. <see cref="CachedTables"/> and <see cref="CachedOperations"/>
+/// are allowlists, and null or empty means everything. A field the cache does not know is ignored.
+/// </summary>
+public sealed class ElastiCacheIntegrationsOverrides : ElastiCacheIntegrationsCachePolicy
 {
-    /// <summary>Cache TTL in seconds.</summary>
-    [JsonPropertyName("ttl")]
+    /// <summary>The only tables that are cached.</summary>
+    [JsonPropertyName("cached_tables")]
+    [JsonPropertyOrder(-2)]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? Ttl { get; init; }
+    public IReadOnlyList<string>? CachedTables { get; init; }
 
-    /// <summary>Negative-cache TTL in seconds.</summary>
-    [JsonPropertyName("nttl")]
+    /// <summary>The only operations that are cached.</summary>
+    [JsonPropertyName("cached_operations")]
+    [JsonPropertyOrder(-1)]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public int? Nttl { get; init; }
+    public IReadOnlyList<string>? CachedOperations { get; init; }
 
-    /// <summary>Repopulate cached items from committed writes.</summary>
-    [JsonPropertyName("populate_on_write")]
+    /// <summary>Per-table settings. An entry never puts a table in scope.</summary>
+    [JsonPropertyName("table_overrides")]
+    [JsonPropertyOrder(1)]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? PopulateOnWrite { get; init; }
+    public IReadOnlyDictionary<string, ElastiCacheIntegrationsTableOverrides>? TableOverrides { get; init; }
+}
 
-    /// <summary>Also write the full-item entry when repopulating.</summary>
-    [JsonPropertyName("populate_full_item")]
-    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public bool? PopulateFullItem { get; init; }
-
-    /// <summary>Fields this client does not model, sent unchanged. A key may not repeat a modeled field.</summary>
-    [JsonExtensionData]
-    public IDictionary<string, JsonElement>? Extra { get; init; }
+/// <summary>Settings for one table in <see cref="ElastiCacheIntegrationsOverrides.TableOverrides"/>.</summary>
+public sealed class ElastiCacheIntegrationsTableOverrides : ElastiCacheIntegrationsCachePolicy
+{
 }
 
 /// <summary>Supplies the <c>AUTH</c> user id and token in place of IAM token generation.</summary>

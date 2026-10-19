@@ -21,22 +21,21 @@ public class ConfigProtocolTests
     {
         var overrides = new ElastiCacheIntegrationsOverrides
         {
-            ExcludeOperations = ["Scan"],
-            ExcludeTables = ["AuditLog"],
-            Ttl = 300,
-            Nttl = 30,
-            PopulateOnWrite = true,
-            PopulateFullItem = false,
-            Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
+            CachedTables = ["Users", "Sessions"],
+            CachedOperations = ["GetItem"],
+            ItemTtl = 300,
+            ItemNegativeTtl = 30,
+            ItemWriteBehavior = ItemWriteBehavior.UpdateCached,
+            TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
             {
-                ["Users"] = new() { Ttl = 600, Nttl = 60, Extra = new Dictionary<string, JsonElement> { ["future"] = JsonDocument.Parse("true").RootElement } },
-                ["Sessions"] = new() { Ttl = 60, PopulateOnWrite = false },
+                ["Users"] = new() { ItemTtl = 600, Extra = new Dictionary<string, JsonElement> { ["future"] = JsonDocument.Parse("true").RootElement } },
+                ["Sessions"] = new() { QueryTtl = 60 },
             },
         };
         Assert.Equal(
-            "{\"version\":\"1.0\",\"exclude_operations\":[\"Scan\"],\"exclude_tables\":[\"AuditLog\"],\"ttl\":300,\"nttl\":30," +
-            "\"populate_on_write\":true,\"populate_full_item\":false," +
-            "\"tables\":{\"Users\":{\"ttl\":600,\"nttl\":60,\"future\":true},\"Sessions\":{\"ttl\":60,\"populate_on_write\":false}}}",
+            "{\"version\":\"1.0\",\"cached_tables\":[\"Users\",\"Sessions\"],\"cached_operations\":[\"GetItem\"],\"item_ttl\":300,\"item_negative_ttl\":30," +
+            "\"item_write_behavior\":\"UPDATE_CACHED\"," +
+            "\"table_overrides\":{\"Users\":{\"item_ttl\":600,\"future\":true},\"Sessions\":{\"query_ttl\":60}}}",
             Json(overrides));
     }
 
@@ -45,43 +44,43 @@ public class ConfigProtocolTests
     {
         var overrides = new ElastiCacheIntegrationsOverrides
         {
-            Ttl = 5,
+            ItemTtl = 5,
             Extra = new Dictionary<string, JsonElement> { ["b"] = JsonDocument.Parse("2").RootElement, ["a"] = JsonDocument.Parse("[1,{\"x\":null}]").RootElement },
         };
-        Assert.Equal("{\"version\":\"1.0\",\"ttl\":5,\"b\":2,\"a\":[1,{\"x\":null}]}", Json(overrides));
+        Assert.Equal("{\"version\":\"1.0\",\"item_ttl\":5,\"b\":2,\"a\":[1,{\"x\":null}]}", Json(overrides));
     }
 
     [Fact]
     public void EscapesNonAsciiLikeNode()
     {
-        var overrides = new ElastiCacheIntegrationsOverrides { ExcludeTables = ["café", "😀", "<a&b>+'"], Extra = new Dictionary<string, JsonElement> { ["é"] = JsonDocument.Parse("\"\\u00E9\\n\"").RootElement } };
+        var overrides = new ElastiCacheIntegrationsOverrides { CachedTables = ["café", "😀", "<a&b>+'"], Extra = new Dictionary<string, JsonElement> { ["é"] = JsonDocument.Parse("\"\\u00E9\\n\"").RootElement } };
         Assert.Equal(
-            "{\"version\":\"1.0\",\"exclude_tables\":[\"caf\\u00e9\",\"\\ud83d\\ude00\",\"<a&b>+'\"],\"\\u00e9\":\"\\u00e9\\n\"}",
+            "{\"version\":\"1.0\",\"cached_tables\":[\"caf\\u00e9\",\"\\ud83d\\ude00\",\"<a&b>+'\"],\"\\u00e9\":\"\\u00e9\\n\"}",
             Json(overrides));
     }
 
     [Fact]
     public void EscapesQuotesAndControlCharacters()
     {
-        Assert.Equal("{\"version\":\"1.0\",\"exclude_tables\":[\"a\\\"b\\\\c\\u0001\\t\"]}", Json(new ElastiCacheIntegrationsOverrides { ExcludeTables = ["a\"b\\c\u0001\t"] }));
+        Assert.Equal("{\"version\":\"1.0\",\"cached_tables\":[\"a\\\"b\\\\c\\u0001\\t\"]}", Json(new ElastiCacheIntegrationsOverrides { CachedTables = ["a\"b\\c\u0001\t"] }));
     }
 
     [Fact]
     public void KeepsTheCaseOfALiteralBackslashU()
     {
-        Assert.Equal("{\"version\":\"1.0\",\"exclude_tables\":[\"a\\\\u00E9\"]}", Json(new ElastiCacheIntegrationsOverrides { ExcludeTables = ["a\\u00E9"] }));
+        Assert.Equal("{\"version\":\"1.0\",\"cached_tables\":[\"a\\\\u00E9\"]}", Json(new ElastiCacheIntegrationsOverrides { CachedTables = ["a\\u00E9"] }));
     }
 
     [Fact]
     public void EscapesDeleteUnlikeNode()
     {
-        Assert.Equal("{\"version\":\"1.0\",\"exclude_tables\":[\"\\u007f\"]}", Json(new ElastiCacheIntegrationsOverrides { ExcludeTables = ["\u007f"] }));
+        Assert.Equal("{\"version\":\"1.0\",\"cached_tables\":[\"\\u007f\"]}", Json(new ElastiCacheIntegrationsOverrides { CachedTables = ["\u007f"] }));
     }
 
     [Fact]
     public void ReplacesALoneSurrogate()
     {
-        Assert.Equal("{\"version\":\"1.0\",\"exclude_tables\":[\"\\ufffd\"]}", Json(new ElastiCacheIntegrationsOverrides { ExcludeTables = ["\ud800"] }));
+        Assert.Equal("{\"version\":\"1.0\",\"cached_tables\":[\"\\ufffd\"]}", Json(new ElastiCacheIntegrationsOverrides { CachedTables = ["\ud800"] }));
     }
 
     [Fact]
@@ -95,8 +94,8 @@ public class ConfigProtocolTests
     public void WritesBothConfigForms()
     {
         var writer = new ArrayBufferWriter<byte>();
-        ElastiCacheIntegrationsProtocol.WriteConfig(writer, "{\"exclude_operations\":[\"Scan\"],\"ttl\":300}"u8.ToArray());
-        Assert.Equal("*2\r\n$10\r\naws.config\r\n$41\r\n{\"exclude_operations\":[\"Scan\"],\"ttl\":300}\r\n", Encoding.UTF8.GetString(writer.WrittenSpan));
+        ElastiCacheIntegrationsProtocol.WriteConfig(writer, "{\"cached_operations\":[\"Scan\"],\"item_ttl\":300}"u8.ToArray());
+        Assert.Equal("*2\r\n$10\r\naws.config\r\n$45\r\n{\"cached_operations\":[\"Scan\"],\"item_ttl\":300}\r\n", Encoding.UTF8.GetString(writer.WrittenSpan));
 
         writer.Clear();
         ElastiCacheIntegrationsProtocol.WriteConfigRefresh(writer);
@@ -106,7 +105,7 @@ public class ConfigProtocolTests
     [Fact]
     public void ReadsAResolvedConfigAndKeepsTheRawObject()
     {
-        const string json = "{\"version\":\"1.0\",\"refresh_interval\":60,\"ttl\":300,\"nttl\":60," +
+        const string json = "{\"version\":\"1.0\",\"refresh_interval\":60,\"item_ttl\":300," +
             "\"predicates\":[{\"expr\":\"service == 'dynamodb' && operation in ops\",\"vars\":{\"ops\":[\"GetItem\"]}}]}";
         var config = ElastiCacheIntegrationsProtocol.ParseConfigReply(Blob(json), noArgumentForm: false)!;
         Assert.Equal("1.0", config.Version);

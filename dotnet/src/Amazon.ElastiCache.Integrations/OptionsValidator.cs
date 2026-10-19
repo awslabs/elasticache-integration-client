@@ -13,10 +13,9 @@ internal static class OptionsValidator
     // ElastiCache closes an IAM-authenticated connection after 12 hours.
     private static readonly TimeSpan MaxReauthInterval = TimeSpan.FromHours(12);
 
-    private static readonly HashSet<string> OverrideFields =
-        ["exclude_operations", "exclude_tables", "ttl", "nttl", "populate_on_write", "populate_full_item", "tables"];
+    private static readonly HashSet<string> TableFields = ["item_ttl", "item_negative_ttl", "query_ttl", "scan_ttl", "item_write_behavior"];
 
-    private static readonly HashSet<string> TableFields = ["ttl", "nttl", "populate_on_write", "populate_full_item"];
+    private static readonly HashSet<string> OverrideFields = [.. TableFields, "cached_tables", "cached_operations", "table_overrides"];
 
     public static void Validate(ElastiCacheIntegrationsClientOptions options)
     {
@@ -111,20 +110,42 @@ internal static class OptionsValidator
 
     private static void ValidateOverrides(ElastiCacheIntegrationsOverrides overrides)
     {
-        NoBlankItems(overrides.ExcludeOperations, "Overrides.ExcludeOperations");
-        NoBlankItems(overrides.ExcludeTables, "Overrides.ExcludeTables");
+        NoBlankItems(overrides.CachedTables, "Overrides.CachedTables");
+        NoBlankItems(overrides.CachedOperations, "Overrides.CachedOperations");
         if (overrides.Extra?.ContainsKey("version") == true)
         {
             throw Invalid("Overrides.Extra[\"version\"]", "is reserved; the client sends the config version");
         }
 
-        ValidateExtra(overrides.Extra, OverrideFields, "Overrides");
-        foreach (var (table, settings) in overrides.Tables ?? new Dictionary<string, ElastiCacheIntegrationsTableOverrides>())
+        ValidatePolicy(overrides, OverrideFields, "Overrides");
+        foreach (var (table, settings) in overrides.TableOverrides ?? new Dictionary<string, ElastiCacheIntegrationsTableOverrides>())
         {
-            var name = $"Overrides.Tables[\"{table}\"]";
-            NotBlank(table, "Overrides.Tables key");
-            ValidateExtra((settings ?? throw Invalid(name, "cannot be null")).Extra, TableFields, name);
+            var name = $"Overrides.TableOverrides[\"{table}\"]";
+            NotBlank(table, "Overrides.TableOverrides key");
+            ValidatePolicy(settings ?? throw Invalid(name, "cannot be null"), TableFields, name);
         }
+    }
+
+    // The cache checks each lifetime against its own bounds; only what it cannot read is caught here.
+    private static void ValidatePolicy(ElastiCacheIntegrationsCachePolicy policy, HashSet<string> modeled, string owner)
+    {
+        foreach (var (field, value) in new[]
+        {
+            ("ItemTtl", policy.ItemTtl), ("ItemNegativeTtl", policy.ItemNegativeTtl), ("QueryTtl", policy.QueryTtl), ("ScanTtl", policy.ScanTtl),
+        })
+        {
+            if (value < 0)
+            {
+                throw Invalid($"{owner}.{field}", "cannot be negative");
+            }
+        }
+
+        if (policy.ItemWriteBehavior is { } behavior && !Enum.IsDefined(behavior))
+        {
+            throw Invalid($"{owner}.ItemWriteBehavior", $"is not a defined value: {(int)behavior}");
+        }
+
+        ValidateExtra(policy.Extra, modeled, owner);
     }
 
     private static void NoBlankItems(IReadOnlyList<string>? items, string name)

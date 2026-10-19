@@ -27,13 +27,13 @@ public class PredicatesTests
     // {} overrides.
     private static readonly string DefaultConfig = Config((AllOps, Vars(AllOperations)));
 
-    // {"tables":{"Users":{},"Sessions":{}}}
+    // {"cached_tables":["Users","Sessions"]}
     private static readonly string AllowConfig = Config(
         (TableName, Vars(SingleTableOps, "allowed", "Users", "Sessions")),
         (RequestItems, Vars(BatchOps, "allowed", "Users", "Sessions")),
         (TransactItems, Vars(TransactOps, "allowed", "Users", "Sessions")));
 
-    // {"exclude_tables":["Secrets"]}
+    // A denylist shape: current overrides no longer produce it, but the evaluator must still run it.
     private static readonly string DenyConfig = Config(
         (TableNameExcept, Vars(SingleTableOps, "excluded", "Secrets")),
         (RequestItemsExcept, Vars(BatchOps, "excluded", "Secrets")),
@@ -142,7 +142,7 @@ public class PredicatesTests
     [Fact]
     public void AllowlistWithoutTheBatchGroupKeepsBatchesOut()
     {
-        // {"tables":{"Users":{}},"exclude_operations":["BatchGetItem","BatchWriteItem"]}
+        // {"cached_tables":["Users"]} with every operation but the batch ones in cached_operations
         var predicates = Compile(Config(
             (TableName, Vars(SingleTableOps, "allowed", "Users")),
             (TransactItems, Vars(TransactOps, "allowed", "Users"))));
@@ -155,7 +155,7 @@ public class PredicatesTests
     [Fact]
     public void EmptyAllowlistRoutesNothing()
     {
-        // {"tables":{"Users":{}},"exclude_tables":["Users"]}
+        // An allowlist with no tables in it.
         var predicates = Compile(Config(
             (TableName, Vars(SingleTableOps, "allowed")),
             (RequestItems, Vars(BatchOps, "allowed")),

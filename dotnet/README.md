@@ -47,7 +47,7 @@ var options = new ElastiCacheIntegrationsClientOptions
     Endpoint = "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
     CacheName = "my-cache",
     Region = "us-east-1",
-    // Overrides = new ElastiCacheIntegrationsOverrides { Ttl = 30 },
+    // Overrides = new ElastiCacheIntegrationsOverrides { CachedTables = ["Users"], ItemTtl = 30 },
 };
 
 await using var dynamodb = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(
@@ -157,23 +157,43 @@ uses the cache's value. The cache resolves the overrides and returns the predica
 routes with. Overrides the cache rejects fail `CreateDynamoDBClientAsync` with
 `ElastiCacheIntegrationsConfigurationException`.
 
+`CachedTables` and `CachedOperations` are allowlists, and they intersect: only those operations,
+on only those tables. Each one null or empty means everything. There is no exclude form: to keep
+one table out of the cache, name the tables that should be in it.
+
+Lifetimes are set per category, connection-wide at the top level or per table under
+`TableOverrides`. A `TableOverrides` entry is settings only and never puts a table in scope. The
+cache refuses a lifetime outside its bounds at connect time, and ignores a field name it does not
+know.
+
 | Field | Wire name | Meaning |
 |-------|-----------|---------|
-| `ExcludeOperations` | `exclude_operations` | Operations not to cache. |
-| `ExcludeTables` | `exclude_tables` | Tables not to cache. |
-| `Ttl` | `ttl` | The default cache TTL, in seconds. |
-| `Nttl` | `nttl` | The default TTL for "not found" replies, in seconds. |
-| `PopulateOnWrite` | `populate_on_write` | Repopulate cached items from committed writes instead of only invalidating. |
-| `PopulateFullItem` | `populate_full_item` | Also write the full-item entry when repopulating. |
-| `Tables` | `tables` | Per-table `Ttl`, `Nttl`, `PopulateOnWrite`, `PopulateFullItem`. When not empty, only these tables are cached. |
+| `CachedTables` | `cached_tables` | The only tables that are cached. |
+| `CachedOperations` | `cached_operations` | The only operations that are cached. |
+| `ItemTtl` | `item_ttl` | Lifetime of a cached item, in seconds, for every operation except Query and Scan. |
+| `ItemNegativeTtl` | `item_negative_ttl` | Lifetime of a cached "item does not exist" answer, in seconds. `0` turns it off. |
+| `QueryTtl` | `query_ttl` | Lifetime of a cached Query page, in seconds. |
+| `ScanTtl` | `scan_ttl` | Lifetime of a cached Scan page, in seconds. |
+| `ItemWriteBehavior` | `item_write_behavior` | `InvalidateOnly`, `UpdateCached` (refresh the cached projections) or `UpdateCachedAndStoreFullItem` (also store the full item). |
+| `TableOverrides` | `table_overrides` | Per-table lifetimes and `ItemWriteBehavior`. |
 | `Extra` | as given | Fields this client does not model, sent unchanged. |
 
 ```csharp
 Overrides = new ElastiCacheIntegrationsOverrides
 {
-    Ttl = 60,
-    ExcludeTables = ["audit-log"],
-    Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["users"] = new() { Ttl = 300 } },
+    CachedTables = ["Users", "Sessions"],
+    CachedOperations = ["GetItem", "Query"],
+    ItemTtl = 500,
+    ItemNegativeTtl = 400,
+    QueryTtl = 300,
+    ScanTtl = 200,
+    ItemWriteBehavior = ItemWriteBehavior.UpdateCached,
+    TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
+    {
+        ["Users"] = new() { ItemTtl = 600 },
+        ["Sessions"] = new() { QueryTtl = 90, ItemWriteBehavior = ItemWriteBehavior.InvalidateOnly },
+        ["Foo"] = new() { QueryTtl = 90 }, // outside CachedTables: never applies
+    },
 },
 ```
 

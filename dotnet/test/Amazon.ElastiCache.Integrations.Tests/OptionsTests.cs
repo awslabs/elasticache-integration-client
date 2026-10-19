@@ -86,14 +86,18 @@ public class OptionsTests
         { "ReauthInterval", () => new() { Endpoint = "h:1", CacheName = "c", ReauthInterval = TimeSpan.FromSeconds(-1) } },
         { "ReauthInterval", () => new() { Endpoint = "h:1", CacheName = "c", ReauthInterval = TimeSpan.FromHours(12) } },
         { "RequestTimeout", () => new() { Endpoint = "h:1", CacheName = "c", RequestTimeout = TimeSpan.FromTicks(5000) } },
-        { "Overrides.ExcludeOperations", () => WithOverrides(new() { ExcludeOperations = ["Scan", ""] }) },
-        { "Overrides.ExcludeTables", () => WithOverrides(new() { ExcludeTables = [null!] }) },
-        { "Overrides.Extra[\"ttl\"]", () => WithOverrides(new() { Extra = Extra("ttl", "1") }) },
+        { "Overrides.CachedOperations", () => WithOverrides(new() { CachedOperations = ["Scan", ""] }) },
+        { "Overrides.CachedTables", () => WithOverrides(new() { CachedTables = [null!] }) },
+        { "Overrides.ItemTtl", () => WithOverrides(new() { ItemTtl = -1 }) },
+        { "Overrides.ItemWriteBehavior", () => WithOverrides(new() { ItemWriteBehavior = (ItemWriteBehavior)7 }) },
+        { "Overrides.Extra[\"item_ttl\"]", () => WithOverrides(new() { Extra = Extra("item_ttl", "1") }) },
+        { "Overrides.Extra[\"table_overrides\"]", () => WithOverrides(new() { Extra = Extra("table_overrides", "{}") }) },
         { "Overrides.Extra[\"version\"]", () => WithOverrides(new() { Extra = Extra("version", "\"1.0\"") }) },
         { "Overrides.Extra[\"future\"]", () => WithOverrides(new() { Extra = new Dictionary<string, JsonElement> { ["future"] = default } }) },
-        { "Overrides.Tables key", () => WithOverrides(new() { Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { [" "] = new() } }) },
-        { "Overrides.Tables[\"Users\"]", () => WithOverrides(new() { Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["Users"] = null! } }) },
-        { "Overrides.Tables[\"Users\"].Extra[\"nttl\"]", () => WithOverrides(new() { Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["Users"] = new() { Extra = Extra("nttl", "1") } } }) },
+        { "Overrides.TableOverrides key", () => WithOverrides(new() { TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { [" "] = new() } }) },
+        { "Overrides.TableOverrides[\"Users\"]", () => WithOverrides(new() { TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["Users"] = null! } }) },
+        { "Overrides.TableOverrides[\"Users\"].ScanTtl", () => WithOverrides(new() { TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["Users"] = new() { ScanTtl = -5 } } }) },
+        { "Overrides.TableOverrides[\"Users\"].Extra[\"query_ttl\"]", () => WithOverrides(new() { TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides> { ["Users"] = new() { Extra = Extra("query_ttl", "1") } } }) },
         { "ReconnectWait", () => new() { Endpoint = "h:1", CacheName = "c", ReconnectWait = TimeSpan.FromSeconds(-1) } },
         { "FallbackDuration", () => new() { Endpoint = "h:1", CacheName = "c", FallbackDuration = TimeSpan.FromSeconds(-2) } },
         { "CachePolicyTimeout", () => new() { Endpoint = "h:1", CacheName = "c", CachePolicyTimeout = TimeSpan.Zero } },
@@ -130,23 +134,72 @@ public class OptionsTests
     {
         var overrides = new ElastiCacheIntegrationsOverrides
         {
-            ExcludeOperations = ["Scan"],
-            ExcludeTables = ["AuditLog"],
-            Ttl = 300,
-            Nttl = 30,
-            PopulateOnWrite = true,
-            PopulateFullItem = false,
-            Tables = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
+            CachedTables = ["Users"],
+            CachedOperations = ["GetItem"],
+            ItemTtl = 300,
+            ItemNegativeTtl = 0,
+            QueryTtl = 60,
+            ScanTtl = 30,
+            ItemWriteBehavior = ItemWriteBehavior.UpdateCachedAndStoreFullItem,
+            TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
             {
-                ["Users"] = new() { Ttl = 600, Nttl = 60, PopulateOnWrite = false, PopulateFullItem = true, Extra = Extra("t", "1") },
+                ["Users"] = new() { ItemTtl = 600, ItemWriteBehavior = ItemWriteBehavior.InvalidateOnly, Extra = Extra("t", "1") },
             },
             Extra = Extra("future", "true"),
         };
 
         Assert.Equal(
-            """{"exclude_operations":["Scan"],"exclude_tables":["AuditLog"],"ttl":300,"nttl":30,"populate_on_write":true,"populate_full_item":false,"tables":{"Users":{"ttl":600,"nttl":60,"populate_on_write":false,"populate_full_item":true,"t":1}},"future":true}""",
+            """{"cached_tables":["Users"],"cached_operations":["GetItem"],"item_ttl":300,"item_negative_ttl":0,"query_ttl":60,"scan_ttl":30,"item_write_behavior":"UPDATE_CACHED_AND_STORE_FULL_ITEM","table_overrides":{"Users":{"item_ttl":600,"item_write_behavior":"INVALIDATE_ONLY","t":1}},"future":true}""",
             JsonSerializer.Serialize(overrides));
         OptionsValidator.Validate(new ElastiCacheIntegrationsClientOptions { Endpoint = "h:1", CacheName = "c", Overrides = overrides });
+    }
+
+    [Theory]
+    [InlineData(ItemWriteBehavior.InvalidateOnly, "INVALIDATE_ONLY")]
+    [InlineData(ItemWriteBehavior.UpdateCached, "UPDATE_CACHED")]
+    [InlineData(ItemWriteBehavior.UpdateCachedAndStoreFullItem, "UPDATE_CACHED_AND_STORE_FULL_ITEM")]
+    public void WriteBehaviorsUseTheProxyLabels(ItemWriteBehavior behavior, string label) =>
+        Assert.Equal($"{{\"item_write_behavior\":\"{label}\"}}", JsonSerializer.Serialize(new ElastiCacheIntegrationsTableOverrides { ItemWriteBehavior = behavior }));
+
+    /// <summary>The example in the README, and in the proxy's config.rs test_the_documented_example_resolves_as_written.</summary>
+    [Fact]
+    public void TheReadmeExampleSerializesToTheProxysDocumentedExample()
+    {
+        var overrides = new ElastiCacheIntegrationsOverrides
+        {
+            CachedTables = ["Users", "Sessions"],
+            CachedOperations = ["GetItem", "Query"],
+            ItemTtl = 500,
+            ItemNegativeTtl = 400,
+            QueryTtl = 300,
+            ScanTtl = 200,
+            ItemWriteBehavior = ItemWriteBehavior.UpdateCached,
+            TableOverrides = new Dictionary<string, ElastiCacheIntegrationsTableOverrides>
+            {
+                ["Users"] = new() { ItemTtl = 600 },
+                ["Sessions"] = new() { QueryTtl = 90, ItemWriteBehavior = ItemWriteBehavior.InvalidateOnly },
+                ["Foo"] = new() { QueryTtl = 90 },
+            },
+        };
+        const string proxyExample = """
+            {
+                "cached_tables": ["Users", "Sessions"],
+                "cached_operations": ["GetItem", "Query"],
+                "item_ttl": 500,
+                "item_negative_ttl": 400,
+                "query_ttl": 300,
+                "scan_ttl": 200,
+                "item_write_behavior": "UPDATE_CACHED",
+                "table_overrides": {
+                    "Users": { "item_ttl": 600 },
+                    "Sessions": { "query_ttl": 90, "item_write_behavior": "INVALIDATE_ONLY" },
+                    "Foo": { "query_ttl": 90 }
+                }
+            }
+            """;
+
+        using var expected = JsonDocument.Parse(proxyExample);
+        Assert.Equal(JsonSerializer.Serialize(expected.RootElement), JsonSerializer.Serialize(overrides));
     }
 
     private static Dictionary<string, JsonElement> Extra(string key, string json)

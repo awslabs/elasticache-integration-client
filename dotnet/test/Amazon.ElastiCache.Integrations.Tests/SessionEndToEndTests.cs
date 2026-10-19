@@ -16,7 +16,7 @@ public class SessionEndToEndTests
         await cache.SendAsync("+OK\r\n");
         Assert.Equal(["HELLO", "3"], await cache.ReadCommandAsync());
         await cache.SendAsync(new RespMap([new(new RespBlobString("proto"u8.ToArray()), new RespInteger(3))]));
-        Assert.Equal(["aws.config", """{"version":"1.0","ttl":30}"""], await cache.ReadCommandAsync());
+        Assert.Equal(["aws.config", """{"version":"1.0","item_ttl":30}"""], await cache.ReadCommandAsync());
         await cache.SendAsync(new RespBlobString(Encoding.UTF8.GetBytes(config)));
     }
 
@@ -38,7 +38,7 @@ public class SessionEndToEndTests
             Endpoint = cache.Endpoint,
             CacheName = "my-cache",
             UseTls = false,
-            Overrides = new ElastiCacheIntegrationsOverrides { Ttl = 30 },
+            Overrides = new ElastiCacheIntegrationsOverrides { ItemTtl = 30 },
         };
 
         var accept = cache.AcceptAsync();
@@ -74,7 +74,7 @@ public class SessionEndToEndTests
             Endpoint = cache.Endpoint,
             CacheName = "my-cache",
             UseTls = false,
-            Overrides = new ElastiCacheIntegrationsOverrides { Ttl = 30 },
+            Overrides = new ElastiCacheIntegrationsOverrides { ItemTtl = 30 },
             CachePolicyTimeout = TimeSpan.FromSeconds(30),
             ConfigTimeout = TimeSpan.FromMinutes(5),
             Reconnect = new ElastiCacheIntegrationsReconnectPolicy { Jitter = 0 },
