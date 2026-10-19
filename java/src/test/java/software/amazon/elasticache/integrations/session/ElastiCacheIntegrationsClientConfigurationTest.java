@@ -99,7 +99,7 @@ class ElastiCacheIntegrationsClientConfigurationTest {
 
     @Test
     void clientConfigurationRejectsUnusableConnectionTimeout() {
-        for (long bad : new long[] {0, -1, Integer.MAX_VALUE + 1L, Long.MIN_VALUE}) {
+        for (long bad : new long[] {0, -1, Long.MIN_VALUE, Integer.MAX_VALUE + 1L, Long.MAX_VALUE}) {
             assertConfigError(
                     "connectionTimeoutMs must be a positive number of milliseconds, at most 2147483647",
                     ElastiCacheIntegrationsClientConfiguration.builder().connectionTimeoutMs(bad));

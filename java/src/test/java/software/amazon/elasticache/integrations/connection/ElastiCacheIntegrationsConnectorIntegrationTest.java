@@ -5,6 +5,8 @@ import static org.junit.jupiter.api.Assertions.*;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.Field;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -23,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.Lock;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -1579,6 +1582,105 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         }
     }
 
+    // === Connection timeout ===
+
+    @Test
+    void handshake_hungHello_timesOutOnConnectionTimeout() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("HELLO");
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost",
+                        server.getPort(),
+                        clientSslContext,
+                        200,
+                        5000,
+                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connect();
+
+            long startNanos = System.nanoTime();
+            ElastiCacheIntegrationsConnectionError error =
+                    assertThrows(
+                            ElastiCacheIntegrationsConnectionError.class,
+                            () -> conn.handshake(TEST_USER, TEST_TOKEN));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+            assertTrue(error.getMessage().contains("HELLO 3 timed out"));
+            assertTrue(
+                    elapsedMillis < 2000,
+                    "handshake() took "
+                            + elapsedMillis
+                            + "ms; expected ~200ms (connectionTimeoutMs), not 5000ms (requestTimeoutMs)");
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void configureAndStartReader_hungInitialConfig_timesOutOnConnectionTimeout() {
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost",
+                        server.getPort(),
+                        clientSslContext,
+                        200,
+                        5000,
+                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+        try {
+            conn.connect();
+            conn.handshake(TEST_USER, TEST_TOKEN);
+            cache.setFailureMode(MockCache.FailureMode.HANG);
+            cache.setFailureCommand("aws.config");
+
+            long startNanos = System.nanoTime();
+            assertThrows(
+                    ElastiCacheIntegrationsConnectionError.class, () -> conn.configureAndStartReader(null));
+            long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+            assertTrue(
+                    elapsedMillis < 2000,
+                    "configureAndStartReader() took "
+                            + elapsedMillis
+                            + "ms; expected ~200ms (connectionTimeoutMs), not 5000ms (requestTimeoutMs)");
+            assertTrue(conn.isDead());
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
+    void connect_hungTlsHandshake_timesOutWithinConnectionTimeout() throws Exception {
+        // Accepts TCP but never answers the ClientHello, so only the TLS handshake can hang.
+        try (ServerSocket silent = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            ElastiCacheIntegrationsConnector conn =
+                    new ElastiCacheIntegrationsConnector(
+                            "localhost",
+                            silent.getLocalPort(),
+                            clientSslContext,
+                            200,
+                            5000,
+                            ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+            try {
+                long startNanos = System.nanoTime();
+                ElastiCacheIntegrationsConnectionError error =
+                        assertThrows(ElastiCacheIntegrationsConnectionError.class, conn::connect);
+                long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+
+                assertEquals(
+                        "Timed out connecting to localhost:" + silent.getLocalPort(), error.getMessage());
+                assertTrue(
+                        elapsedMillis < 2000,
+                        "connect() took "
+                                + elapsedMillis
+                                + "ms; expected ~200ms (connectionTimeoutMs), not 5000ms"
+                                + " (requestTimeoutMs)");
+            } finally {
+                conn.close();
+            }
+        }
+    }
+
     // === TLS hostname verification ===
 
     @Test
@@ -1592,9 +1694,8 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         ElastiCacheIntegrationsConnectionError error =
                 assertThrows(ElastiCacheIntegrationsConnectionError.class, conn::connect);
 
-        // The error should be related to certificate/hostname mismatch
-        assertTrue(
-                error.getMessage().contains("TLS") || error.getCause() != null,
-                "Should fail due to TLS hostname verification");
+        // A rejected certificate reports as a TLS failure, not as an unreachable cache.
+        assertEquals("TLS handshake failed to 127.0.0.1:" + server.getPort(), error.getMessage());
+        assertInstanceOf(SSLException.class, error.getCause());
     }
 }
