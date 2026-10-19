@@ -340,6 +340,21 @@ describe("ElastiCacheIntegrations protocol", () => {
     }
   });
 
+  it("reports Python's element-type error text", () => {
+    expect(() => deserializeResponse([200, "", Buffer.alloc(0)])).toThrow(
+      "Malformed request response elements: headers=string, body=bytes",
+    );
+  });
+
+  it("checks header and body types before the status", () => {
+    expect(() => deserializeResponse(["bad", Buffer.alloc(0), 7])).toThrow(
+      "Malformed request response elements: headers=bytes, body=number",
+    );
+    expect(() => deserializeResponse([999, Buffer.alloc(0), null])).toThrow(
+      "Malformed request response elements: headers=bytes, body=null",
+    );
+  });
+
   it("rejects request response error frames", () => {
     // A RespError request reply raises rather than being returned as a response.
     let failure: unknown;

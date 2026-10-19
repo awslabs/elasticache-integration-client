@@ -185,15 +185,15 @@ export function deserializeResponse(
   }
 
   const [statusRaw, headersRaw, bodyRaw] = elements;
+  if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
+    throw new ElastiCacheIntegrationsProtocolError(
+      `Malformed request response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
+    );
+  }
   const status = parseStatus(statusRaw);
   if (status < MIN_STATUS || status > MAX_STATUS) {
     throw new ElastiCacheIntegrationsProtocolError(
       `Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`,
-    );
-  }
-  if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
-    throw new ElastiCacheIntegrationsProtocolError(
-      `Malformed response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
     );
   }
 
@@ -254,11 +254,11 @@ export function stringifyConfig(overrides: Record<string, unknown>): string {
   }
 }
 
-/** Escape non-ASCII UTF-16 code units, such as `é`, as Python `json.dumps` does by default. */
+/** Escape DEL and non-ASCII UTF-16 code units, such as `é`, as Python `json.dumps` does by default. */
 function escapeNonAscii(value: string): string {
-  // Match UTF-16 code units from U+0080 through U+FFFF; for example, "é" becomes "\\u00e9".
+  // Match UTF-16 code units from U+007F through U+FFFF; for example, "é" becomes "\\u00e9".
   return value.replace(
-    /[\u0080-\uffff]/g,
+    /[\u007f-\uffff]/g,
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 }
