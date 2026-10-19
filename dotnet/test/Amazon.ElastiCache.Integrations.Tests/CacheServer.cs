@@ -45,7 +45,7 @@ internal sealed class CacheServer : IAsyncDisposable
 {
     /// <summary>A config that routes the ten operations the proxy advertises.</summary>
     public const string RouteTenOperations =
-        """{"version":"1.0","predicates":[{"expr":"operation in ['GetItem','Query','Scan','PutItem','UpdateItem','DeleteItem','BatchGetItem','BatchWriteItem','TransactGetItems','TransactWriteItems']"}]}""";
+        """{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"operation in ['GetItem','Query','Scan','PutItem','UpdateItem','DeleteItem','BatchGetItem','BatchWriteItem','TransactGetItems','TransactWriteItems']"}]}""";
 
     private static readonly ElastiCacheIntegrationsClientOptions Defaults = new() { Endpoint = "-", CacheName = "-" };
 

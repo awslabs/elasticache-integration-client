@@ -116,17 +116,16 @@ public class ConfigProtocolTests
     }
 
     [Theory]
-    [InlineData("{\"predicates\":[]}", null, null)]
-    [InlineData("{\"version\":\"1.7\",\"refresh_interval\":0}", "1.7", null)]
-    [InlineData("{\"version\":\"1\",\"refresh_interval\":null}", "1", null)]
-    [InlineData("{\"version\":\"2.0\"}", "2.0", null)]
-    [InlineData("{\"refresh_interval\":5}", null, 5)]
+    [InlineData("{\"refresh_interval\":60}", null, 60)]
+    [InlineData("{\"version\":null,\"refresh_interval\":60}", null, 60)]
+    [InlineData("{\"version\":\"1.7\",\"refresh_interval\":1}", "1.7", 1)]
+    [InlineData("{\"version\":\"2.0\",\"refresh_interval\":5}", "2.0", 5)]
     [InlineData("{\"refresh_interval\":2147483}", null, 2147483)]
-    public void ReadsOptionalFields(string json, string? version, int? seconds)
+    public void ReadsTheVersionAndRefreshInterval(string json, string? version, int seconds)
     {
         var config = ElastiCacheIntegrationsProtocol.ParseConfigReply(Blob(json), noArgumentForm: true)!;
         Assert.Equal(version, config.Version);
-        Assert.Equal(seconds is null ? null : TimeSpan.FromSeconds(seconds.Value), config.RefreshInterval);
+        Assert.Equal(TimeSpan.FromSeconds(seconds), config.RefreshInterval);
     }
 
     [Fact]
@@ -160,7 +159,11 @@ public class ConfigProtocolTests
     [InlineData("\"text\"")]
     [InlineData("null")]
     [InlineData("")]
-    [InlineData("{\"version\":1}")]
+    [InlineData("{\"version\":1,\"refresh_interval\":60}")]
+    [InlineData("{\"predicates\":[]}")]
+    [InlineData("{\"refresh_interval\":null}")]
+    [InlineData("{\"refresh_interval\":0}")]
+    [InlineData("{\"refresh_interval\":60.0}")]
     [InlineData("{\"refresh_interval\":-1}")]
     [InlineData("{\"refresh_interval\":1.5}")]
     [InlineData("{\"refresh_interval\":\"60\"}")]

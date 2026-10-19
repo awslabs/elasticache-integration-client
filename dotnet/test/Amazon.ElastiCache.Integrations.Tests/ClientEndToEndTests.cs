@@ -99,7 +99,7 @@ public class ClientEndToEndTests
     [Fact]
     public async Task AConfigWithoutPredicatesFailsOpen()
     {
-        await using var server = new CacheServer("""{"version":"1.0"}""");
+        await using var server = new CacheServer("""{"version":"1.0","refresh_interval":60}""");
 
         var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionException>(() => ClientAsync(server, new HttpHandlerTests.RecordingOrigin()));
 
@@ -179,7 +179,7 @@ public class ClientEndToEndTests
     [Fact]
     public async Task ARequestThePredicatesDeclineGoesToDynamoDBSigned()
     {
-        await using var server = new CacheServer("""{"version":"1.0","predicates":[{"expr":"operation == 'GetItem' && body.TableName == 'ElastiCacheIntegrationsTest'"}]}""");
+        await using var server = new CacheServer("""{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"operation == 'GetItem' && body.TableName == 'ElastiCacheIntegrationsTest'"}]}""");
         var origin = new HttpHandlerTests.RecordingOrigin("""{"Item":{"id":{"S":"origin"}}}""");
         await using var client = await ClientAsync(server, origin);
 

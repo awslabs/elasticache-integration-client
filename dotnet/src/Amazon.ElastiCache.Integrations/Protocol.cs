@@ -174,7 +174,7 @@ internal static class ElastiCacheIntegrationsProtocol
 
     private static string? ReadVersion(JsonElement root)
     {
-        if (!root.TryGetProperty("version", out var value))
+        if (!root.TryGetProperty("version", out var value) || value.ValueKind == JsonValueKind.Null)
         {
             return null;
         }
@@ -183,19 +183,20 @@ internal static class ElastiCacheIntegrationsProtocol
         return value.ValueKind == JsonValueKind.String ? value.GetString()! : throw MalformedConfig("version is not a string");
     }
 
-    private static TimeSpan? ReadRefreshInterval(JsonElement root)
+    /// <summary>Required: a positive whole number of seconds. <c>60.0</c> is refused, as Python does.</summary>
+    private static TimeSpan ReadRefreshInterval(JsonElement root)
     {
-        if (!root.TryGetProperty("refresh_interval", out var value) || value.ValueKind == JsonValueKind.Null)
+        if (!root.TryGetProperty("refresh_interval", out var value))
         {
-            return null;
+            throw MalformedConfig("refresh_interval is missing");
         }
 
-        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var seconds) || seconds is < 0 or > MaxRefreshSeconds)
+        if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var seconds) || seconds is <= 0 or > MaxRefreshSeconds)
         {
-            throw MalformedConfig("refresh_interval must be whole seconds");
+            throw MalformedConfig("refresh_interval must be a positive whole number of seconds");
         }
 
-        return seconds == 0 ? null : TimeSpan.FromSeconds(seconds);
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>The longest delay a .NET timer takes, <see cref="int.MaxValue"/> milliseconds.</summary>

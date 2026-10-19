@@ -6,7 +6,7 @@ namespace Amazon.ElastiCache.Integrations.Tests;
 /// <summary>The session over a real <see cref="ElastiCacheIntegrationsConnection"/> and <see cref="MockCache"/>.</summary>
 public class SessionEndToEndTests
 {
-    private const string ConfigJson = """{"version":"1.0","predicates":[{"expr":"true"}]}""";
+    private const string ConfigJson = """{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true"}]}""";
 
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 

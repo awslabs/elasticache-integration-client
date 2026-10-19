@@ -265,16 +265,15 @@ where replies come in order (event 1204). Any other error fails the attempt, whi
 
 ## Config refresh
 
-When the config has a `refresh_interval`, the client asks for the current config on that
-interval. A new config replaces the predicates; an error, or a config the client cannot use,
+The config must carry `refresh_interval`, a positive whole number of seconds; a config without
+one is not usable. The client asks for the current config on that interval. A new config replaces the predicates; an error, or a config the client cannot use,
 keeps the current one and retries on backoff. A config is confirmed whenever a connection is set
 up or a usable refresh reply arrives, new or unchanged. An unchanged reply after an unusable
 config is not usable: the cache still holds that config.
 
 `CachePolicyTimeout` bounds how long an unconfirmed config is used. Once it has passed, the next
 failed refresh replaces the connection (event 1306). The normal reconnect follows, and
-`FallbackDuration` applies while it runs. A config with no `refresh_interval` is never refreshed,
-so it never goes stale.
+`FallbackDuration` applies while it runs.
 
 ## Errors
 

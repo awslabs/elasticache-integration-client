@@ -249,7 +249,7 @@ public class ConnectionBringUpTests
 
         var changed = rig.Connection.RefreshConfigAsync(Token);
         await rig.Cache.ReadCommandAsync();
-        await rig.Cache.SendAsync(new RespBlobString("""{"version":"1.1"}"""u8.ToArray()));
+        await rig.Cache.SendAsync(new RespBlobString("""{"version":"1.1","refresh_interval":60}"""u8.ToArray()));
         var config = await changed;
         Assert.Equal("1.1", config!.Version);
         Assert.Same(config, rig.Connection.Config);

@@ -11,14 +11,7 @@ public class ProtocolVectorTests
     private static readonly JsonElement Vectors = SharedFixtures.Load("protocol-vectors.json");
 
     /// <summary>Vectors this client does not match yet, each with a fragment of the failure message it gives today.</summary>
-    private static readonly Dictionary<string, string> KnownGaps = new()
-    {
-        // ReadVersion refuses a null version; Python reads it as no version.
-        ["config_null_version"] = "version is not a string",
-        // ReadRefreshInterval treats a missing or zero refresh_interval as "never refresh".
-        ["config_missing_refresh_interval"] = "Value is null",
-        ["config_non_positive_refresh_interval"] = "Value is null",
-    };
+    private static readonly Dictionary<string, string> KnownGaps = new();
 
     public static TheoryData<string> EncodeVectors => SharedFixtures.Names(Vectors, "encode");
 

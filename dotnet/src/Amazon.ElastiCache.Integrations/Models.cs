@@ -91,7 +91,7 @@ internal sealed class ResolvedConfig
 
     public string? Version { get; }
 
-    /// <summary>How often to refresh the config; null when the cache sets no interval.</summary>
+    /// <summary>How often to refresh the config. Every parsed config has one; null means never.</summary>
     public TimeSpan? RefreshInterval { get; }
 
     /// <summary>The whole reply object, detached from its source document.</summary>
