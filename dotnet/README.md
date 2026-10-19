@@ -1,12 +1,12 @@
 # ElastiCache Integrations .NET
 
-Thin ElastiCache Integrations client for the AWS SDK for .NET v4 DynamoDB client (`AWSSDK.DynamoDBv2`), on
-`net8.0`.
+Thin ElastiCache Integrations client for the AWS SDK for .NET v4 DynamoDB client
+(`AWSSDK.DynamoDBv2`), on `net8.0`.
 
-`ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync` returns an ordinary `AmazonDynamoDBClient`. Calls that
-the cache's routing predicates match are sent to the cache over RESP3 and TLS. Every other
-call goes to DynamoDB through the SDK's normal HTTP path, unchanged. Application code keeps the
-same SDK API, retries, unmarshalling and exceptions.
+`ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync` returns an ordinary
+`AmazonDynamoDBClient`. Calls that the cache's routing predicates match are sent to the cache over
+RESP3 and TLS. Every other call goes to DynamoDB through the SDK's normal HTTP path, unchanged.
+Application code keeps the same SDK API, retries, unmarshalling and exceptions.
 
 ## Requirements
 
@@ -67,8 +67,8 @@ optional. Without credentials the SDK default chain is used, once, for both the 
 DynamoDB. The client sets the config's `HttpClientFactory`, so a config that already has one is
 refused.
 
-`ElastiCacheIntegrationsDynamoDBClient` owns the cache session. `DisposeAsync` drains calls in flight for up to
-`ConfigTimeout`, then closes. `Dispose` closes at once.
+`ElastiCacheIntegrationsDynamoDBClient` owns the cache session. `DisposeAsync` drains calls in
+flight for up to `ConfigTimeout`, then closes. `Dispose` closes at once.
 
 ## Request routing
 
@@ -83,8 +83,8 @@ to DynamoDB with no cache round trip. An evaluation error counts as no match.
 The body is parsed only for a predicate that names `body`, such as a table filter. With no table
 filter, the default predicate reads `service` and `operation` only, and the body is never parsed.
 A body that cannot be read as a JSON object (malformed, not UTF-8, too deep) is no match for a
-predicate that reads it. A predicate that does not read it can still route the call; the cache then rejects it with
-`PARSE_ERROR`, and the call goes to DynamoDB, or fails in strict mode.
+predicate that reads it. A predicate that does not read it can still route the call; the cache
+then rejects it with `PARSE_ERROR`; the call goes to DynamoDB, or fails in strict mode.
 
 The client uses a config only when it can use all of it: format `1.x`, a `predicates` array, and
 every entry an object with a string `expr`, an object `vars` if any, and an expression that
@@ -152,10 +152,10 @@ and `ReconnectWait` are still under review and may change before GA.
 
 ### Overrides
 
-`ElastiCacheIntegrationsOverrides` is sent once, with the first `aws.config` of each connection. A field left null
-uses the cache's value. The cache resolves the overrides and returns the predicates the client
-routes with. Overrides the cache rejects fail `CreateDynamoDBClientAsync` with
-`ElastiCacheIntegrationsConfigurationException`.
+`ElastiCacheIntegrationsOverrides` is sent once, with the first `aws.config` of each connection. A
+field left null uses the cache's value. The cache resolves the overrides and returns the
+predicates the client routes with. Overrides the cache rejects fail `CreateDynamoDBClientAsync`
+with `ElastiCacheIntegrationsConfigurationException`.
 
 `CachedTables` and `CachedOperations` are allowlists, and they intersect: only those operations,
 on only those tables. Each one null or empty means everything. There is no exclude form: to keep
@@ -199,12 +199,12 @@ Overrides = new ElastiCacheIntegrationsOverrides
 
 ## Region
 
-The cache region is `Options.Region`, else the SDK config's region, else the SDK's default
-region chain. Reading the config's region also reads `AWS_REGION` and the profile. So a region
-found there counts as the config's region, and it must match `Options.Region` when both are set:
-a mismatch fails `CreateDynamoDBClientAsync` with `ElastiCacheIntegrationsConfigurationException`. The Node.js
-client lets the explicit region win instead. When the config has neither a region nor a
-`ServiceURL`, The client sets its region to the cache region.
+The cache region is `Options.Region`, else the SDK config's region, else the SDK's default region
+chain. Reading the config's region also reads `AWS_REGION` and the profile. So a region found
+there counts as the config's region, and it must match `Options.Region` when both are set: a
+mismatch fails `CreateDynamoDBClientAsync` with `ElastiCacheIntegrationsConfigurationException`.
+The Node.js client lets the explicit region win instead. When the config has neither a region nor
+a `ServiceURL`, The client sets its region to the cache region.
 
 ## Authentication
 
@@ -251,8 +251,8 @@ A call that finds no connection:
 2. Then goes to DynamoDB with the original signed request, while inside `FallbackDuration`. The
    fallback window starts when `ReconnectWait` ends, not at the drop, so the wait does not use it
    up.
-3. Once the window is spent, fails with `ElastiCacheIntegrationsCacheUnavailableException` until the cache is back
-   (event 1305, once per outage).
+3. Once the window is spent, fails with `ElastiCacheIntegrationsCacheUnavailableException` until
+   the cache is back (event 1305, once per outage).
 
 `FallbackDuration = TimeSpan.Zero` is strict mode: while the client is open, a call never falls
 back. It fails with `ElastiCacheIntegrationsCacheUnavailableException` when there is no connection or the cache
@@ -273,23 +273,24 @@ or more, an in-band reply timeout closes the connection at once.
 A `MOVED` reply closes the connection and starts the reconnect. If it came in place of the reply,
 the cache did not run the call, so the call is sent once more the way a call with no connection
 goes. If it came after the cache accepted the call with a request id, the call fails with
-`HttpRequestException` wrapping `ElastiCacheIntegrationsConnectionLostException`, and the SDK's retry policy
-decides. `NOAUTH` always counts as not run: the engine refuses the command before the cache
-sees it.
+`HttpRequestException` wrapping `ElastiCacheIntegrationsConnectionLostException`, and the SDK's
+retry policy decides. `NOAUTH` always counts as not run: the engine refuses the command before
+the cache sees it.
 
-Replies may arrive out of order: the cache can answer with a request id and send the result
-later as a RESP3 push. A slow call then does not block the calls behind it. A call that times
-out is abandoned alone and the connection stays up; a late reply for it is dropped (event 1203).
-If the cache answers `HELLO 3` with `ERR` (no `HELLO`) or `NOPROTO` (no RESP3), the client uses RESP2,
+Replies may arrive out of order: the cache can answer with a request id and send the result later
+as a RESP3 push. A slow call then does not block the calls behind it. A call that times out is
+abandoned alone and the connection stays up; a late reply for it is dropped (event 1203). If the
+cache answers `HELLO 3` with `ERR` (no `HELLO`) or `NOPROTO` (no RESP3), the client uses RESP2,
 where replies come in order (event 1204). Any other error fails the attempt, which is retried.
 
 ## Config refresh
 
-The config must carry `refresh_interval`, a positive whole number of seconds; a config without
-one is not usable. The client asks for the current config on that interval. A new config replaces the predicates; an error, or a config the client cannot use,
-keeps the current one and retries on backoff. A config is confirmed whenever a connection is set
-up or a usable refresh reply arrives, new or unchanged. An unchanged reply after an unusable
-config is not usable: the cache still holds that config.
+The config must carry `refresh_interval`, a positive whole number of seconds; a config without one
+is not usable. The client asks for the current config on that interval. A new config replaces the
+predicates; an error, or a config the client cannot use, keeps the current one and retries on
+backoff. A config is confirmed whenever a connection is set up or a usable refresh reply arrives,
+new or unchanged. An unchanged reply after an unusable config is not usable: the cache still holds
+that config.
 
 `CachePolicyTimeout` bounds how long an unconfirmed config is used. Once it has passed, the next
 failed refresh replaces the connection (event 1306). The normal reconnect follows, and
@@ -317,20 +318,22 @@ From a call:
 | `OperationCanceledException` | The caller cancelled. |
 | `ObjectDisposedException` | The client was closed before or during the call. |
 
-All client errors derive from `ElastiCacheIntegrationsException`. Messages never hold tokens, presigned URLs or
-credentials.
+All client errors derive from `ElastiCacheIntegrationsException`. Messages never hold tokens,
+presigned URLs or credentials.
 
 ## Closing
 
 Close the client with `await using` or `DisposeAsync`. A call already sent to the cache when the
-client is closed fails with `HttpRequestException` wrapping `ElastiCacheIntegrationsConnectionLostException`, or
-with `OperationCanceledException`. A call not yet sent, such as one waiting for a reconnect or
-retried by the SDK after the close, goes to DynamoDB while the SDK client is still open. Once the
-SDK client is disposed, it throws `ObjectDisposedException` itself. Close is idempotent.
+client is closed fails with `HttpRequestException` wrapping
+`ElastiCacheIntegrationsConnectionLostException`, or with `OperationCanceledException`. A call not
+yet sent, such as one waiting for a reconnect or retried by the SDK after the close, goes to
+DynamoDB while the SDK client is still open. Once the SDK client is disposed, it throws
+`ObjectDisposedException` itself. Close is idempotent.
 
 ## Manual lifecycle
 
-`ElastiCacheIntegrationsHandle` is the session alone, for applications that build their own SDK clients:
+`ElastiCacheIntegrationsHandle` is the session alone, for applications that build their own SDK
+clients:
 
 ```csharp
 await using var handle = await ElastiCacheIntegrationsHandle.OpenAsync(options, credentials, RegionEndpoint.USEast1);
@@ -345,9 +348,10 @@ as in the Node and Java clients. `IsOpen` is true while it has a live connection
 
 ## Logging
 
-The client logs through `Options.LoggerFactory`, under the category `Amazon.ElastiCache.Integrations`. Without one
-it writes Information and higher to stderr, so warnings are never lost. An exception thrown by a
-configured logger is dropped, so a broken logging provider cannot stop the client. Event ids:
+The client logs through `Options.LoggerFactory`, under the category
+`Amazon.ElastiCache.Integrations`. Without one it writes Information and higher to stderr, so
+warnings are never lost. An exception thrown by a configured logger is dropped, so a broken
+logging provider cannot stop the client. Event ids:
 
 | Id | Event | Level |
 |----|-------|-------|
@@ -393,11 +397,11 @@ dotnet test
 scripts/pack-smoke.sh
 ```
 
-`scripts/pack-smoke.sh` packs the library, checks the package contents and metadata, installs
-the package into a throwaway console app and runs that app against the test suite's in-process
-mock cache. It needs no AWS access. `dotnet test --filter Category=alignment` runs only the
-cross-client fixtures in `../shared/`: the wire vectors and the SDK request cases. Tests never use the host's `~/.aws` files, AWS environment
-variables or instance metadata.
+`scripts/pack-smoke.sh` packs the library, checks the package contents and metadata, installs the
+package into a throwaway console app and runs that app against the test suite's in-process mock
+cache. It needs no AWS access. `dotnet test --filter Category=alignment` runs only the
+cross-client fixtures in `../shared/`: the wire vectors and the SDK request cases. Tests never use
+the host's `~/.aws` files, AWS environment variables or instance metadata.
 
-[samples/Amazon.ElastiCache.Integrations.LiveValidation](samples/Amazon.ElastiCache.Integrations.LiveValidation/README.md) checks the
-client against a real cache and compares every result with DynamoDB.
+[samples/Amazon.ElastiCache.Integrations.LiveValidation](samples/Amazon.ElastiCache.Integrations.LiveValidation/README.md)
+checks the client against a real cache and compares every result with DynamoDB.
