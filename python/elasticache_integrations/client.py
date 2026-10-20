@@ -31,15 +31,15 @@ class ElastiCacheIntegrationsClientConfiguration:
             Defaults to 5 seconds.
         connection_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
             request waits for reconnection after a connection is lost. Defaults to 2 seconds.
-        fallback_duration: How long, in seconds, routed requests may use the origin
-            service after an outage's reconnect wait ends without a connection.
-            ``None`` (the default) or any negative value allows this for the rest
-            of the outage. ``0`` disables fallback for requests that find no cache
-            connection; they raise
-            :class:`~elasticache_integrations.exceptions.ElastiCacheIntegrationsCacheUnavailable`
-            when the reconnect wait ends. The window is shared by requests during
-            one outage. A later outage gets a new window after the connection has
-            recovered.
+        fallback_duration: How long, in seconds, routed requests may use the origin service
+            after an outage's reconnect wait ends without a connection. The window is shared
+            by requests during one outage. A later outage gets a new window after recovery.
+
+            * ``None`` (the default) or any negative value: allow fallback for the rest of
+              the outage.
+            * ``N > 0``: allow fallback for N seconds. Later requests raise
+              :class:`~elasticache_integrations.exceptions.ElastiCacheIntegrationsCacheUnavailable`.
+            * ``0``: disable fallback. Requests raise as soon as the reconnect wait ends.
         cache_policy_overrides: Optional settings that change what ElastiCacheIntegrations caches:
             which tables and operations to cache, and the cache entry lifetimes. ``cached_tables``
             and ``cached_operations`` are allowlists — each empty or absent means everything, so
