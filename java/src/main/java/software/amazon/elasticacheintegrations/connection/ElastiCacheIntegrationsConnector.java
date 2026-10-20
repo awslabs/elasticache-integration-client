@@ -25,7 +25,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import software.amazon.elasticacheintegrations.auth.AuthCredentials;
-import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthenticationError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsError;
@@ -407,7 +407,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     private void verifyHelloReply(RespValue reply) {
         if (reply instanceof RespError) {
             markDead();
-            throw new ElastiCacheIntegrationsAuthenticationError(
+            throw new ElastiCacheIntegrationsAuthError(
                     "HELLO 3 rejected: " + ((RespError) reply).getCode());
         }
         if (!(reply instanceof RespMap)) {
@@ -433,8 +433,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      *
      * @param userId the user ID for AUTH
      * @param authToken the fresh AUTH token/password
-     * @throws ElastiCacheIntegrationsAuthenticationError if AUTH is rejected or returns an unexpected
-     *     reply
+     * @throws ElastiCacheIntegrationsAuthError if AUTH is rejected or returns an unexpected reply
      * @throws ElastiCacheIntegrationsConnectionError if AUTH times out
      */
     public void reauthenticate(String userId, String authToken) {
@@ -461,7 +460,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
     private void verifyReauthenticationReply(RespValue reply) {
         if (reply instanceof RespError) {
-            throw new ElastiCacheIntegrationsAuthenticationError(
+            throw new ElastiCacheIntegrationsAuthError(
                     "IAM AUTH rejected: " + ((RespError) reply).getCode());
         }
         if (reply instanceof RespSimpleString
@@ -469,7 +468,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             return;
         }
         markDead();
-        throw new ElastiCacheIntegrationsAuthenticationError(
+        throw new ElastiCacheIntegrationsAuthError(
                 "IAM AUTH failed: unexpected reply of type " + reply.getClass().getSimpleName());
     }
 

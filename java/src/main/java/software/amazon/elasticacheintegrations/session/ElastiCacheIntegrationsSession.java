@@ -19,7 +19,7 @@ import java.util.logging.Logger;
 import software.amazon.elasticacheintegrations.auth.AuthCredentials;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsRequestCancellation;
-import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthenticationError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionError;
@@ -555,7 +555,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
         try {
             active.reauthenticate(credentials.getUserId(), credentials.getToken());
-        } catch (ElastiCacheIntegrationsAuthenticationError authFailure) {
+        } catch (ElastiCacheIntegrationsAuthError authFailure) {
             if (!active.isDead()) {
                 forceRefreshAfterRejection(authFailure);
             }
@@ -716,7 +716,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
         try {
             next.handshake(credentials.getUserId(), credentials.getToken());
-        } catch (ElastiCacheIntegrationsAuthenticationError authFailure) {
+        } catch (ElastiCacheIntegrationsAuthError authFailure) {
             forceRefreshAfterRejection(authFailure);
             throw authFailure;
         }
@@ -738,7 +738,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
     }
 
-    private void forceRefreshAfterRejection(ElastiCacheIntegrationsAuthenticationError authFailure) {
+    private void forceRefreshAfterRejection(ElastiCacheIntegrationsAuthError authFailure) {
         if (!(authProvider instanceof ManagedIamAuthProvider)) {
             return;
         }

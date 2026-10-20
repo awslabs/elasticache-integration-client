@@ -27,7 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.elasticacheintegrations.auth.AuthCredentials;
-import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthenticationError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsError;
@@ -1312,9 +1312,9 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
-            ElastiCacheIntegrationsAuthenticationError error =
+            ElastiCacheIntegrationsAuthError error =
                     assertThrows(
-                            ElastiCacheIntegrationsAuthenticationError.class,
+                            ElastiCacheIntegrationsAuthError.class,
                             () -> conn.reauthenticate(TEST_USER, "rejected-token"));
 
             assertTrue(error.getMessage().contains("WRONGPASS"));
@@ -1347,9 +1347,9 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
 
-            ElastiCacheIntegrationsAuthenticationError error =
+            ElastiCacheIntegrationsAuthError error =
                     assertThrows(
-                            ElastiCacheIntegrationsAuthenticationError.class,
+                            ElastiCacheIntegrationsAuthError.class,
                             () -> conn.reauthenticate(TEST_USER, "fresh-token"));
 
             assertTrue(error.getMessage().contains("RespBulkString"));
@@ -1440,10 +1440,9 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connect();
 
-            ElastiCacheIntegrationsAuthenticationError error =
+            ElastiCacheIntegrationsAuthError error =
                     assertThrows(
-                            ElastiCacheIntegrationsAuthenticationError.class,
-                            () -> conn.handshake(TEST_USER, TEST_TOKEN));
+                            ElastiCacheIntegrationsAuthError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
 
             assertTrue(error.getMessage().contains("WRONGPASS"));
             assertFalse(error.getMessage().contains(TEST_TOKEN));

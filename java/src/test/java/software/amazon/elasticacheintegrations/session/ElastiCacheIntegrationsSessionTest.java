@@ -30,7 +30,7 @@ import software.amazon.elasticacheintegrations.auth.AuthCredentials;
 import software.amazon.elasticacheintegrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticacheintegrations.connection.ElastiCacheIntegrationsRequestCancellation;
-import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthenticationError;
+import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsError;
@@ -168,7 +168,7 @@ class ElastiCacheIntegrationsSessionTest {
                 new TestConnector() {
                     @Override
                     public void reauthenticate(String userId, String authToken) {
-                        throw new ElastiCacheIntegrationsAuthenticationError("IAM AUTH rejected: WRONGPASS");
+                        throw new ElastiCacheIntegrationsAuthError("IAM AUTH rejected: WRONGPASS");
                     }
                 };
         ElastiCacheIntegrationsSession session =
@@ -176,7 +176,7 @@ class ElastiCacheIntegrationsSessionTest {
                         () -> connector, () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null, fastPolicy());
         try {
             session.open();
-            assertThrows(ElastiCacheIntegrationsAuthenticationError.class, session::reauthenticateOnce);
+            assertThrows(ElastiCacheIntegrationsAuthError.class, session::reauthenticateOnce);
         } finally {
             session.close();
         }
@@ -190,7 +190,7 @@ class ElastiCacheIntegrationsSessionTest {
                 new TestConnector() {
                     @Override
                     public void reauthenticate(String userId, String authToken) {
-                        throw new ElastiCacheIntegrationsAuthenticationError("IAM AUTH rejected: WRONGPASS");
+                        throw new ElastiCacheIntegrationsAuthError("IAM AUTH rejected: WRONGPASS");
                     }
                 };
         ElastiCacheIntegrationsSession session =
@@ -198,7 +198,7 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             session.open();
 
-            assertThrows(ElastiCacheIntegrationsAuthenticationError.class, session::reauthenticateOnce);
+            assertThrows(ElastiCacheIntegrationsAuthError.class, session::reauthenticateOnce);
 
             assertEquals(
                     2,
@@ -219,7 +219,7 @@ class ElastiCacheIntegrationsSessionTest {
                     @Override
                     public void reauthenticate(String userId, String authToken) {
                         fail();
-                        throw new ElastiCacheIntegrationsAuthenticationError("Unexpected AUTH reply");
+                        throw new ElastiCacheIntegrationsAuthError("Unexpected AUTH reply");
                     }
                 };
         ElastiCacheIntegrationsSession session =
@@ -227,7 +227,7 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             session.open();
 
-            assertThrows(ElastiCacheIntegrationsAuthenticationError.class, session::reauthenticateOnce);
+            assertThrows(ElastiCacheIntegrationsAuthError.class, session::reauthenticateOnce);
 
             assertEquals(
                     1,
