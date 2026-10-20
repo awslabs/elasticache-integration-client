@@ -20,7 +20,8 @@ export class RequestMetadata {
     ) {
       throw new TypeError("RequestMetadata requires service and operation");
     }
-    this.service = options.service;
+    // The proxy's predicates match the lowercase service exactly. toLowerCase() is locale-independent.
+    this.service = options.service.toLowerCase();
     this.operation = options.operation;
   }
 }

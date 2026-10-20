@@ -5,8 +5,11 @@ import { AssumeRoleCommand, STSClient } from "@aws-sdk/nested-clients/sts";
 import { HttpRequest } from "@smithy/core/protocols";
 import { createServer, type Server } from "node:http";
 
-import { client } from "../src/index.js";
-import { ElastiCacheIntegrationsConnectionLost } from "../src/errors.js";
+import { install } from "../src/index.js";
+import {
+  ElastiCacheIntegrationsConfigError,
+  ElastiCacheIntegrationsConnectionLost,
+} from "../src/errors.js";
 import { MockCache, Reply } from "./mock-cache.js";
 
 const retryableResponse = Buffer.from(`<?xml version="1.0"?>
@@ -86,20 +89,21 @@ describe("public client", () => {
   });
 
   it("passes a non-JSON request through to the origin without a cache round trip", async () => {
-    const sts = await client("sts", STSClient, {
+    const sts = new STSClient({
+      region: "us-east-1",
+      endpoint: originEndpoint,
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 2,
+    });
+    await install({
+      client: sts,
       endpoint: cache.endpoint,
       cacheName: "test-cache",
-      region: "us-east-1",
       connectorOptions: { tls: false },
-      clientConfig: {
-        endpoint: originEndpoint,
-        credentials: {
-          accessKeyId: "AKIAEXAMPLE",
-          secretAccessKey: "secret-example",
-          sessionToken: "token-example",
-        },
-        maxAttempts: 2,
-      },
     });
 
     const preCacheRequests: HttpRequest[] = [];
@@ -189,20 +193,21 @@ describe("public DynamoDB client", () => {
   });
 
   it("routes serialized unsigned DynamoDB requests through ElastiCacheIntegrations and deserializes retries", async () => {
-    const dynamodb = await client("dynamodb", DynamoDBClient, {
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 2,
+    });
+    await install({
+      client: dynamodb,
       endpoint: cache.endpoint,
       cacheName: "test-cache",
-      region: "us-east-1",
       connectorOptions: { tls: false },
-      clientConfig: {
-        endpoint: "http://127.0.0.1:1",
-        credentials: {
-          accessKeyId: "AKIAEXAMPLE",
-          secretAccessKey: "secret-example",
-          sessionToken: "token-example",
-        },
-        maxAttempts: 2,
-      },
     });
 
     const preCacheRequests: HttpRequest[] = [];
@@ -256,6 +261,103 @@ describe("public DynamoDB client", () => {
     }
   });
 
+  it("routes a command the client sent before install when cacheMiddleware is on", async () => {
+    const cachingCache = new MockCache({
+      config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
+      responseFn: () =>
+        Reply.ok(
+          200,
+          "content-type:application/x-amz-json-1.0",
+          Buffer.from('{"Item":{"id":{"S":"value"}}}'),
+        ),
+    });
+    await cachingCache.start();
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 1,
+      cacheMiddleware: true,
+    });
+    const getItem = () =>
+      dynamodb.send(
+        new GetItemCommand({ TableName: "ElastiCacheIntegrationsTest", Key: { id: { S: "key" } } }),
+      );
+
+    try {
+      // Nothing listens on the origin, but the SDK caches the resolved handler anyway.
+      await expect(getItem()).rejects.toThrow();
+      await install({
+        client: dynamodb,
+        endpoint: cachingCache.endpoint,
+        cacheName: "test-cache",
+        connectorOptions: { tls: false },
+      });
+
+      const result = await getItem();
+
+      expect(result.Item).toEqual({ id: { S: "value" } });
+      expect(cachingCache.requests).toHaveLength(1);
+    } finally {
+      dynamodb.destroy();
+      await cachingCache.stop();
+    }
+  });
+
+  it("refuses a second install and keeps serving through the first", async () => {
+    const onceCache = new MockCache({
+      config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
+      responseFn: () =>
+        Reply.ok(
+          200,
+          "content-type:application/x-amz-json-1.0",
+          Buffer.from('{"Item":{"id":{"S":"value"}}}'),
+        ),
+    });
+    await onceCache.start();
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret-example" },
+      maxAttempts: 1,
+    });
+    const installOptions = {
+      client: dynamodb,
+      endpoint: onceCache.endpoint,
+      cacheName: "test-cache",
+      connectorOptions: { tls: false },
+    };
+    const getItem = () =>
+      dynamodb.send(
+        new GetItemCommand({ TableName: "ElastiCacheIntegrationsTest", Key: { id: { S: "key" } } }),
+      );
+
+    try {
+      await install(installOptions);
+      const install2 = install(installOptions);
+      await expect(install2).rejects.toBeInstanceOf(ElastiCacheIntegrationsConfigError);
+      await expect(install2).rejects.toThrow("already has ElastiCache Integrations installed");
+      // The refused install opened no second connection.
+      expect(onceCache.cacheCommandLog).toEqual(["hello", "aws.config"]);
+
+      await expect(getItem()).resolves.toMatchObject({ Item: { id: { S: "value" } } });
+      expect(onceCache.requests).toHaveLength(1);
+
+      // destroy() detaches, so the client can be installed into again.
+      dynamodb.destroy();
+      await install(installOptions);
+      await expect(getItem()).resolves.toMatchObject({ Item: { id: { S: "value" } } });
+      expect(onceCache.requests).toHaveLength(2);
+    } finally {
+      dynamodb.destroy();
+      await onceCache.stop();
+    }
+  });
+
   it("rejects an in-flight request when async callers destroy the client", async () => {
     const hangingCache = new MockCache({
       config: {
@@ -264,20 +366,21 @@ describe("public DynamoDB client", () => {
       failure: "hang",
     });
     await hangingCache.start();
-    const dynamodb = await client("dynamodb", DynamoDBClient, {
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 1,
+    });
+    await install({
+      client: dynamodb,
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
-      region: "us-east-1",
       connectorOptions: { tls: false, requestTimeout: 5_000 },
-      clientConfig: {
-        endpoint: "http://127.0.0.1:1",
-        credentials: {
-          accessKeyId: "AKIAEXAMPLE",
-          secretAccessKey: "secret-example",
-          sessionToken: "token-example",
-        },
-        maxAttempts: 1,
-      },
     });
 
     try {

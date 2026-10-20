@@ -22,6 +22,7 @@ import {
 import {
   awsToCacheRequest,
   installCacheMiddleware,
+  installedHandle,
   ElastiCacheIntegrationsHandle,
   cacheToHttpResponse,
   cacheMiddleware,
@@ -201,7 +202,8 @@ describe("ElastiCacheIntegrationsHandle", () => {
     sdkClient.destroy();
     sdkClient.destroy();
 
-    expect(order).toEqual(["elastiCacheIntegrations", "sdk"]);
+    // The second destroy() is the SDK's own again, as on a client that never had a handle.
+    expect(order).toEqual(["elastiCacheIntegrations", "sdk", "sdk"]);
     expect(handle.installed).toBe(false);
     expect(session.destroy).toHaveBeenCalledOnce();
     expect(sdkClient.middlewareStack.remove("elastiCacheIntegrations")).toBe(false);
@@ -220,8 +222,29 @@ describe("ElastiCacheIntegrationsHandle", () => {
     );
 
     expect(session.destroy).toHaveBeenCalledOnce();
-    expect(originalDestroy).toHaveBeenCalledOnce();
+    expect(originalDestroy).toHaveBeenCalledTimes(32);
     expect(handle.installed).toBe(false);
+  });
+
+  it("can be installed again after destroy", () => {
+    const originalDestroy = vi.fn();
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: originalDestroy,
+    };
+    const firstSession = fakeSession();
+    const secondSession = fakeSession();
+
+    new ElastiCacheIntegrationsHandle(sdkClient, firstSession, "svc");
+    sdkClient.destroy();
+    expect(sdkClient.destroy).toBe(originalDestroy);
+
+    new ElastiCacheIntegrationsHandle(sdkClient, secondSession, "svc");
+    sdkClient.destroy();
+
+    expect(secondSession.destroy).toHaveBeenCalledOnce();
+    expect(originalDestroy).toHaveBeenCalledTimes(2);
+    expect(sdkClient.destroy).toBe(originalDestroy);
   });
 
   it("shutdown detaches ElastiCacheIntegrations without destroying the SDK client", () => {
@@ -241,6 +264,37 @@ describe("ElastiCacheIntegrationsHandle", () => {
 
     sdkClient.destroy();
     expect(originalDestroy).toHaveBeenCalledOnce();
+  });
+
+  it("shutdown drops handler chains cached while the middleware was installed", () => {
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: vi.fn(),
+      handlers: new Map([["GetItemCommand", () => undefined]]),
+    };
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    sdkClient.handlers = new Map([["GetItemCommand", () => undefined]]);
+
+    handle.shutdown();
+
+    expect(sdkClient).not.toHaveProperty("handlers");
+  });
+
+  it("is visible to a second copy of the package loaded in the same process", async () => {
+    // An app that both imports and requires the package loads the ESM and CJS builds side by side.
+    vi.resetModules();
+    const otherCopy = await import("../src/middleware.js");
+    expect(otherCopy.installedHandle).not.toBe(installedHandle);
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: vi.fn(),
+    };
+
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    expect(otherCopy.installedHandle(sdkClient)).toBe(handle);
+
+    handle.shutdown();
+    expect(otherCopy.installedHandle(sdkClient)).toBeUndefined();
   });
 });
 

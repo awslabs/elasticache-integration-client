@@ -324,9 +324,9 @@ class ElastiCacheIntegrationsSession:
         or when the cache is disconnected and the fallback window is still open.
         In both cases, the request has not been sent, so falling back is safe.
 
-        Right after a drop, a request with no connector waits a short, bounded time
-        (``request_wait``) for the reconnect to land before falling back — so a quick
-        reconnect is ridden out rather than sending the request to the origin.
+        Right after a drop, a request with no connector waits up to the configured
+        ``connection_timeout`` for the reconnect to land before falling back. This gives a quick
+        reconnect time to finish rather than sending the request to the origin.
 
         Once a request is sent to ElastiCacheIntegrations, failures propagate to the hook. For a
         replay-safe operation the hook returns them through botocore as retryable, so
@@ -344,7 +344,7 @@ class ElastiCacheIntegrationsSession:
         # Read the connector once; the reconnect thread may replace it concurrently.
         connector = self._connection_manager.connector
         if connector is None or not connector.is_alive:
-            # No live connector: wait briefly for a reconnect before falling back
+            # No live connector: wait for the current reconnect window before falling back
             connector = self._connection_manager.wait_for_connector()
         if connector is None:
             if not self._connection_manager.fallback_allowed():

@@ -1,5 +1,5 @@
 /** ElastiCacheIntegrations client package, public API. */
-export { client } from "./client.js";
+export { install } from "./client.js";
 export type { ElastiCacheIntegrationsClientOptions } from "./client.js";
 export type { ReconnectPolicyOptions } from "./session.js";
 export {

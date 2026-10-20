@@ -186,6 +186,18 @@ describe("ElastiCacheIntegrations protocol", () => {
     ]);
   });
 
+  it("lowercases the service so it matches the proxy's predicates", () => {
+    const request = new ElastiCacheIntegrationsRequest({
+      method: "POST",
+      url: "https://x/",
+      metadata: new RequestMetadata({ service: "DynamoDB", operation: "GetItem" }),
+    });
+
+    const [, args] = serializeRequest(request);
+
+    expect(args[4]).toEqual(Buffer.from("service=dynamodb&op=GetItem"));
+  });
+
   it("converts string bodies during serialization", () => {
     const request = new ElastiCacheIntegrationsRequest({
       method: "POST",

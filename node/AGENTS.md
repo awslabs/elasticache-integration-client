@@ -109,10 +109,11 @@ require the corresponding tests, README, and package checks to change with it.
   timeout or malformed reply, confine tokens to AUTH, and keep verified TLS as
   the default; plaintext (`tls: false`) and unverified TLS
   (`insecureSkipVerify`) are explicit, opt-in local/test behavior.
-- **Client readiness:** flag returning a partially initialized client or
-  masking an initialization error with cleanup failures. Safe path: return
-  only after auth, session opening, and middleware installation succeed, and
-  clean up resources already owned by the factory.
+- **Client readiness:** flag resolving `install()` on a partially initialized
+  client or masking an initialization error with cleanup failures. Safe path:
+  resolve only after auth, session opening, and middleware installation succeed, and
+  clean up only what `install()` opened. The caller owns the SDK client, so a
+  failed install must not destroy it.
 
 ### Finding standard
 

@@ -12,7 +12,7 @@ if (!packageSpec || !expectedName || !expectedVersion) {
 }
 
 const checks = [
-  'typeof elastiCacheIntegrations.client === "function"',
+  'typeof elastiCacheIntegrations.install === "function"',
   `elastiCacheIntegrations.version === ${JSON.stringify(expectedVersion)}`,
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsError === "function"',
   'typeof elastiCacheIntegrations.ElastiCacheIntegrationsConfigError === "function"',
