@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { constructStack } from "@smithy/core/client";
@@ -114,6 +117,8 @@ function setup() {
   mocks.buildCacheAuthProvider.mockResolvedValue(generatedAuthProvider);
   mocks.session.open.mockResolvedValue(undefined);
 }
+
+const caCertsPath = fileURLToPath(new URL("./fixtures/tls/localhost.crt", import.meta.url));
 
 const options = {
   endpoint: "cache.example.com:6379",
@@ -416,7 +421,7 @@ describe("install", () => {
     expect(mocks.sessionConstructor.mock.calls[0]![1]).toEqual({ tables: ["t"] });
   });
 
-  it("passes verify and caCerts to the connector", async () => {
+  it("reads the caCerts file and passes verify and its contents to the connector", async () => {
     setup();
 
     await install({
@@ -424,15 +429,66 @@ describe("install", () => {
       endpoint: options.endpoint,
       cacheName: options.cacheName,
       verify: false,
-      caCerts: "pem-data",
+      caCerts: caCertsPath,
     });
 
     const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
     connectorFactory();
     expect(mocks.connection.mock.calls[0]![2]).toMatchObject({
       verify: false,
-      caCerts: "pem-data",
+      caCerts: readFileSync(caCertsPath),
     });
+  });
+
+  it("rejects a caCerts path that cannot be read", async () => {
+    setup();
+
+    await expect(
+      install({
+        client: new FakeClient(),
+        ...options,
+        caCerts: "/no/such/ca-bundle.pem",
+      }),
+    ).rejects.toThrow(
+      new ElastiCacheIntegrationsConfigError(
+        "caCerts must be the path of a readable CA bundle file, got /no/such/ca-bundle.pem",
+      ),
+    );
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+  });
+
+  it.each(["fallbackDuration", "overrides", "stalenessDuration", "iamRefreshAfterSeconds"])(
+    "rejects the unknown install option %s",
+    async (name) => {
+      setup();
+
+      await expect(
+        install({ client: new FakeClient(), ...options, [name]: 0 } as never),
+      ).rejects.toThrow(
+        new ElastiCacheIntegrationsConfigError(`install() got an unexpected option '${name}'`),
+      );
+      expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+      expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an unknown clientConfiguration field", async () => {
+    setup();
+
+    await expect(
+      install({
+        client: new FakeClient(),
+        ...options,
+        clientConfiguration: { fallbackDurationSeconds: 0 } as never,
+      }),
+    ).rejects.toThrow(
+      new ElastiCacheIntegrationsConfigError(
+        "clientConfiguration got an unexpected field 'fallbackDurationSeconds'",
+      ),
+    );
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    expect(mocks.sessionConstructor).not.toHaveBeenCalled();
   });
 
   it("verifies the cache's TLS certificate by default", async () => {

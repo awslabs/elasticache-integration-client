@@ -114,7 +114,8 @@ to repeat. A client can have the cache installed once; a second `install()` on
 the same client raises `ElastiCacheIntegrationsConfigError`. After `destroy()`,
 the client can be installed into again.
 `userId` defaults to `default.iam-user`. `verify` (default `true`) and
-`caCerts` control TLS certificate verification; see the end of this README.
+`caCerts`, the path of a PEM CA bundle file that `install()` reads once before
+connecting, control TLS certificate verification; see the end of this README.
 `connectorOptions` and `reconnectPolicy` are Node-specific.
 
 ## Configuration
@@ -148,7 +149,8 @@ await install({
 | `iamTokenRefreshDelay` | 300 s                    | When the IAM toolkit signs a replacement token in the background. Greater than 0 and less than 880 s.                                        |
 
 `install()` raises `ElastiCacheIntegrationsConfigError` for a value that is not
-usable, before it connects. `cachePolicyTimeout` is described under
+usable, or for an install option or `clientConfiguration` field it does not
+recognise, before it connects. `cachePolicyTimeout` is described under
 [Cache policy timeout](#cache-policy-timeout).
 
 ## Reconnection and fallback
@@ -254,7 +256,7 @@ starts normal recovery. Configure the cadence with
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when
 Node is run with system-CA support enabled — or against
-`caCerts` when supplied. A local or test endpoint whose
+the CA bundle file named by `caCerts` when supplied. A local or test endpoint whose
 certificate cannot be verified is reached with
 `verify: false`, which keeps TLS but waives the identity
 check and emits a process warning on the first handshake that uses it. It is not

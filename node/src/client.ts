@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { buildCacheAuthProvider } from "./auth.js";
 import {
   DEFAULT_REQUEST_TIMEOUT,
@@ -75,8 +77,11 @@ interface ElastiCacheIntegrationsInstallOptions<TClient extends InstallableClien
   userId?: string;
   /** Verify the cache's TLS certificate. Defaults to `true`; `false` is for self-signed test rigs only. */
   verify?: boolean;
-  /** CA bundle (PEM) to verify against instead of the system trust store. */
-  caCerts?: string | Buffer | Array<string | Buffer>;
+  /**
+   * Path of a PEM CA bundle file to verify against instead of the system trust store. install()
+   * reads it once, before connecting.
+   */
+  caCerts?: string;
   /** How the cache behaves and its optional cache policy overrides; omitted means all defaults. */
   clientConfiguration?: ElastiCacheIntegrationsClientConfiguration;
   /**
@@ -90,6 +95,26 @@ interface ElastiCacheIntegrationsInstallOptions<TClient extends InstallableClien
   /** Advanced reconnection and fallback configuration. */
   reconnectPolicy?: ReconnectPolicyOptions;
 }
+
+const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
+  "client",
+  "endpoint",
+  "cacheName",
+  "userId",
+  "verify",
+  "caCerts",
+  "clientConfiguration",
+  "connectorOptions",
+  "reconnectPolicy",
+]);
+
+const CLIENT_CONFIGURATION_FIELDS: ReadonlySet<string> = new Set([
+  "cacheRequestTimeout",
+  "fallbackDuration",
+  "cachePolicyOverrides",
+  "cachePolicyTimeout",
+  "iamTokenRefreshDelay",
+]);
 
 /** The part of an AWS SDK v3 client that install() reads. */
 type InstallableClient = ElastiCacheIntegrationsCompatibleClient & {
@@ -132,6 +157,13 @@ interface ResolvedClientConfiguration {
 function resolveClientConfiguration(
   configuration: ElastiCacheIntegrationsClientConfiguration,
 ): ResolvedClientConfiguration {
+  for (const field of Object.keys(configuration)) {
+    if (!CLIENT_CONFIGURATION_FIELDS.has(field)) {
+      throw new ElastiCacheIntegrationsConfigError(
+        `clientConfiguration got an unexpected field '${field}'`,
+      );
+    }
+  }
   const {
     cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
     fallbackDuration,
@@ -297,6 +329,22 @@ function isSdkClient(value: unknown): value is InstallableClient {
   );
 }
 
+function readCaCerts(path: string): Buffer {
+  if (typeof path !== "string") {
+    throw new ElastiCacheIntegrationsConfigError(
+      `caCerts must be the path of a CA bundle file, got ${typeName(path)}`,
+    );
+  }
+  try {
+    return readFileSync(path);
+  } catch (error) {
+    throw new ElastiCacheIntegrationsConfigError(
+      `caCerts must be the path of a readable CA bundle file, got ${String(path)}`,
+      { cause: error },
+    );
+  }
+}
+
 function typeName(value: unknown): string {
   if (value === null) return "null";
   if (typeof value !== "object") return typeof value;
@@ -314,6 +362,13 @@ function typeName(value: unknown): string {
 export async function install<TClient extends InstallableClient>(
   options: ElastiCacheIntegrationsInstallOptions<TClient>,
 ): Promise<void> {
+  // An unknown key is usually a removed or misspelled option; ignoring it would silently apply a
+  // default, so it fails like an unexpected keyword argument to the Python install().
+  for (const name of Object.keys(options)) {
+    if (!INSTALL_OPTIONS.has(name)) {
+      throw new ElastiCacheIntegrationsConfigError(`install() got an unexpected option '${name}'`);
+    }
+  }
   const {
     client: sdkClient,
     endpoint,
@@ -337,6 +392,7 @@ export async function install<TClient extends InstallableClient>(
     );
   }
   const configuration = resolveClientConfiguration(clientConfiguration);
+  const caCertsPem = caCerts === undefined ? undefined : readCaCerts(caCerts);
   // botocore names a service by lowercasing its service id and hyphenating spaces; the proxy's
   // predicates match that name, so Node derives it the same way.
   const service = sdkClient.config.serviceId.toLowerCase().replace(/ /g, "-");
@@ -370,7 +426,7 @@ export async function install<TClient extends InstallableClient>(
       ...connectorOptions,
       requestTimeout: configuration.requestTimeoutMs,
       verify,
-      ...(caCerts === undefined ? {} : { caCerts }),
+      ...(caCertsPem === undefined ? {} : { caCerts: caCertsPem }),
     },
     ...(configuration.fallbackDurationMs === undefined
       ? {}
