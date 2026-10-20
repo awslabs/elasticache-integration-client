@@ -380,7 +380,8 @@ describe("public DynamoDB client", () => {
       client: dynamodb,
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
-      connectorOptions: { tls: false, requestTimeout: 5_000 },
+      connectorOptions: { tls: false },
+      clientConfiguration: { cacheRequestTimeout: 5 },
     });
 
     try {

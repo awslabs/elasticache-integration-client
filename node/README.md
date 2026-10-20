@@ -33,8 +33,8 @@ This package currently ports the Python implementation's:
 Automatic ElastiCacheIntegrations failover to another endpoint remains out of scope. Deferred
 cache responses are correlated by request ID and later `aws.response`
 pushes, while callers still receive ordinary promises. The per-request timeout
-defaults to 5 seconds and can be overridden with
-`connectorOptions.requestTimeout`. A timeout for a deferred request removes only
+defaults to 5 seconds and can be changed with the
+`cacheRequestTimeout` field (see [Configuration](#configuration)). A timeout for a deferred request removes only
 that request and preserves the connection; a FIFO or write timeout remains
 connection-fatal. The middleware sends requests with no matching predicate
 directly to origin and has a narrow origin fallback for cataloged idempotent
@@ -64,7 +64,7 @@ keeps the last good config.
 The predicates are compiled when the session opens and recompiled whenever a
 refresh returns a new config. A refresh sends `aws.config` with no argument,
 and a RESP3 null reply means the config is unchanged. See
-[Config staleness](#config-staleness) for what happens when refreshes fail.
+[Cache policy timeout](#cache-policy-timeout) for what happens when refreshes fail.
 
 ## Client
 
@@ -113,9 +113,43 @@ passing shutdown failures to the origin, stops reconnect activity, and is safe
 to repeat. A client can have the cache installed once; a second `install()` on
 the same client raises `ElastiCacheIntegrationsConfigError`. After `destroy()`,
 the client can be installed into again.
-`userId` defaults to `default.iam-user`. `connectorOptions` is Node-specific;
-all `aws.config` overrides are passed through `overrides`.
-`stalenessDuration` is described under [Config staleness](#config-staleness).
+`userId` defaults to `default.iam-user`. `verify` (default `true`) and
+`caCerts` control TLS certificate verification; see the end of this README.
+`connectorOptions` and `reconnectPolicy` are Node-specific.
+
+## Configuration
+
+Optional ElastiCacheIntegrations settings go in one
+`ElastiCacheIntegrationsClientConfiguration` object, passed as
+`clientConfiguration`. Every field has a default, so set only what you change.
+Cache policy settings are sent to the cache through `aws.config`. `install()`
+copies `cachePolicyOverrides`, so changing the object afterward has no effect.
+
+```ts
+await install({
+  client: dynamodb,
+  endpoint: "cache.example.com:6379",
+  cacheName: "my-cache",
+  clientConfiguration: {
+    cacheRequestTimeout: 2,
+    fallbackDuration: 60,
+    cachePolicyOverrides: { cached_tables: ["Users", "Sessions"] },
+    iamTokenRefreshDelay: 300,
+  },
+});
+```
+
+| Field                  | Default                  | Meaning                                                                                                                                      |
+| ---------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cacheRequestTimeout`  | 5 s                      | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
+| `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
+| `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |
+| `cachePolicyTimeout`   | 3600 s                   | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache.                                                 |
+| `iamTokenRefreshDelay` | 300 s                    | When the IAM toolkit signs a replacement token in the background. Greater than 0 and less than 880 s.                                        |
+
+`install()` raises `ElastiCacheIntegrationsConfigError` for a value that is not
+usable, before it connects. `cachePolicyTimeout` is described under
+[Cache policy timeout](#cache-policy-timeout).
 
 ## Reconnection and fallback
 
@@ -127,7 +161,7 @@ Every replacement resolves fresh credentials, repeats `HELLO 3 AUTH` and `aws.co
 recompiles the resolved predicates.
 
 While there is no connection, a routed request has not been sent to ElastiCacheIntegrations and
-can safely use the origin. `fallbackDuration` controls that per-outage window:
+can safely use the origin. `clientConfiguration.fallbackDuration` controls that per-outage window:
 
 | `fallbackDuration`                         | Behavior                                                                               |
 | ------------------------------------------ | -------------------------------------------------------------------------------------- |
@@ -139,26 +173,27 @@ The window resets after every successful reconnect. Requests that do not match
 the resolved predicates continue to origin even after a finite window expires.
 `ElastiCacheIntegrationsCacheUnavailable` is exported and marked retryable for the AWS SDK.
 
-## Config staleness
+## Cache policy timeout
 
-The resolved config is re-fetched periodically on the live connection. A
-refresh that fails changes nothing: the last config the server confirmed stays
-in force and the next refresh retries. A config the server sends, an empty
-"unchanged" reply, and each new connection resolving its own config all count
-as confirmation.
+ElastiCacheIntegrations automatically confirms the resolved cache policy in the
+background through `aws.config`. A new policy replaces the current one. An
+unchanged reply confirms that the current policy is still valid. Both replies
+restart the timeout, and each new connection resolving its own policy counts as
+confirmation too.
 
-`stalenessDuration` bounds that tolerance. It is a positive whole number of
-seconds and defaults to one hour. A refresh that fails past it means the config
-can no longer be trusted, so ElastiCacheIntegrations drops the connection, and bringing up the
-replacement resolves a fresh config. A refresh that succeeds restarts the
-window, so a healthy connection is never dropped. Requests fall back meanwhile
-under the `fallbackDuration` rules above. A request already in flight when the connection
-drops falls back only when it is idempotent.
+If confirmation fails, ElastiCacheIntegrations keeps using the last confirmed
+policy. That tolerance is bounded by `cachePolicyTimeout`, one hour by default,
+which must be a positive whole number of seconds. After the timeout, the next
+failed confirmation drops the connection so a replacement can fetch a current
+policy, and a healthy connection is never dropped. Requests follow the
+`fallbackDuration` rules while the connection is being replaced. A request
+already in flight when the connection drops falls back only when it is
+idempotent.
 
-A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a config with a
+A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a policy with a
 predicate this client cannot compile never fix themselves, so they log at error
 level on every occurrence, including each connection attempt. On refresh they
-still keep the last good config until the staleness window drops the
+still keep the last confirmed policy until the cache policy timeout drops the
 connection. Refresh timeouts and connection loss
 start recovery immediately.
 
@@ -167,7 +202,7 @@ await install({
   client: dynamodb,
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
-  fallbackDuration: 60,
+  clientConfiguration: { fallbackDuration: 60 },
   reconnectPolicy: {
     connectAttempts: 3,
     connectionTimeoutMs: 5_000,
@@ -197,9 +232,10 @@ against a local or test endpoint, supplies `connectorOptions.authProvider`
 instead: it returns `[userId, token]` and replaces toolkit token management
 entirely, so no AWS credentials are required.
 
-The first token is minted lazily. Set `iamRefreshAfterSeconds` to customize its
-background refresh point; the accepted range, defaults, retry behavior, and
-safety margin are defined by the
+The first token is minted lazily. Set `clientConfiguration.iamTokenRefreshDelay` to customize its
+background refresh point. It must be greater than 0 and less than 880 seconds,
+which keeps the toolkit's 20-second safety margin on the 15-minute token. The
+default and retry behavior are defined by the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
 
 `install()` creates this default manager, so destroying the SDK client also
@@ -218,15 +254,15 @@ starts normal recovery. Configure the cadence with
 TLS is on by default and the server's certificate is verified against Node.js's
 default CA store — its bundled Mozilla roots, plus the OS trust store only when
 Node is run with system-CA support enabled — or against
-`connectorOptions.caCerts` when supplied. A local or test endpoint whose
+`caCerts` when supplied. A local or test endpoint whose
 certificate cannot be verified is reached with
-`connectorOptions.insecureSkipVerify`, which keeps TLS but waives the identity
+`verify: false`, which keeps TLS but waives the identity
 check and emits a process warning on the first handshake that uses it. It is not
 a production option; supply `caCerts` instead wherever the endpoint's CA is
 available.
 
 Authentication, transport, protocol, and middleware implementation details are
-internal to the package. Overrides use standard JSON-compatible values;
+internal to the package. `cachePolicyOverrides` use standard JSON-compatible values;
 non-finite JavaScript numbers are rejected instead of being silently converted
 to `null`.
 

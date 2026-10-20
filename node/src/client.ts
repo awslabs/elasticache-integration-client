@@ -1,5 +1,6 @@
 import { buildCacheAuthProvider } from "./auth.js";
 import {
+  DEFAULT_REQUEST_TIMEOUT,
   ElastiCacheIntegrationsConnector,
   type ElastiCacheIntegrationsConnectorOptions,
 } from "./connection.js";
@@ -16,7 +17,54 @@ import {
   type ReconnectPolicyOptions,
 } from "./session.js";
 
-export interface ElastiCacheIntegrationsClientOptions<TClient extends InstallableClient> {
+/**
+ * Configuration for a ElastiCacheIntegrations client. All fields are optional and use defaults
+ * when omitted. install() rejects a value that is not usable with ElastiCacheIntegrationsConfigError.
+ */
+export interface ElastiCacheIntegrationsClientConfiguration {
+  /**
+   * Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
+   * Defaults to 5 seconds.
+   */
+  cacheRequestTimeout?: number;
+  /**
+   * How long, in seconds, requests may be served directly by the origin service while
+   * ElastiCacheIntegrations has no connection to the cache. `null`, `undefined` (the default), or
+   * any negative value means indefinitely; `0` means never.
+   */
+  fallbackDuration?: number | null;
+  /**
+   * Optional settings that change what ElastiCacheIntegrations caches: which tables and operations
+   * to cache, and the cache entry lifetimes. Sent through the internal `aws.config` command.
+   *
+   * `cached_tables` and `cached_operations` are allowlists. Each one empty or absent means
+   * everything, so keeping a table out of the cache means naming the tables that should be cached
+   * rather than the one that should not. The lifetimes (`item_ttl`, `item_negative_ttl`,
+   * `query_ttl`, `scan_ttl`) and `item_write_behavior` apply connection-wide, or per table under
+   * `table_overrides`.
+   *
+   * The object is sent as given. A field name the proxy does not recognise is ignored, so a typo
+   * or a stale key is dropped without an error.
+   */
+  cachePolicyOverrides?: Readonly<Record<string, unknown>>;
+  /**
+   * How long, in seconds, ElastiCacheIntegrations may use a cache policy without confirmation
+   * from the cache. After this time, ElastiCacheIntegrations reconnects to get a current policy.
+   * Defaults to 3600 seconds and must be a positive whole number.
+   */
+  cachePolicyTimeout?: number;
+  /**
+   * How long, in seconds, after a token is issued before the IAM toolkit signs a replacement in
+   * the background, while callers keep using the current token. Must be greater than 0 and less
+   * than 880. When omitted, the toolkit default of 300 seconds is used. Applies only to the managed provider; a connector authProvider owns its
+   * configuration.
+   *
+   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
+   */
+  iamTokenRefreshDelay?: number;
+}
+
+interface ElastiCacheIntegrationsInstallOptions<TClient extends InstallableClient> {
   /** AWS SDK v3 client to install ElastiCacheIntegrations into. Its region, credentials, and service are used. */
   client: TClient;
   /** Cache endpoint as host:port. */
@@ -25,41 +73,22 @@ export interface ElastiCacheIntegrationsClientOptions<TClient extends Installabl
   cacheName: string;
   /** ElastiCache IAM user id; defaults to default.iam-user. */
   userId?: string;
+  /** Verify the cache's TLS certificate. Defaults to `true`; `false` is for self-signed test rigs only. */
+  verify?: boolean;
+  /** CA bundle (PEM) to verify against instead of the system trust store. */
+  caCerts?: string | Buffer | Array<string | Buffer>;
+  /** How the cache behaves and its optional cache policy overrides; omitted means all defaults. */
+  clientConfiguration?: ElastiCacheIntegrationsClientConfiguration;
   /**
-   * Seconds after token issuance when IAM refresh begins in the background.
-   * Applies only to the managed provider; a connector authProvider owns its configuration.
-   *
-   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
+   * Node-specific ElastiCacheIntegrations transport configuration. The request timeout and TLS
+   * verification are set through `clientConfiguration.cacheRequestTimeout`, `verify`, and `caCerts`.
    */
-  iamRefreshAfterSeconds?: number;
-  /** Node-specific ElastiCacheIntegrations transport configuration. */
-  connectorOptions?: ElastiCacheIntegrationsConnectorOptions;
-  /**
-   * Seconds that disconnected requests may fall back to origin per outage.
-   * `null`, `undefined`, or a negative value means indefinitely; zero disables fallback.
-   */
-  fallbackDuration?: number | null;
+  connectorOptions?: Omit<
+    ElastiCacheIntegrationsConnectorOptions,
+    "requestTimeout" | "verify" | "caCerts"
+  >;
   /** Advanced reconnection and fallback configuration. */
   reconnectPolicy?: ReconnectPolicyOptions;
-  /**
-   * Overrides sent in the `aws.config` handshake.
-   *
-   * `cached_tables` and `cached_operations` are allowlists — each empty or absent means
-   * everything — so keeping a table out of the cache means naming the tables that should be
-   * cached rather than the one that should not. The lifetimes (`item_ttl`, `item_negative_ttl`,
-   * `query_ttl`, `scan_ttl`) and `item_write_behavior` apply connection-wide, or per table under
-   * `table_overrides`.
-   *
-   * The object is sent as given. A field name the proxy does not recognise is ignored, so a typo
-   * or a stale key is dropped without an error.
-   */
-  overrides?: Readonly<Record<string, unknown>>;
-  /**
-   * How long, in seconds, the resolved config stays trusted while refreshes are failing. Past it
-   * the connection is dropped so a new one re-resolves the config. Defaults to one hour; must be a
-   * positive whole number of seconds.
-   */
-  stalenessDuration?: number;
 }
 
 /** The part of an AWS SDK v3 client that install() reads. */
@@ -71,25 +100,105 @@ interface InitializeOptions {
   cacheName: string;
   region: string;
   userId?: string;
-  iamRefreshAfterSeconds?: number;
-  connectorOptions?: ElastiCacheIntegrationsConnectorOptions;
-  fallbackDuration?: number | null;
+  iamTokenRefreshDelay?: number;
+  connectorOptions: ElastiCacheIntegrationsConnectorOptions;
+  fallbackDurationMs?: number | null;
   reconnectPolicy?: ReconnectPolicyOptions;
-  overrides: Readonly<Record<string, unknown>>;
+  cachePolicyOverrides: Readonly<Record<string, unknown>>;
   stalenessDurationMs: number;
 }
 
 /**
- * Validate and convert the public seconds-based staleness window to milliseconds.
+ * Upper bound for iamTokenRefreshDelay, mirroring the toolkit's 20-second safety margin on the
+ * 15-minute token. The toolkit re-validates; this is the user-facing check.
+ */
+const MAX_IAM_TOKEN_REFRESH_DELAY = 880;
+
+interface ResolvedClientConfiguration {
+  requestTimeoutMs: number;
+  fallbackDurationMs?: number | null;
+  cachePolicyOverrides: Readonly<Record<string, unknown>>;
+  stalenessDurationMs: number;
+  iamTokenRefreshDelay?: number;
+}
+
+/**
+ * Validate the public seconds-based configuration and convert it to the milliseconds the
+ * transport uses.
  *
  * Runs before transport initialization so a bad value fails fast instead of after a connection
  * and the authenticated RESP3 handshake has already succeeded.
  */
+function resolveClientConfiguration(
+  configuration: ElastiCacheIntegrationsClientConfiguration,
+): ResolvedClientConfiguration {
+  const {
+    cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
+    fallbackDuration,
+    cachePolicyOverrides = {},
+    cachePolicyTimeout,
+    iamTokenRefreshDelay,
+  } = configuration;
+  if (
+    typeof cacheRequestTimeout !== "number" ||
+    !Number.isFinite(cacheRequestTimeout) ||
+    cacheRequestTimeout <= 0
+  ) {
+    throw new ElastiCacheIntegrationsConfigError(
+      "cacheRequestTimeout must be a positive number of seconds",
+    );
+  }
+  if (
+    typeof cachePolicyOverrides !== "object" ||
+    cachePolicyOverrides === null ||
+    Array.isArray(cachePolicyOverrides)
+  ) {
+    throw new ElastiCacheIntegrationsConfigError(
+      "cachePolicyOverrides must be an object or undefined",
+    );
+  }
+  if (
+    iamTokenRefreshDelay !== undefined &&
+    (typeof iamTokenRefreshDelay !== "number" ||
+      !Number.isFinite(iamTokenRefreshDelay) ||
+      !(iamTokenRefreshDelay > 0 && iamTokenRefreshDelay < MAX_IAM_TOKEN_REFRESH_DELAY))
+  ) {
+    throw new ElastiCacheIntegrationsConfigError(
+      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less " +
+        `than ${MAX_IAM_TOKEN_REFRESH_DELAY}, or undefined to use the toolkit default`,
+    );
+  }
+  let copiedOverrides: Readonly<Record<string, unknown>>;
+  try {
+    // Copied so a caller mutating its object after install() cannot change later handshakes.
+    copiedOverrides = structuredClone(cachePolicyOverrides);
+  } catch (error) {
+    throw new ElastiCacheIntegrationsConfigError("cachePolicyOverrides must be JSON-serializable", {
+      cause: error,
+    });
+  }
+  return {
+    // A sub-millisecond timeout still waits at least one millisecond.
+    requestTimeoutMs: Math.max(1, Math.round(cacheRequestTimeout * 1_000)),
+    ...(fallbackDuration === undefined
+      ? {}
+      : { fallbackDurationMs: fallbackDurationMs(fallbackDuration) }),
+    cachePolicyOverrides: copiedOverrides,
+    stalenessDurationMs: stalenessDurationMs(cachePolicyTimeout),
+    ...(iamTokenRefreshDelay === undefined ? {} : { iamTokenRefreshDelay }),
+  };
+}
+
 function stalenessDurationMs(seconds: number | undefined): number {
   if (seconds === undefined) return DEFAULT_STALENESS_DURATION_MS;
-  if (!Number.isSafeInteger(seconds * 1_000) || !Number.isInteger(seconds) || seconds <= 0) {
+  if (
+    typeof seconds !== "number" ||
+    !Number.isSafeInteger(seconds * 1_000) ||
+    !Number.isInteger(seconds) ||
+    seconds <= 0
+  ) {
     throw new ElastiCacheIntegrationsConfigError(
-      "stalenessDuration must be a positive whole number of seconds",
+      "cachePolicyTimeout must be a positive whole number of seconds",
     );
   }
   return seconds * 1_000;
@@ -111,18 +220,18 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
   const [host, port] = parseEndpoint(endpoint);
   // A caller-supplied provider replaces token generation rather than competing with it.
   const managedAuthProvider =
-    options.connectorOptions?.authProvider === undefined
+    options.connectorOptions.authProvider === undefined
       ? await buildCacheAuthProvider({
           cacheName: options.cacheName,
           ...(options.userId === undefined ? {} : { userId: options.userId }),
           region: options.region,
-          ...(options.iamRefreshAfterSeconds === undefined
+          ...(options.iamTokenRefreshDelay === undefined
             ? {}
-            : { refreshAfterSeconds: options.iamRefreshAfterSeconds }),
+            : { refreshAfterSeconds: options.iamTokenRefreshDelay }),
           credentials: sdkClient.config.credentials,
         })
       : undefined;
-  const authProvider = options.connectorOptions?.authProvider ?? managedAuthProvider;
+  const authProvider = options.connectorOptions.authProvider ?? managedAuthProvider;
   const connectorFactory = Object.assign(
     () =>
       new ElastiCacheIntegrationsConnector(host, port, {
@@ -135,14 +244,14 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
   try {
     const reconnectPolicy = {
       ...options.reconnectPolicy,
-      ...(options.fallbackDuration === undefined
+      ...(options.fallbackDurationMs === undefined
         ? {}
-        : { fallbackDurationMs: fallbackDurationMs(options.fallbackDuration) }),
+        : { fallbackDurationMs: options.fallbackDurationMs }),
       stalenessDurationMs: options.stalenessDurationMs,
     };
     session = new ElastiCacheIntegrationsSession(
       connectorFactory,
-      options.overrides,
+      options.cachePolicyOverrides,
       reconnectPolicy,
     );
   } catch (error) {
@@ -166,7 +275,7 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
 
 function fallbackDurationMs(value: number | null): number | null {
   if (value === null) return value;
-  const milliseconds = value * 1_000;
+  const milliseconds = typeof value === "number" ? value * 1_000 : NaN;
   if (!Number.isSafeInteger(milliseconds) || milliseconds % 1_000 !== 0) {
     throw new ElastiCacheIntegrationsConfigError(
       "fallbackDuration must be a whole number of seconds, null, or undefined",
@@ -203,19 +312,18 @@ function typeName(value: unknown): string {
  * ElastiCacheIntegrations releases what it opened and the client stays usable without the cache.
  */
 export async function install<TClient extends InstallableClient>(
-  options: ElastiCacheIntegrationsClientOptions<TClient>,
+  options: ElastiCacheIntegrationsInstallOptions<TClient>,
 ): Promise<void> {
   const {
     client: sdkClient,
     endpoint,
     cacheName,
     userId,
-    iamRefreshAfterSeconds,
+    verify = true,
+    caCerts,
+    clientConfiguration = {},
     connectorOptions,
-    fallbackDuration,
     reconnectPolicy,
-    overrides = {},
-    stalenessDuration,
   } = options;
   if (!isSdkClient(sdkClient)) {
     throw new ElastiCacheIntegrationsConfigError(
@@ -228,7 +336,7 @@ export async function install<TClient extends InstallableClient>(
       "This AWS SDK client already has ElastiCache Integrations installed; install once per client.",
     );
   }
-  const resolvedStalenessDurationMs = stalenessDurationMs(stalenessDuration);
+  const configuration = resolveClientConfiguration(clientConfiguration);
   // botocore names a service by lowercasing its service id and hyphenating spaces; the proxy's
   // predicates match that name, so Node derives it the same way.
   const service = sdkClient.config.serviceId.toLowerCase().replace(/ /g, "-");
@@ -255,11 +363,20 @@ export async function install<TClient extends InstallableClient>(
     cacheName,
     region,
     ...(userId === undefined ? {} : { userId }),
-    ...(iamRefreshAfterSeconds === undefined ? {} : { iamRefreshAfterSeconds }),
-    ...(connectorOptions === undefined ? {} : { connectorOptions }),
-    ...(fallbackDuration === undefined ? {} : { fallbackDuration }),
+    ...(configuration.iamTokenRefreshDelay === undefined
+      ? {}
+      : { iamTokenRefreshDelay: configuration.iamTokenRefreshDelay }),
+    connectorOptions: {
+      ...connectorOptions,
+      requestTimeout: configuration.requestTimeoutMs,
+      verify,
+      ...(caCerts === undefined ? {} : { caCerts }),
+    },
+    ...(configuration.fallbackDurationMs === undefined
+      ? {}
+      : { fallbackDurationMs: configuration.fallbackDurationMs }),
     ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
-    overrides,
-    stalenessDurationMs: resolvedStalenessDurationMs,
+    cachePolicyOverrides: configuration.cachePolicyOverrides,
+    stalenessDurationMs: configuration.stalenessDurationMs,
   });
 }

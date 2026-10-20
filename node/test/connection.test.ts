@@ -1257,7 +1257,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
-      insecureSkipVerify: true,
+      verify: false,
     });
 
     try {
@@ -1273,13 +1273,13 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const cache = await startCache({ tls: true });
     const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
-      insecureSkipVerify: true,
+      verify: false,
     });
 
     try {
       await connector.connect();
       expect(emitWarning).toHaveBeenCalledWith(
-        expect.stringContaining("insecureSkipVerify"),
+        expect.stringContaining("verify: false"),
         "ElastiCacheIntegrationsInsecureTlsWarning",
       );
     } finally {
@@ -1288,11 +1288,11 @@ describe("ElastiCacheIntegrationsConnector", () => {
     }
   });
 
-  it("accepts an untrusted TLS certificate when verification is skipped", async () => {
+  it("connects to an untrusted TLS certificate when verify is false", async () => {
     const cache = await startCache({ tls: true });
     // Same server and same absent CA as the test above, so the flag is the only difference.
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
-      insecureSkipVerify: true,
+      verify: false,
     });
 
     await connector.connect();
@@ -1302,10 +1302,10 @@ describe("ElastiCacheIntegrationsConnector", () => {
     await connector.close();
   });
 
-  it("still rejects an untrusted TLS certificate when verification is not skipped", async () => {
+  it("still rejects an untrusted TLS certificate when verify is true", async () => {
     const cache = await startCache({ tls: true });
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
-      insecureSkipVerify: false,
+      verify: true,
     });
 
     await expect(connector.connect()).rejects.toBeInstanceOf(
@@ -1354,7 +1354,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const server = await startSniServer("::1");
     // The fixture certificate has no ::1 SAN, so only the handshake and SNI are under test.
     const connector = new ElastiCacheIntegrationsConnector("::1", server.port, {
-      insecureSkipVerify: true,
+      verify: false,
     });
     const emitWarning = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
 

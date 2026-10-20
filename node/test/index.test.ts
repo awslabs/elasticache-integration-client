@@ -8,14 +8,17 @@ import {
   ElastiCacheIntegrationsError,
   version,
 } from "../src/index.js";
-import type { ElastiCacheIntegrationsClientOptions } from "../src/index.js";
+import type { ElastiCacheIntegrationsClientConfiguration } from "../src/index.js";
 
 const sts = new STSClient({ region: "us-east-1" });
-const stsOptions: ElastiCacheIntegrationsClientOptions<typeof sts> = {
+const clientConfiguration: ElastiCacheIntegrationsClientConfiguration = {
+  iamTokenRefreshDelay: 120,
+};
+const stsOptions: Parameters<typeof install<typeof sts>>[0] = {
   client: sts,
   endpoint: "cache.example.com:6379",
   cacheName: "test-cache",
-  iamRefreshAfterSeconds: 120,
+  clientConfiguration,
 };
 
 describe("ElastiCacheIntegrations package entry point", () => {
@@ -29,7 +32,7 @@ describe("ElastiCacheIntegrations package entry point", () => {
     expect(ElastiCacheIntegrationsConfigError).toBeTypeOf("function");
     expect(ElastiCacheIntegrationsError).toBeTypeOf("function");
     expect(stsOptions.client).toBe(sts);
-    expect(stsOptions.iamRefreshAfterSeconds).toBe(120);
+    expect(stsOptions.clientConfiguration?.iamTokenRefreshDelay).toBe(120);
   });
 
   it("does not export internal implementation APIs", async () => {

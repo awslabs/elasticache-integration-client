@@ -26,7 +26,7 @@ import {
 
 const DEFAULT_READ_SIZE = 64 * 1024;
 const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
-const DEFAULT_REQUEST_TIMEOUT = 5_000;
+export const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO, AUTH and aws.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const RESP3_PROTOCOL = 3;
@@ -267,16 +267,17 @@ export interface ElastiCacheIntegrationsConnectorOptions {
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
   /**
-   * Accept the server's certificate without verifying it. Local and test endpoints only.
+   * Verify the server's TLS certificate. Defaults to `true`; `false` is for local and test
+   * endpoints only.
    *
-   * Distinct from `tls: false`, which drops TLS entirely: this keeps the encrypted channel
-   * and waives only the identity check, which is what a self-signed endpoint needs. SNI is
-   * still sent, so a server that routes on it is unaffected.
+   * Distinct from `tls: false`, which drops TLS entirely: `verify: false` keeps the encrypted
+   * channel and waives only the identity check, which is what a self-signed endpoint needs. SNI
+   * is still sent, so a server that routes on it is unaffected.
    *
-   * Prefer `caCerts` whenever the endpoint's CA can be supplied; reach for this only when it
+   * Prefer `caCerts` whenever the endpoint's CA can be supplied; set this to `false` only when it
    * cannot, such as a certificate minted per test run for a name that is not the one dialled.
    */
-  insecureSkipVerify?: boolean;
+  verify?: boolean;
   /** Maximum size requested from a socket read. */
   readSize?: number;
   /** Maximum size of one RESP response frame in bytes. Defaults to 16 MiB. */
@@ -308,7 +309,7 @@ class ElastiCacheIntegrationsHandshakeRejected extends ElastiCacheIntegrationsCo
 
 type ConnectedSocket = Socket | TLSSocket;
 
-let warnedInsecureSkipVerify = false;
+let warnedVerifyDisabled = false;
 
 /**
  * Announce once per process that certificate verification is off.
@@ -321,11 +322,11 @@ let warnedInsecureSkipVerify = false;
  * from a production misconfiguration, so it is emitted rather than logged and carries its own
  * name for a consumer that filters warnings.
  */
-function warnInsecureSkipVerify(): void {
-  if (warnedInsecureSkipVerify) return;
-  warnedInsecureSkipVerify = true;
+function warnVerifyDisabled(): void {
+  if (warnedVerifyDisabled) return;
+  warnedVerifyDisabled = true;
   process.emitWarning(
-    "ElastiCacheIntegrations TLS certificate verification is disabled (insecureSkipVerify). " +
+    "ElastiCacheIntegrations TLS certificate verification is disabled (verify: false). " +
       "Expected only against a local or test endpoint.",
     "ElastiCacheIntegrationsInsecureTlsWarning",
   );
@@ -345,7 +346,7 @@ export class ElastiCacheIntegrationsConnector {
   private readonly requestTimeout: number;
   private readonly configTimeout: number;
   private readonly caCerts: ElastiCacheIntegrationsConnectorOptions["caCerts"];
-  private readonly insecureSkipVerify: boolean;
+  private readonly verify: boolean;
   private readonly readSize: number;
   private readonly maxResponseSize: number;
   private readonly authProvider: ElastiCacheIntegrationsConnectorOptions["authProvider"];
@@ -371,7 +372,7 @@ export class ElastiCacheIntegrationsConnector {
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
-    this.insecureSkipVerify = options.insecureSkipVerify ?? false;
+    this.verify = options.verify ?? true;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
     this.maxResponseSize = validatePositiveInteger(
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
@@ -781,11 +782,11 @@ export class ElastiCacheIntegrationsConnector {
         // address (RFC 6066), and Node 26 rejects one.
         host: this.host,
         minVersion: "TLSv1.2",
-        rejectUnauthorized: !this.insecureSkipVerify,
+        rejectUnauthorized: this.verify,
       };
       if (isIP(this.host) === 0) options.servername = this.host;
       if (this.caCerts !== undefined) options.ca = this.caCerts;
-      if (this.insecureSkipVerify) warnInsecureSkipVerify();
+      if (!this.verify) warnVerifyDisabled();
 
       const secured = connectTls(options);
       this.openingSocket = secured;
