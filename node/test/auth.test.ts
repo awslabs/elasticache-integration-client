@@ -2,18 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { CredentialsProviderError } from "@smithy/core/config";
 
-const defaultCredentials = vi.hoisted(() => {
-  const provider = vi.fn();
-  return {
-    provider,
-    fromNodeProviderChain: vi.fn(() => provider),
-  };
-});
-
-vi.mock("@aws-sdk/credential-providers", () => ({
-  fromNodeProviderChain: defaultCredentials.fromNodeProviderChain,
-}));
-
 import {
   DEFAULT_USER_ID,
   IamAuthTokenProvider,
@@ -242,24 +230,25 @@ describe("buildCacheAuthProvider", () => {
     }
   });
 
-  it("caches tokens and can force-refresh credentials from the default provider chain", async () => {
-    defaultCredentials.provider
+  it("caches and force-refreshes rotated credentials", async () => {
+    const clientCredentials = vi
+      .fn()
       .mockResolvedValueOnce(credentials)
       .mockResolvedValueOnce(rotatedCredentials);
-    defaultCredentials.fromNodeProviderChain.mockClear();
 
     const provider = await buildCacheAuthProvider({
       cacheName: "my-cache",
       region: "us-east-1",
+      credentials: clientCredentials,
     });
 
     const [, firstToken] = await provider();
     const [, cachedToken] = await provider();
     const [, refreshedToken] = await provider.refreshAuth();
 
-    expect(defaultCredentials.fromNodeProviderChain).toHaveBeenCalledOnce();
-    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
-    expect(defaultCredentials.provider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(clientCredentials).toHaveBeenCalledTimes(2);
+    expect(clientCredentials).toHaveBeenNthCalledWith(1, { forceRefresh: true });
+    expect(clientCredentials).toHaveBeenNthCalledWith(2, { forceRefresh: true });
     expect(firstToken).toContain(credentials.accessKeyId);
     expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
     expect(cachedToken).toBe(firstToken);

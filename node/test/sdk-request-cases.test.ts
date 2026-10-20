@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import * as dynamodb from "@aws-sdk/client-dynamodb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { client } from "../src/index.js";
+import { install } from "../src/index.js";
 import { MockCache } from "./mock-cache.js";
 
 // Cross-client SDK request cases. Each case goes through the real AWS SDK into the mock cache.
@@ -62,26 +62,29 @@ describe("shared SDK request cases", () => {
 
   for (const testCase of CASES.cases) {
     it(`sends ${testCase.name}`, async () => {
-      const sdkClient = await client(testCase.service, dynamodb.DynamoDBClient, {
-        endpoint: cache.endpoint,
-        cacheName: "test-cache",
+      // install() derives the service from the client, so every case must name DynamoDB.
+      expect(testCase.service).toBe("dynamodb");
+      const sdkClient = new dynamodb.DynamoDBClient({
         region: "us-east-1",
-        connectorOptions: { tls: false },
-        clientConfig: {
-          // A session token makes the SDK send x-amz-security-token, which ElastiCacheIntegrations must strip.
-          credentials: {
-            accessKeyId: "testkey",
-            secretAccessKey: "testsecret",
-            sessionToken: "testtoken",
-          },
-          // ElastiCacheIntegrations must carry every case; a request that falls back to the origin fails here
-          // instead of reaching real AWS.
-          requestHandler: {
-            handle: (request: { hostname?: string }) => {
-              throw new Error(`request went to the origin: ${request.hostname}`);
-            },
+        // A session token makes the SDK send x-amz-security-token, which ElastiCacheIntegrations must strip.
+        credentials: {
+          accessKeyId: "testkey",
+          secretAccessKey: "testsecret",
+          sessionToken: "testtoken",
+        },
+        // ElastiCacheIntegrations must carry every case; a request that falls back to the origin fails here
+        // instead of reaching real AWS.
+        requestHandler: {
+          handle: (request: { hostname?: string }) => {
+            throw new Error(`request went to the origin: ${request.hostname}`);
           },
         },
+      });
+      await install({
+        client: sdkClient,
+        endpoint: cache.endpoint,
+        cacheName: "test-cache",
+        connectorOptions: { tls: false },
       });
       try {
         const Command = commandFor(testCase.operation);

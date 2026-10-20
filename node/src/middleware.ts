@@ -194,6 +194,30 @@ export function installCacheMiddleware<Input extends object, Output extends obje
   });
 }
 
+/**
+ * Drop the handlers a `cacheMiddleware: true` client resolved before its stack changed.
+ *
+ * Smithy caches each command's resolved middleware chain in the private `handlers` field and
+ * clears it the same way in its own destroy(). Without this, a command sent before install() keeps
+ * its cache-free chain, and one sent before shutdown() keeps a chain that calls the closed session.
+ */
+function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): void {
+  Reflect.deleteProperty(client, "handlers");
+}
+
+/**
+ * Key for the handle attached to a client, so a second install can be refused.
+ *
+ * Symbol.for() returns the same symbol in every copy of this module, so an app that loads both the
+ * ESM and CommonJS builds still sees one install per client.
+ */
+const HANDLE = Symbol.for("elasticache-integrations.handle");
+
+/** Return the handle already attached to `sdkClient`, or undefined if there is none. */
+export function installedHandle(sdkClient: object): ElastiCacheIntegrationsHandle | undefined {
+  return Reflect.get(sdkClient, HANDLE) as ElastiCacheIntegrationsHandle | undefined;
+}
+
 /** Attaches ElastiCacheIntegrations to one AWS SDK client and detaches it cleanly. */
 export class ElastiCacheIntegrationsHandle {
   installed = false;
@@ -212,8 +236,10 @@ export class ElastiCacheIntegrationsHandle {
   install(): void {
     if (this.installed || this.destroyed) return;
     installCacheMiddleware(this.sdkClient, this.service, this.session);
-    this.sdkDestroy = this.sdkClient.destroy.bind(this.sdkClient);
+    clearCachedHandlers(this.sdkClient);
+    this.sdkDestroy = this.sdkClient.destroy;
     this.sdkClient.destroy = this.destroy;
+    Reflect.set(this.sdkClient, HANDLE, this);
     this.installed = true;
   }
 
@@ -221,7 +247,9 @@ export class ElastiCacheIntegrationsHandle {
   shutdown(): void {
     if (!this.installed) return;
     this.sdkClient.middlewareStack.remove(CACHE_MIDDLEWARE);
+    clearCachedHandlers(this.sdkClient);
     this.sdkClient.destroy = this.sdkDestroy!;
+    Reflect.deleteProperty(this.sdkClient, HANDLE);
     this.session.destroy();
     this.installed = false;
   }
@@ -235,9 +263,11 @@ export class ElastiCacheIntegrationsHandle {
       this.shutdown();
     } finally {
       try {
-        sdkDestroy();
+        sdkDestroy.call(this.sdkClient);
       } finally {
-        this.sdkClient.destroy = this.destroy;
+        // Put the SDK's own destroy() back, so a later install does not save this inert one as
+        // "the SDK's" and stop the SDK client from ever being destroyed.
+        this.sdkClient.destroy = sdkDestroy;
       }
     }
   };

@@ -46,6 +46,13 @@ session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
 Its per-request timeout defaults to 5 seconds and can be changed with the
 `cache_request_timeout` field (see below).
 
+Cache requests may complete out of order when the cache returns a request ID and later delivers
+the result in a `aws.response` RESP3 push. Deferred requests do not block later FIFO replies. If a
+deferred request times out, only that request is abandoned, and a late push for its ID is dropped.
+A timeout while a request is still FIFO-correlated closes the connection to prevent reply
+misrouting. A RESP3 push with an unrecognized kind is treated as protocol corruption and closes
+the connection.
+
 ## Installing into a client
 
 `install()` takes a boto3 client the application already built, so the client keeps its own
@@ -94,6 +101,7 @@ elasticache_integrations.install(
     cache_name="my-cache",
     client_configuration=elasticache_integrations.ElastiCacheIntegrationsClientConfiguration(
         cache_request_timeout=2.0,
+        connection_timeout=2.0,
         fallback_duration=60,
         cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
         iam_token_refresh_delay=300,
@@ -104,6 +112,7 @@ elasticache_integrations.install(
 | Field | Default | Meaning |
 |---|---|---|
 | `cache_request_timeout` | 5 s | How long to wait for each ElastiCacheIntegrations request's reply. |
+| `connection_timeout` | 2 s | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
 | `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |
@@ -163,18 +172,19 @@ toolkit's token refresh.
 
 ## Reconnection and fallback
 
-A lost connection is rebuilt in the background and retried until it succeeds.
-Reconnecting never blocks a request: while there is no connection, requests are
-declined so the AWS SDK sends them to the origin service using the application's
-own credentials.
+A lost connection is rebuilt in the background and retried until it succeeds. Right after the
+loss, a request waits up to `connection_timeout` for the new connection. If the connection is not
+back by then, the AWS SDK sends the request to the origin service using the application's own
+credentials. The same timeout bounds startup; client creation fails if no connection is ready.
 
-How long requests may fall back is controlled by the `fallback_duration` field:
+How long requests may fall back, counted from the end of `connection_timeout`, is controlled by
+`fallback_duration`:
 
 | `fallback_duration` | Behavior |
 |---|---|
 | `None` (default), or negative | Serve from the origin service indefinitely, so a cache outage never becomes an application outage. |
 | `N > 0` | Serve from the origin service for N seconds, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
-| `0` | Never fall back — the first request after a connection is lost raises. |
+| `0` | Never fall back — wait up to `connection_timeout` for a connection, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
 
 The window is **per outage, not a total budget**: `fallback_duration=60` allows 60 seconds of
 fallback each time the connection is lost, and a connection that keeps flapping gets a fresh 60
@@ -183,8 +193,9 @@ seconds after every successful reconnect.
 `elasticache_integrations.ElastiCacheIntegrationsCacheUnavailable` subclasses botocore's `ConnectionClosedError`, so it is retryable and
 an application's existing `except botocore...` blocks already catch it. Retryable cuts both ways:
 under the SDK's default retry mode a raised request is retried, which is usually what you want — a
-retry after backoff can land once the connection is back — but with `fallback_duration=0` it turns
-one fast failure into several.
+retry after backoff can land once the connection is back. With `fallback_duration=0`, a routed
+request waits only for the part of `connection_timeout` left in the current outage. Later retries in
+the same outage do not restart that wait.
 
 When there is no live cache connection, the request has not been sent and can safely pass through
 for any operation while the fallback window remains open. After a request is sent, origin fallback
@@ -213,9 +224,6 @@ rules while the connection is being replaced.
   when the next request times out. Closing that gap needs a periodic health check.
 - **IAM authentication validation.** Exercise the toolkit-backed flow against a real IAM-enabled
   cache in addition to the hermetic mock-cache coverage.
-- **Asynchronous / out-of-band responses.** Only the synchronous reply is handled. A follow-up
-  handles the out-of-band response (request-id followed by a later push) so a slow cache miss does
-  not block pipelined hits.
 - **Public TTL / NTTL controls.** TTL/NTTL policy is resolved server-side from the
   `aws.config` overrides; the public API does not expose per-table or per-request TTL
   overrides yet.
