@@ -31,6 +31,8 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
     private final ElastiCacheIntegrationsRequestContext requestContext;
     private final SdkHttpClient originClient;
     private final boolean ownsOriginClient;
+    private final boolean ownsSession;
+    private final ManagedIamAuthProvider ownedAuthProvider;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ElastiCacheIntegrationsHttpClient(
@@ -38,10 +40,26 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
             ElastiCacheIntegrationsRequestContext requestContext,
             SdkHttpClient originClient,
             boolean ownsOriginClient) {
+        this(session, requestContext, originClient, ownsOriginClient, false, null);
+    }
+
+    /**
+     * Create a transport that also owns the session and token manager behind it. {@link #close()}
+     * closes the session, then the token manager, then the origin transport if it is owned.
+     */
+    ElastiCacheIntegrationsHttpClient(
+            ElastiCacheIntegrationsSession session,
+            ElastiCacheIntegrationsRequestContext requestContext,
+            SdkHttpClient originClient,
+            boolean ownsOriginClient,
+            boolean ownsSession,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.requestContext = requestContext;
         this.originClient = originClient;
         this.ownsOriginClient = ownsOriginClient;
+        this.ownsSession = ownsSession;
+        this.ownedAuthProvider = ownedAuthProvider;
     }
 
     @Override
@@ -149,8 +167,20 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
             return;
         }
         requestContext.clear();
-        if (ownsOriginClient) {
-            originClient.close();
+        try {
+            if (ownsSession) {
+                session.close();
+            }
+        } finally {
+            try {
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
+                }
+            } finally {
+                if (ownsOriginClient) {
+                    originClient.close();
+                }
+            }
         }
     }
 }

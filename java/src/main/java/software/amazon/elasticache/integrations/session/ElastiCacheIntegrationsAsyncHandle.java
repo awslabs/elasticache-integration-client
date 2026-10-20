@@ -57,7 +57,9 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
                         executor,
                         ownedExecutor,
                         maxBufferedRequestBytes,
-                        maxConcurrentBodyCollectors);
+                        maxConcurrentBodyCollectors,
+                        true,
+                        ownedAuthProvider);
         this.httpClient = interceptor.getHttpClient();
         this.ownedAuthProvider = ownedAuthProvider;
     }
@@ -101,26 +103,17 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         state = State.OPEN;
     }
 
-    /** Close the Cache session and owned async resources. Idempotent. */
+    /** Close the transport, session, token manager and owned async resources. Idempotent. */
     @Override
     public synchronized void close() {
         if (state == State.CLOSED) {
             return;
         }
         try {
-            session.close();
+            // The transport closes the session, then the token manager, then owned async resources.
+            httpClient.close();
         } finally {
-            try {
-                httpClient.close();
-            } finally {
-                try {
-                    if (ownedAuthProvider != null) {
-                        ownedAuthProvider.close();
-                    }
-                } finally {
-                    state = State.CLOSED;
-                }
-            }
+            state = State.CLOSED;
         }
     }
 

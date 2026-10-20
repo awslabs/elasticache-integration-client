@@ -1801,6 +1801,48 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void handle_closingTheTransportClosesTheSession() {
+        ElastiCacheIntegrationsHandle handle =
+                ElastiCacheIntegrationsHandle.builder()
+                        .host("localhost")
+                        .port(server.getPort())
+                        .sslContext(clientSslContext)
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .build();
+        try {
+            handle.open();
+
+            // The SDK closes the transport it was given when the application closes the client.
+            handle.getHttpClient().close();
+
+            assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.getSession().getState());
+        } finally {
+            handle.close();
+        }
+    }
+
+    @Test
+    void asyncHandle_closingTheTransportClosesTheSession() {
+        ElastiCacheIntegrationsAsyncHandle handle =
+                ElastiCacheIntegrationsAsyncHandle.builder()
+                        .host("localhost")
+                        .port(server.getPort())
+                        .sslContext(clientSslContext)
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .build();
+        try {
+            handle.open();
+
+            // The SDK closes the transport it was given when the application closes the client.
+            handle.getHttpClient().close();
+
+            assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.getSession().getState());
+        } finally {
+            handle.close();
+        }
+    }
+
+    @Test
     void staleness_handleBuilderPassesDurationToSession() {
         assertThrows(
                 IllegalArgumentException.class,

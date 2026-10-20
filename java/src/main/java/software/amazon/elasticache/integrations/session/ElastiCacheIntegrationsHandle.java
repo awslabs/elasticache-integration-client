@@ -70,7 +70,8 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
             ManagedIamAuthProvider ownedAuthProvider) {
         this.session = session;
         this.interceptor =
-                new ElastiCacheIntegrationsInterceptor(session, originClient, ownsOriginClient);
+                new ElastiCacheIntegrationsInterceptor(
+                        session, originClient, ownsOriginClient, true, ownedAuthProvider);
         this.httpClient = interceptor.getHttpClient();
         this.ownedAuthProvider = ownedAuthProvider;
     }
@@ -128,24 +129,15 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
         opened = true;
     }
 
-    /** Close the Cache session. Idempotent. */
+    /** Close the transport, session, token manager and owned origin transport. Idempotent. */
     @Override
     public void close() {
         if (closed) {
             return;
         }
         closed = true;
-        try {
-            session.close();
-        } finally {
-            try {
-                httpClient.close();
-            } finally {
-                if (ownedAuthProvider != null) {
-                    ownedAuthProvider.close();
-                }
-            }
-        }
+        // The transport closes the session, then the token manager, then an owned origin transport.
+        httpClient.close();
     }
 
     /**

@@ -39,6 +39,8 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
     private final ExecutorService ownedExecutor;
     private final int maxBufferedRequestBytes;
     private final Semaphore bodyCollectorPermits;
+    private final boolean ownsSession;
+    private final ManagedIamAuthProvider ownedAuthProvider;
     private final AtomicBoolean closed = new AtomicBoolean();
 
     ElastiCacheIntegrationsAsyncHttpClient(
@@ -68,6 +70,36 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             ExecutorService ownedExecutor,
             int maxBufferedRequestBytes,
             int maxConcurrentBodyCollectors) {
+        this(
+                session,
+                requestContext,
+                originClient,
+                ownsOriginClient,
+                executor,
+                ownedExecutor,
+                maxBufferedRequestBytes,
+                maxConcurrentBodyCollectors,
+                false,
+                null);
+    }
+
+    /**
+     * Create a transport that also owns the session and token manager behind it. {@link #close()}
+     * closes the session, then the token manager, then the origin transport and executor if owned.
+     */
+    ElastiCacheIntegrationsAsyncHttpClient(
+            ElastiCacheIntegrationsSession session,
+            ElastiCacheIntegrationsRequestContext requestContext,
+            SdkAsyncHttpClient originClient,
+            boolean ownsOriginClient,
+            Executor executor,
+            ExecutorService ownedExecutor,
+            int maxBufferedRequestBytes,
+            int maxConcurrentBodyCollectors,
+            boolean ownsSession,
+            ManagedIamAuthProvider ownedAuthProvider) {
+        this.ownsSession = ownsSession;
+        this.ownedAuthProvider = ownedAuthProvider;
         this.session = session;
         this.requestContext = requestContext;
         this.originClient = originClient;
@@ -277,11 +309,26 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             return;
         }
         requestContext.clear();
-        if (ownsOriginClient) {
-            originClient.close();
-        }
-        if (ownedExecutor != null) {
-            ownedExecutor.shutdownNow();
+        try {
+            if (ownsSession) {
+                session.close();
+            }
+        } finally {
+            try {
+                if (ownedAuthProvider != null) {
+                    ownedAuthProvider.close();
+                }
+            } finally {
+                try {
+                    if (ownsOriginClient) {
+                        originClient.close();
+                    }
+                } finally {
+                    if (ownedExecutor != null) {
+                        ownedExecutor.shutdownNow();
+                    }
+                }
+            }
         }
     }
 

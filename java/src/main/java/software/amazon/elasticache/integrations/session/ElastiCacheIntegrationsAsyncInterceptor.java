@@ -33,7 +33,9 @@ public final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionI
             Executor executor,
             ExecutorService ownedExecutor,
             int maxBufferedRequestBytes,
-            int maxConcurrentBodyCollectors) {
+            int maxConcurrentBodyCollectors,
+            boolean ownsSession,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.requestContext = new ElastiCacheIntegrationsRequestContext();
         this.httpClient =
                 new ElastiCacheIntegrationsAsyncHttpClient(
@@ -44,7 +46,9 @@ public final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionI
                         executor,
                         ownedExecutor,
                         maxBufferedRequestBytes,
-                        maxConcurrentBodyCollectors);
+                        maxConcurrentBodyCollectors,
+                        ownsSession,
+                        ownedAuthProvider);
     }
 
     /**
