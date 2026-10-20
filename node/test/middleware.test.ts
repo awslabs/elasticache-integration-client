@@ -22,6 +22,7 @@ import {
 import {
   awsToCacheRequest,
   installCacheMiddleware,
+  installedHandle,
   ElastiCacheIntegrationsHandle,
   cacheToHttpResponse,
   cacheMiddleware,
@@ -263,6 +264,37 @@ describe("ElastiCacheIntegrationsHandle", () => {
 
     sdkClient.destroy();
     expect(originalDestroy).toHaveBeenCalledOnce();
+  });
+
+  it("shutdown drops handler chains cached while the middleware was installed", () => {
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: vi.fn(),
+      handlers: new Map([["GetItemCommand", () => undefined]]),
+    };
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    sdkClient.handlers = new Map([["GetItemCommand", () => undefined]]);
+
+    handle.shutdown();
+
+    expect(sdkClient).not.toHaveProperty("handlers");
+  });
+
+  it("is visible to a second copy of the package loaded in the same process", async () => {
+    // An app that both imports and requires the package loads the ESM and CJS builds side by side.
+    vi.resetModules();
+    const otherCopy = await import("../src/middleware.js");
+    expect(otherCopy.installedHandle).not.toBe(installedHandle);
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      destroy: vi.fn(),
+    };
+
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    expect(otherCopy.installedHandle(sdkClient)).toBe(handle);
+
+    handle.shutdown();
+    expect(otherCopy.installedHandle(sdkClient)).toBeUndefined();
   });
 });
 

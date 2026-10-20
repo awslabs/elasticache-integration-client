@@ -198,19 +198,24 @@ export function installCacheMiddleware<Input extends object, Output extends obje
  * Drop the handlers a `cacheMiddleware: true` client resolved before its stack changed.
  *
  * Smithy caches each command's resolved middleware chain in the private `handlers` field and
- * clears it the same way in its own destroy(). Without this, a command sent before install()
- * keeps its cache-free chain.
+ * clears it the same way in its own destroy(). Without this, a command sent before install() keeps
+ * its cache-free chain, and one sent before shutdown() keeps a chain that calls the closed session.
  */
 function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): void {
   Reflect.deleteProperty(client, "handlers");
 }
 
-/** The handle attached to each client, so a second install can be refused. */
-const handles = new WeakMap<object, ElastiCacheIntegrationsHandle>();
+/**
+ * Key for the handle attached to a client, so a second install can be refused.
+ *
+ * Symbol.for() returns the same symbol in every copy of this module, so an app that loads both the
+ * ESM and CommonJS builds still sees one install per client.
+ */
+const HANDLE = Symbol.for("elasticache-integrations.handle");
 
 /** Return the handle already attached to `sdkClient`, or undefined if there is none. */
 export function installedHandle(sdkClient: object): ElastiCacheIntegrationsHandle | undefined {
-  return handles.get(sdkClient);
+  return Reflect.get(sdkClient, HANDLE) as ElastiCacheIntegrationsHandle | undefined;
 }
 
 /** Attaches ElastiCacheIntegrations to one AWS SDK client and detaches it cleanly. */
@@ -234,7 +239,7 @@ export class ElastiCacheIntegrationsHandle {
     clearCachedHandlers(this.sdkClient);
     this.sdkDestroy = this.sdkClient.destroy;
     this.sdkClient.destroy = this.destroy;
-    handles.set(this.sdkClient, this);
+    Reflect.set(this.sdkClient, HANDLE, this);
     this.installed = true;
   }
 
@@ -242,8 +247,9 @@ export class ElastiCacheIntegrationsHandle {
   shutdown(): void {
     if (!this.installed) return;
     this.sdkClient.middlewareStack.remove(CACHE_MIDDLEWARE);
+    clearCachedHandlers(this.sdkClient);
     this.sdkClient.destroy = this.sdkDestroy!;
-    handles.delete(this.sdkClient);
+    Reflect.deleteProperty(this.sdkClient, HANDLE);
     this.session.destroy();
     this.installed = false;
   }

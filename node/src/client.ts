@@ -248,7 +248,7 @@ export async function install<TClient extends InstallableClient>(
   }
   if (typeof sdkClient.config.credentials !== "function") {
     throw new ElastiCacheIntegrationsConfigError(
-      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
+      "This AWS SDK client has no credential provider, so the cache cannot be authenticated.",
     );
   }
   await initialize(sdkClient, service, endpoint, {
