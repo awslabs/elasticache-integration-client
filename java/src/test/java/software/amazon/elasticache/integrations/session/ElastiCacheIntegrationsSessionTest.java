@@ -35,6 +35,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -1876,6 +1877,25 @@ class ElastiCacheIntegrationsSessionTest {
             assertSame(originalConfig, session.getConfig());
             assertFalse(session.isConfigStale());
             assertEquals(1, connections.get());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void open_failsWithOverridesRejectedWhenTheCacheRejectsTheOverrides() {
+        cache.setConfigError(new RespError("CONFIG_INVALID", "unknown override key"));
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        this::createConnection,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        Collections.singletonMap("item_ttl", 60),
+                        fastPolicy());
+        try {
+            ElastiCacheIntegrationsOverridesRejected thrown =
+                    assertThrows(ElastiCacheIntegrationsOverridesRejected.class, session::open);
+            assertTrue(thrown.getMessage().contains("unknown override key"));
+            assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());
         } finally {
             session.close();
         }

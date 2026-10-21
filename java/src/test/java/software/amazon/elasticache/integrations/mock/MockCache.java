@@ -38,6 +38,9 @@ public class MockCache {
     /** Error reply for a zero-argument {@code aws.config}; takes precedence when set. */
     private RespError noArgConfigError = null;
 
+    /** Error reply for a one-argument {@code aws.config}; takes precedence when set. */
+    private RespError configError = null;
+
     private FailureMode failureMode = FailureMode.NONE;
     private String failureCommand = null;
     private boolean failureAfterReply = false;
@@ -71,6 +74,11 @@ public class MockCache {
      */
     public void setNoArgConfigReply(String noArgConfigReply) {
         this.noArgConfigReply = noArgConfigReply;
+    }
+
+    /** Reply to one-argument {@code aws.config} with an error. Pass {@code null} to clear. */
+    public void setConfigError(RespError configError) {
+        this.configError = configError;
     }
 
     /** Reply to zero-argument {@code aws.config} with an error. Pass {@code null} to clear. */
@@ -276,6 +284,9 @@ public class MockCache {
                 return RespNull.INSTANCE;
             }
             return new RespBulkString(noArgConfigReply.getBytes(StandardCharsets.UTF_8));
+        }
+        if (configError != null) {
+            return configError;
         }
         return new RespBulkString(configJson.getBytes(StandardCharsets.UTF_8));
     }

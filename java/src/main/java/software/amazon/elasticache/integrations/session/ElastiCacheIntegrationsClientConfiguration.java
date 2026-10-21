@@ -97,7 +97,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
 
         /**
          * Set how long to wait for each cache request's reply, in milliseconds (default: 5000). Must be
-         * positive.
+         * positive and at most {@link Integer#MAX_VALUE}.
          */
         public Builder cacheRequestTimeoutMs(long cacheRequestTimeoutMs) {
             this.cacheRequestTimeoutMs = cacheRequestTimeoutMs;
@@ -105,10 +105,16 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         }
 
         /**
-         * Set how long, in seconds, requests may go directly to the origin service while there is no
-         * cache connection. A negative value (the default) means indefinitely, so a cache outage never
-         * becomes an application outage. Zero means never: the first request after a connection is lost
-         * fails with {@code ElastiCacheIntegrationsCacheUnavailable}.
+         * Set how long, in seconds, routed requests may use the origin service while there is no cache
+         * connection. The window is shared by requests during one outage. A later outage gets a new
+         * window after recovery.
+         *
+         * <ul>
+         *   <li>A negative value (the default): allow fallback for the rest of the outage.
+         *   <li>{@code N > 0}: allow fallback for N seconds. Later requests fail with {@code
+         *       ElastiCacheIntegrationsCacheUnavailable}.
+         *   <li>{@code 0}: disable fallback. Requests fail as soon as the connection is lost.
+         * </ul>
          */
         public Builder fallbackDurationSeconds(long fallbackDurationSeconds) {
             this.fallbackDurationSeconds = fallbackDurationSeconds;
@@ -126,7 +132,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * apply connection-wide, or per table under {@code table_overrides}.
          *
          * <p>The cache ignores a field name it does not recognise, so a typo is dropped without an
-         * error.
+         * error. Values must be JSON values: null, a string, a boolean, a finite number, a list, or a
+         * map with string keys.
          */
         public Builder cachePolicyOverrides(Map<String, Object> cachePolicyOverrides) {
             this.cachePolicyOverrides = cachePolicyOverrides;
@@ -144,9 +151,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         }
 
         /**
-         * Set how long after a token is issued the IAM toolkit signs a replacement in the background,
-         * while callers keep using the current token. Must be greater than 0 and less than 880 seconds.
-         * When null (the default), the toolkit default of 300 seconds applies.
+         * Set how long after a token is issued before the IAM toolkit signs a replacement in the
+         * background, while callers keep using the current token. Must be greater than 0 and less than
+         * 880 seconds. When null (the default), the toolkit default of 300 seconds is used.
          */
         public Builder iamTokenRefreshDelay(Duration iamTokenRefreshDelay) {
             this.iamTokenRefreshDelay = iamTokenRefreshDelay;
@@ -159,9 +166,10 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * @throws ElastiCacheIntegrationsConfigError if a value is not usable
          */
         public ElastiCacheIntegrationsClientConfiguration build() {
-            if (cacheRequestTimeoutMs <= 0) {
+            if (cacheRequestTimeoutMs <= 0 || cacheRequestTimeoutMs > Integer.MAX_VALUE) {
                 throw new ElastiCacheIntegrationsConfigError(
-                        "cacheRequestTimeoutMs must be a positive number of milliseconds");
+                        "cacheRequestTimeoutMs must be a positive number of milliseconds, at most "
+                                + Integer.MAX_VALUE);
             }
             if (cachePolicyTimeoutSeconds <= 0
                     || cachePolicyTimeoutSeconds > TimeUnit.NANOSECONDS.toSeconds(Long.MAX_VALUE)) {
@@ -179,32 +187,57 @@ public final class ElastiCacheIntegrationsClientConfiguration {
                                 + MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS
                                 + " seconds, or null to use the toolkit default");
             }
+            // Copied and checked here so a value the aws.config handshake cannot send fails before
+            // connecting, and a later change to the caller's map has no effect.
             this.cachePolicyOverrides =
-                    cachePolicyOverrides == null ? null : deepCopyMap(cachePolicyOverrides);
+                    cachePolicyOverrides == null
+                            ? null
+                            : deepCopyMap(cachePolicyOverrides, "cachePolicyOverrides");
             return new ElastiCacheIntegrationsClientConfiguration(this);
         }
 
-        private static Map<String, Object> deepCopyMap(Map<String, Object> source) {
+        private static Map<String, Object> deepCopyMap(Map<?, ?> source, String path) {
             Map<String, Object> copy = new LinkedHashMap<>();
-            for (Map.Entry<String, Object> entry : source.entrySet()) {
-                copy.put(entry.getKey(), deepCopy(entry.getValue()));
+            for (Map.Entry<?, ?> entry : source.entrySet()) {
+                Object key = entry.getKey();
+                if (!(key instanceof String)) {
+                    throw new ElastiCacheIntegrationsConfigError(
+                            path + " must have string keys, got " + typeName(key));
+                }
+                copy.put((String) key, deepCopy(entry.getValue(), path + "." + key));
             }
             return Collections.unmodifiableMap(copy);
         }
 
-        @SuppressWarnings("unchecked")
-        private static Object deepCopy(Object value) {
+        private static Object deepCopy(Object value, String path) {
             if (value instanceof Map) {
-                return deepCopyMap((Map<String, Object>) value);
+                return deepCopyMap((Map<?, ?>) value, path);
             }
             if (value instanceof List) {
                 List<Object> copy = new ArrayList<>();
-                for (Object element : (List<Object>) value) {
-                    copy.add(deepCopy(element));
+                int index = 0;
+                for (Object element : (List<?>) value) {
+                    copy.add(deepCopy(element, path + "[" + index++ + "]"));
                 }
                 return Collections.unmodifiableList(copy);
             }
-            return value;
+            if ((value instanceof Double && !Double.isFinite((Double) value))
+                    || (value instanceof Float && !Float.isFinite((Float) value))) {
+                throw new ElastiCacheIntegrationsConfigError(
+                        path + " must be a finite number, got " + value);
+            }
+            if (value == null
+                    || value instanceof String
+                    || value instanceof Boolean
+                    || value instanceof Number) {
+                return value;
+            }
+            throw new ElastiCacheIntegrationsConfigError(
+                    path + " must be JSON-serializable, got " + typeName(value));
+        }
+
+        private static String typeName(Object value) {
+            return value == null ? "null" : value.getClass().getName();
         }
     }
 }
