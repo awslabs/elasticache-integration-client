@@ -234,7 +234,7 @@ export function serializeConfig(
   return [CONFIG_COMMAND, [Buffer.from(payload, "utf8")]];
 }
 
-function stringifyConfig(overrides: Record<string, unknown>): string {
+export function stringifyConfig(overrides: Record<string, unknown>): string {
   try {
     const serialized = JSON.stringify(overrides, (_key, value: unknown) => {
       if (typeof value === "number" && !Number.isFinite(value)) {

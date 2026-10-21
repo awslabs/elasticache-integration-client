@@ -107,8 +107,10 @@ require the corresponding tests, README, and package checks to change with it.
   15-minute token, periodically re-AUTH live connections, keep the last valid
   state after an explicit refresh rejection, invalidate the stream after a
   timeout or malformed reply, confine tokens to AUTH, and keep verified TLS as
-  the default; plaintext (`tls: false`) and unverified TLS
-  (`verify: false`) are explicit, opt-in local/test behavior.
+  the default; unverified TLS (`verify: false`) is explicit, opt-in
+  local/test behavior. Plaintext (`tls: false`) and a caller-supplied
+  `authProvider` are internal connector options that `install()` does not
+  expose; flag a change that makes them public.
 - **Client readiness:** flag resolving `install()` on a partially initialized
   client or masking an initialization error with cleanup failures. Safe path:
   resolve only after auth, session opening, and middleware installation succeed, and
@@ -158,9 +160,11 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
 
 ## Security and test boundaries
 
-- TLS and certificate verification are enabled by default. Use `tls: false` (no
-  TLS at all) or `verify: false` (TLS without certificate verification)
-  only for local or test endpoints.
+- TLS and certificate verification are enabled by default. `verify: false`
+  (TLS without certificate verification) is for local or test endpoints only.
+  Tests that go through `install()` use the TLS mock cache with the localhost
+  fixture as `caCerts`; plaintext (`tls: false`) is reachable only by
+  constructing the connector directly in tests.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material. Wrapped requests are fully serialized but not
   origin-signed; Roxy owns origin signing. ElastiCache IAM `elasticache:connect`

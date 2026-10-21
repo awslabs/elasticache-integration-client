@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
@@ -11,6 +13,8 @@ import {
   ElastiCacheIntegrationsConnectionLost,
 } from "../src/errors.js";
 import { MockCache, Reply } from "./mock-cache.js";
+
+const CA_CERTS = fileURLToPath(new URL("./fixtures/tls/localhost.crt", import.meta.url));
 
 const retryableResponse = Buffer.from(`<?xml version="1.0"?>
 <ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
@@ -39,6 +43,7 @@ describe("public client", () => {
   let originEndpoint: string;
   const originRequests: Array<{ body: string; headers: Record<string, string | string[]> }> = [];
   const cache = new MockCache({
+    tls: true,
     config: {
       predicates: [{ expr: "service == 'dynamodb' && operation == 'GetItem'", vars: {} }],
     },
@@ -103,7 +108,7 @@ describe("public client", () => {
       client: sts,
       endpoint: cache.endpoint,
       cacheName: "test-cache",
-      connectorOptions: { tls: false },
+      caCerts: CA_CERTS,
     });
 
     const preCacheRequests: HttpRequest[] = [];
@@ -158,6 +163,7 @@ describe("public client", () => {
 describe("public DynamoDB client", () => {
   let responses = 0;
   const cache = new MockCache({
+    tls: true,
     config: {
       predicates: [
         {
@@ -207,7 +213,7 @@ describe("public DynamoDB client", () => {
       client: dynamodb,
       endpoint: cache.endpoint,
       cacheName: "test-cache",
-      connectorOptions: { tls: false },
+      caCerts: CA_CERTS,
     });
 
     const preCacheRequests: HttpRequest[] = [];
@@ -263,6 +269,7 @@ describe("public DynamoDB client", () => {
 
   it("routes a command the client sent before install when cacheMiddleware is on", async () => {
     const cachingCache = new MockCache({
+      tls: true,
       config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
       responseFn: () =>
         Reply.ok(
@@ -295,7 +302,7 @@ describe("public DynamoDB client", () => {
         client: dynamodb,
         endpoint: cachingCache.endpoint,
         cacheName: "test-cache",
-        connectorOptions: { tls: false },
+        caCerts: CA_CERTS,
       });
 
       const result = await getItem();
@@ -310,6 +317,7 @@ describe("public DynamoDB client", () => {
 
   it("refuses a second install and keeps serving through the first", async () => {
     const onceCache = new MockCache({
+      tls: true,
       config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
       responseFn: () =>
         Reply.ok(
@@ -329,7 +337,7 @@ describe("public DynamoDB client", () => {
       client: dynamodb,
       endpoint: onceCache.endpoint,
       cacheName: "test-cache",
-      connectorOptions: { tls: false },
+      caCerts: CA_CERTS,
     };
     const getItem = () =>
       dynamodb.send(
@@ -360,6 +368,7 @@ describe("public DynamoDB client", () => {
 
   it("rejects an in-flight request when async callers destroy the client", async () => {
     const hangingCache = new MockCache({
+      tls: true,
       config: {
         predicates: [{ expr: "operation == 'GetItem'", vars: {} }],
       },
@@ -380,7 +389,7 @@ describe("public DynamoDB client", () => {
       client: dynamodb,
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
-      connectorOptions: { tls: false },
+      caCerts: CA_CERTS,
       clientConfiguration: { cacheRequestTimeout: 5 },
     });
 

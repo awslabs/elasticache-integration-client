@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import * as dynamodb from "@aws-sdk/client-dynamodb";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { install } from "../src/index.js";
 import { MockCache } from "./mock-cache.js";
+
+const CA_CERTS = fileURLToPath(new URL("./fixtures/tls/localhost.crt", import.meta.url));
 
 // Cross-client SDK request cases. Each case goes through the real AWS SDK into the mock cache.
 // Python and Java run the same file through their own SDKs, so a client whose adapter builds a
@@ -52,7 +55,7 @@ describe("shared SDK request cases", () => {
   let cache: MockCache;
 
   beforeEach(async () => {
-    cache = new MockCache({ config: CASES.config, responseBody: Buffer.from("{}") });
+    cache = new MockCache({ tls: true, config: CASES.config, responseBody: Buffer.from("{}") });
     await cache.start();
   });
 
@@ -84,7 +87,7 @@ describe("shared SDK request cases", () => {
         client: sdkClient,
         endpoint: cache.endpoint,
         cacheName: "test-cache",
-        connectorOptions: { tls: false },
+        caCerts: CA_CERTS,
       });
       try {
         const Command = commandFor(testCase.operation);

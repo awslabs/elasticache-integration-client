@@ -12,11 +12,11 @@ import {
   installedHandle,
   type ElastiCacheIntegrationsCompatibleClient,
 } from "./middleware.js";
+import { stringifyConfig } from "./protocol.js";
 import {
   DEFAULT_STALENESS_DURATION_MS,
   parseEndpoint,
   ElastiCacheIntegrationsSession,
-  type ReconnectPolicyOptions,
 } from "./session.js";
 
 /**
@@ -30,9 +30,15 @@ export interface ElastiCacheIntegrationsClientConfiguration {
    */
   cacheRequestTimeout?: number;
   /**
-   * How long, in seconds, requests may be served directly by the origin service while
-   * ElastiCacheIntegrations has no connection to the cache. `null`, `undefined` (the default), or
-   * any negative value means indefinitely; `0` means never.
+   * How long, in seconds, routed requests may use the origin service while
+   * ElastiCacheIntegrations has no connection to the cache. The window is shared by requests
+   * during one outage. A later outage gets a new window after recovery.
+   *
+   * - `undefined` (the default), `null`, or any negative value: allow fallback for the rest of
+   *   the outage.
+   * - `N > 0`: allow fallback for N seconds. Later requests raise
+   *   `ElastiCacheIntegrationsCacheUnavailable`.
+   * - `0`: disable fallback. Requests raise as soon as the connection is lost.
    */
   fallbackDuration?: number | null;
   /**
@@ -58,10 +64,7 @@ export interface ElastiCacheIntegrationsClientConfiguration {
   /**
    * How long, in seconds, after a token is issued before the IAM toolkit signs a replacement in
    * the background, while callers keep using the current token. Must be greater than 0 and less
-   * than 880. When omitted, the toolkit default of 300 seconds is used. Applies only to the managed provider; a connector authProvider owns its
-   * configuration.
-   *
-   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
+   * than 880. When omitted, the toolkit default of 300 seconds is used.
    */
   iamTokenRefreshDelay?: number;
 }
@@ -83,17 +86,7 @@ interface ElastiCacheIntegrationsInstallOptions<TClient extends InstallableClien
    */
   caCerts?: string;
   /** How the cache behaves and its optional cache policy overrides; omitted means all defaults. */
-  clientConfiguration?: ElastiCacheIntegrationsClientConfiguration;
-  /**
-   * Node-specific ElastiCacheIntegrations transport configuration. The request timeout and TLS
-   * verification are set through `clientConfiguration.cacheRequestTimeout`, `verify`, and `caCerts`.
-   */
-  connectorOptions?: Omit<
-    ElastiCacheIntegrationsConnectorOptions,
-    "requestTimeout" | "verify" | "caCerts"
-  >;
-  /** Advanced reconnection and fallback configuration. */
-  reconnectPolicy?: ReconnectPolicyOptions;
+  clientConfiguration?: ElastiCacheIntegrationsClientConfiguration | null;
 }
 
 const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
@@ -104,9 +97,10 @@ const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
   "verify",
   "caCerts",
   "clientConfiguration",
-  "connectorOptions",
-  "reconnectPolicy",
 ]);
+
+/** setTimeout fires after 1 ms for any delay above this, so longer timeouts are rejected. */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 const CLIENT_CONFIGURATION_FIELDS: ReadonlySet<string> = new Set([
   "cacheRequestTimeout",
@@ -128,7 +122,6 @@ interface InitializeOptions {
   iamTokenRefreshDelay?: number;
   connectorOptions: ElastiCacheIntegrationsConnectorOptions;
   fallbackDurationMs?: number | null;
-  reconnectPolicy?: ReconnectPolicyOptions;
   cachePolicyOverrides: Readonly<Record<string, unknown>>;
   stalenessDurationMs: number;
 }
@@ -155,8 +148,14 @@ interface ResolvedClientConfiguration {
  * and the authenticated RESP3 handshake has already succeeded.
  */
 function resolveClientConfiguration(
-  configuration: ElastiCacheIntegrationsClientConfiguration,
+  configuration: ElastiCacheIntegrationsClientConfiguration | null | undefined,
 ): ResolvedClientConfiguration {
+  configuration ??= {};
+  if (typeof configuration !== "object" || Array.isArray(configuration)) {
+    throw new ElastiCacheIntegrationsConfigError(
+      `clientConfiguration must be an object, null, or undefined, got ${typeName(configuration)}`,
+    );
+  }
   for (const field of Object.keys(configuration)) {
     if (!CLIENT_CONFIGURATION_FIELDS.has(field)) {
       throw new ElastiCacheIntegrationsConfigError(
@@ -174,10 +173,12 @@ function resolveClientConfiguration(
   if (
     typeof cacheRequestTimeout !== "number" ||
     !Number.isFinite(cacheRequestTimeout) ||
-    cacheRequestTimeout <= 0
+    cacheRequestTimeout <= 0 ||
+    Math.round(cacheRequestTimeout * 1_000) > MAX_TIMER_DELAY_MS
   ) {
     throw new ElastiCacheIntegrationsConfigError(
-      "cacheRequestTimeout must be a positive number of seconds",
+      "cacheRequestTimeout must be a positive number of seconds, at most " +
+        Math.floor(MAX_TIMER_DELAY_MS / 1_000),
     );
   }
   if (
@@ -202,8 +203,10 @@ function resolveClientConfiguration(
   }
   let copiedOverrides: Readonly<Record<string, unknown>>;
   try {
-    // Copied so a caller mutating its object after install() cannot change later handshakes.
-    copiedOverrides = structuredClone(cachePolicyOverrides);
+    // Copied through the same serializer the aws.config handshake uses, so a value it would
+    // reject fails here, before connecting, and later changes to the caller's object have no
+    // effect on later handshakes.
+    copiedOverrides = JSON.parse(stringifyConfig(cachePolicyOverrides)) as Record<string, unknown>;
   } catch (error) {
     throw new ElastiCacheIntegrationsConfigError("cachePolicyOverrides must be JSON-serializable", {
       cause: error,
@@ -250,32 +253,26 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
   options: InitializeOptions,
 ): Promise<ElastiCacheIntegrationsHandle> {
   const [host, port] = parseEndpoint(endpoint);
-  // A caller-supplied provider replaces token generation rather than competing with it.
-  const managedAuthProvider =
-    options.connectorOptions.authProvider === undefined
-      ? await buildCacheAuthProvider({
-          cacheName: options.cacheName,
-          ...(options.userId === undefined ? {} : { userId: options.userId }),
-          region: options.region,
-          ...(options.iamTokenRefreshDelay === undefined
-            ? {}
-            : { refreshAfterSeconds: options.iamTokenRefreshDelay }),
-          credentials: sdkClient.config.credentials,
-        })
-      : undefined;
-  const authProvider = options.connectorOptions.authProvider ?? managedAuthProvider;
+  const authProvider = await buildCacheAuthProvider({
+    cacheName: options.cacheName,
+    ...(options.userId === undefined ? {} : { userId: options.userId }),
+    region: options.region,
+    ...(options.iamTokenRefreshDelay === undefined
+      ? {}
+      : { refreshAfterSeconds: options.iamTokenRefreshDelay }),
+    credentials: sdkClient.config.credentials,
+  });
   const connectorFactory = Object.assign(
     () =>
       new ElastiCacheIntegrationsConnector(host, port, {
         ...options.connectorOptions,
-        ...(authProvider === undefined ? {} : { authProvider }),
+        authProvider,
       }),
-    managedAuthProvider === undefined ? {} : { close: () => managedAuthProvider.close() },
+    { close: () => authProvider.close() },
   );
   let session: ElastiCacheIntegrationsSession;
   try {
     const reconnectPolicy = {
-      ...options.reconnectPolicy,
       ...(options.fallbackDurationMs === undefined
         ? {}
         : { fallbackDurationMs: options.fallbackDurationMs }),
@@ -287,8 +284,8 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
       reconnectPolicy,
     );
   } catch (error) {
-    // The session owns the managed provider only once it exists.
-    managedAuthProvider?.close();
+    // The session owns the auth provider only once it exists.
+    authProvider.close();
     throw error;
   }
   try {
@@ -376,10 +373,13 @@ export async function install<TClient extends InstallableClient>(
     userId,
     verify = true,
     caCerts,
-    clientConfiguration = {},
-    connectorOptions,
-    reconnectPolicy,
+    clientConfiguration,
   } = options;
+  if (typeof verify !== "boolean") {
+    throw new ElastiCacheIntegrationsConfigError(
+      `verify must be a boolean, got ${typeName(verify)}`,
+    );
+  }
   if (!isSdkClient(sdkClient)) {
     throw new ElastiCacheIntegrationsConfigError(
       `client must be an AWS SDK v3 client, got ${typeName(sdkClient)}. Create one with ` +
@@ -423,7 +423,6 @@ export async function install<TClient extends InstallableClient>(
       ? {}
       : { iamTokenRefreshDelay: configuration.iamTokenRefreshDelay }),
     connectorOptions: {
-      ...connectorOptions,
       requestTimeout: configuration.requestTimeoutMs,
       verify,
       ...(caCertsPem === undefined ? {} : { caCerts: caCertsPem }),
@@ -431,7 +430,6 @@ export async function install<TClient extends InstallableClient>(
     ...(configuration.fallbackDurationMs === undefined
       ? {}
       : { fallbackDurationMs: configuration.fallbackDurationMs }),
-    ...(reconnectPolicy === undefined ? {} : { reconnectPolicy }),
     cachePolicyOverrides: configuration.cachePolicyOverrides,
     stalenessDurationMs: configuration.stalenessDurationMs,
   });
