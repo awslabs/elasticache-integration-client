@@ -217,7 +217,9 @@ The first token is minted lazily. The toolkit signs a replacement in the
 background after 300 seconds by default. Set
 `clientConfiguration.iamTokenRefreshDelay` to customize that background signing
 point; it must be greater than 0 and less than 880 seconds, preserving the
-toolkit's 20-second safety margin on the 15-minute token.
+toolkit's 20-second safety margin on the 15-minute token. Refresh and retry
+behavior is described in the
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
 
 `install()` creates the token manager, so destroying the SDK client also
 closes the manager and stops its timers.
