@@ -21,6 +21,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     /** Default for {@link Builder#cacheRequestTimeoutMs(long)}: 5 seconds. */
     public static final long DEFAULT_CACHE_REQUEST_TIMEOUT_MS = 5_000;
 
+    /** Default for {@link Builder#connectionTimeoutMs(long)}: 2 seconds. */
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
+
     /** Value of {@link Builder#fallbackDurationSeconds(long)} that allows fallback indefinitely. */
     public static final long INDEFINITE_FALLBACK = -1;
 
@@ -35,6 +38,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     static final long MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS = 880;
 
     private final long cacheRequestTimeoutMs;
+    private final long connectionTimeoutMs;
     private final long fallbackDurationSeconds;
     private final Map<String, Object> cachePolicyOverrides;
     private final long cachePolicyTimeoutSeconds;
@@ -42,6 +46,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
 
     private ElastiCacheIntegrationsClientConfiguration(Builder builder) {
         this.cacheRequestTimeoutMs = builder.cacheRequestTimeoutMs;
+        this.connectionTimeoutMs = builder.connectionTimeoutMs;
         this.fallbackDurationSeconds = builder.fallbackDurationSeconds;
         this.cachePolicyOverrides = builder.cachePolicyOverrides;
         this.cachePolicyTimeoutSeconds = builder.cachePolicyTimeoutSeconds;
@@ -60,6 +65,14 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     /** Return how long to wait for each cache request's reply, in milliseconds. */
     public long getCacheRequestTimeoutMs() {
         return cacheRequestTimeoutMs;
+    }
+
+    /**
+     * Return how long to try to connect at startup, and how long a request waits for reconnection
+     * after a connection is lost, in milliseconds.
+     */
+    public long getConnectionTimeoutMs() {
+        return connectionTimeoutMs;
     }
 
     /**
@@ -88,6 +101,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     /** Builder for {@link ElastiCacheIntegrationsClientConfiguration}. */
     public static final class Builder {
         private long cacheRequestTimeoutMs = DEFAULT_CACHE_REQUEST_TIMEOUT_MS;
+        private long connectionTimeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS;
         private long fallbackDurationSeconds = INDEFINITE_FALLBACK;
         private Map<String, Object> cachePolicyOverrides;
         private long cachePolicyTimeoutSeconds = DEFAULT_CACHE_POLICY_TIMEOUT_SECONDS;
@@ -101,6 +115,16 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          */
         public Builder cacheRequestTimeoutMs(long cacheRequestTimeoutMs) {
             this.cacheRequestTimeoutMs = cacheRequestTimeoutMs;
+            return this;
+        }
+
+        /**
+         * Set how long, in milliseconds, ElastiCache Integrations tries to connect at startup, and how
+         * long a request waits for reconnection after a connection is lost (default: 2000). Must be
+         * positive.
+         */
+        public Builder connectionTimeoutMs(long connectionTimeoutMs) {
+            this.connectionTimeoutMs = connectionTimeoutMs;
             return this;
         }
 
@@ -170,6 +194,10 @@ public final class ElastiCacheIntegrationsClientConfiguration {
                 throw new ElastiCacheIntegrationsConfigError(
                         "cacheRequestTimeoutMs must be a positive number of milliseconds, at most "
                                 + Integer.MAX_VALUE);
+            }
+            if (connectionTimeoutMs <= 0) {
+                throw new ElastiCacheIntegrationsConfigError(
+                        "connectionTimeoutMs must be a positive number of milliseconds");
             }
             if (cachePolicyTimeoutSeconds <= 0
                     || cachePolicyTimeoutSeconds > TimeUnit.NANOSECONDS.toSeconds(Long.MAX_VALUE)) {
