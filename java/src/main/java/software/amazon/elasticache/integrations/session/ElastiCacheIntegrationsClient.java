@@ -21,6 +21,7 @@ import software.amazon.awssdk.core.SdkServiceClientConfiguration;
 import software.amazon.awssdk.core.client.builder.SdkAsyncClientBuilder;
 import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
@@ -1005,11 +1006,17 @@ public final class ElastiCacheIntegrationsClient {
     }
 
     /**
-     * The SDK rejects a builder that has both an HTTP client and an HTTP client builder. Return a
-     * configuration error that names the option to use instead, or null for any other failure.
+     * Return the configuration error for an SDK build failure the application can fix, or null for
+     * any other failure. The SDK rejects a builder that has both an HTTP client and an HTTP client
+     * builder, and fails to build a client when no region resolves.
      */
     private static ElastiCacheIntegrationsConfigError translateBuildFailure(
             Throwable failure, String originOption) {
+        if (failure instanceof SdkClientException
+                && failure.getMessage() != null
+                && failure.getMessage().startsWith("Unable to load region")) {
+            return new ElastiCacheIntegrationsConfigError(NO_REGION, failure);
+        }
         if (failure instanceof IllegalArgumentException
                 && failure.getMessage() != null
                 && failure.getMessage().contains("can't both be configured")

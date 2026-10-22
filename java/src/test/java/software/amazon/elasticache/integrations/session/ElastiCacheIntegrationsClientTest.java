@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
@@ -292,6 +293,47 @@ class ElastiCacheIntegrationsClientTest {
                 error.getMessage());
         assertTrue(cache.getAuthAttempts().isEmpty());
         assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+    }
+
+    @Test
+    void clientRejectsAClientWithNoRegion() throws Exception {
+        assumeTrue(
+                System.getenv("AWS_REGION") == null && System.getenv("AWS_DEFAULT_REGION") == null,
+                "the environment supplies a region");
+        Path emptyProfile = Files.createFile(tempDir.resolve("config"));
+        Map<String, String> properties = new HashMap<>();
+        properties.put("aws.configFile", emptyProfile.toString());
+        properties.put("aws.sharedCredentialsFile", emptyProfile.toString());
+        properties.put("aws.disableEc2Metadata", "true");
+        Map<String, String> previous = new HashMap<>();
+        properties.forEach((key, value) -> previous.put(key, System.setProperty(key, value)));
+        try {
+            DynamoDbClientBuilder noRegion =
+                    DynamoDbClient.builder()
+                            .credentialsProvider(
+                                    StaticCredentialsProvider.create(
+                                            AwsBasicCredentials.create(OWN_ACCESS_KEY, "own-secret-key")))
+                            .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+            ElastiCacheIntegrationsConfigError error =
+                    assertThrows(
+                            ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().install(noRegion));
+
+            assertEquals(
+                    "The AWS SDK client has no region, so the cache's IAM token cannot be signed. "
+                            + "Create the client with a region.",
+                    error.getMessage());
+            assertTrue(cache.getAuthAttempts().isEmpty());
+        } finally {
+            previous.forEach(
+                    (key, value) -> {
+                        if (value == null) {
+                            System.clearProperty(key);
+                        } else {
+                            System.setProperty(key, value);
+                        }
+                    });
+        }
     }
 
     @Test
