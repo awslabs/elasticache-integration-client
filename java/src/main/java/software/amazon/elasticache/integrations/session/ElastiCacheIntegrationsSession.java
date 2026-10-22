@@ -38,10 +38,10 @@ import software.amazon.elasticache.integrations.resp.RespValue;
 /**
  * Owns the active Cache connector and replaces it after transport failure.
  *
- * <p>Initial connection is bounded by {@link ReconnectPolicy#getConnectAttempts()} and {@link
- * ReconnectPolicy#getConnectionTimeoutMs()}. Once open, an idle or in-flight disconnect starts one
- * background reconnect loop. The loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and
- * {@code aws.config}, and keeps trying until it succeeds or the session closes.
+ * <p>Initial connection is bounded by the reconnect policy's connect attempts and connection
+ * timeout. Once open, an idle or in-flight disconnect starts one background reconnect loop. The
+ * loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and {@code aws.config}, and keeps
+ * trying until it succeeds or the session closes.
  *
  * <p>While no connector is available, matching requests use origin fallback until the configured
  * fallback duration expires. After a request is admitted to Cache, the HTTP adapters allow direct
@@ -232,6 +232,21 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      */
     public State getState() {
         return state;
+    }
+
+    /** For testing: the staleness window this session was created with, in seconds. */
+    long stalenessDurationSeconds() {
+        return TimeUnit.NANOSECONDS.toSeconds(stalenessDurationNanos);
+    }
+
+    /** For testing: the reconnect policy this session was created with. */
+    ReconnectPolicy reconnectPolicy() {
+        return reconnectPolicy;
+    }
+
+    /** For testing: the override map this session sends in {@code aws.config}. */
+    Map<String, Object> overrides() {
+        return overrides;
     }
 
     /**

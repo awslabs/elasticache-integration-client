@@ -1,14 +1,25 @@
 package software.amazon.elasticache.integrations.session;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -18,6 +29,8 @@ import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
@@ -30,24 +43,35 @@ import software.amazon.awssdk.http.HttpExecuteRequest;
 import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
+import software.amazon.awssdk.identity.spi.AwsSessionCredentialsIdentity;
+import software.amazon.awssdk.identity.spi.IdentityProvider;
+import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
-import software.amazon.elasticache.integrations.auth.AuthCredentials;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.mock.ReceivedRequest;
 import software.amazon.elasticache.integrations.mock.Reply;
+import software.amazon.elasticache.integrations.resp.RespError;
+import software.amazon.elasticache.integrations.resp.RespSimpleString;
 
 class ElastiCacheIntegrationsClientTest {
 
+    private static final String OWN_ACCESS_KEY = "AKIDOWNCREDENTIAL01";
     private static final String TEST_USER = "test-user";
     private static final String TEST_TOKEN = "test-token";
 
+    @TempDir Path tempDir;
+
     private MockCache cache;
     private MockTlsServer server;
+    private Path caBundle;
     private SSLContext clientSslContext;
 
     // Common SDK client configuration for tests - fake credentials since we intercept requests
@@ -60,10 +84,16 @@ class ElastiCacheIntegrationsClientTest {
                 .endpointOverride(URI.create("http://localhost:8080"));
     }
 
+    private final AtomicReference<ElastiCacheIntegrationsHandle> handle = new AtomicReference<>();
+
     @BeforeEach
     void setUp() throws Exception {
         cache = new MockCache();
+        cache.setConfigJson(
+                "{\"version\":\"1.0\",\"refresh_interval\":60,\"predicates\":[{\"expr\":\"true\"}]}");
         server = new MockTlsServer(cache);
+        caBundle = tempDir.resolve("ca.pem");
+        server.writeCaBundle(caBundle);
         clientSslContext = server.getSslContext();
     }
 
@@ -71,6 +101,528 @@ class ElastiCacheIntegrationsClientTest {
     void tearDown() throws Exception {
         if (server != null) {
             server.close();
+        }
+    }
+
+    /** The application's own builder: its region and credentials, and an origin nobody can reach. */
+    private static DynamoDbClientBuilder appBuilder() {
+        return DynamoDbClient.builder()
+                .region(Region.US_EAST_1)
+                .credentialsProvider(
+                        StaticCredentialsProvider.create(
+                                AwsBasicCredentials.create(OWN_ACCESS_KEY, "own-secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+    }
+
+    private ElastiCacheIntegrationsClient.Builder cacheBuilder() {
+        return ElastiCacheIntegrationsClient.builder()
+                .endpoint("localhost:" + server.getPort())
+                .cacheName("my-cache")
+                .caCerts(caBundle)
+                .handleObserver(handle::set);
+    }
+
+    private void replyWithTables(String... names) {
+        StringBuilder body = new StringBuilder("{\"TableNames\":[");
+        for (int i = 0; i < names.length; i++) {
+            body.append(i == 0 ? "" : ",").append('"').append(names[i]).append('"');
+        }
+        cache.setReply(
+                Reply.ok(
+                        200,
+                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                        body.append("]}").toString().getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test
+    void clientWiresUpTheSuppliedClient() {
+        replyWithTables("from-cache");
+
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertEquals(Collections.singletonList("from-cache"), client.listTables().tableNames());
+            assertTrue(handle.get().isOpen());
+        }
+
+        ReceivedRequest request = cache.getLastRequest();
+        assertNotNull(request);
+        assertEquals("POST", request.getMethod());
+        assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
+        assertFalse(request.getHeaders().contains("authorization"));
+        assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void clientCanBeInstalledAgainAfterClose() {
+        DynamoDbClientBuilder builder = appBuilder();
+        cacheBuilder().install(builder).close();
+        assertTrue(
+                builder.overrideConfiguration().executionInterceptors().isEmpty(),
+                "install leaves the application's builder as it was");
+
+        replyWithTables("from-cache");
+        try (DynamoDbClient client = cacheBuilder().install(builder)) {
+            assertEquals(Collections.singletonList("from-cache"), client.listTables().tableNames());
+        }
+    }
+
+    @Test
+    void clientClosesTheSessionWhenInstallingTheHookFails() {
+        cache.setAuthReplyFunction((userId, token) -> new RespError("WRONGPASS", "rejected"));
+
+        ElastiCacheIntegrationsError error =
+                assertThrows(
+                        ElastiCacheIntegrationsError.class, () -> cacheBuilder().install(appBuilder()));
+
+        assertTrue(error instanceof ElastiCacheIntegrationsAuthError, error.toString());
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                handle.get().getOwnedAuthProvider()::get,
+                "the token manager is closed");
+        assertEquals(0, error.getSuppressed().length);
+    }
+
+    @Test
+    void clientKeepsTheSuppliedBuilderUsableWhenBringupFails() {
+        AtomicBoolean reject = new AtomicBoolean(true);
+        cache.setAuthReplyFunction(
+                (userId, token) ->
+                        reject.get()
+                                ? new RespError("WRONGPASS", "rejected")
+                                : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
+        DynamoDbClientBuilder builder = appBuilder();
+        assertThrows(ElastiCacheIntegrationsAuthError.class, () -> cacheBuilder().install(builder));
+
+        reject.set(false);
+        replyWithTables("from-cache");
+        try (DynamoDbClient client = cacheBuilder().install(builder)) {
+            assertEquals(Collections.singletonList("from-cache"), client.listTables().tableNames());
+        }
+    }
+
+    @Test
+    void clientSignsTheCacheTokenWithTheClientsOwnCredentials() {
+        try (DynamoDbClient client = cacheBuilder().userId("IAM-User").install(appBuilder())) {
+            assertTrue(handle.get().isOpen());
+        }
+
+        MockCache.AuthAttempt attempt = cache.getAuthAttempts().get(0);
+        assertEquals("iam-user", attempt.getUserId());
+        assertTrue(attempt.getToken().startsWith("my-cache/"));
+        assertTrue(attempt.getToken().contains("X-Amz-Credential=" + OWN_ACCESS_KEY + "%2F"));
+    }
+
+    @Test
+    void clientResolvesTheCredentialsAgainForEachNewToken() {
+        AtomicInteger calls = new AtomicInteger();
+        DynamoDbClientBuilder builder =
+                appBuilder()
+                        .credentialsProvider(
+                                () ->
+                                        AwsBasicCredentials.create(
+                                                "AKIDROTATING" + calls.incrementAndGet(), "rotating-secret"));
+
+        try (DynamoDbClient client = cacheBuilder().install(builder)) {
+            handle.get().getOwnedAuthProvider().refresh();
+            MockCache.AuthAttempt first = cache.getAuthAttempts().get(0);
+
+            assertTrue(first.getToken().contains("X-Amz-Credential=AKIDROTATING1%2F"));
+            assertTrue(
+                    handle
+                            .get()
+                            .getOwnedAuthProvider()
+                            .get()
+                            .getToken()
+                            .contains("X-Amz-Credential=AKIDROTATING2%2F"));
+        }
+    }
+
+    @Test
+    void clientSignsTheCacheTokenWithAnIdentityProviderThatIsNotACredentialsProvider() {
+        IdentityProvider<AwsSessionCredentialsIdentity> sessionIdentity =
+                new IdentityProvider<AwsSessionCredentialsIdentity>() {
+                    @Override
+                    public Class<AwsSessionCredentialsIdentity> identityType() {
+                        return AwsSessionCredentialsIdentity.class;
+                    }
+
+                    @Override
+                    public CompletableFuture<AwsSessionCredentialsIdentity> resolveIdentity(
+                            ResolveIdentityRequest request) {
+                        return CompletableFuture.completedFuture(
+                                AwsSessionCredentialsIdentity.create(
+                                        "ASIASESSIONCREDENTIAL", "session-secret", "session-token-value"));
+                    }
+                };
+
+        try (DynamoDbClient client =
+                cacheBuilder().install(appBuilder().credentialsProvider(sessionIdentity))) {
+            assertTrue(handle.get().isOpen());
+        }
+
+        String token = cache.getAuthAttempts().get(0).getToken();
+        assertTrue(token.contains("X-Amz-Credential=ASIASESSIONCREDENTIAL%2F"));
+        assertTrue(token.contains("X-Amz-Security-Token="));
+    }
+
+    @Test
+    void clientSignsTheCacheTokenForTheClientsRegion() {
+        try (DynamoDbClient client =
+                cacheBuilder().install(appBuilder().region(Region.AP_SOUTHEAST_2))) {
+            assertTrue(handle.get().isOpen());
+        }
+
+        assertTrue(
+                cache.getAuthAttempts().get(0).getToken().contains("%2Fap-southeast-2%2Felasticache%2F"));
+    }
+
+    @Test
+    void clientRejectsAnUnsignedClient() {
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () ->
+                                cacheBuilder()
+                                        .install(
+                                                appBuilder().credentialsProvider(AnonymousCredentialsProvider.create())));
+
+        assertEquals(
+                "This AWS SDK client carries no credentials, so the cache cannot be authenticated. "
+                        + "A client built with AnonymousCredentialsProvider is not supported.",
+                error.getMessage());
+        assertTrue(cache.getAuthAttempts().isEmpty());
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+    }
+
+    @Test
+    void clientRejectsMissingOptions() {
+        assertThrows(
+                ElastiCacheIntegrationsConfigError.class,
+                () -> ElastiCacheIntegrationsClient.builder().cacheName("c").install(appBuilder()));
+        assertThrows(
+                ElastiCacheIntegrationsConfigError.class,
+                () -> ElastiCacheIntegrationsClient.builder().endpoint("cache:6379").install(appBuilder()));
+        assertThrows(
+                ElastiCacheIntegrationsConfigError.class,
+                () ->
+                        ElastiCacheIntegrationsClient.builder()
+                                .endpoint("no-port")
+                                .cacheName("c")
+                                .install(appBuilder()));
+    }
+
+    @Test
+    void clientGivesSessionOwnershipOfManagedAuth() {
+        DynamoDbClient client = cacheBuilder().install(appBuilder());
+        ManagedIamAuthProvider auth = handle.get().getOwnedAuthProvider();
+        assertNotNull(auth.get());
+
+        client.close();
+
+        assertThrows(ElastiCacheIntegrationsError.class, auth::get);
+    }
+
+    @Test
+    void clientPassesCacheRequestTimeoutToConnector() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("aws.request");
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .originHttpClient(origin)
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .cacheRequestTimeoutMs(100)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+        }
+
+        assertNotNull(origin.request.get(), "the timed-out request fell back to the origin");
+    }
+
+    @Test
+    void clientPassesTheCachePolicyTimeoutToTheSession() {
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertEquals(3600, handle.get().getSession().stalenessDurationSeconds());
+        }
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .cachePolicyTimeoutSeconds(600)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(600, handle.get().getSession().stalenessDurationSeconds());
+        }
+    }
+
+    @Test
+    void clientPassesTheFallbackDurationToTheSession() {
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertTrue(handle.get().getSession().reconnectPolicy().getFallbackDurationSeconds() < 0);
+        }
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .fallbackDurationSeconds(60)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(60, handle.get().getSession().reconnectPolicy().getFallbackDurationSeconds());
+        }
+    }
+
+    @Test
+    void clientPassesCachePolicyOverridesToTheSession() {
+        Map<String, Object> overrides = Collections.singletonMap("item_ttl", 300);
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .cachePolicyOverrides(overrides)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(overrides, handle.get().getSession().overrides());
+            assertNotNull(handle.get().getSession().getConfig());
+        }
+    }
+
+    @Test
+    void clientCopiesCachePolicyOverridesBeforePassingThemToTheSession() {
+        List<Object> tables = new ArrayList<>(Collections.singletonList("t"));
+        Map<String, Object> overrides = new HashMap<>();
+        overrides.put("cached_tables", tables);
+        ElastiCacheIntegrationsClientConfiguration configuration =
+                ElastiCacheIntegrationsClientConfiguration.builder()
+                        .cachePolicyOverrides(overrides)
+                        .build();
+
+        try (DynamoDbClient client =
+                cacheBuilder().clientConfiguration(configuration).install(appBuilder())) {
+            tables.add("other");
+            overrides.put("item_ttl", 1);
+
+            Map<String, Object> sent = handle.get().getSession().overrides();
+            assertEquals(Collections.singletonMap("cached_tables", Collections.singletonList("t")), sent);
+            assertTrue(sent != overrides);
+            assertTrue(sent.get("cached_tables") != tables);
+        }
+    }
+
+    @Test
+    void clientKeepsTheBuildersOverrideConfiguration() {
+        AtomicBoolean ownInterceptorRan = new AtomicBoolean();
+        ExecutionInterceptor ownInterceptor =
+                new ExecutionInterceptor() {
+                    @Override
+                    public void beforeExecution(
+                            Context.BeforeExecution context, ExecutionAttributes executionAttributes) {
+                        ownInterceptorRan.set(true);
+                    }
+                };
+        replyWithTables("t");
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .install(
+                                appBuilder()
+                                        .overrideConfiguration(
+                                                ClientOverrideConfiguration.builder()
+                                                        .addExecutionInterceptor(ownInterceptor)
+                                                        .apiCallTimeout(Duration.ofSeconds(30))
+                                                        .build()))) {
+            assertEquals(Collections.singletonList("t"), client.listTables().tableNames());
+
+            assertTrue(ownInterceptorRan.get());
+            assertEquals(
+                    Duration.ofSeconds(30),
+                    client.serviceClientConfiguration().overrideConfiguration().apiCallTimeout().get());
+        }
+    }
+
+    @Test
+    void clientRejectsABuilderWithItsOwnHttpClient() {
+        RecordingOriginClient ownTransport = new RecordingOriginClient();
+
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () -> cacheBuilder().install(appBuilder().httpClient(ownTransport)));
+
+        assertTrue(error.getMessage().contains("originHttpClient"), error.getMessage());
+        assertNotNull(error.getCause(), "the SDK's own error is the cause");
+        assertEquals(0, ownTransport.closeCount.get(), "the application's client stays open");
+        assertTrue(cache.getAuthAttempts().isEmpty());
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+    }
+
+    @Test
+    void clientCloseClosesTheSession() {
+        RecordingOriginClient origin = new RecordingOriginClient();
+        DynamoDbClient client = cacheBuilder().originHttpClient(origin).install(appBuilder());
+        assertTrue(handle.get().isOpen());
+
+        client.close();
+
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+        assertFalse(handle.get().isOpen());
+        assertEquals(0, origin.closeCount.get(), "a caller-supplied origin stays open");
+        client.close();
+        assertEquals(0, origin.closeCount.get());
+    }
+
+    @Test
+    void clientAcceptsTheApplicationsOwnTransportAsTheOrigin() {
+        cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,\"predicates\":[]}");
+        RecordingOriginClient ownTransport = new RecordingOriginClient();
+
+        try (DynamoDbClient client =
+                cacheBuilder().originHttpClient(ownTransport).install(appBuilder())) {
+            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+        }
+
+        assertNotNull(ownTransport.request.get(), "a request no predicate matches goes to the origin");
+        assertTrue(cache.getRequests().isEmpty());
+    }
+
+    @Test
+    void clientVerifiesTheCacheAgainstCaCerts() throws Exception {
+        replyWithTables("verified");
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertEquals(Collections.singletonList("verified"), client.listTables().tableNames());
+        }
+
+        // A bundle that does not hold the cache's certificate fails the connection.
+        try (MockTlsServer other = new MockTlsServer(new MockCache())) {
+            Path otherBundle = tempDir.resolve("other.pem");
+            other.writeCaBundle(otherBundle);
+            ElastiCacheIntegrationsError mismatch =
+                    assertThrows(
+                            ElastiCacheIntegrationsError.class,
+                            () -> cacheBuilder().caCerts(otherBundle).install(appBuilder()));
+            assertTrue(mismatch instanceof ElastiCacheIntegrationsConnectionError, mismatch.toString());
+        }
+
+        // Without caCerts the system trust store does not know the self-signed certificate.
+        assertThrows(
+                ElastiCacheIntegrationsConnectionError.class,
+                () -> cacheBuilder().caCerts(null).install(appBuilder()));
+
+        // The host name is still checked against the bundle's certificate (CN=localhost).
+        assertThrows(
+                ElastiCacheIntegrationsConnectionError.class,
+                () -> cacheBuilder().endpoint("127.0.0.1:" + server.getPort()).install(appBuilder()));
+
+        // verify(false) skips both checks.
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .caCerts(null)
+                        .endpoint("127.0.0.1:" + server.getPort())
+                        .verify(false)
+                        .install(appBuilder())) {
+            assertEquals(Collections.singletonList("verified"), client.listTables().tableNames());
+        }
+    }
+
+    @Test
+    void clientRejectsAnUnusableCaCertsFile() throws Exception {
+        Path missing = tempDir.resolve("missing.pem");
+        Path garbage = tempDir.resolve("garbage.pem");
+        Files.write(garbage, "not a certificate".getBytes(StandardCharsets.US_ASCII));
+
+        for (Path bad : Arrays.asList(missing, garbage)) {
+            assertThrows(
+                    ElastiCacheIntegrationsConfigError.class,
+                    () -> cacheBuilder().caCerts(bad).install(appBuilder()),
+                    bad.toString());
+        }
+        assertTrue(cache.getAuthAttempts().isEmpty());
+    }
+
+    @Test
+    void builderConnectionFailurePropagatesWithoutCallingOrigin() throws Exception {
+        int cachePort = server.getPort();
+        server.close();
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        cacheBuilder()
+                                .endpoint("localhost:" + cachePort)
+                                .originHttpClient(origin)
+                                .install(appBuilder()));
+
+        assertNull(origin.request.get());
+        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+    }
+
+    @Test
+    void clientOperationReusesCapturedRequestForSdkRetry() {
+        AtomicInteger attempt = new AtomicInteger();
+        cache.setReplyFunction(
+                request ->
+                        attempt.getAndIncrement() == 0
+                                ? Reply.ok(
+                                        500,
+                                        headers("x-amzn-errortype", "InternalServerError"),
+                                        "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}")
+                                : Reply.ok(
+                                        200,
+                                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                                        "{\"TableNames\":[]}"));
+
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+        }
+
+        assertEquals(2, cache.getRequests().size());
+    }
+
+    @Test
+    void clientOperationCacheTimeoutFallsBackToOrigin() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("aws.request");
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .originHttpClient(origin)
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .cacheRequestTimeoutMs(100)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+        }
+
+        assertNotNull(origin.request.get());
+        assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
+    }
+
+    @Test
+    void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+        replyWithTables("reconnected");
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+                DynamoDbClient client =
+                        cacheBuilder()
+                                .endpoint("localhost:" + proxy.getPort())
+                                .originHttpClient(origin)
+                                .install(appBuilder())) {
+            proxy.disconnectClients();
+
+            awaitRecovered(handle.get().getSession());
+            assertEquals(Collections.singletonList("reconnected"), client.listTables().tableNames());
+            assertEquals(2, cache.getAuthAttempts().size());
+            assertEquals(2, proxy.getAcceptedConnections());
         }
     }
 
@@ -142,47 +694,6 @@ class ElastiCacheIntegrationsClientTest {
         assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
         assertFalse(request.getHeaders().contains("authorization"));
         assertFalse(request.getHeaders().contains("x-amz-date"));
-    }
-
-    @Test
-    void clientOperation_reusesCapturedRequestForSdkRetry() {
-        configureListTablesPredicate();
-        AtomicInteger attempt = new AtomicInteger();
-        cache.setReplyFunction(
-                request -> {
-                    if (attempt.getAndIncrement() == 0) {
-                        return Reply.ok(
-                                500,
-                                mapOf(
-                                        "content-type", "application/x-amz-json-1.0",
-                                        "x-amzn-errortype", "InternalServerError"),
-                                "{\"__type\":\"InternalServerError\",\"message\":\"retry\"}");
-                    }
-                    return Reply.ok(
-                            200,
-                            Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                            "{\"TableNames\":[]}");
-                });
-
-        Consumer<DynamoDbClientBuilder> unreachableOriginConfig =
-                b ->
-                        b.region(Region.US_EAST_1)
-                                .credentialsProvider(
-                                        StaticCredentialsProvider.create(
-                                                AwsBasicCredentials.create("access-key", "secret-key")))
-                                .endpointOverride(URI.create("http://127.0.0.1:1"));
-
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), unreachableOriginConfig)
-                        .build()) {
-            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
-        }
-
-        assertEquals(2, cache.getRequests().size());
     }
 
     @Test
@@ -279,90 +790,6 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void builder_connectionFailure_propagatesWithoutCallingOrigin() throws Exception {
-        int cachePort = server.getPort();
-        server.close(); // Stop the server so connection fails
-        RecordingOriginClient origin = new RecordingOriginClient();
-
-        assertThrows(
-                ElastiCacheIntegrationsError.class,
-                () ->
-                        ElastiCacheIntegrationsClient.builder()
-                                .endpoint("localhost:" + cachePort)
-                                .authCredentials(TEST_USER, TEST_TOKEN)
-                                .sslContext(clientSslContext)
-                                .connectTimeoutMs(100)
-                                .originHttpClient(origin)
-                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                                .build());
-
-        assertNull(origin.request.get());
-        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
-    }
-
-    @Test
-    void clientOperation_cacheTimeoutFallsBackToOrigin() {
-        cache.setFailureMode(MockCache.FailureMode.HANG);
-        cache.setFailureCommand("aws.request");
-        RecordingOriginClient origin = new RecordingOriginClient();
-
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .requestTimeoutMs(100)
-                        .originHttpClient(origin)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
-        }
-
-        assertNotNull(origin.request.get());
-        assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
-    }
-
-    @Test
-    void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
-        configureListTablesPredicate();
-        cache.setReply(
-                Reply.ok(
-                        200,
-                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                        "{\"TableNames\":[\"reconnected\"]}"));
-        AtomicInteger credentialsCallCount = new AtomicInteger();
-        RecordingOriginClient origin = new RecordingOriginClient();
-
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
-                ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                        ElastiCacheIntegrationsClient.builder()
-                                .endpoint("localhost:" + proxy.getPort())
-                                .authProvider(
-                                        () ->
-                                                new AuthCredentials(
-                                                        TEST_USER, "token-" + credentialsCallCount.incrementAndGet()))
-                                .sslContext(clientSslContext)
-                                .originHttpClient(origin)
-                                .reconnectPolicy(
-                                        ReconnectPolicy.builder()
-                                                .fallbackDurationSeconds(-1)
-                                                .baseDelayMs(1)
-                                                .maxDelayMs(2)
-                                                .jitterFactor(0)
-                                                .build())
-                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                                .build()) {
-            proxy.disconnectClients();
-
-            awaitRecovered(result.handle().getSession(), credentialsCallCount);
-            assertEquals(
-                    Collections.singletonList("reconnected"), result.client().listTables().tableNames());
-            assertEquals(2, credentialsCallCount.get());
-            assertEquals(2, proxy.getAcceptedConnections());
-        }
-    }
-
-    @Test
     void builder_withOverrides_passesToSession() {
         try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
                 ElastiCacheIntegrationsClient.builder()
@@ -452,6 +879,13 @@ class ElastiCacheIntegrationsClientTest {
         }
     }
 
+    private void configureListTablesPredicate() {
+        cache.setConfigJson(
+                "{\"version\":\"1.0\",\"refresh_interval\":60,"
+                        + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
+                        + "&& operation == 'ListTables'\",\"vars\":{}}]}");
+    }
+
     private static final class RecordingOriginClient implements SdkHttpClient {
         private final AtomicReference<HttpExecuteRequest> request = new AtomicReference<>();
         private final AtomicInteger closeCount = new AtomicInteger();
@@ -486,30 +920,21 @@ class ElastiCacheIntegrationsClientTest {
         }
     }
 
-    private void configureListTablesPredicate() {
-        cache.setConfigJson(
-                "{\"version\":\"1.0\",\"refresh_interval\":60,"
-                        + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
-                        + "&& operation == 'ListTables'\",\"vars\":{}}]}");
-    }
-
-    private static void awaitRecovered(
-            ElastiCacheIntegrationsSession session, AtomicInteger credentialsCallCount)
-            throws InterruptedException {
+    private void awaitRecovered(ElastiCacheIntegrationsSession session) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while ((credentialsCallCount.get() < 2
+        while ((cache.getAuthAttempts().size() < 2
                         || session.getState() != ElastiCacheIntegrationsSession.State.OPEN)
                 && System.nanoTime() < deadline) {
             Thread.sleep(1);
         }
-        assertEquals(2, credentialsCallCount.get());
+        assertEquals(2, cache.getAuthAttempts().size());
         assertEquals(ElastiCacheIntegrationsSession.State.OPEN, session.getState());
     }
 
-    private static Map<String, String> mapOf(String key1, String value1, String key2, String value2) {
-        Map<String, String> values = new HashMap<>();
-        values.put(key1, value1);
-        values.put(key2, value2);
-        return values;
+    private static Map<String, String> headers(String key, String value) {
+        Map<String, String> headers = new HashMap<>();
+        headers.put("content-type", "application/x-amz-json-1.0");
+        headers.put(key, value);
+        return headers;
     }
 }

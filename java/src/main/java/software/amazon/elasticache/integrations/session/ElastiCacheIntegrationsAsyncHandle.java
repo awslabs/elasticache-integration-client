@@ -103,6 +103,11 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         state = State.OPEN;
     }
 
+    /** Get the IAM token manager adapter this handle owns, or null when auth is caller-owned. */
+    ManagedIamAuthProvider getOwnedAuthProvider() {
+        return ownedAuthProvider;
+    }
+
     /** Close the transport, session, token manager and owned async resources. Idempotent. */
     @Override
     public synchronized void close() {
@@ -142,6 +147,7 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         private SSLContext sslContext;
         private Supplier<AuthCredentials> authProvider;
         private IamAuthTokenProvider iamAuthProvider;
+        private ManagedIamAuthProvider managedAuthProvider;
         private Map<String, Object> overrides;
         private int connectTimeoutMs = 5000;
         private int initializationTimeoutMs = 5000;
@@ -215,6 +221,14 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         public Builder authProvider(IamAuthTokenProvider authProvider) {
             this.iamAuthProvider = authProvider;
             this.authProvider = null;
+            return this;
+        }
+
+        /** Set a token manager adapter whose lifecycle this handle owns. */
+        Builder managedAuthProvider(ManagedIamAuthProvider managedAuthProvider) {
+            this.managedAuthProvider = managedAuthProvider;
+            this.authProvider = null;
+            this.iamAuthProvider = null;
             return this;
         }
 
@@ -369,7 +383,9 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
             validateConfiguration();
 
             ManagedIamAuthProvider ownedAuthProvider =
-                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
+                    managedAuthProvider != null
+                            ? managedAuthProvider
+                            : iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
             Supplier<AuthCredentials> resolvedAuthProvider =
                     ownedAuthProvider != null ? ownedAuthProvider : authProvider;
             boolean ownsOriginClient = originHttpClient == null;
@@ -410,7 +426,7 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
             if (host == null || host.isEmpty()) {
                 throw new ElastiCacheIntegrationsError("host is required");
             }
-            if (authProvider == null && iamAuthProvider == null) {
+            if (authProvider == null && iamAuthProvider == null && managedAuthProvider == null) {
                 throw new ElastiCacheIntegrationsError("authProvider is required");
             }
             if (maxBufferedRequestBytes <= 0) {
