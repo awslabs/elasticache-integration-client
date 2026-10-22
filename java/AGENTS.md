@@ -12,7 +12,12 @@
 - `src/main/java/software/amazon/elasticache/integrations/`: production Java modules organized by
   concern:
   - `connection/`: TCP/TLS socket management, FIFO/request-ID correlation.
-  - `session/`: ElastiCacheIntegrationsSession, ElastiCacheIntegrationsClient (SDK integration), ElastiCacheIntegrationsInterceptor.
+  - `session/`: ElastiCacheIntegrationsSession, ElastiCacheIntegrationsClient (the `install` and
+    `installAsync` entry point), ElastiCacheIntegrationsClientConfiguration, ElastiCacheIntegrationsInterceptor.
+    The package-private ElastiCacheIntegrationsHandle and ElastiCacheIntegrationsAsyncHandle own the
+    session, interceptor and transport that `install` wires into the application's SDK client builder.
+    ReconnectPolicy is package-private and carries internal defaults. IamAuthTokenProvider (in `auth/`)
+    is internal for the same reason, but it must stay public because `session/` uses it.
   - `protocol/`: Cache wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
@@ -63,13 +68,21 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### High-value invariants
 
-- **Public API surface:** flag changes to ElastiCacheIntegrationsClient.Builder, ElastiCacheIntegrationsSession,
-  or exception types that can break consumers or expose internals. Safe path:
-  keep public API deliberate and update README/tests for intentional changes.
+- **Public API surface:** flag changes to ElastiCacheIntegrationsClient.Builder,
+  ElastiCacheIntegrationsClientConfiguration, ElastiCacheIntegrationsSession, or exception types that
+  can break consumers or expose internals. Safe path: keep public API deliberate and update
+  README/tests for intentional changes. The handles, ReconnectPolicy and the interceptors' lifecycle
+  stay internal; do not reintroduce a manual lifecycle.
 - **SDK integration:** flag changes that overwrite caller-provided
   ClientOverrideConfiguration, break ExecutionInterceptor registration, or
-  interfere with SDK retry/deserialization behavior. Safe path: merge
-  interceptors with existing config using the SDK builder's getter.
+  interfere with SDK retry/deserialization behavior. Safe path: copy the SDK
+  builder's `overrideConfiguration()` with `toBuilder()` and add the interceptor
+  to the copy. Set the transport with `httpClientBuilder(...)`, never
+  `httpClient(...)`, so the SDK closes it with the client. Restore the builder's
+  override configuration and clear the `httpClientBuilder` after every build,
+  successful or not, so the application's builder can be installed into again. A
+  builder that already has an `httpClient` fails with
+  `ElastiCacheIntegrationsConfigError`.
 - **Wire shape:** flag changes that can alter Cache interoperability or corrupt
   bytes. Safe path: preserve binary-safe RESP framing and the exact
   `aws.request` five-argument order—method, URL, normalized headers, body,
@@ -89,8 +102,9 @@ require the corresponding tests, README, and build checks to change with it.
   `connect → HELLO 3 AUTH → aws.config`, use after close, or duplicate
   teardown. Safe path: preserve the one-way lifecycle, cleanup on failed open,
   and idempotent `close()`.
-- **Authentication and transport:** flag divergence from the SDK credential
-  provider, stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
+- **Authentication and transport:** flag divergence from the built SDK client's
+  region and credentials provider (read from `serviceClientConfiguration()`),
+  stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
   TLS verification, or plaintext by default. Safe path: force-refresh
   credentials for each fresh 15-minute token, periodically re-AUTH live
   connections, keep the last valid state after an explicit rejection, invalidate
@@ -98,9 +112,16 @@ require the corresponding tests, README, and build checks to change with it.
   HELLO AUTH trailer and subsequent AUTH commands, and keep verified TLS with
   hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
-  an initialization error with cleanup failures. Safe path: return only after
-  auth, session opening, and interceptor installation succeed, and clean up
-  resources already owned by the factory.
+  an initialization error with cleanup failures. Safe path: open the session
+  only after the SDK client is built (its region and credentials create the IAM
+  token manager), return only after auth and session opening succeed, close the
+  built client on any later failure, and attach a close failure as suppressed on
+  the original error.
+- **Close ordering:** flag a close that skips a step or leaks a caller-owned
+  resource. Safe path: the transport's `close()` closes the session, then the
+  IAM token manager, then the origin transport only when Photon created it. A
+  caller-supplied origin transport or executor stays open, and repeated
+  `close()` is safe.
 
 ### Finding standard
 
@@ -153,7 +174,7 @@ ticks do nothing while reconnecting, and stale replies from replaced connectors
 are discarded. Any other refresh failure is logged and leaves the current
 config, predicates, and interval as last-known-good. Every config reply, null
 reply, open, and reconnect restarts the staleness window. A refresh that fails
-after `stalenessDurationSeconds` (default 3600) have passed without
+after `cachePolicyTimeoutSeconds` (default 3600) have passed without
 confirmation drops the connector into the normal reconnect and origin-fallback
 path. `ElastiCacheIntegrationsOverridesRejected` (`CONFIG_INVALID`) and `ElastiCacheIntegrationsConfigUnevaluable`
 (a predicate that cannot be compiled, which rejects the whole config) are logged

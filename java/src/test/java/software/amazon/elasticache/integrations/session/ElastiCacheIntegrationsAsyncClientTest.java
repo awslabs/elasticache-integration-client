@@ -27,7 +27,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -73,7 +72,6 @@ class ElastiCacheIntegrationsAsyncClientTest {
     private MockCache cache;
     private MockTlsServer server;
     private Path caBundle;
-    private SSLContext clientSslContext;
     private final AtomicReference<ElastiCacheIntegrationsAsyncHandle> handle =
             new AtomicReference<>();
 
@@ -94,7 +92,6 @@ class ElastiCacheIntegrationsAsyncClientTest {
         server = new MockTlsServer(cache);
         caBundle = tempDir.resolve("ca.pem");
         server.writeCaBundle(caBundle);
-        clientSslContext = server.getSslContext();
     }
 
     @AfterEach
@@ -505,35 +502,6 @@ class ElastiCacheIntegrationsAsyncClientTest {
             closers.shutdownNow();
             client.close();
         }
-    }
-
-    @Test
-    void asyncOperationIsServedByCache() throws Exception {
-        cache.setReply(
-                Reply.ok(
-                        200,
-                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                        "{\"TableNames\":[\"from-cache\"]}"));
-
-        try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials("test-user", "test-token")
-                        .sslContext(clientSslContext)
-                        .buildAsync(
-                                DynamoDbAsyncClient.builder(), ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
-            assertEquals(
-                    Collections.singletonList("from-cache"),
-                    result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
-            assertTrue(result.handle().isOpen());
-        }
-
-        ReceivedRequest request = cache.getLastRequest();
-        assertNotNull(request);
-        assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
-        assertEquals("{}", new String(request.getBody(), StandardCharsets.UTF_8));
-        assertFalse(request.getHeaders().contains("authorization"));
-        assertFalse(request.getHeaders().contains("x-amz-date"));
     }
 
     private ElastiCacheIntegrationsClient.Builder cacheBuilder() {

@@ -13,48 +13,14 @@ import software.amazon.elasticache.integrations.connection.ElastiCacheIntegratio
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
 /**
- * Manages the attachment of Cache to an AWS SDK client.
+ * Owns the session, interceptor and transport that {@link ElastiCacheIntegrationsClient} installs
+ * into a synchronous SDK client builder.
  *
- * <p>ElastiCacheIntegrationsHandle creates and manages the lifecycle of a
- * ElastiCacheIntegrationsSession and its associated ElastiCacheIntegrationsConnector. It provides a
- * clean API for setting up Cache with an SDK client.
- *
- * <p>AWS SDK v2 for Java requires the interceptor and HTTP transport to be configured at client
- * build time, so this handle is used during construction:
- *
- * <pre>{@code
- * // Cache creates and owns auto-refresh for a concrete IAM provider
- * IamAuthTokenProvider iamAuth = IamAuthTokenProvider.builder()
- *     .cacheName("my-cache")
- *     .region(Region.US_EAST_1)
- *     .build();
- *
- * ElastiCacheIntegrationsHandle handle = ElastiCacheIntegrationsHandle.builder()
- *     .host("my-cache.serverless.use1.cache.amazonaws.com")
- *     .port(6379)
- *     .authProvider(iamAuth)
- *     .build();
- *
- * // Open the session
- * handle.open();
- *
- * // Build the SDK client with the Cache-first, origin-fallback transport
- * DynamoDbClient client = DynamoDbClient.builder()
- *     .overrideConfiguration(c -> c.addExecutionInterceptor(handle.getInterceptor()))
- *     .httpClient(handle.getHttpClient())
- *     .build();
- *
- * // Use the client...
- *
- * // Clean up (close the handle, then the client)
- * handle.close();
- * client.close();
- * }</pre>
- *
- * <p>For simpler lifecycle management, consider using try-with-resources or integrating with your
- * application's shutdown hooks.
+ * <p>Closing the handle closes the transport, which closes the session, then the IAM token manager,
+ * then the origin transport if the handle created it. The SDK client closes the transport when the
+ * application closes the client.
  */
-public class ElastiCacheIntegrationsHandle implements Closeable {
+class ElastiCacheIntegrationsHandle implements Closeable {
 
     private final ElastiCacheIntegrationsSession session;
     private final ElastiCacheIntegrationsInterceptor interceptor;
@@ -77,11 +43,7 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
     }
 
     /**
-     * Get the interceptor to add to an SDK client.
-     *
-     * <p>The interceptor should be added during client construction via {@code
-     * overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))}. The client must also use
-     * {@link #getHttpClient()} as its HTTP transport.
+     * Get the interceptor to add to the SDK client builder's override configuration.
      *
      * @return the interceptor
      */
@@ -90,11 +52,7 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
     }
 
     /**
-     * Get the HTTP client that attempts Cache and falls back to the origin service.
-     *
-     * <p>This transport must be installed together with {@link #getInterceptor()}. Installing only
-     * the interceptor bypasses Cache and sends every request through the SDK's configured origin
-     * transport.
+     * Get the transport that attempts Cache and falls back to the origin service.
      *
      * @return the HTTP client
      */
@@ -141,7 +99,6 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
             return;
         }
         closed = true;
-        // The transport closes the session, then the token manager, then an owned origin transport.
         httpClient.close();
     }
 

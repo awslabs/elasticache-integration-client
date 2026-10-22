@@ -6,20 +6,18 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
-import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
@@ -31,26 +29,29 @@ import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.resp.RespError;
 import software.amazon.elasticache.integrations.resp.RespSimpleString;
 import software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsClient;
-import software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsSession;
-import software.amazon.elasticache.integrations.session.ReconnectPolicy;
+import software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsClientConfiguration;
 
+/**
+ * The IAM token is signed with the region and credentials of the application's own SDK client, so
+ * these tests rotate or reject the credentials on the SDK client's provider.
+ */
 class IamAuthClientIntegrationTest {
     private static final String FIRST_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE";
     private static final String ROTATED_ACCESS_KEY = "ASIAROTATEDCREDENTIAL";
-    private static final AwsCredentialsProvider SDK_CREDENTIALS =
-            StaticCredentialsProvider.create(
-                    AwsBasicCredentials.create("sdk-access-key", "sdk-secret-key"));
+
+    @TempDir Path tempDir;
 
     private MockCache cache;
     private MockTlsServer server;
-    private SSLContext clientSslContext;
+    private Path caBundle;
 
     @BeforeEach
     void setUp() throws Exception {
         cache = new MockCache();
         cache.setConfigJson("{\"version\":\"1.0\",\"refresh_interval\":60,\"predicates\":[]}");
         server = new MockTlsServer(cache);
-        clientSslContext = server.getSslContext();
+        caBundle = tempDir.resolve("ca.pem");
+        server.writeCaBundle(caBundle);
     }
 
     @AfterEach
@@ -61,38 +62,26 @@ class IamAuthClientIntegrationTest {
     }
 
     @Test
-    void syncAndAsyncClientsAuthenticateWithFreshToolkitCredentials() {
+    void syncAndAsyncClientsAuthenticateWithFreshCredentials() {
         AtomicInteger credentialCalls = new AtomicInteger();
-        Supplier<AuthCredentials> authProvider =
-                authProvider(
-                        () -> {
-                            int call = credentialCalls.incrementAndGet();
-                            return AwsBasicCredentials.create(
-                                    call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
-                                    call == 1 ? "first-secret" : "rotated-secret");
-                        });
+        AwsCredentialsProvider sdkCredentials = rotatingCredentials(credentialCalls);
 
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .sslContext(clientSslContext)
-                        .authProvider(authProvider)
-                        .origin(
-                                DynamoDbClient.builder(),
-                                builder -> builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                        .build()) {
-            assertTrue(result.handle().isOpen());
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .install(
+                                DynamoDbClient.builder()
+                                        .region(Region.US_EAST_1)
+                                        .credentialsProvider(sdkCredentials))) {
+            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
         }
 
-        try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .sslContext(clientSslContext)
-                        .authProvider(authProvider)
-                        .buildAsync(
-                                DynamoDbAsyncClient.builder(),
-                                builder -> builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))) {
-            assertTrue(result.handle().isOpen());
+        try (DynamoDbAsyncClient client =
+                cacheBuilder()
+                        .installAsync(
+                                DynamoDbAsyncClient.builder()
+                                        .region(Region.US_EAST_1)
+                                        .credentialsProvider(sdkCredentials))) {
+            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
         }
 
         assertEquals(2, credentialCalls.get());
@@ -114,25 +103,20 @@ class IamAuthClientIntegrationTest {
     void nonMapHelloReplyDoesNotForceTokenRefresh() {
         AtomicInteger credentialCalls = new AtomicInteger();
         cache.setHelloReply(new RespSimpleString("NOT-OK".getBytes(StandardCharsets.UTF_8)));
-        Supplier<AuthCredentials> authProvider =
-                authProvider(
-                        () -> {
-                            credentialCalls.incrementAndGet();
-                            return AwsBasicCredentials.create(FIRST_ACCESS_KEY, "first-secret");
-                        });
+        AwsCredentialsProvider sdkCredentials =
+                () -> {
+                    credentialCalls.incrementAndGet();
+                    return AwsBasicCredentials.create(FIRST_ACCESS_KEY, "first-secret");
+                };
 
         assertThrows(
                 ElastiCacheIntegrationsConnectionError.class,
                 () ->
-                        ElastiCacheIntegrationsClient.builder()
-                                .endpoint("localhost:" + server.getPort())
-                                .sslContext(clientSslContext)
-                                .authProvider(authProvider)
-                                .origin(
-                                        DynamoDbClient.builder(),
-                                        builder ->
-                                                builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                                .build());
+                        cacheBuilder()
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(sdkCredentials)));
 
         assertEquals(1, credentialCalls.get());
         assertEquals(3, cache.getAuthAttempts().size());
@@ -145,45 +129,20 @@ class IamAuthClientIntegrationTest {
     @Test
     void reconnectUsesTokenInstalledByBackgroundRefresh() throws Exception {
         AtomicInteger credentialCalls = new AtomicInteger();
-        CountDownLatch refreshInstalled = new CountDownLatch(1);
-        IamAuthTokenProvider authProvider =
-                IamAuthTokenProvider.builder()
-                        .cacheName("My-Cache")
-                        .userId("IAM-User")
-                        .region(Region.US_EAST_1)
-                        .credentialsProvider(
-                                () -> {
-                                    int call = credentialCalls.incrementAndGet();
-                                    return AwsBasicCredentials.create(
-                                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
-                                            call == 1 ? "first-secret" : "rotated-secret");
-                                })
-                        .refreshAfter(Duration.ofMillis(10))
-                        .onTokenChanged(
-                                token -> {
-                                    if (token.contains(ROTATED_ACCESS_KEY)) {
-                                        refreshInstalled.countDown();
-                                    }
-                                })
-                        .build();
 
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
-                ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                        ElastiCacheIntegrationsClient.builder()
+                DynamoDbClient client =
+                        cacheBuilder()
                                 .endpoint("localhost:" + proxy.getPort())
-                                .sslContext(clientSslContext)
-                                .authProvider(authProvider)
-                                .reconnectPolicy(
-                                        ReconnectPolicy.builder().baseDelayMs(1).maxDelayMs(10).jitterFactor(0).build())
-                                .origin(
-                                        DynamoDbClient.builder(),
-                                        builder ->
-                                                builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                                .build()) {
-            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
+                                .clientConfiguration(fastRefresh())
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(rotatingCredentials(credentialCalls)))) {
+            awaitAtLeast(credentialCalls, 2);
 
             proxy.disconnectClients();
-            awaitReconnect(result.handle().getSession(), 2);
+            awaitAuthAttempts(2);
 
             List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
             assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
@@ -199,28 +158,16 @@ class IamAuthClientIntegrationTest {
                         token.contains(FIRST_ACCESS_KEY)
                                 ? new RespError("invalid-iam-credentials", "credentials rejected")
                                 : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
-        Supplier<AuthCredentials> authProvider =
-                authProvider(
-                        () -> {
-                            int call = credentialCalls.incrementAndGet();
-                            return AwsBasicCredentials.create(
-                                    call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
-                                    call == 1 ? "first-secret" : "rotated-secret");
-                        });
 
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .sslContext(clientSslContext)
-                        .authProvider(authProvider)
-                        .origin(
-                                DynamoDbClient.builder(),
-                                builder -> builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                        .build()) {
-            assertTrue(result.handle().isOpen());
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .install(
+                                DynamoDbClient.builder()
+                                        .region(Region.US_EAST_1)
+                                        .credentialsProvider(rotatingCredentials(credentialCalls)))) {
+            assertEquals(2, credentialCalls.get());
         }
 
-        assertEquals(2, credentialCalls.get());
         List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
         assertEquals(2, attempts.size());
         assertTrue(attempts.get(0).getToken().contains(FIRST_ACCESS_KEY));
@@ -231,92 +178,41 @@ class IamAuthClientIntegrationTest {
     @Test
     void clientCloseStopsInternallyManagedRefresh() throws Exception {
         AtomicInteger credentialCalls = new AtomicInteger();
-        CountDownLatch refreshInstalled = new CountDownLatch(1);
-        IamAuthTokenProvider authProvider =
-                IamAuthTokenProvider.builder()
-                        .cacheName("My-Cache")
-                        .userId("IAM-User")
-                        .region(Region.US_EAST_1)
-                        .credentialsProvider(
-                                () -> {
-                                    int call = credentialCalls.incrementAndGet();
-                                    return AwsBasicCredentials.create(
-                                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
-                                            call == 1 ? "first-secret" : "rotated-secret");
-                                })
-                        .refreshAfter(Duration.ofMillis(10))
-                        .onTokenChanged(
-                                token -> {
-                                    if (token.contains(ROTATED_ACCESS_KEY)) {
-                                        refreshInstalled.countDown();
-                                    }
-                                })
-                        .build();
 
-        ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .sslContext(clientSslContext)
-                        .authProvider(authProvider)
-                        .origin(
-                                DynamoDbClient.builder(),
-                                builder -> builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                        .build();
+        DynamoDbClient client =
+                cacheBuilder()
+                        .clientConfiguration(fastRefresh())
+                        .install(
+                                DynamoDbClient.builder()
+                                        .region(Region.US_EAST_1)
+                                        .credentialsProvider(rotatingCredentials(credentialCalls)));
         try {
-            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
+            awaitAtLeast(credentialCalls, 2);
         } finally {
-            result.close();
+            client.close();
         }
-        Thread.sleep(50);
-        int callsAfterClose = credentialCalls.get();
-        Thread.sleep(100);
 
-        assertEquals(callsAfterClose, credentialCalls.get());
+        assertRefreshStopped(credentialCalls);
     }
 
     @Test
     void asyncClientCloseStopsInternallyManagedRefresh() throws Exception {
         AtomicInteger credentialCalls = new AtomicInteger();
-        CountDownLatch refreshInstalled = new CountDownLatch(1);
-        IamAuthTokenProvider authProvider =
-                IamAuthTokenProvider.builder()
-                        .cacheName("My-Cache")
-                        .userId("IAM-User")
-                        .region(Region.US_EAST_1)
-                        .credentialsProvider(
-                                () -> {
-                                    int call = credentialCalls.incrementAndGet();
-                                    return AwsBasicCredentials.create(
-                                            call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
-                                            call == 1 ? "first-secret" : "rotated-secret");
-                                })
-                        .refreshAfter(Duration.ofMillis(10))
-                        .onTokenChanged(
-                                token -> {
-                                    if (token.contains(ROTATED_ACCESS_KEY)) {
-                                        refreshInstalled.countDown();
-                                    }
-                                })
-                        .build();
 
-        ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .sslContext(clientSslContext)
-                        .authProvider(authProvider)
-                        .buildAsync(
-                                DynamoDbAsyncClient.builder(),
-                                builder -> builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS));
+        DynamoDbAsyncClient client =
+                cacheBuilder()
+                        .clientConfiguration(fastRefresh())
+                        .installAsync(
+                                DynamoDbAsyncClient.builder()
+                                        .region(Region.US_EAST_1)
+                                        .credentialsProvider(rotatingCredentials(credentialCalls)));
         try {
-            assertTrue(refreshInstalled.await(5, TimeUnit.SECONDS));
+            awaitAtLeast(credentialCalls, 2);
         } finally {
-            result.close();
+            client.close();
         }
-        Thread.sleep(50);
-        int callsAfterClose = credentialCalls.get();
-        Thread.sleep(100);
 
-        assertEquals(callsAfterClose, credentialCalls.get());
+        assertRefreshStopped(credentialCalls);
     }
 
     @Test
@@ -331,19 +227,14 @@ class IamAuthClientIntegrationTest {
                 assertThrows(
                         ElastiCacheIntegrationsError.class,
                         () ->
-                                ElastiCacheIntegrationsClient.builder()
-                                        .endpoint("localhost:" + server.getPort())
-                                        .sslContext(clientSslContext)
-                                        .authProvider(
-                                                authProvider(
-                                                        () ->
-                                                                AwsBasicCredentials.create(
-                                                                        "AKIAINVALIDCREDENTIAL", "invalid-secret")))
-                                        .origin(
-                                                DynamoDbClient.builder(),
-                                                builder ->
-                                                        builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                                        .build());
+                                cacheBuilder()
+                                        .install(
+                                                DynamoDbClient.builder()
+                                                        .region(Region.US_EAST_1)
+                                                        .credentialsProvider(
+                                                                () ->
+                                                                        AwsBasicCredentials.create(
+                                                                                "AKIAINVALIDCREDENTIAL", "invalid-secret"))));
 
         assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertFalse(cache.getAuthAttempts().isEmpty());
@@ -362,31 +253,40 @@ class IamAuthClientIntegrationTest {
                 assertThrows(
                         ElastiCacheIntegrationsError.class,
                         () ->
-                                ElastiCacheIntegrationsClient.builder()
-                                        .endpoint("localhost:" + server.getPort())
-                                        .sslContext(clientSslContext)
-                                        .authCredentials("iam-user", "expired-token")
-                                        .origin(
-                                                DynamoDbClient.builder(),
-                                                builder ->
-                                                        builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS))
-                                        .build());
+                                cacheBuilder()
+                                        .install(
+                                                DynamoDbClient.builder()
+                                                        .region(Region.US_EAST_1)
+                                                        .credentialsProvider(
+                                                                () -> AwsBasicCredentials.create(FIRST_ACCESS_KEY, "secret"))));
 
         assertTrue(error.getMessage().contains("HELLO 3 rejected"));
-        assertEquals("expired-token", cache.getAuthAttempts().get(0).getToken());
-        assertTrue(
-                cache.getAuthAttempts().stream()
-                        .allMatch(attempt -> "expired-token".equals(attempt.getToken())));
+        assertTrue(cache.getAuthAttempts().get(0).getToken().startsWith("my-cache/"));
         assertHelloOnly(cache.getReceivedCommands());
     }
 
-    private static IamAuthTokenProvider authProvider(AwsCredentialsProvider credentialsProvider) {
-        return IamAuthTokenProvider.builder()
+    private ElastiCacheIntegrationsClient.Builder cacheBuilder() {
+        return ElastiCacheIntegrationsClient.builder()
+                .endpoint("localhost:" + server.getPort())
                 .cacheName("My-Cache")
                 .userId("IAM-User")
-                .region(Region.US_EAST_1)
-                .credentialsProvider(credentialsProvider)
+                .caCerts(caBundle);
+    }
+
+    private static ElastiCacheIntegrationsClientConfiguration fastRefresh() {
+        return ElastiCacheIntegrationsClientConfiguration.builder()
+                .iamTokenRefreshDelay(Duration.ofMillis(10))
                 .build();
+    }
+
+    /** The first call returns the first key and every later call returns the rotated one. */
+    private static AwsCredentialsProvider rotatingCredentials(AtomicInteger calls) {
+        return () -> {
+            int call = calls.incrementAndGet();
+            return AwsBasicCredentials.create(
+                    call == 1 ? FIRST_ACCESS_KEY : ROTATED_ACCESS_KEY,
+                    call == 1 ? "first-secret" : "rotated-secret");
+        };
     }
 
     private static void assertHelloOnly(List<String> commands) {
@@ -394,15 +294,29 @@ class IamAuthClientIntegrationTest {
         assertTrue(commands.stream().allMatch("HELLO"::equals));
     }
 
-    private void awaitReconnect(ElastiCacheIntegrationsSession session, int expectedAuthAttempts)
+    private static void awaitAtLeast(AtomicInteger counter, int expected)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while ((cache.getAuthAttempts().size() < expectedAuthAttempts
-                        || session.getState() != ElastiCacheIntegrationsSession.State.OPEN)
-                && System.nanoTime() < deadline) {
+        while (counter.get() < expected && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
-        assertTrue(cache.getAuthAttempts().size() >= expectedAuthAttempts);
-        assertEquals(ElastiCacheIntegrationsSession.State.OPEN, session.getState());
+        assertTrue(counter.get() >= expected, "expected at least " + expected + ", got " + counter);
+    }
+
+    private void awaitAuthAttempts(int expected) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (cache.getAuthAttempts().size() < expected && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertTrue(cache.getAuthAttempts().size() >= expected);
+    }
+
+    private static void assertRefreshStopped(AtomicInteger credentialCalls)
+            throws InterruptedException {
+        Thread.sleep(50);
+        int callsAfterClose = credentialCalls.get();
+        Thread.sleep(100);
+
+        assertEquals(callsAfterClose, credentialCalls.get());
     }
 }

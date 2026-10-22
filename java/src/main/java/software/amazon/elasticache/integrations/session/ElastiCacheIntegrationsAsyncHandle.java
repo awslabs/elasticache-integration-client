@@ -20,18 +20,17 @@ import software.amazon.elasticache.integrations.connection.ElastiCacheIntegratio
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
 /**
- * Manages the attachment of Cache to an asynchronous AWS SDK client.
+ * Owns the session, interceptor and transport that {@link ElastiCacheIntegrationsClient} installs
+ * into an asynchronous SDK client builder.
  *
  * <p>Lifecycle operations are serialized. Requests remain concurrent through the asynchronous HTTP
- * transport.
+ * transport. Closing the handle closes the transport, which closes the session, then the IAM token
+ * manager, then the origin transport and executor if the handle created them.
  */
-public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
+final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
 
-    /** Default limit on a buffered async request body, in bytes (16 MiB). */
-    public static final int DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 16 * 1024 * 1024;
-
-    /** Default limit on async request bodies collected at once. */
-    public static final int DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS = 8;
+    static final int DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 16 * 1024 * 1024;
+    static final int DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS = 8;
 
     private final ElastiCacheIntegrationsSession session;
     private final ElastiCacheIntegrationsAsyncInterceptor interceptor;
@@ -65,7 +64,7 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
     }
 
     /**
-     * Get the interceptor to install on the SDK client.
+     * Get the interceptor to add to the SDK client builder's override configuration.
      *
      * @return the interceptor
      */
@@ -74,7 +73,7 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
     }
 
     /**
-     * Get the Cache-first asynchronous HTTP transport.
+     * Get the Cache-first asynchronous transport.
      *
      * @return the asynchronous HTTP client
      */
@@ -115,7 +114,6 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
             return;
         }
         try {
-            // The transport closes the session, then the token manager, then owned async resources.
             httpClient.close();
         } finally {
             state = State.CLOSED;

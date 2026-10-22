@@ -9,7 +9,7 @@ import java.util.concurrent.ThreadLocalRandom;
  * attempts continue until one succeeds or the session is closed. The same backoff schedule is used
  * when background AUTH refresh fails.
  */
-public final class ReconnectPolicy {
+final class ReconnectPolicy {
 
     /**
      * {@link Builder#fallbackDurationSeconds(long)} value that allows origin fallback indefinitely.
