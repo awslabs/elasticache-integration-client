@@ -249,13 +249,13 @@ public final class ElastiCacheIntegrationsClient {
             return this;
         }
 
-        /** Set the cache behavior options (default: all defaults). */
+        /** Set the cache behavior options. Null means all defaults, which is also the default. */
         public Builder clientConfiguration(
                 ElastiCacheIntegrationsClientConfiguration clientConfiguration) {
-            if (clientConfiguration == null) {
-                throw new NullPointerException("clientConfiguration");
-            }
-            this.clientConfiguration = clientConfiguration;
+            this.clientConfiguration =
+                    clientConfiguration == null
+                            ? ElastiCacheIntegrationsClientConfiguration.defaults()
+                            : clientConfiguration;
             return this;
         }
 
@@ -512,7 +512,8 @@ public final class ElastiCacheIntegrationsClient {
         }
 
         private int installRequestTimeoutMs() {
-            return (int) Math.min(Integer.MAX_VALUE, clientConfiguration.getCacheRequestTimeoutMs());
+            // The configuration bounds the timeout to Integer.MAX_VALUE.
+            return Math.toIntExact(clientConfiguration.getCacheRequestTimeoutMs());
         }
 
         private ReconnectPolicy installReconnectPolicy() {

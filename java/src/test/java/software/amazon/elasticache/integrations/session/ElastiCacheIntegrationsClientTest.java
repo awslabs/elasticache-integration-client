@@ -323,6 +323,15 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    void clientTreatsANullClientConfigurationAsAllDefaults() {
+        replyWithTables("from-cache");
+
+        try (DynamoDbClient client = cacheBuilder().clientConfiguration(null).install(appBuilder())) {
+            assertEquals(Collections.singletonList("from-cache"), client.listTables().tableNames());
+        }
+    }
+
+    @Test
     void clientPassesCacheRequestTimeoutToConnector() {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("aws.request");
