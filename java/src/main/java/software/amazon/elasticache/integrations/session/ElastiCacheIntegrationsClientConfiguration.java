@@ -83,8 +83,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     }
 
     /**
-     * Return how long requests may go to the origin service while there is no cache connection, in
-     * seconds. A negative value means indefinitely and zero means never.
+     * Return how long requests may go to the origin service after the reconnect wait ends without a
+     * connection, in seconds. A negative value means indefinitely and zero means never.
      */
     public long getFallbackDurationSeconds() {
         return fallbackDurationSeconds;
@@ -136,15 +136,15 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         }
 
         /**
-         * Set how long, in seconds, routed requests may use the origin service while there is no cache
-         * connection. The window is shared by requests during one outage. A later outage gets a new
-         * window after recovery.
+         * Set how long, in seconds, routed requests may use the origin service after an outage's
+         * reconnect wait ends without a connection. The window is shared by requests during one outage.
+         * A later outage gets a new window after recovery.
          *
          * <ul>
          *   <li>A negative value (the default): allow fallback for the rest of the outage.
          *   <li>{@code N > 0}: allow fallback for N seconds. Later requests fail with {@code
          *       ElastiCacheIntegrationsCacheUnavailable}.
-         *   <li>{@code 0}: disable fallback. Requests fail as soon as the connection is lost.
+         *   <li>{@code 0}: disable fallback. Requests fail as soon as the reconnect wait ends.
          * </ul>
          */
         public Builder fallbackDurationSeconds(long fallbackDurationSeconds) {

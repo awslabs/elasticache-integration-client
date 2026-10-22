@@ -9,8 +9,9 @@ The Java package is `software.amazon.elasticache.integrations`.
 Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, requests that have
-not been sent to Cache use origin fallback until the configured fallback
-window expires. After a request is sent, indeterminate failures fall back only
+not been sent to Cache first wait up to `connectionTimeoutMs` for the new
+connection, then use origin fallback until the configured fallback window
+expires. After a request is sent, indeterminate failures fall back only
 when the connection drops and the operation is in the shared replay-safe
 catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
 SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
@@ -250,8 +251,8 @@ ElastiCacheIntegrationsClient.builder()
 | Option | Default | Meaning |
 |---|---|---|
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
-| `connectionTimeoutMs(long)` | 2000 | How long each connection attempt (connect, HELLO/authentication, and configuration) may take, in milliseconds. Must be positive. |
-| `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service while there is no cache connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
+| `connectionTimeoutMs(long)` | 2000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Must be positive. |
+| `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
 | `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
@@ -306,9 +307,9 @@ Cache asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.
 If Cache rejects cached IAM credentials during `HELLO 3 AUTH`, the failed
 connection is discarded, the manager force-refreshes the token with newly resolved AWS
-credentials, and the existing bounded connect or reconnect policy opens the
+credentials, and the existing connect or reconnect policy opens the
 next connection with the replacement token. Persistent IAM configuration
-errors still surface after the configured connection-attempt limit.
+errors still surface once `connectionTimeoutMs` has passed at startup.
 Closing the client also closes the manager, so no additional lifecycle step is
 required.
 
@@ -320,19 +321,25 @@ attempt creates a new TLS connection, resolves fresh credentials, repeats
 `HELLO 3 AUTH` and `aws.config`, and uses capped exponential backoff with jitter.
 Reconnect attempts continue until one succeeds or the session closes.
 
-Initial startup remains bounded: Cache makes three attempts, and each complete
-connect, HELLO/authentication, and configuration attempt is limited to
-`connectionTimeoutMs` (2 seconds by default). Reconnect delays use capped
-exponential backoff from 100 ms to 3.2 s with 20 percent jitter, and Cache
-repeats `AUTH` on a live connection every 15 minutes. These values are not
-configurable.
+Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
+for the new connection and uses it if it arrives. If the connection is not back
+by then, the request uses the signed origin fallback. The same timeout bounds
+startup: Cache keeps retrying the first connection until `connectionTimeoutMs`
+has passed, caps each attempt by the time left, and then fails client creation.
+Reconnect delays use capped exponential backoff from 100 ms to 3.2 s with 20
+percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
+These values are not configurable.
 
-While reconnecting, cache-eligible requests may use the signed origin fallback.
 `fallbackDurationSeconds` on `ElastiCacheIntegrationsClientConfiguration`
-controls that window: a negative value (the default) allows fallback
-indefinitely, zero disables fallback, and a positive value allows fallback for
-that many seconds. Once the window ends, Cache raises a retryable transport
-failure for the AWS SDK to handle. If a request already admitted to Cache fails
+controls how long requests may fall back, counted from the end of the
+`connectionTimeoutMs` wait. A negative value (the default) allows fallback
+indefinitely. A positive value allows fallback for that many seconds. Zero
+never allows fallback, so a request waits up to `connectionTimeoutMs` for a
+connection and then raises `ElastiCacheIntegrationsCacheUnavailable`. Once the
+window ends, Cache raises a retryable transport failure for the AWS SDK to
+handle. With `fallbackDurationSeconds` set to `0`, a routed request waits only
+for the part of `connectionTimeoutMs` left in the current outage. Later retries
+in the same outage do not restart that wait. If a request already admitted to Cache fails
 as the connection drops, it falls back directly only when its operation is in
 the shared replay-safe catalog. On a healthy connection, an `ORIGIN_ERROR` is
 SDK-retryable only for a cataloged operation; other RESP errors and

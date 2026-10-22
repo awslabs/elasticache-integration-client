@@ -113,13 +113,17 @@ class IamAuthClientIntegrationTest {
                 ElastiCacheIntegrationsConnectionError.class,
                 () ->
                         cacheBuilder()
+                                .clientConfiguration(
+                                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                                .connectionTimeoutMs(1_000)
+                                                .build())
                                 .install(
                                         DynamoDbClient.builder()
                                                 .region(Region.US_EAST_1)
                                                 .credentialsProvider(sdkCredentials)));
 
         assertEquals(1, credentialCalls.get());
-        assertEquals(3, cache.getAuthAttempts().size());
+        assertTrue(cache.getAuthAttempts().size() >= 2, "startup retries until the timeout");
         assertTrue(
                 cache.getAuthAttempts().stream()
                         .allMatch(attempt -> attempt.getToken().contains(FIRST_ACCESS_KEY)));

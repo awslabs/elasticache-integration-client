@@ -102,6 +102,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
     private volatile ConnectionSnapshot snapshot;
     private volatile Refresher configRefresher;
     private volatile Refresher reauthRefresher;
+    private boolean canRetry = true;
+    private volatile long readyDeadlineNanos;
     private volatile long fallbackDeadlineNanos;
     private boolean opening;
     private boolean reconnectRunning;
@@ -123,11 +125,9 @@ class ElastiCacheIntegrationsSession implements Closeable {
             ElastiCacheIntegrationsConnector connector,
             Supplier<AuthCredentials> authProvider,
             Map<String, Object> overrides) {
-        this(
-                singleConnectorFactory(connector),
-                authProvider,
-                overrides,
-                ReconnectPolicy.builder().connectAttempts(1).build());
+        this(singleConnectorFactory(connector), authProvider, overrides, ReconnectPolicy.defaults());
+        // A session around one concrete connector cannot build another, so it tries only once.
+        this.canRetry = false;
     }
 
     ElastiCacheIntegrationsSession(
@@ -244,6 +244,16 @@ class ElastiCacheIntegrationsSession implements Closeable {
         return reconnectPolicy;
     }
 
+    /** For testing: when requests stop waiting for the current outage's reconnect. */
+    long readyDeadlineNanos() {
+        return readyDeadlineNanos;
+    }
+
+    /** For testing: when origin fallback ends for the current outage. */
+    long fallbackDeadlineNanos() {
+        return fallbackDeadlineNanos;
+    }
+
     /** For testing: the override map this session sends in {@code aws.config}. */
     Map<String, Object> overrides() {
         return overrides;
@@ -290,7 +300,10 @@ class ElastiCacheIntegrationsSession implements Closeable {
      * Open the session: connect, negotiate RESP3 and authenticate, perform the config exchange,
      * compile the resolved predicates, then start config and authentication refresh.
      *
-     * <p>Connect/handshake/config failures are retried with a new connector and fresh credentials.
+     * <p>Connect/handshake/config failures are retried with a new connector and fresh credentials
+     * until the policy's connection timeout has passed. Each attempt is capped by the time left, and
+     * no backoff sleep runs past the deadline. When the time runs out, a connection failure is thrown
+     * as a timeout with the last failure as its cause, and any other failure is thrown unchanged.
      * Once a connector is live, refresher construction and startup are local session setup rather
      * than connectivity, so a failure there closes the connector and fails immediately instead of
      * repeating a successful handshake. The session becomes {@code OPEN} only once both refreshers
@@ -318,7 +331,15 @@ class ElastiCacheIntegrationsSession implements Closeable {
             RuntimeException lastFailure = null;
             ElastiCacheIntegrationsConnector established = null;
             ConnectionSnapshot establishedSnapshot = null;
-            for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
+            long timeoutMs = reconnectPolicy.getConnectionTimeoutMs();
+            long deadline = saturatedAdd(System.nanoTime(), TimeUnit.MILLISECONDS.toNanos(timeoutMs));
+            boolean timedOut = false;
+            for (long attempt = 1; ; attempt++) {
+                long remainingNanos = nanosUntil(deadline);
+                if (remainingNanos <= 0) {
+                    timedOut = true;
+                    break;
+                }
                 ElastiCacheIntegrationsConnector next = null;
                 try {
                     next = connectorFactory.get();
@@ -329,7 +350,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         candidate = next;
                     }
-                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    ConnectionSnapshot snapshot =
+                            initializeWithTimeout(next, nanosToMillisCeil(remainingNanos));
                     synchronized (stateLock) {
                         if (state != State.CREATED || !next.isReady()) {
                             next.close();
@@ -352,9 +374,11 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     if (next != null) {
                         next.close();
                     }
-                    if (attempt < reconnectPolicy.getConnectAttempts()) {
-                        sleep(reconnectPolicy.delayFor(attempt));
+                    if (!canRetry || state != State.CREATED) {
+                        break;
                     }
+                    sleep(
+                            Math.min(reconnectPolicy.delayFor(attempt), nanosToMillisCeil(nanosUntil(deadline))));
                 }
             }
 
@@ -363,9 +387,17 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     state = State.CLOSED;
                 }
                 reconnectExecutor.shutdownNow();
-                throw lastFailure != null
-                        ? lastFailure
-                        : new ElastiCacheIntegrationsConnectionError("Cache initial connection failed");
+                if (lastFailure == null) {
+                    throw new ElastiCacheIntegrationsConnectionError("Cache initial connection failed");
+                }
+                // Auth errors are connection errors in Java but not in Python, so check them first.
+                if (timedOut
+                        && lastFailure instanceof ElastiCacheIntegrationsConnectionError
+                        && !(lastFailure instanceof ElastiCacheIntegrationsAuthError)) {
+                    throw new ElastiCacheIntegrationsConnectionError(
+                            "opening a connection timed out after " + timeoutMs + "ms", lastFailure);
+                }
+                throw lastFailure;
             }
 
             Refresher nextConfigRefresher = null;
@@ -623,9 +655,9 @@ class ElastiCacheIntegrationsSession implements Closeable {
     /**
      * Route a request to Cache, or return {@code null} to let the caller handle it.
      *
-     * <p>A request is passed through when it does not match any resolved predicate, or when the cache
-     * is disconnected and the fallback window is still open. In both cases, the request has not been
-     * sent, so falling back is safe.
+     * <p>A request that finds no ready connector waits until the current outage's ready deadline for
+     * a reconnect, and is served on the new connector if one arrives. After the wait it falls back to
+     * the origin while the fallback window is open, and raises otherwise.
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
@@ -653,11 +685,19 @@ class ElastiCacheIntegrationsSession implements Closeable {
         ElastiCacheIntegrationsConnector active = connector;
         if (active == null || !active.isReady()) {
             beginReconnect(active);
-            if (fallbackAllowed()) {
-                return null;
+            active = awaitConnector();
+            if (cancellation.isCancelled()) {
+                throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
             }
-            throw new ElastiCacheIntegrationsCacheUnavailable(
-                    "Cache has no cache connection and origin fallback is no longer allowed");
+            // A close during the wait also ends it here, and the request falls back as Python's does.
+            if (active == null) {
+                if (fallbackAllowed()) {
+                    return null;
+                }
+                throw new ElastiCacheIntegrationsCacheUnavailable(
+                        "Cache has no cache connection and origin fallback is no longer allowed");
+            }
+            ensureUsable();
         }
 
         try {
@@ -741,7 +781,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
         return state == State.OPEN && active != null && active.isReady();
     }
 
-    private ConnectionSnapshot initializeWithTimeout(ElastiCacheIntegrationsConnector next) {
+    private ConnectionSnapshot initializeWithTimeout(
+            ElastiCacheIntegrationsConnector next, long timeoutMs) {
         FutureTask<ConnectionSnapshot> task = new FutureTask<>(() -> initialize(next));
         Thread thread =
                 new Thread(
@@ -749,15 +790,12 @@ class ElastiCacheIntegrationsSession implements Closeable {
         thread.setDaemon(true);
         thread.start();
         try {
-            return task.get(reconnectPolicy.getConnectionTimeoutMs(), TimeUnit.MILLISECONDS);
+            return task.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             next.close();
             task.cancel(true);
             throw new ElastiCacheIntegrationsConnectionError(
-                    "Opening Cache connection timed out after "
-                            + reconnectPolicy.getConnectionTimeoutMs()
-                            + "ms",
-                    e);
+                    "opening a connection timed out after " + timeoutMs + "ms", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             next.close();
@@ -831,7 +869,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                 if (current != null && current.isReady() && current != failed) {
                     return;
                 }
-                fallbackDeadlineNanos = fallbackDeadline();
+                startOutageDeadlines();
                 connector = null;
                 state = State.RECONNECTING;
                 if (current != null) {
@@ -865,7 +903,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         candidate = next;
                     }
-                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    ConnectionSnapshot snapshot =
+                            initializeWithTimeout(next, ReconnectPolicy.RECONNECT_ATTEMPT_TIMEOUT_MS);
                     synchronized (stateLock) {
                         candidate = null;
                         if (state == State.CLOSED || !next.isReady()) {
@@ -878,6 +917,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         publish(next, snapshot);
                         state = State.OPEN;
+                        stateLock.notifyAll();
                     }
                     return;
                 } catch (RuntimeException failure) {
@@ -916,18 +956,74 @@ class ElastiCacheIntegrationsSession implements Closeable {
     }
 
     private boolean fallbackAllowed() {
+        if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
+            return false;
+        }
         long deadline = fallbackDeadlineNanos;
         return deadline == Long.MAX_VALUE || System.nanoTime() < deadline;
     }
 
-    private long fallbackDeadline() {
+    /**
+     * Set both deadlines of a new outage from one clock reading. The fallback window starts when the
+     * reconnect wait ends. Callers hold {@code stateLock} and clear the connector afterwards, so a
+     * request that sees no connector also sees the new deadlines.
+     */
+    private void startOutageDeadlines() {
+        long ready =
+                saturatedAdd(
+                        System.nanoTime(),
+                        TimeUnit.MILLISECONDS.toNanos(reconnectPolicy.getConnectionTimeoutMs()));
         long seconds = reconnectPolicy.getFallbackDurationSeconds();
-        if (seconds < 0) {
-            return Long.MAX_VALUE;
-        }
-        long duration = TimeUnit.SECONDS.toNanos(seconds);
+        readyDeadlineNanos = ready;
+        fallbackDeadlineNanos =
+                seconds < 0 ? Long.MAX_VALUE : saturatedAdd(ready, TimeUnit.SECONDS.toNanos(seconds));
+    }
+
+    /** Add a non-negative duration, stopping at {@link Long#MAX_VALUE} instead of overflowing. */
+    private static long saturatedAdd(long base, long nanos) {
+        long sum = base + nanos;
+        return sum < base ? Long.MAX_VALUE : sum;
+    }
+
+    /** Return the nanoseconds left before {@code deadline}, or 0 once it has passed. */
+    private static long nanosUntil(long deadline) {
         long now = System.nanoTime();
-        return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
+        if (deadline <= now) {
+            return 0;
+        }
+        long remaining = deadline - now;
+        // The difference overflows when the deadline is Long.MAX_VALUE and the clock is negative.
+        return remaining < 0 ? Long.MAX_VALUE : remaining;
+    }
+
+    private static long nanosToMillisCeil(long nanos) {
+        long millis = TimeUnit.NANOSECONDS.toMillis(nanos);
+        return nanos > TimeUnit.MILLISECONDS.toNanos(millis) ? millis + 1 : Math.max(1, millis);
+    }
+
+    /**
+     * Wait until the current outage's ready deadline for a connector to be published. Returns the
+     * ready connector, or null when the deadline passes or the session closes.
+     */
+    private ElastiCacheIntegrationsConnector awaitConnector() {
+        synchronized (stateLock) {
+            while (true) {
+                ElastiCacheIntegrationsConnector current = connector;
+                if (current != null && current.isReady()) {
+                    return current;
+                }
+                long remaining = nanosUntil(readyDeadlineNanos);
+                if (state != State.RECONNECTING || remaining <= 0) {
+                    return null;
+                }
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(stateLock, remaining);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+        }
     }
 
     /** For testing: wake every thread waiting on the state lock, as a spurious wakeup would. */
