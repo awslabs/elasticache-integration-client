@@ -68,10 +68,10 @@ and interval unchanged; a valid config reply atomically replaces the config and
 predicates and sets the next refresh interval.
 
 Periodic refresh pauses while reconnecting, and a late reply from a closed or
-replaced connector is ignored. See [Config staleness](#config-staleness) for
+replaced connector is ignored. See [Cache policy timeout](#cache-policy-timeout) for
 what happens when refreshes fail.
 
-## Config staleness
+## Cache policy timeout
 
 A refresh that fails changes nothing: the last config the server confirmed
 stays in force and the next refresh retries. A config the server sends, an
@@ -93,7 +93,7 @@ A `CONFIG_INVALID` reply (the proxy rejected the overrides,
 `ElastiCacheIntegrationsOverridesRejected`) and a config with a predicate this client cannot
 compile (`ElastiCacheIntegrationsConfigUnevaluable`) never fix themselves, so they log at
 `SEVERE` on every occurrence, including each connection attempt. On refresh
-they still keep the last good config until the staleness window drops the
+they still keep the last good config until the cache policy timeout drops the
 connection. Refresh failures that kill the connection start recovery
 immediately.
 
@@ -203,7 +203,7 @@ ElastiCacheIntegrationsClient.builder()
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service while there is no cache connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
-| `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Config staleness](#config-staleness). |
+| `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
 | `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
 
 `build()` throws `ElastiCacheIntegrationsConfigError` for a value that is not
