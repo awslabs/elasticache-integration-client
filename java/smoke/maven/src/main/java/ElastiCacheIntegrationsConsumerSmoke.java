@@ -10,7 +10,7 @@ public final class ElastiCacheIntegrationsConsumerSmoke {
         }
         if (!"software.amazon.elasticache.auth".equals(
                 ElastiCacheIamAuthTokenProvider.class.getPackage().getName())) {
-            throw new AssertionError("The bundled IAM toolkit was not loadable");
+            throw new AssertionError("The IAM toolkit dependency was not loadable");
         }
     }
 }

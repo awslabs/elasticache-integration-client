@@ -16,7 +16,7 @@
   - `protocol/`: Cache wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
-  - `auth/`: Cache adapters for the sourced ElastiCache IAM toolkit.
+  - `auth/`: Cache adapters for the ElastiCache IAM toolkit dependency.
   - `model/`: ElastiCacheIntegrationsRequest, ElastiCacheIntegrationsResponse, metadata types.
   - `exception/`: Cache error hierarchy.
 - `src/test/java/software/amazon/elasticacheintegrations/`: JUnit 5 tests organized by
@@ -165,8 +165,9 @@ at `SEVERE` on every occurrence.
   local or test endpoints.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material.
-- The Java IAM toolkit is pinned under `vendor/` and built by Gradle through
-  Maven. Keep token validation and signing in that library; Cache owns only
+- The Java IAM toolkit is the Maven Central dependency
+  `software.amazon.elasticache:developer-toolkit-elasticache`. Keep token
+  validation and signing in that library; Cache owns only
   the adapter, TLS connection, and HELLO/AUTH lifecycle.
 - Prefer hermetic tests and local mocks over live AWS or Cache endpoints.
 - `MockTlsServer` generates a self-signed `CN=localhost` certificate at test

@@ -89,7 +89,7 @@ public final class IamAuthTokenGenerator {
      *
      * <p>The toolkit resolves credentials and signs a new token on every call so rotated credentials
      * are picked up automatically. See the <a
-     * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+     * href="https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh">
      * toolkit token manager documentation</a> for its validity contract.
      *
      * @return the signed token string (presigned URL with scheme stripped)
@@ -195,7 +195,7 @@ public final class IamAuthTokenGenerator {
          *
          * <p>Retained for source compatibility. The ElastiCache toolkit owns the token lifetime, so
          * unsupported values are rejected. See the <a
-         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh">
          * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration

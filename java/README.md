@@ -19,8 +19,10 @@ an expired fallback window, and shutdown are surfaced without starting an
 origin request. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 
-IAM token generation and refresh are provided by the Amazon ElastiCache
-developer toolkit. The toolkit validates and lowercases cache names and user
+IAM token generation and refresh come from the Amazon ElastiCache developer
+toolkit, the
+[`software.amazon.elasticache:developer-toolkit-elasticache`](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache)
+artifact on Maven Central. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
 SigV4 signing contract. Cache sends the resulting bearer token only in the
 TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
@@ -166,7 +168,7 @@ When a concrete `IamAuthTokenProvider` is supplied to `ElastiCacheIntegrationsCl
 token manager. It caches the current IAM token and refreshes it in the
 background. The refresh defaults, accepted range, retry behavior, and safety
 margin are defined by the
-[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh).
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh).
 Configure a custom refresh point with
 `IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
 
@@ -240,15 +242,6 @@ Close the handle and SDK client when they are no longer needed. The factory
 result types close both resources and are intended for try-with-resources.
 
 ## Development
-
-Until the Java toolkit is published to a Maven repository, it is pinned as a
-Git submodule and built as part of `./gradlew build`. Initialize it after
-cloning with `git submodule update --init --recursive`. Maven must be available
-on `PATH` for the sourced toolkit build.
-
-The release JAR bundles the sourced toolkit classes because that toolkit is not
-yet independently available from Maven Central. Its AWS SDK dependencies remain
-ordinary transitive dependencies in the generated Cache POM.
 
 Gradle runs on JDK 21 because Error Prone 2.50 requires JDK 21 and
 Gradle 8.14 cannot run on JDK 25. The compiler emits Java 8 bytecode

@@ -1,6 +1,5 @@
 import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
-import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
 
 plugins {
@@ -56,27 +55,14 @@ sourceSets {
     }
 }
 
-val iamToolkitRoot = layout.projectDirectory.dir("vendor/developer-toolkit-elasticache/java")
-val iamToolkitJar = iamToolkitRoot.file(
-    "target/developer-toolkit-elasticache-0.1.0-SNAPSHOT.jar"
-)
-
-val buildIamToolkit by tasks.registering(Exec::class) {
-    description = "Build the sourced ElastiCache Java IAM toolkit"
-    workingDir(iamToolkitRoot)
-    commandLine("mvn", "--quiet", "-DskipTests", "package")
-    inputs.files(fileTree(iamToolkitRoot.dir("src/main")))
-    inputs.file(iamToolkitRoot.file("pom.xml"))
-    outputs.file(iamToolkitJar)
-}
-
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.3")
     implementation("dev.cel:compiler:0.14.0")
     implementation("dev.cel:runtime:0.14.0")
-    implementation(files(iamToolkitJar))
+    // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
+    api("software.amazon.elasticache:developer-toolkit-elasticache:1.0.0")
 
-    // AWS SDK v2 for the sourced IAM toolkit and ExecutionInterceptor integration
+    // AWS SDK v2 for the IAM toolkit and ExecutionInterceptor integration
     // The compatibility workflow passes -PawsSdkVersion=2.+ to test the latest SDK.
     api(platform("software.amazon.awssdk:bom:${providers.gradleProperty("awsSdkVersion").getOrElse("2.55.6")}"))
     api("software.amazon.awssdk:auth")
@@ -101,30 +87,12 @@ dependencies {
 }
 
 tasks.withType<JavaCompile>().configureEach {
-    dependsOn(buildIamToolkit)
     if (JavaVersion.current().isJava9Compatible) {
         options.release.set(8)
     }
 }
 
 tasks.jar {
-    dependsOn(buildIamToolkit)
-
-    // TODO(#49): Stop bundling these classes once the toolkit is on Maven Central.
-    // The IAM toolkit is sourced rather than published, so include its classes
-    // in the distributable JAR. Its AWS SDK dependencies remain normal POM
-    // dependencies declared above.
-    from({ zipTree(iamToolkitJar.asFile) }) {
-        exclude(
-            "META-INF/*.SF",
-            "META-INF/*.DSA",
-            "META-INF/*.RSA",
-            "META-INF/MANIFEST.MF",
-            "META-INF/LICENSE",
-            "META-INF/NOTICE"
-        )
-    }
-
     from("../LICENSE") {
         into("META-INF")
         rename { "LICENSE" }
@@ -213,7 +181,6 @@ val verifyJars by tasks.registering {
         val jars = mapOf(
             tasks.jar.get().archiveFile.get().asFile to listOf(
                 "software/amazon/elasticacheintegrations/session/ElastiCacheIntegrationsClient.class",
-                "software/amazon/elasticache/auth/ElastiCacheIamAuthTokenProvider.class",
                 "idempotent-operations.json",
                 "META-INF/LICENSE",
                 "META-INF/NOTICE"
@@ -229,6 +196,14 @@ val verifyJars by tasks.registering {
                     check(zip.getEntry(entry) != null) { "${jarFile.name} is missing $entry" }
                 }
             }
+        }
+        // The IAM toolkit is a Maven Central dependency, so the main JAR must not carry a copy.
+        ZipFile(tasks.jar.get().archiveFile.get().asFile).use { zip ->
+            val toolkitEntries = zip.entries().asSequence()
+                .map { it.name }
+                .filter { it.startsWith("software/amazon/elasticache/auth/") }
+                .toList()
+            check(toolkitEntries.isEmpty()) { "Main JAR contains IAM toolkit classes: $toolkitEntries" }
         }
     }
 }

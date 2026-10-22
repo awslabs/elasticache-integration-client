@@ -231,7 +231,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          *
          * <p>Retained for source compatibility. The ElastiCache toolkit owns the token lifetime, so
          * unsupported values are rejected. See the <a
-         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh">
          * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
@@ -245,7 +245,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          * Set how long after issuance Cache-managed tokens refresh.
          *
          * <p>The accepted range, default, retry behavior, and safety margin are defined by the <a
-         * href="https://github.com/aws/developer-toolkit-elasticache/tree/release-2/java#caching-and-background-refresh">
+         * href="https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh">
          * toolkit token manager documentation</a>.
          */
         public Builder refreshAfter(Duration refreshAfter) {

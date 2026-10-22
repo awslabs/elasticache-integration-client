@@ -4,7 +4,6 @@
 ## Install & test
 
 ```bash
-git submodule update --init python/vendor/developer-toolkit-elasticache
 cd python
 pip install -e '.[test]'   # runtime deps plus pytest and TLS test fixtures
 python -m pytest           # see tests/README.md for details
@@ -148,7 +147,8 @@ the whole set.
 
 ## IAM authentication
 
-IAM token generation and refresh are provided by the Amazon ElastiCache developer toolkit.
+IAM token generation and refresh come from the Amazon ElastiCache developer toolkit, the
+[`developer-toolkit-elasticache`](https://pypi.org/project/developer-toolkit-elasticache/) package on PyPI.
 The toolkit validates and lowercases cache names and user IDs, re-reads the credentials for
 every newly signed token, and owns the SigV4 signing contract. ElastiCacheIntegrations sends the bearer token
 only in the TLS-protected `HELLO 3 AUTH` exchange; origin request signing remains owned by boto3.
@@ -227,13 +227,3 @@ rules while the connection is being replaced.
 - **Public TTL / NTTL controls.** TTL/NTTL policy is resolved server-side from the
   `aws.config` overrides; the public API does not expose per-table or per-request TTL
   overrides yet.
-
-## Development
-
-The ElastiCache toolkit is pinned as a Git submodule and bundled into the ElastiCacheIntegrations wheel until its
-managed-token API is available in the published Python package. Initialize it before installing
-or building from a checkout:
-
-```bash
-git submodule update --init python/vendor/developer-toolkit-elasticache
-```

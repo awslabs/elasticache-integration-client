@@ -66,7 +66,7 @@ export interface ElastiCacheIntegrationsClientConfiguration {
    * the background, while callers keep using the current token. Must be greater than 0 and less
    * than 880. When omitted, the toolkit default of 300 seconds is used.
    *
-   * @see https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh
+   * @see https://github.com/aws/developer-toolkit-elasticache/tree/main/node#caching-and-background-refresh
    */
   iamTokenRefreshDelay?: number;
 }

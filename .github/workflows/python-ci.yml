@@ -35,10 +35,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -80,10 +76,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -120,10 +112,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -158,21 +146,8 @@ jobs:
               "elasticache_integrations/connection.py",
               "elasticache_integrations/idempotency.py",
           ]
-          toolkit_modules = [
-              "developer_toolkit_elasticache/__init__.py",
-              "developer_toolkit_elasticache/LICENSE",
-              "developer_toolkit_elasticache/NOTICE",
-              "developer_toolkit_elasticache/token_generator.py",
-              "developer_toolkit_elasticache/token_manager.py",
-          ]
-          sdist_toolkit_modules = [
-              "vendor/developer-toolkit-elasticache/python/LICENSE",
-              "vendor/developer-toolkit-elasticache/python/NOTICE",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/__init__.py",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_generator.py",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_manager.py",
-          ]
-          junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc")
+          # The toolkit is a PyPI dependency, so neither archive may carry a copy.
+          junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc", "vendor/", "developer_toolkit_elasticache")
 
           (sdist,) = glob.glob("dist/*.tar.gz")
           (wheel,) = glob.glob("dist/*.whl")
@@ -184,12 +159,8 @@ jobs:
 
           errors = []
           required_by_archive = {
-              "sdist": [
-                  catalog,
-                  *cache_modules,
-                  *sdist_toolkit_modules,
-              ],
-              "wheel": [catalog, *cache_modules, *toolkit_modules],
+              "sdist": [catalog, *cache_modules],
+              "wheel": [catalog, *cache_modules],
           }
           for label, names in (("sdist", sdist_names), ("wheel", wheel_names)):
               for required in required_by_archive[label]:
