@@ -411,6 +411,23 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    void clientPassesConnectionTimeoutToTheSession() {
+        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+            assertEquals(2_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
+        }
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .connectionTimeoutMs(1_500)
+                                        .build())
+                        .install(appBuilder())) {
+            assertEquals(1_500, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
+        }
+    }
+
+    @Test
     void clientPassesTheFallbackDurationToTheSession() {
         try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
             assertTrue(handle.get().getSession().reconnectPolicy().getFallbackDurationSeconds() < 0);

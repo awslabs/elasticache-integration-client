@@ -519,6 +519,7 @@ public final class ElastiCacheIntegrationsClient {
 
         private ReconnectPolicy installReconnectPolicy() {
             return ReconnectPolicy.builder()
+                    .connectionTimeoutMs(clientConfiguration.getConnectionTimeoutMs())
                     .fallbackDurationSeconds(clientConfiguration.getFallbackDurationSeconds())
                     .build();
         }
