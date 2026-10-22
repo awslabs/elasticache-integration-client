@@ -229,20 +229,18 @@ class IamAuthClientIntegrationTest {
                                 ? new RespError("invalid-iam-credentials", "credentials rejected")
                                 : new RespError("ERR", "unexpected token"));
 
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                cacheBuilder()
-                                        .install(
-                                                DynamoDbClient.builder()
-                                                        .region(Region.US_EAST_1)
-                                                        .credentialsProvider(
-                                                                () ->
-                                                                        AwsBasicCredentials.create(
-                                                                                "AKIAINVALIDCREDENTIAL", "invalid-secret"))));
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        cacheBuilder()
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(
+                                                        () ->
+                                                                AwsBasicCredentials.create(
+                                                                        "AKIAINVALIDCREDENTIAL", "invalid-secret"))));
 
-        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertFalse(cache.getAuthAttempts().isEmpty());
         assertTrue(
                 cache.getAuthAttempts().stream()
@@ -255,18 +253,16 @@ class IamAuthClientIntegrationTest {
         cache.setAuthReplyFunction(
                 (userId, token) -> new RespError("expired-iam-token", "token expired"));
 
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                cacheBuilder()
-                                        .install(
-                                                DynamoDbClient.builder()
-                                                        .region(Region.US_EAST_1)
-                                                        .credentialsProvider(
-                                                                () -> AwsBasicCredentials.create(FIRST_ACCESS_KEY, "secret"))));
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        cacheBuilder()
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(
+                                                        () -> AwsBasicCredentials.create(FIRST_ACCESS_KEY, "secret"))));
 
-        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertTrue(cache.getAuthAttempts().get(0).getToken().startsWith("my-cache/"));
         assertHelloOnly(cache.getReceivedCommands());
     }

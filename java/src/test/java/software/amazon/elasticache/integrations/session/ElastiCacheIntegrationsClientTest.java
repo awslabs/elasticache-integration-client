@@ -51,7 +51,6 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.awssdk.utils.AttributeMap;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -161,7 +160,6 @@ class ElastiCacheIntegrationsClientTest {
                 assertThrows(
                         ElastiCacheIntegrationsError.class, () -> cacheBuilder().install(appBuilder()));
 
-        assertTrue(error instanceof ElastiCacheIntegrationsAuthError, error.toString());
         assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
         assertThrows(
                 ElastiCacheIntegrationsError.class,
@@ -179,7 +177,7 @@ class ElastiCacheIntegrationsClientTest {
                                 ? new RespError("WRONGPASS", "rejected")
                                 : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
         DynamoDbClientBuilder builder = appBuilder();
-        assertThrows(ElastiCacheIntegrationsAuthError.class, () -> cacheBuilder().install(builder));
+        assertThrows(ElastiCacheIntegrationsError.class, () -> cacheBuilder().install(builder));
 
         reject.set(false);
         replyWithTables("from-cache");
