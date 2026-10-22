@@ -202,7 +202,7 @@ ElastiCacheIntegrationsClient.builder()
 | Option | Default | Meaning |
 |---|---|---|
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
-| `connectionTimeoutMs(long)` | 2000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Must be positive. |
+| `connectionTimeoutMs(long)` | 2000 | How long each connection attempt (connect, HELLO/authentication, and configuration) may take, in milliseconds. Must be positive. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service while there is no cache connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
@@ -345,9 +345,10 @@ attempt creates a new TLS connection, resolves fresh credentials, repeats
 `HELLO 3 AUTH` and `aws.config`, and uses capped exponential backoff with jitter.
 Reconnect attempts continue until one succeeds or the session closes.
 
-Initial startup remains bounded: by default Cache makes three attempts, and
-each complete connect, HELLO/authentication, and configuration attempt is limited to
-five seconds.
+Initial startup remains bounded: Cache makes three attempts, and each complete
+connect, HELLO/authentication, and configuration attempt is limited to
+`connectionTimeoutMs` (2 seconds through `install`, 5 seconds through the
+`ReconnectPolicy` default).
 
 While reconnecting, cache-eligible requests may use the signed origin fallback.
 `fallbackDurationSeconds` controls that window: a negative value allows
