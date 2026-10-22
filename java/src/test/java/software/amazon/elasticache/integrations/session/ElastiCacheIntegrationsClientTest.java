@@ -167,7 +167,7 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void clientClosesTheSessionWhenInstallingTheHookFails() {
+    void clientClosesTheSessionWhenAuthenticationFails() {
         cache.setAuthReplyFunction((userId, token) -> new RespError("WRONGPASS", "rejected"));
 
         ElastiCacheIntegrationsError error =
