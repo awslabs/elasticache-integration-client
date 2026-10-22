@@ -332,7 +332,7 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void clientPassesCacheRequestTimeoutToConnector() {
+    void clientPassesCacheRequestTimeoutToConnectorFactory() {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("aws.request");
         RecordingOriginClient origin = new RecordingOriginClient();

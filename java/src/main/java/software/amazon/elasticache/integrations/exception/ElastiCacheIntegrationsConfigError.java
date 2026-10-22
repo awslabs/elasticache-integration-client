@@ -2,8 +2,8 @@ package software.amazon.elasticache.integrations.exception;
 
 /**
  * An option or the application's SDK client cannot be used to install ElastiCache Integrations, for
- * example a non-positive timeout, a client with no region, or a client builder that is already
- * installed.
+ * example a non-positive timeout, a client with no region, or a client builder that already has an
+ * httpClient.
  */
 public class ElastiCacheIntegrationsConfigError extends ElastiCacheIntegrationsError {
 
