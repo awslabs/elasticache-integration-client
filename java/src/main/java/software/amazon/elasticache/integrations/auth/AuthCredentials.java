@@ -7,6 +7,9 @@ import java.util.Objects;
  *
  * <p>Used by {@link IamAuthTokenProvider} to return both the user ID and the generated IAM auth
  * token for the {@code HELLO 3 AUTH} handshake.
+ *
+ * <p><b>Internal:</b> this class is not part of the supported API. It is public only because the
+ * {@code connection} package uses it.
  */
 public final class AuthCredentials {
 

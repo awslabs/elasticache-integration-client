@@ -18,7 +18,7 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
  * <p>The unsigned request and SDK operation metadata are retained in the per-execution SDK
  * attributes. Each HTTP attempt is handed to the async transport immediately before transmission.
  */
-public final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionInterceptor {
+final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionInterceptor {
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsAsyncInterceptor.class.getName());

@@ -33,7 +33,7 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
  * interceptor together with {@link #getHttpClient()}. Using the interceptor with the SDK's default
  * transport does not enable Cache and lets that transport contact the origin service.
  */
-public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
+class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsInterceptor.class.getName());

@@ -24,7 +24,7 @@ import software.amazon.elasticache.integrations.model.RequestMetadata;
  * <p>Used by {@link ElastiCacheIntegrationsInterceptor} to convert SDK requests before sending to
  * the cache, and to convert Cache responses back to SDK responses.
  */
-public final class SdkAdapters {
+final class SdkAdapters {
 
     private SdkAdapters() {}
 

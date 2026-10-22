@@ -56,7 +56,7 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  * config is no longer trusted: the connector is dropped so a new one re-resolves it, and requests
  * fall back meanwhile.
  */
-public class ElastiCacheIntegrationsSession implements Closeable {
+class ElastiCacheIntegrationsSession implements Closeable {
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsSession.class.getName());

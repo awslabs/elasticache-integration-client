@@ -23,7 +23,7 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRes
  * fallback is limited to replay-safe operations whose Cache connection has dropped; retryable
  * healthy-connection failures are returned to the SDK.
  */
-public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
+final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
 
     private static final String CLIENT_NAME = "java-cache";
 

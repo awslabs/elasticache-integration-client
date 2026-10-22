@@ -14,10 +14,10 @@
   - `connection/`: TCP/TLS socket management, FIFO/request-ID correlation.
   - `session/`: ElastiCacheIntegrationsSession, ElastiCacheIntegrationsClient (the `install` and
     `installAsync` entry point), ElastiCacheIntegrationsClientConfiguration, ElastiCacheIntegrationsInterceptor.
-    The package-private ElastiCacheIntegrationsHandle and ElastiCacheIntegrationsAsyncHandle own the
-    session, interceptor and transport that `install` wires into the application's SDK client builder.
-    ReconnectPolicy is package-private and carries internal defaults. IamAuthTokenProvider (in `auth/`)
-    is internal for the same reason, but it must stay public because `session/` uses it.
+    Only ElastiCacheIntegrationsClient and ElastiCacheIntegrationsClientConfiguration are public. The
+    session, handles, interceptors, transports, ReconnectPolicy and the parsing and SDK adapter helpers
+    are package-private. In `auth/`, IamAuthTokenGenerator is package-private, and IamAuthTokenProvider
+    and AuthCredentials are internal but must stay public because other packages use them.
   - `protocol/`: Cache wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
@@ -69,10 +69,10 @@ require the corresponding tests, README, and build checks to change with it.
 ### High-value invariants
 
 - **Public API surface:** flag changes to ElastiCacheIntegrationsClient.Builder,
-  ElastiCacheIntegrationsClientConfiguration, ElastiCacheIntegrationsSession, or exception types that
-  can break consumers or expose internals. Safe path: keep public API deliberate and update
-  README/tests for intentional changes. The handles, ReconnectPolicy and the interceptors' lifecycle
-  stay internal; do not reintroduce a manual lifecycle.
+  ElastiCacheIntegrationsClientConfiguration, or exception types that can break consumers or expose
+  internals. Safe path: keep public API deliberate and update README/tests for intentional changes.
+  The session, handles, interceptors, transports and ReconnectPolicy stay package-private; do not
+  reintroduce a manual lifecycle.
 - **SDK integration:** flag changes that overwrite caller-provided
   ClientOverrideConfiguration, break ExecutionInterceptor registration, or
   interfere with SDK retry/deserialization behavior. Safe path: copy the SDK
