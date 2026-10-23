@@ -30,15 +30,20 @@ export interface ElastiCacheIntegrationsClientConfiguration {
    */
   cacheRequestTimeout?: number;
   /**
-   * How long, in seconds, routed requests may use the origin service while
-   * ElastiCacheIntegrations has no connection to the cache. The window is shared by requests
-   * during one outage. A later outage gets a new window after recovery.
+   * How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
+   * request waits for reconnection after a connection is lost. Defaults to 2 seconds.
+   */
+  connectionTimeout?: number;
+  /**
+   * How long, in seconds, routed requests may use the origin service after an outage's
+   * reconnect wait ends without a connection. The window is shared by requests during one
+   * outage. A later outage gets a new window after recovery.
    *
    * - `undefined` (the default), `null`, or any negative value: allow fallback for the rest of
    *   the outage.
    * - `N > 0`: allow fallback for N seconds. Later requests raise
    *   `ElastiCacheIntegrationsCacheUnavailable`.
-   * - `0`: disable fallback. Requests raise as soon as the connection is lost.
+   * - `0`: disable fallback. Requests raise as soon as the reconnect wait ends.
    */
   fallbackDuration?: number | null;
   /**
@@ -101,11 +106,14 @@ const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
   "clientConfiguration",
 ]);
 
+const DEFAULT_CONNECTION_TIMEOUT = 2;
+
 /** setTimeout fires after 1 ms for any delay above this, so longer timeouts are rejected. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
 const CLIENT_CONFIGURATION_FIELDS: ReadonlySet<string> = new Set([
   "cacheRequestTimeout",
+  "connectionTimeout",
   "fallbackDuration",
   "cachePolicyOverrides",
   "cachePolicyTimeout",
@@ -124,6 +132,7 @@ interface InitializeOptions {
   iamTokenRefreshDelay?: number;
   connectorOptions: ElastiCacheIntegrationsConnectorOptions;
   fallbackDurationMs?: number | null;
+  connectionTimeoutMs: number;
   cachePolicyOverrides: Readonly<Record<string, unknown>>;
   stalenessDurationMs: number;
 }
@@ -136,6 +145,7 @@ const MAX_IAM_TOKEN_REFRESH_DELAY = 880;
 
 interface ResolvedClientConfiguration {
   requestTimeoutMs: number;
+  connectionTimeoutMs: number;
   fallbackDurationMs?: number | null;
   cachePolicyOverrides: Readonly<Record<string, unknown>>;
   stalenessDurationMs: number;
@@ -167,22 +177,14 @@ function resolveClientConfiguration(
   }
   const {
     cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
+    connectionTimeout = DEFAULT_CONNECTION_TIMEOUT,
     fallbackDuration,
     cachePolicyOverrides = {},
     cachePolicyTimeout,
     iamTokenRefreshDelay,
   } = configuration;
-  if (
-    typeof cacheRequestTimeout !== "number" ||
-    !Number.isFinite(cacheRequestTimeout) ||
-    cacheRequestTimeout <= 0 ||
-    Math.round(cacheRequestTimeout * 1_000) > MAX_TIMER_DELAY_MS
-  ) {
-    throw new ElastiCacheIntegrationsConfigError(
-      "cacheRequestTimeout must be a positive number of seconds, at most " +
-        Math.floor(MAX_TIMER_DELAY_MS / 1_000),
-    );
-  }
+  const requestTimeoutMs = timeoutMs("cacheRequestTimeout", cacheRequestTimeout);
+  const connectionTimeoutMs = timeoutMs("connectionTimeout", connectionTimeout);
   if (
     typeof cachePolicyOverrides !== "object" ||
     cachePolicyOverrides === null ||
@@ -215,8 +217,8 @@ function resolveClientConfiguration(
     });
   }
   return {
-    // A sub-millisecond timeout still waits at least one millisecond.
-    requestTimeoutMs: Math.max(1, Math.round(cacheRequestTimeout * 1_000)),
+    requestTimeoutMs,
+    connectionTimeoutMs,
     ...(fallbackDuration === undefined
       ? {}
       : { fallbackDurationMs: fallbackDurationMs(fallbackDuration) }),
@@ -224,6 +226,22 @@ function resolveClientConfiguration(
     stalenessDurationMs: stalenessDurationMs(cachePolicyTimeout),
     ...(iamTokenRefreshDelay === undefined ? {} : { iamTokenRefreshDelay }),
   };
+}
+
+/** Validate a timeout in seconds and convert it to milliseconds. */
+function timeoutMs(name: string, seconds: unknown): number {
+  if (
+    typeof seconds !== "number" ||
+    !Number.isFinite(seconds) ||
+    seconds <= 0 ||
+    Math.round(seconds * 1_000) > MAX_TIMER_DELAY_MS
+  ) {
+    throw new ElastiCacheIntegrationsConfigError(
+      `${name} must be a positive number of seconds, at most ${Math.floor(MAX_TIMER_DELAY_MS / 1_000)}`,
+    );
+  }
+  // A sub-millisecond timeout still waits at least one millisecond.
+  return Math.max(1, Math.round(seconds * 1_000));
 }
 
 function stalenessDurationMs(seconds: number | undefined): number {
@@ -278,6 +296,7 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
       ...(options.fallbackDurationMs === undefined
         ? {}
         : { fallbackDurationMs: options.fallbackDurationMs }),
+      connectionTimeoutMs: options.connectionTimeoutMs,
       stalenessDurationMs: options.stalenessDurationMs,
     };
     session = new ElastiCacheIntegrationsSession(
@@ -432,6 +451,7 @@ export async function install<TClient extends InstallableClient>(
     ...(configuration.fallbackDurationMs === undefined
       ? {}
       : { fallbackDurationMs: configuration.fallbackDurationMs }),
+    connectionTimeoutMs: configuration.connectionTimeoutMs,
     cachePolicyOverrides: configuration.cachePolicyOverrides,
     stalenessDurationMs: configuration.stalenessDurationMs,
   });

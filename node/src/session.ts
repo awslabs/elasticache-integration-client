@@ -1,10 +1,12 @@
 /**
  * ElastiCacheIntegrationsSession owns cache connection recovery and the asynchronous request API.
  *
- * Initial connection attempts are bounded so client creation fails loudly.
- * After a live connection is lost, reconnect attempts continue in the
- * background until one succeeds or the session closes. Requests that have not
- * been sent may use the origin fallback window while no connector is available.
+ * The initial connection retries until the connection timeout passes, so client
+ * creation fails loudly. After a live connection is lost, reconnect attempts
+ * continue in the background until one succeeds or the session closes. A
+ * request that has not been sent waits up to the connection timeout for the
+ * reconnect, then may use the origin fallback window while no connector is
+ * available.
  *
  * The resolved config and its CEL predicates determine which requests are sent
  * to ElastiCacheIntegrations. The middleware may pass predicate declines, disconnected requests,
@@ -46,8 +48,9 @@ import { PredicateEvaluator } from "./predicates.js";
 import { Refresher } from "./refresh.js";
 
 const AUTH_ERROR = "AUTH_ERROR";
-const DEFAULT_CONNECT_ATTEMPTS = 3;
-const DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+const DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
+/** Cap on each background reconnect attempt. */
+const RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
 const DEFAULT_BASE_DELAY_MS = 100;
 const DEFAULT_MAX_DELAY_MS = 3_200;
@@ -57,15 +60,17 @@ const MAX_TIMER_DELAY_MS = 2_147_483_647;
 /** Reconnect and origin-fallback settings. */
 export interface ReconnectPolicyOptions {
   /**
-   * Origin fallback window for each outage, in milliseconds.
+   * Origin fallback window for each outage, in milliseconds, counted from the end of the
+   * reconnect wait.
    *
    * `null`, `undefined`, or a negative value means indefinitely. Zero disables
    * fallback, and a positive value allows fallback until that deadline.
    */
   fallbackDurationMs?: number | null;
-  /** Maximum attempts while initially opening the session. Defaults to 3. */
-  connectAttempts?: number;
-  /** Overall timeout for each initial connect, HELLO, and config attempt. */
+  /**
+   * How long `open()` keeps trying to connect, and how long a request waits for a reconnect
+   * after a live connection is lost, in milliseconds. Defaults to 2,000.
+   */
   connectionTimeoutMs?: number;
   /** How often a live connection obtains fresh credentials and runs AUTH again. */
   authRefreshIntervalMs?: number;
@@ -105,7 +110,6 @@ export interface ElastiCacheIntegrationsSessionOptions extends ReconnectPolicyOp
 
 interface ReconnectPolicy {
   fallbackWindowMs: number;
-  connectAttempts: number;
   connectionTimeoutMs: number;
   authRefreshIntervalMs: number;
   baseDelayMs: number;
@@ -140,13 +144,6 @@ function jitteredTimerInterval(value: number, name: string, jitter: number): num
   return interval;
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) {
-    throw new ElastiCacheIntegrationsConfigError(`${name} must be a positive integer`);
-  }
-  return value;
-}
-
 function fallbackWindow(value: number | null | undefined): number {
   if (value === null || value === undefined) return Number.POSITIVE_INFINITY;
   if (!Number.isSafeInteger(value)) {
@@ -157,10 +154,7 @@ function fallbackWindow(value: number | null | undefined): number {
   return value < 0 ? Number.POSITIVE_INFINITY : value;
 }
 
-function resolveReconnectPolicy(
-  options: ReconnectPolicyOptions | undefined,
-  reconnectable: boolean,
-): ReconnectPolicy {
+function resolveReconnectPolicy(options: ReconnectPolicyOptions | undefined): ReconnectPolicy {
   const baseDelayMs = timerDelay(options?.baseDelayMs ?? DEFAULT_BASE_DELAY_MS, "baseDelayMs");
   const maxDelayMs = timerDelay(options?.maxDelayMs ?? DEFAULT_MAX_DELAY_MS, "maxDelayMs");
   if (maxDelayMs < baseDelayMs) {
@@ -172,10 +166,6 @@ function resolveReconnectPolicy(
   }
   return {
     fallbackWindowMs: fallbackWindow(options?.fallbackDurationMs),
-    connectAttempts: positiveInteger(
-      options?.connectAttempts ?? (reconnectable ? DEFAULT_CONNECT_ATTEMPTS : 1),
-      "connectAttempts",
-    ),
     connectionTimeoutMs: timerDelay(
       options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
       "connectionTimeoutMs",
@@ -253,7 +243,12 @@ export class ElastiCacheIntegrationsSession {
   private connector: ElastiCacheIntegrationsConnector | undefined;
   private candidate: ElastiCacheIntegrationsConnector | undefined;
   private reconnectTask: Promise<void> | undefined;
+  /** When requests stop waiting for a reconnect during the current outage. */
+  private readyDeadline = 0;
+  /** When origin fallback ends during the current outage. */
   private fallbackDeadline = 0;
+  /** Resolvers of requests waiting for a reconnect, woken on reconnect and on close. */
+  private readonly connectorWaiters = new Set<() => void>();
   private readonly disconnected = new WeakSet<ElastiCacheIntegrationsConnector>();
   private readonly recoveryAbort = new AbortController();
   private factoryClosed = false;
@@ -273,7 +268,7 @@ export class ElastiCacheIntegrationsSession {
     this.connectorFactory = this.reconnectable
       ? (connectorOrFactory as ElastiCacheIntegrationsConnectorFactory)
       : singleConnectorFactory(connectorOrFactory as ElastiCacheIntegrationsConnector);
-    this.reconnectPolicy = resolveReconnectPolicy(sessionOptions, this.reconnectable);
+    this.reconnectPolicy = resolveReconnectPolicy(sessionOptions);
     this.stalenessDurationMs = sessionOptions?.stalenessDurationMs ?? DEFAULT_STALENESS_DURATION_MS;
     this.clock = sessionOptions?.clock ?? (() => performance.now());
   }
@@ -304,16 +299,23 @@ export class ElastiCacheIntegrationsSession {
     return this.clock() >= this.configDeadline;
   }
 
-  /** Open the initial connection with bounded retries. */
+  /**
+   * Open the initial connection, retrying until the connection timeout passes.
+   *
+   * A session built from a single connector makes one attempt.
+   */
   async open(): Promise<void> {
     if (this.state !== "created") {
       throw new ElastiCacheIntegrationsError(`open() called on a ${this.state} session`);
     }
 
-    let lastFailure: unknown = new ElastiCacheIntegrationsConnectionError(
-      "ElastiCacheIntegrations connection attempts exhausted",
-    );
-    for (let attempt = 1; attempt <= this.reconnectPolicy.connectAttempts; attempt++) {
+    const timeoutMs = this.reconnectPolicy.connectionTimeoutMs;
+    const timeoutMessage = `opening a connection timed out after ${timeoutMs / 1_000}s`;
+    const deadline = performance.now() + timeoutMs;
+    let lastFailure: unknown;
+    let attempt = 0;
+    while (true) {
+      attempt++;
       if (this.state !== "created") {
         throw new ElastiCacheIntegrationsConnectionError("Session closed during open()");
       }
@@ -323,7 +325,8 @@ export class ElastiCacheIntegrationsSession {
         candidate = this.createCandidate();
         const initialized = await this.initializeWithTimeout(
           candidate,
-          this.reconnectPolicy.connectionTimeoutMs,
+          Math.max(1, deadline - performance.now()),
+          timeoutMessage,
         );
         if (this.state !== "created") {
           throw new ElastiCacheIntegrationsConnectionError("Session closed during open()");
@@ -336,25 +339,25 @@ export class ElastiCacheIntegrationsSession {
       } catch (error) {
         lastFailure = error;
         await this.closeCandidate(candidate);
-        if (
-          attempt < this.reconnectPolicy.connectAttempts &&
-          !(await this.waitBeforeRetry(attempt))
-        ) {
-          lastFailure = new ElastiCacheIntegrationsConnectionError("Session closed during open()");
-          break;
-        }
       }
+
+      const remaining = deadline - performance.now();
+      if (!this.reconnectable || remaining <= 0) break;
+      if (!(await this.waitBeforeRetry(attempt, remaining))) {
+        this.state = "closed";
+        this.connection = "closed";
+        throw new ElastiCacheIntegrationsConnectionError("Session closed during open()");
+      }
+      if (deadline - performance.now() <= 0) break;
     }
 
     this.state = "closed";
     this.connection = "closed";
+    if (this.reconnectable && lastFailure instanceof ElastiCacheIntegrationsConnectionError) {
+      throw new ElastiCacheIntegrationsConnectionError(timeoutMessage, { cause: lastFailure });
+    }
     if (lastFailure instanceof Error) throw lastFailure;
-    throw new ElastiCacheIntegrationsConnectionError(
-      "ElastiCacheIntegrations connection attempts exhausted",
-      {
-        cause: lastFailure,
-      },
-    );
+    throw new ElastiCacheIntegrationsConnectionError(timeoutMessage, { cause: lastFailure });
   }
 
   /**
@@ -473,8 +476,9 @@ export class ElastiCacheIntegrationsSession {
    * Send matching requests to ElastiCacheIntegrations and decline requests that are safe to send
    * to origin.
    *
-   * A disconnected request has not been sent, so it may fall back while the
-   * per-outage window is open. Once execute starts, every failure propagates:
+   * A disconnected request has not been sent, so it waits for the reconnect until the outage's
+   * `readyDeadline`, then may fall back while the per-outage window is open. Once execute
+   * starts, every failure propagates:
    * the request may have reached ElastiCacheIntegrations and must not be directly replayed.
    */
   async request(
@@ -493,8 +497,12 @@ export class ElastiCacheIntegrationsSession {
       currentConnector = undefined;
     }
     if (this.state === "open" && currentConnector === undefined) {
-      if (performance.now() < this.fallbackDeadline) return undefined;
-      throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
+      currentConnector = await this.waitForConnector();
+      // A close during the wait also ends it here, and the request falls back 
+      if (currentConnector === undefined) {
+        if (this.fallbackAllowed()) return undefined;
+        throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
+      }
     }
     if (currentConnector === undefined) {
       throw new ElastiCacheIntegrationsConnectionError(
@@ -514,6 +522,36 @@ export class ElastiCacheIntegrationsSession {
     }
   }
 
+  /**
+   * Wait until a reconnect is published or the outage's `readyDeadline` passes. Returns the
+   * published connector, or undefined if none arrived or the session closed.
+   */
+  private async waitForConnector(): Promise<ElastiCacheIntegrationsConnector | undefined> {
+    while (this.state === "open" && this.connector === undefined) {
+      const remaining = this.readyDeadline - performance.now();
+      if (remaining <= 0) break;
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          clearTimeout(timer);
+          this.connectorWaiters.delete(wake);
+          resolve();
+        };
+        const timer = setTimeout(wake, remaining);
+        this.connectorWaiters.add(wake);
+      });
+    }
+    return this.state === "open" ? this.connector : undefined;
+  }
+
+  private wakeWaiters(): void {
+    for (const wake of [...this.connectorWaiters]) wake();
+  }
+
+  /** Whether a request with no connector may go to origin. Strict mode (0) never allows it. */
+  private fallbackAllowed(): boolean {
+    return this.reconnectPolicy.fallbackWindowMs !== 0 && performance.now() < this.fallbackDeadline;
+  }
+
   /** Stop background refresh and close active and recovering connectors. Idempotent. */
   async close(): Promise<void> {
     if (this.state === "closed") {
@@ -525,6 +563,7 @@ export class ElastiCacheIntegrationsSession {
     this.reauthRefresher?.stop();
     this.configRefresher?.stop();
     this.recoveryAbort.abort();
+    this.wakeWaiters();
     this.closeFactory();
     const active = this.connector;
     const candidate = this.candidate;
@@ -544,6 +583,7 @@ export class ElastiCacheIntegrationsSession {
     this.reauthRefresher?.stop();
     this.configRefresher?.stop();
     this.recoveryAbort.abort();
+    this.wakeWaiters();
     this.closeFactory();
     this.candidate?.destroy();
     this.connector?.destroy();
@@ -588,6 +628,7 @@ export class ElastiCacheIntegrationsSession {
   private async initializeWithTimeout(
     connector: ElastiCacheIntegrationsConnector,
     timeout: number,
+    timeoutMessage: string,
   ): Promise<{ config: ResolvedConfig; evaluator: PredicateEvaluator }> {
     let timer: NodeJS.Timeout | undefined;
     try {
@@ -596,11 +637,7 @@ export class ElastiCacheIntegrationsSession {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             connector.destroy();
-            reject(
-              new ElastiCacheIntegrationsConnectionError(
-                `opening a connection timed out after ${timeout}ms`,
-              ),
-            );
+            reject(new ElastiCacheIntegrationsConnectionError(timeoutMessage));
           }, timeout);
         }),
       ]);
@@ -663,9 +700,10 @@ export class ElastiCacheIntegrationsSession {
     this.disconnected.add(connector);
     if (this.state !== "open" || this.connector !== connector) return;
 
-    // Open the fallback window before clearing the connector so a request that
-    // observes no connector always sees the current outage's deadline.
-    this.fallbackDeadline = performance.now() + this.reconnectPolicy.fallbackWindowMs;
+    // Set both deadlines from one clock reading before clearing the connector, so a request
+    // that observes no connector always sees the current outage's deadlines.
+    this.readyDeadline = performance.now() + this.reconnectPolicy.connectionTimeoutMs;
+    this.fallbackDeadline = this.readyDeadline + this.reconnectPolicy.fallbackWindowMs;
     const configRefresher = this.configRefresher;
     const reauthRefresher = this.reauthRefresher;
     this.configRefresher = undefined;
@@ -697,7 +735,8 @@ export class ElastiCacheIntegrationsSession {
         candidate = this.createCandidate();
         const initialized = await this.initializeWithTimeout(
           candidate,
-          this.reconnectPolicy.connectionTimeoutMs,
+          RECONNECT_ATTEMPT_TIMEOUT_MS,
+          `opening a connection timed out after ${RECONNECT_ATTEMPT_TIMEOUT_MS / 1_000}s`,
         );
         if (this.state !== "open" || this.connection !== "reconnecting") {
           await this.closeCandidate(candidate);
@@ -706,7 +745,9 @@ export class ElastiCacheIntegrationsSession {
         this.publishConnection(candidate, initialized);
         this.candidate = undefined;
         this.connection = "alive";
+        this.readyDeadline = 0;
         this.fallbackDeadline = 0;
+        this.wakeWaiters();
         return;
       } catch {
         await this.closeCandidate(candidate);
@@ -736,8 +777,12 @@ export class ElastiCacheIntegrationsSession {
     return Math.min(MAX_TIMER_DELAY_MS, jittered);
   }
 
-  private async waitBeforeRetry(failedAttempt: number): Promise<boolean> {
-    const delay = this.delayFor(failedAttempt);
+  /** Sleep before the next attempt, at most `maxDelayMs`. False if the session closed. */
+  private async waitBeforeRetry(
+    failedAttempt: number,
+    maxDelayMs = Number.POSITIVE_INFINITY,
+  ): Promise<boolean> {
+    const delay = Math.min(this.delayFor(failedAttempt), maxDelayMs);
     try {
       await new Promise<void>((resolve, reject) => {
         const signal = this.recoveryAbort.signal;

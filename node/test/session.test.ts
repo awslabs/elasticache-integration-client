@@ -1,3 +1,5 @@
+import { createServer } from "node:net";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -127,6 +129,33 @@ function testRequest(): ElastiCacheIntegrationsRequest {
     metadata: new RequestMetadata({ service: "svc", operation: "GetItem" }),
   });
 }
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** An address with nothing listening on it, so connecting is refused. */
+async function unusedPort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  await new Promise((resolve) => server.close(resolve));
+  return port;
+}
+
+/** A factory whose first connector is `initial` and whose replacements all fail to connect. */
+function outageFactory(initial: ElastiCacheIntegrationsConnector) {
+  const factory = vi.fn<() => ElastiCacheIntegrationsConnector>(() =>
+    factory.mock.calls.length === 1
+      ? initial
+      : controlledConnector({
+          connect: async () => {
+            throw new ElastiCacheIntegrationsConnectionError("unavailable");
+          },
+        }).connector,
+  );
+  return factory;
+}
+
+const slowBackoff = { baseDelayMs: 10_000, maxDelayMs: 10_000, jitter: 0 };
 
 async function waitForState(session: ElastiCacheIntegrationsSession, state: string): Promise<void> {
   await vi.waitFor(() => {
@@ -699,7 +728,6 @@ describe("ElastiCacheIntegrationsSession", () => {
       factory,
       {},
       {
-        connectAttempts: 3,
         baseDelayMs: 1,
         maxDelayMs: 1,
         jitter: 0,
@@ -715,31 +743,7 @@ describe("ElastiCacheIntegrationsSession", () => {
     await session.close();
   });
 
-  it("fails startup after the configured attempt limit", async () => {
-    const factory = vi.fn<() => ElastiCacheIntegrationsConnector>(() => {
-      return controlledConnector({
-        connect: async () => {
-          throw new ElastiCacheIntegrationsConnectionError("unavailable");
-        },
-      }).connector;
-    });
-    const session = new ElastiCacheIntegrationsSession(
-      factory,
-      {},
-      {
-        connectAttempts: 2,
-        baseDelayMs: 1,
-        maxDelayMs: 1,
-        jitter: 0,
-      },
-    );
-
-    await expect(session.open()).rejects.toThrow("unavailable");
-    expect(factory).toHaveBeenCalledTimes(2);
-    expect(session.connectionState).toBe("closed");
-  });
-
-  it("bounds the complete initial connect, HELLO, and config attempt", async () => {
+  it("connection timeout bounds connect and configure", async () => {
     const cache = new MockCache({ failure: "hang", failureCommand: "hello" });
     await cache.start();
     const connectors: ElastiCacheIntegrationsConnector[] = [];
@@ -755,16 +759,15 @@ describe("ElastiCacheIntegrationsSession", () => {
       },
       {},
       {
-        connectAttempts: 1,
         connectionTimeoutMs: 25,
       },
     );
     const started = performance.now();
     try {
-      await expect(session.open()).rejects.toThrow("opening a connection timed out after 25ms");
+      await expect(session.open()).rejects.toThrow("opening a connection timed out after 0.025s");
       expect(performance.now() - started).toBeLessThan(500);
-      expect(connectors).toHaveLength(1);
-      expect(connectors[0]?.isDead).toBe(true);
+      expect(connectors.length).toBeGreaterThanOrEqual(1);
+      expect(connectors.every((connector) => connector.isDead)).toBe(true);
     } finally {
       await session.close();
       await cache.stop();
@@ -952,6 +955,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       factory,
       {},
       {
+        connectionTimeoutMs: 1,
         baseDelayMs: 10_000,
         maxDelayMs: 10_000,
         jitter: 0,
@@ -982,6 +986,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       {},
       {
         fallbackDurationMs: 5,
+        connectionTimeoutMs: 1,
         baseDelayMs: 10_000,
         maxDelayMs: 10_000,
         jitter: 0,
@@ -1006,7 +1011,7 @@ describe("ElastiCacheIntegrationsSession", () => {
     await session.close();
   });
 
-  it("raises immediately when fallback is disabled", async () => {
+  it("raises when the reconnect wait ends and fallback is disabled", async () => {
     const initial = controlledConnector();
     const replacement = controlledConnector({
       connect: async () => {
@@ -1022,6 +1027,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       {},
       {
         fallbackDurationMs: 0,
+        connectionTimeoutMs: 1,
         baseDelayMs: 10_000,
         maxDelayMs: 10_000,
         jitter: 0,
@@ -1054,6 +1060,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       {},
       {
         fallbackDurationMs: 0,
+        connectionTimeoutMs: 1,
         baseDelayMs: 10_000,
         maxDelayMs: 10_000,
         jitter: 0,
@@ -1136,53 +1143,338 @@ describe("ElastiCacheIntegrationsSession", () => {
   it.each(["handshake", "config"] as const)(
     "times out reconnect when %s hangs and allows shutdown",
     async (failure) => {
-      const initial = controlledConnector();
-      const never = () => new Promise<never>(() => undefined);
-      const replacement = controlledConnector({
-        ...(failure === "handshake" ? { handshake: never } : { config: never }),
-      });
-      const factory = vi
-        .fn<() => ElastiCacheIntegrationsConnector>()
-        .mockReturnValueOnce(initial.connector)
-        .mockReturnValue(replacement.connector);
-      const session = new ElastiCacheIntegrationsSession(
-        factory,
-        {},
-        {
-          connectionTimeoutMs: 25,
-          baseDelayMs: 10_000,
-          maxDelayMs: 10_000,
-          jitter: 0,
-        },
-      );
-      await session.open();
-      initial.fail();
+      vi.useFakeTimers();
+      try {
+        const initial = controlledConnector();
+        const never = () => new Promise<never>(() => undefined);
+        const replacement = controlledConnector({
+          ...(failure === "handshake" ? { handshake: never } : { config: never }),
+        });
+        const factory = vi
+          .fn<() => ElastiCacheIntegrationsConnector>()
+          .mockReturnValueOnce(initial.connector)
+          .mockReturnValue(replacement.connector);
+        const session = new ElastiCacheIntegrationsSession(
+          factory,
+          {},
+          {
+            baseDelayMs: 10_000,
+            maxDelayMs: 10_000,
+            jitter: 0,
+          },
+        );
+        await session.open();
+        initial.fail();
 
-      await vi.waitFor(() => {
-        if (failure === "handshake") {
-          expect(replacement.connector.handshake).toHaveBeenCalledOnce();
-        } else {
-          expect(replacement.connector.execute).toHaveBeenCalledWith(
-            "aws.config",
-            Buffer.from(`{"version":"${PROTOCOL_VERSION}"}`),
-          );
-        }
-      });
+        await vi.waitFor(() => {
+          if (failure === "handshake") {
+            expect(replacement.connector.handshake).toHaveBeenCalledOnce();
+          } else {
+            expect(replacement.connector.execute).toHaveBeenCalledWith(
+              "aws.config",
+              Buffer.from(`{"version":"${PROTOCOL_VERSION}"}`),
+            );
+          }
+        });
 
-      const started = performance.now();
-      await session.close();
-      expect(performance.now() - started).toBeLessThan(500);
-      expect(replacement.connector.destroy).toHaveBeenCalled();
-      expect(factory).toHaveBeenCalledTimes(2);
+        // Each background attempt is capped at 5 s, independent of connectionTimeoutMs.
+        await vi.advanceTimersByTimeAsync(5_001);
+        expect(replacement.connector.destroy).toHaveBeenCalled();
+
+        const started = performance.now();
+        await session.close();
+        expect(performance.now() - started).toBeLessThan(500);
+        expect(factory).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
     },
   );
+
+  it("creating a session gives up after connection timeout", async () => {
+    const port = await unusedPort();
+    const connectors: ElastiCacheIntegrationsConnector[] = [];
+    const session = new ElastiCacheIntegrationsSession(
+      () => {
+        const connector = new ElastiCacheIntegrationsConnector("127.0.0.1", port, {
+          tls: false,
+          authProvider: () => ["test-user", "test-token"],
+        });
+        connectors.push(connector);
+        return connector;
+      },
+      {},
+      { connectionTimeoutMs: 200, baseDelayMs: 10, maxDelayMs: 20, jitter: 0 },
+    );
+    const started = performance.now();
+
+    await expect(session.open()).rejects.toBeInstanceOf(ElastiCacheIntegrationsConnectionError);
+
+    expect(connectors.length).toBeGreaterThanOrEqual(2);
+    expect(performance.now() - started).toBeLessThan(1_000);
+    expect(connectors.some((connector) => connector.isReady)).toBe(false);
+  });
+
+  it("creating a session uses full connection timeout", async () => {
+    const built: ElastiCacheIntegrationsConnector[] = [];
+    const session = new ElastiCacheIntegrationsSession(
+      () => {
+        const { connector } = controlledConnector({
+          handshake: async () => {
+            throw new ElastiCacheIntegrationsConnectionError("cache unreachable");
+          },
+        });
+        built.push(connector);
+        return connector;
+      },
+      {},
+      { connectionTimeoutMs: 300, baseDelayMs: 20, maxDelayMs: 20, jitter: 0 },
+    );
+    const started = performance.now();
+
+    const error = await session.open().catch((cause: unknown) => cause);
+
+    const elapsed = performance.now() - started;
+    expect(error).toBeInstanceOf(ElastiCacheIntegrationsConnectionError);
+    expect((error as Error).message).toBe("opening a connection timed out after 0.3s");
+    expect((error as Error).cause).toMatchObject({ message: "cache unreachable" });
+    // No backoff sleep runs past the deadline.
+    expect(elapsed).toBeGreaterThanOrEqual(290);
+    expect(elapsed).toBeLessThan(700);
+    expect(built.length).toBeGreaterThanOrEqual(3);
+    for (const connector of built) expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it("creating a session preserves non-connection setup error", async () => {
+    const built: ElastiCacheIntegrationsConnector[] = [];
+    const session = new ElastiCacheIntegrationsSession(
+      () => {
+        const { connector } = controlledConnector({
+          handshake: async () => {
+            throw new ElastiCacheIntegrationsOverridesRejected("aws.config rejected");
+          },
+        });
+        built.push(connector);
+        return connector;
+      },
+      {},
+      { connectionTimeoutMs: 200, baseDelayMs: 20, maxDelayMs: 20, jitter: 0 },
+    );
+    const started = performance.now();
+
+    await expect(session.open()).rejects.toBeInstanceOf(ElastiCacheIntegrationsOverridesRejected);
+
+    expect(performance.now() - started).toBeGreaterThanOrEqual(190);
+    expect(built.length).toBeGreaterThanOrEqual(2);
+    for (const connector of built) expect(connector.close).toHaveBeenCalledOnce();
+  });
+
+  it("request waits then passes through when window open", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 50, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+    const started = performance.now();
+
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+
+    expect(performance.now() - started).toBeGreaterThanOrEqual(45);
+    await session.close();
+  });
+
+  it("request waits then escalates when window spent", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 50, fallbackDurationMs: 0, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+    const started = performance.now();
+
+    await expect(session.request(testRequest())).rejects.toBeInstanceOf(
+      ElastiCacheIntegrationsCacheUnavailable,
+    );
+
+    expect(performance.now() - started).toBeGreaterThanOrEqual(45);
+    await session.close();
+  });
+
+  it("request served when reconnect lands within the wait", async () => {
+    const initial = controlledConnector();
+    let allowReconnect!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      allowReconnect = resolve;
+    });
+    const replacement = controlledConnector({ connect: () => gate });
+    const factory = vi
+      .fn<() => ElastiCacheIntegrationsConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { connectionTimeoutMs: 2_000, fallbackDurationMs: 0, baseDelayMs: 1, maxDelayMs: 1 },
+    );
+    await session.open();
+    initial.fail();
+
+    const pending = session.request(testRequest());
+    await sleep(30);
+    allowReconnect();
+
+    await expect(pending).resolves.toBeInstanceOf(ElastiCacheIntegrationsResponse);
+    expect(replacement.connector.execute).toHaveBeenCalledTimes(2);
+    await session.close();
+  });
+
+  it("request on a dead connector waits for the reconnect", async () => {
+    const initial = controlledConnector();
+    // The connector is dead, but it has not reported the loss to the session yet.
+    Object.defineProperty(initial.connector, "isDead", { get: () => true });
+    const replacement = controlledConnector();
+    const factory = vi
+      .fn<() => ElastiCacheIntegrationsConnector>()
+      .mockReturnValueOnce(initial.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { connectionTimeoutMs: 2_000, fallbackDurationMs: 0, baseDelayMs: 1, maxDelayMs: 1 },
+    );
+    await session.open();
+
+    await expect(session.request(testRequest())).resolves.toBeInstanceOf(
+      ElastiCacheIntegrationsResponse,
+    );
+
+    // Only the config handshake reached the dead connector.
+    expect(initial.connector.execute).toHaveBeenCalledTimes(1);
+    expect(replacement.connector.execute).toHaveBeenCalledTimes(2);
+    await session.close();
+  });
+
+  it("retry after an in-flight loss waits for the reconnect", async () => {
+    // The loss goes up for the SDK to retry. The retry finds the dead connector, removes it, and
+    // is served on the new connector instead of failing again.
+    let lost = false;
+    const dying = controlledConnector({
+      request: async () => {
+        lost = true;
+        throw new ElastiCacheIntegrationsConnectionLost("socket died");
+      },
+    });
+    Object.defineProperty(dying.connector, "isDead", { get: () => lost });
+    const replacement = controlledConnector();
+    const factory = vi
+      .fn<() => ElastiCacheIntegrationsConnector>()
+      .mockReturnValueOnce(dying.connector)
+      .mockReturnValue(replacement.connector);
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { connectionTimeoutMs: 2_000, fallbackDurationMs: 0, baseDelayMs: 1, maxDelayMs: 1 },
+    );
+    await session.open();
+
+    await expect(session.request(testRequest())).rejects.toBeInstanceOf(
+      ElastiCacheIntegrationsConnectionLost,
+    );
+    await expect(session.request(testRequest())).resolves.toBeInstanceOf(
+      ElastiCacheIntegrationsResponse,
+    );
+
+    expect(replacement.connector.execute).toHaveBeenCalledTimes(2);
+    await session.close();
+  });
+
+  it("request does not wait after the reconnect wait", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 100, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+    await sleep(150);
+    const started = performance.now();
+
+    await expect(session.request(testRequest())).resolves.toBeUndefined();
+
+    // A request that waited the full connectionTimeout would take 100 ms.
+    expect(performance.now() - started).toBeLessThan(80);
+    await session.close();
+  });
+
+  it("strict mode does not allow fallback before ready deadline", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 1_000, fallbackDurationMs: 0, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+    let settled = false;
+    const pending = session.request(testRequest()).finally(() => {
+      settled = true;
+    });
+    pending.catch(() => undefined);
+
+    await sleep(50);
+    expect(settled).toBe(false);
+
+    await expect(pending).rejects.toBeInstanceOf(ElastiCacheIntegrationsCacheUnavailable);
+    await session.close();
+  });
+
+  it("fallback window starts when the wait ends", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 5_000, fallbackDurationMs: 1_000, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+
+    const deadlines = session as unknown as { readyDeadline: number; fallbackDeadline: number };
+    expect(deadlines.fallbackDeadline - deadlines.readyDeadline).toBe(1_000);
+    await session.close();
+  });
+
+  it("closing the session wakes a waiting request", async () => {
+    const initial = controlledConnector();
+    const session = new ElastiCacheIntegrationsSession(
+      outageFactory(initial.connector),
+      {},
+      { connectionTimeoutMs: 5_000, ...slowBackoff },
+    );
+    await session.open();
+    initial.fail();
+    const outcome = session.request(testRequest());
+    await sleep(20);
+
+    const started = performance.now();
+    await session.close();
+
+    // The woken request falls back to the origin.
+    await expect(outcome).resolves.toBeUndefined();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 
   it("validates reconnect policy bounds", () => {
     const connector = fakeConnector();
     const aboveTimerLimit = 2_147_483_648;
 
     expect(
-      () => new ElastiCacheIntegrationsSession(() => connector, {}, { connectAttempts: 0 }),
+      () => new ElastiCacheIntegrationsSession(() => connector, {}, { connectionTimeoutMs: 0 }),
     ).toThrow(ElastiCacheIntegrationsConfigError);
     expect(
       () => new ElastiCacheIntegrationsSession(() => connector, {}, { baseDelayMs: 0 }),

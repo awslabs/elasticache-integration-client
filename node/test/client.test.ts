@@ -156,6 +156,7 @@ describe("install", () => {
       expect.any(Function),
       { timeout: 42 },
       {
+        connectionTimeoutMs: 2_000,
         stalenessDurationMs: 3_600_000,
       },
     );
@@ -273,8 +274,31 @@ describe("install", () => {
       { timeout: 42 },
       {
         fallbackDurationMs: 60_000,
+        connectionTimeoutMs: 2_000,
         stalenessDurationMs: 3_600_000,
       },
+    );
+  });
+
+  it.each([
+    [undefined, 2_000],
+    [1.5, 1_500],
+  ])("passes connectionTimeout %s to the session", async (requested, expected) => {
+    setup();
+
+    await install({
+      client: new FakeClient(),
+      ...options,
+      clientConfiguration: {
+        ...options.clientConfiguration,
+        ...(requested === undefined ? {} : { connectionTimeout: requested }),
+      },
+    });
+
+    expect(mocks.sessionConstructor).toHaveBeenCalledWith(
+      expect.any(Function),
+      { timeout: 42 },
+      expect.objectContaining({ connectionTimeoutMs: expected }),
     );
   });
 
@@ -287,6 +311,17 @@ describe("install", () => {
       "cacheRequestTimeout",
       2_147_484,
       "cacheRequestTimeout must be a positive number of seconds, at most 2147483",
+    ],
+    ["connectionTimeout", 0, "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", -1, "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", NaN, "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", Infinity, "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", true, "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", "2", "connectionTimeout must be a positive number of seconds"],
+    [
+      "connectionTimeout",
+      2_147_484,
+      "connectionTimeout must be a positive number of seconds, at most 2147483",
     ],
     ["fallbackDuration", 0.5, "fallbackDuration must be a whole number of seconds"],
     ["fallbackDuration", true, "fallbackDuration must be a whole number of seconds"],
@@ -509,7 +544,10 @@ describe("install", () => {
     const connectorFactory = mocks.sessionConstructor.mock.calls[0]![0] as () => unknown;
     connectorFactory();
     expect(mocks.connection.mock.calls[0]![2]).toMatchObject({ requestTimeout: 5_000 });
-    expect(mocks.sessionConstructor.mock.calls[0]![2]).toEqual({ stalenessDurationMs: 3_600_000 });
+    expect(mocks.sessionConstructor.mock.calls[0]![2]).toEqual({
+      connectionTimeoutMs: 2_000,
+      stalenessDurationMs: 3_600_000,
+    });
   });
 
   it("rejects a clientConfiguration that is not an object", async () => {
@@ -555,6 +593,7 @@ describe("install", () => {
     });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
+      connectionTimeoutMs: 2_000,
       stalenessDurationMs: expected,
     });
   });
