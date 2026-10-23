@@ -498,7 +498,7 @@ export class ElastiCacheIntegrationsSession {
     }
     if (this.state === "open" && currentConnector === undefined) {
       currentConnector = await this.waitForConnector();
-      // A close during the wait also ends it here, and the request falls back 
+      // A close during the wait also ends it here, and the request falls back
       if (currentConnector === undefined) {
         if (this.fallbackAllowed()) return undefined;
         throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
