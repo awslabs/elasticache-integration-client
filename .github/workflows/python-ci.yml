@@ -152,7 +152,7 @@ jobs:
           (sdist,) = glob.glob("dist/*.tar.gz")
           (wheel,) = glob.glob("dist/*.whl")
           with tarfile.open(sdist) as archive:
-              # Members start with "elasticache-integrations-<version>/"; drop that prefix.
+              # Members start with "aws_elasticache_integration_client-<version>/"; drop that prefix.
               sdist_names = [n.split("/", 1)[1] for n in archive.getnames() if "/" in n]
           with zipfile.ZipFile(wheel) as archive:
               wheel_names = archive.namelist()

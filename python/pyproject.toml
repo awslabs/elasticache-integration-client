@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "elasticache-integrations"
+name = "aws-elasticache-integration-client"
 version = "0.0.1"
-description = "ElastiCacheIntegrations client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
+description = "ElastiCache Integrations for AWS SDK for Python (Boto3) DynamoDB clients."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -15,6 +15,9 @@ dependencies = [
     "cel-python>=0.1",  # CEL evaluation of the resolved aws.config predicates
     "developer-toolkit-elasticache>=1.1,<2",  # IAM token generation and refresh
 ]
+
+[project.urls]
+Repository = "https://github.com/awslabs/aws-elasticache-integration-client"
 
 [project.optional-dependencies]
 test = [

@@ -9,7 +9,7 @@ plugins {
     id("net.ltgt.errorprone") version "5.1.1"
 }
 
-group = "software.amazon.elasticacheintegrations"
+group = "software.amazon.elasticache"
 version = "0.0.1"
 
 val releasePublishing = providers.gradleProperty("releasePublishing").isPresent

@@ -1,1 +1,1 @@
-rootProject.name = "elasticache-integrations"
+rootProject.name = "aws-elasticache-integration-client"

@@ -3,7 +3,8 @@
 ElastiCache Integrations for AWS SDK for Java v2 DynamoDB clients.
 
 Published releases use the Maven coordinates
-`software.amazon.elasticacheintegrations:elasticache-integrations:<version>`.
+`software.amazon.elasticache:aws-elasticache-integration-client:<version>`.
+The Java package is `software.amazon.elasticacheintegrations`.
 
 Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the

@@ -23,8 +23,8 @@
 
     <dependencies>
         <dependency>
-            <groupId>software.amazon.elasticacheintegrations</groupId>
-            <artifactId>elasticache-integrations</artifactId>
+            <groupId>software.amazon.elasticache</groupId>
+            <artifactId>aws-elasticache-integration-client</artifactId>
             <version>${cache.version}</version>
         </dependency>
     </dependencies>
