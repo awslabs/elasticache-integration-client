@@ -2,7 +2,7 @@
 
 Drive the full client path:
 
-    elasticache_integrations.install(client=ddb) -> boto3 GetItem -> before-send hook -> ElastiCacheIntegrationsSession
+    aws_elasticache_integration_client.install(client=ddb) -> boto3 GetItem -> before-send hook -> ElastiCacheIntegrationsSession
         -> real ElastiCacheIntegrationsConnector (verifying TLS) -> MockCache -> response
 
 These exercise the **real** pure-Python ``ElastiCacheIntegrationsConnector`` over **verifying TLS** (not a double) —
@@ -32,7 +32,7 @@ import boto3
 import pytest
 from botocore.hooks import first_non_none_response
 
-import elasticache_integrations
+import aws_elasticache_integration_client
 from tests.mock import MockCache
 
 ITEM = {"id": {"S": "42"}, "name": {"S": "widget"}}
@@ -65,7 +65,9 @@ def cache(monkeypatch):
 def test_get_item(cache, session):
     """get_item is served by the mock cache, and the request arrives there exactly as sent."""
     ddb = session.client("dynamodb")
-    elasticache_integrations.install(client=ddb, endpoint=cache.endpoint, cache_name="test-cache")
+    aws_elasticache_integration_client.install(
+        client=ddb, endpoint=cache.endpoint, cache_name="test-cache"
+    )
 
     result = ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
     assert result["ResponseMetadata"]["HTTPStatusCode"] == 200
@@ -75,7 +77,7 @@ def test_get_item(cache, session):
     log = cache.cache_command_log
     assert log.index("hello") < log.index("aws.config") < log.index("aws.request")
 
-    # Check what elasticache_integrations sent to the cache.
+    # Check what aws_elasticache_integration_client sent to the cache.
     method, url, headers, req_body, metadata = cache.last_request_args[:5]
     assert method == b"POST"
     # The SDK's request URL is the real DynamoDB endpoint (the cache endpoint is only where
@@ -96,7 +98,9 @@ def test_get_item(cache, session):
 def test_connection_reuse(cache, session):
     """Two calls on one client reuse one connection: one config handshake, two requests."""
     ddb = session.client("dynamodb")
-    elasticache_integrations.install(client=ddb, endpoint=cache.endpoint, cache_name="test-cache")
+    aws_elasticache_integration_client.install(
+        client=ddb, endpoint=cache.endpoint, cache_name="test-cache"
+    )
 
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})
@@ -109,7 +113,9 @@ def test_connection_reuse(cache, session):
 def test_close_lifecycle(cache, session):
     """close() disconnects ElastiCacheIntegrations (nothing reaches the cache afterwards) and is idempotent."""
     ddb = session.client("dynamodb")
-    elasticache_integrations.install(client=ddb, endpoint=cache.endpoint, cache_name="test-cache")
+    aws_elasticache_integration_client.install(
+        client=ddb, endpoint=cache.endpoint, cache_name="test-cache"
+    )
     ddb.get_item(TableName="my-table", Key={"id": {"S": "42"}})  # served by the cache
     requests_before = len(cache.requests)
 

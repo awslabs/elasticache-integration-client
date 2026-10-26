@@ -11,15 +11,18 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import elasticache_integrations.session as session_mod
-from elasticache_integrations.connection_manager import ConnectionManager, ConnectionState
-from elasticache_integrations.exceptions import (
+import aws_elasticache_integration_client.session as session_mod
+from aws_elasticache_integration_client.connection_manager import ConnectionManager, ConnectionState
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConnectionLost,
 )
-from elasticache_integrations.models import ElastiCacheIntegrationsRequest, RequestMetadata
-from elasticache_integrations.reconnect_policy import ReconnectPolicy
-from elasticache_integrations.session import ElastiCacheIntegrationsSession
+from aws_elasticache_integration_client.models import (
+    ElastiCacheIntegrationsRequest,
+    RequestMetadata,
+)
+from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 from tests.mock import mock_connector
 
 

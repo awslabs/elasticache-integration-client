@@ -58,7 +58,7 @@ export class Refresher {
     this.validateInterval(intervalSeconds);
     this.intervalSeconds = intervalSeconds;
     this.random = options.random ?? Math.random;
-    this.name = options.name ?? "elastiCacheIntegrations-refresher";
+    this.name = options.name ?? "aws-elasticache-integration-client-refresher";
     this.failureDelayMs = options.failureDelayMs;
   }
 

@@ -1,4 +1,4 @@
-"""Unit tests for elasticache_integrations.connection, organized by the connector contract:
+"""Unit tests for aws_elasticache_integration_client.connection, organized by the connector contract:
 
 1. Establishment — connect() yields a usable connection or a ElastiCacheIntegrationsConnectionError
 2. Authentication — the AUTH exchange
@@ -21,12 +21,12 @@ from unittest import mock
 
 import pytest
 
-from elasticache_integrations.connection import (
+from aws_elasticache_integration_client.connection import (
     ElastiCacheIntegrationsConnector,
     _PendingRequests,
     _SocketReader,
 )
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsAuthError,
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
@@ -34,8 +34,8 @@ from elasticache_integrations.exceptions import (
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsTimeoutError,
 )
-from elasticache_integrations.protocol import PUSH_KIND_RESPONSE
-from elasticache_integrations.resp import RespError, RespPush, RespValue
+from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE
+from aws_elasticache_integration_client.resp import RespError, RespPush, RespValue
 from tests.mock import MockCache, Reply
 
 
@@ -195,7 +195,7 @@ class TestElastiCacheIntegrationsConnector:
                 outcome.append(exc)
 
         with mock.patch(
-            "elasticache_integrations.connection.asyncio.open_connection", blocked_open
+            "aws_elasticache_integration_client.connection.asyncio.open_connection", blocked_open
         ):
             t = threading.Thread(target=run_connect)
             t.start()
@@ -208,7 +208,8 @@ class TestElastiCacheIntegrationsConnector:
         assert isinstance(outcome[0], ElastiCacheIntegrationsConnectionError), outcome[0]
         assert conn._writer is None
         assert not any(
-            th.name == "elasticache-integrations-io-thread" for th in threading.enumerate()
+            th.name == "aws-elasticache-integration-client-io-thread"
+            for th in threading.enumerate()
         )
 
     def test_connect_install_refused_after_close(self):
@@ -222,7 +223,9 @@ class TestElastiCacheIntegrationsConnector:
         async def fake_open(*args, **kwargs):
             return (mock.Mock(), writer)
 
-        with mock.patch("elasticache_integrations.connection.asyncio.open_connection", fake_open):
+        with mock.patch(
+            "aws_elasticache_integration_client.connection.asyncio.open_connection", fake_open
+        ):
             with pytest.raises(ElastiCacheIntegrationsConnectionError):
                 asyncio.run(conn._establish_connection())
         writer.transport.abort.assert_called_once()
@@ -356,7 +359,7 @@ class TestElastiCacheIntegrationsConnector:
         conn = ElastiCacheIntegrationsConnector("host", 6379, tls=False, auth_provider=provider)
         conn.execute = mock.Mock(return_value=RespError("WRONGPASS", "bad token"))
 
-        with caplog.at_level("WARNING", logger="elasticache_integrations.connection"):
+        with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.connection"):
             with pytest.raises(ElastiCacheIntegrationsAuthError, match="WRONGPASS"):
                 conn.authenticate()
 
@@ -888,7 +891,7 @@ class TestElastiCacheIntegrationsConnector:
             conn.execute("aws.config", b"{}")
             conn.close()
         assert not any(
-            t.name == "elasticache-integrations-io-thread" for t in threading.enumerate()
+            t.name == "aws-elasticache-integration-client-io-thread" for t in threading.enumerate()
         )
 
     def test_close_stops_and_forgets_the_io_loop(self):
@@ -1038,7 +1041,7 @@ class TestElastiCacheIntegrationsConnector:
             conn.connect()
 
         assert not any(
-            t.name == "elasticache-integrations-io-thread" for t in threading.enumerate()
+            t.name == "aws-elasticache-integration-client-io-thread" for t in threading.enumerate()
         )
         assert conn._io_loop_thread.loop is None
 

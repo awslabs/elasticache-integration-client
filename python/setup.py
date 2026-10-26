@@ -8,7 +8,7 @@ from setuptools.command.sdist import sdist as _sdist
 CATALOG = "idempotent-operations.json"
 SHARED_CATALOG = Path(__file__).parent.parent / "shared" / CATALOG
 # Where the sdist carries the catalog. A wheel built from an sdist has no ../shared to read.
-SDIST_CATALOG = Path(__file__).parent / "elasticache_integrations" / CATALOG
+SDIST_CATALOG = Path(__file__).parent / "aws_elasticache_integration_client" / CATALOG
 
 
 class sdist(_sdist):
@@ -16,7 +16,7 @@ class sdist(_sdist):
 
     def make_release_tree(self, base_dir, files):
         super().make_release_tree(base_dir, files)
-        copyfile(SHARED_CATALOG, Path(base_dir) / "elasticache_integrations" / CATALOG)
+        copyfile(SHARED_CATALOG, Path(base_dir) / "aws_elasticache_integration_client" / CATALOG)
 
 
 class build_py(_build_py):
@@ -26,7 +26,7 @@ class build_py(_build_py):
         super().run()
         # A checkout reads the shared file. An unpacked sdist has only its own copy.
         source = SHARED_CATALOG if SHARED_CATALOG.exists() else SDIST_CATALOG
-        target = Path(self.build_lib) / "elasticache_integrations" / CATALOG
+        target = Path(self.build_lib) / "aws_elasticache_integration_client" / CATALOG
         target.parent.mkdir(parents=True, exist_ok=True)
         copyfile(source, target)
 

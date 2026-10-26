@@ -4,8 +4,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>software.amazon.elasticacheintegrations.smoke</groupId>
-    <artifactId>elasticache-integrations-maven-smoke</artifactId>
+    <groupId>software.amazon.elasticache.integrations.smoke</groupId>
+    <artifactId>aws-elasticache-integration-client-maven-smoke</artifactId>
     <version>1.0.0</version>
 
     <properties>
@@ -16,7 +16,7 @@
 
     <repositories>
         <repository>
-            <id>elasticache-integrations-release</id>
+            <id>aws-elasticache-integration-client-release</id>
             <url>${cache.repository}</url>
         </repository>
     </repositories>

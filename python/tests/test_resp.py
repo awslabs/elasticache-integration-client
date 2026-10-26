@@ -1,12 +1,12 @@
-"""Tests for elasticache_integrations.resp — the standalone RESP3 wire codec."""
+"""Tests for aws_elasticache_integration_client.resp — the standalone RESP3 wire codec."""
 
 import pytest
 
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsProtocolError,
 )
-from elasticache_integrations.resp import (
+from aws_elasticache_integration_client.resp import (
     IncompleteFrame,
     RespError,
     RespPush,

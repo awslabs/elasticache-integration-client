@@ -138,13 +138,13 @@ jobs:
           import tarfile
           import zipfile
 
-          catalog = "elasticache_integrations/idempotent-operations.json"
+          catalog = "aws_elasticache_integration_client/idempotent-operations.json"
           cache_modules = [
-              "elasticache_integrations/__init__.py",
-              "elasticache_integrations/client.py",
-              "elasticache_integrations/session.py",
-              "elasticache_integrations/connection.py",
-              "elasticache_integrations/idempotency.py",
+              "aws_elasticache_integration_client/__init__.py",
+              "aws_elasticache_integration_client/client.py",
+              "aws_elasticache_integration_client/session.py",
+              "aws_elasticache_integration_client/connection.py",
+              "aws_elasticache_integration_client/idempotency.py",
           ]
           # The toolkit is a PyPI dependency, so neither archive may carry a copy.
           junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc", "vendor/", "developer_toolkit_elasticache")

@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# Maven (the consumer smoke project)
+smoke/maven/target/
+
 # Compiled class file
 *.class
 

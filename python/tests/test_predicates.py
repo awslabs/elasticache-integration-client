@@ -1,7 +1,7 @@
-"""Tests for elasticache_integrations.predicates — CEL evaluation of resolved-config predicates.
+"""Tests for aws_elasticache_integration_client.predicates — CEL evaluation of resolved-config predicates.
 
 Requires ``cel-python`` (a runtime dependency). The expressions used here are the ones the proxy
-actually emits (see ElastiCacheProxyRust/src/libproxy/elasticache_integrations/config.rs), so these tests double as a
+actually emits (see ElastiCacheProxyRust/src/libproxy/aws_elasticache_integration_client/config.rs), so these tests double as a
 cross-check that the client evaluates the proxy's wire format correctly.
 """
 
@@ -9,9 +9,12 @@ import json
 
 import pytest
 
-from elasticache_integrations.exceptions import ElastiCacheIntegrationsConfigUnevaluable
-from elasticache_integrations.models import ElastiCacheIntegrationsRequest, RequestMetadata
-from elasticache_integrations.predicates import (
+from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigUnevaluable
+from aws_elasticache_integration_client.models import (
+    ElastiCacheIntegrationsRequest,
+    RequestMetadata,
+)
+from aws_elasticache_integration_client.predicates import (
     _CONTEXT_NAMES,
     _build_context,
     compile_predicates,
@@ -266,7 +269,7 @@ def test_variable_may_not_shadow_a_context_name(caplog):
             }
         ]
     }
-    with caplog.at_level("WARNING", logger="elasticache_integrations.predicates"):
+    with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.predicates"):
         predicates = compile_predicates(config)
     assert "reserved context name" in caplog.text
     # The real service still decides: s3 does not route, dynamodb does.
@@ -283,14 +286,14 @@ def test_context_names_match_the_reserved_set():
 def test_non_boolean_result_does_not_route(expr, caplog):
     # A truthy non-boolean would otherwise coerce to True and route everything.
     predicates = compile_predicates({"predicates": [{"expr": expr, "vars": {}}]})
-    with caplog.at_level("WARNING", logger="elasticache_integrations.predicates"):
+    with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.predicates"):
         assert should_route_to_cache(predicates, _get_item()) is False
     assert "not bool" in caplog.text
 
 
 def test_non_boolean_result_warns_once_per_predicate(caplog):
     predicates = compile_predicates({"predicates": [{"expr": "'yes'", "vars": {}}]})
-    with caplog.at_level("WARNING", logger="elasticache_integrations.predicates"):
+    with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.predicates"):
         for _ in range(5):
             should_route_to_cache(predicates, _get_item())
     assert len([r for r in caplog.records if "not bool" in r.message]) == 1
