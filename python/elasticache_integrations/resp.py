@@ -188,7 +188,8 @@ def _decode_map(
 # Prefixes whose decoders recurse into child values.
 _AGGREGATE_PREFIXES = frozenset({b"*", b">", b"%"})
 
-# Prefix → decoder dispatch.
+# Prefix → decoder dispatch. A decoder that recurses into child values must also have its
+# prefix listed in _AGGREGATE_PREFIXES, or the nesting cap will not cover it.
 _DECODERS = {
     b"+": _decode_simple_string,
     b":": _decode_integer,
