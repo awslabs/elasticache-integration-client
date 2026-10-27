@@ -38,15 +38,15 @@ import software.amazon.elasticache.integrations.resp.RespValue;
 /**
  * Owns the active Cache connector and replaces it after transport failure.
  *
- * <p>Initial connection is bounded by the reconnect policy's connect attempts and connection
- * timeout. Once open, an idle or in-flight disconnect starts one background reconnect loop. The
- * loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and {@code aws.config}, and keeps
- * trying until it succeeds or the session closes.
+ * <p>Initial connection retries until the reconnect policy's connection timeout has passed. Once
+ * open, an idle or in-flight disconnect starts one background reconnect loop. The loop obtains
+ * fresh credentials, repeats {@code HELLO 3 AUTH} and {@code aws.config}, and keeps trying until it
+ * succeeds or the session closes.
  *
- * <p>While no connector is available, matching requests use origin fallback until the configured
- * fallback duration expires. After a request is admitted to Cache, the HTTP adapters allow direct
- * origin fallback only when the connection drops and the operation is in the shared replay-safe
- * catalog.
+ * <p>While no connector is available, a matching request waits up to the connection timeout for the
+ * reconnect, then uses origin fallback until the configured fallback duration expires. After a
+ * request is admitted to Cache, the HTTP adapters allow direct origin fallback only when the
+ * connection drops and the operation is in the shared replay-safe catalog.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Cache. Requests with no matching
  * predicate are declined for origin pass-through. The background runners started by {@link #open()}
@@ -377,6 +377,14 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     if (!canRetry || state != State.CREATED) {
                         break;
                     }
+                    long failedAttempt = attempt;
+                    LOGGER.fine(
+                            () ->
+                                    "elasticache_integrations connect attempt "
+                                            + failedAttempt
+                                            + " failed ("
+                                            + failure
+                                            + "); retrying");
                     sleep(
                             Math.min(reconnectPolicy.delayFor(attempt), nanosToMillisCeil(nanosUntil(deadline))));
                 }
