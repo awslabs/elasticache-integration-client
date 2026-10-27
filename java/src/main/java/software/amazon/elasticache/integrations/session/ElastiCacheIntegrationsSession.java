@@ -693,7 +693,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
         ElastiCacheIntegrationsConnector active = connector;
         if (active == null || !active.isReady()) {
             beginReconnect(active);
-            active = awaitConnector();
+            active = waitForConnector();
             if (cancellation.isCancelled()) {
                 throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
             }
@@ -1013,7 +1013,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
      * Wait until the current outage's ready deadline for a connector to be published. Returns the
      * ready connector, or null when the deadline passes or the session closes.
      */
-    private ElastiCacheIntegrationsConnector awaitConnector() {
+    private ElastiCacheIntegrationsConnector waitForConnector() {
         synchronized (stateLock) {
             while (true) {
                 ElastiCacheIntegrationsConnector current = connector;
