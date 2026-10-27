@@ -1267,7 +1267,7 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void connectionTimeoutBoundsConnectAndConfigure() {
+    void connectionTimeoutBoundsConnectAndConfigure() throws Exception {
         // The cache accepts the connection and never answers HELLO, so the timeout has to cover the
         // handshake, not only the connect. The connector's own 5 s read timeout would otherwise apply.
         cache.setFailureMode(MockCache.FailureMode.HANG);
@@ -1296,7 +1296,22 @@ class ElastiCacheIntegrationsSessionTest {
         assertEquals(1, built.size());
         assertTrue(elapsed >= 290, "gave up before the timeout: " + elapsed + "ms");
         assertTrue(elapsed < 1_500, "the timeout did not cover HELLO: " + elapsed + "ms");
+        // A timed-out attempt leaks neither a connection nor the thread that was bringing it up.
         assertFalse(built.get(0).isReady());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (connectThreadAlive() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertFalse(connectThreadAlive(), "the connect thread outlived the timed-out attempt");
+    }
+
+    private static boolean connectThreadAlive() {
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && thread.getName().startsWith("cache-connect-")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A session whose first connector fails its first request, which loses the connection. */
