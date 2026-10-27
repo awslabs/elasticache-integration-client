@@ -56,7 +56,7 @@ sourceSets {
 }
 
 dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.3")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.4")
     implementation("dev.cel:compiler:0.14.0")
     implementation("dev.cel:runtime:0.14.0")
     // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
@@ -76,7 +76,7 @@ dependencies {
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
 
-    errorprone("com.google.errorprone:error_prone_core:2.50.0")
+    errorprone("com.google.errorprone:error_prone_core:2.51.0")
 
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
