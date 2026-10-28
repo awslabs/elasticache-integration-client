@@ -1175,7 +1175,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
             for (int t = 0; t < numThreads; t++) {
                 final int threadNum = t;
-                executor.submit(
+                executor.execute(
                         () -> {
                             try {
                                 startLatch.await(); // Wait for all threads to be ready
@@ -1249,7 +1249,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             // Wait for all to complete and verify each caller got their own response
             for (int i = 0; i < futures.size(); i++) {
                 String result = futures.get(i).get(10, TimeUnit.SECONDS);
-                String[] parts = result.split("\\|");
+                String[] parts = result.split("\\|", -1);
                 assertEquals(2, parts.length, "Result should have marker|body format");
                 String sentMarker = parts[0];
                 String receivedBody = parts[1];

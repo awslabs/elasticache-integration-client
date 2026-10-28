@@ -235,6 +235,7 @@ public class MockTlsServer implements Closeable {
         return ctx;
     }
 
+    @SuppressWarnings("JavaUtilDate") // The BouncyCastle certificate builder takes Date.
     private X509Certificate generateSelfSignedCert(KeyPair keyPair) throws Exception {
         long now = System.currentTimeMillis();
         Date notBefore = new Date(now);

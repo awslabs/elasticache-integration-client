@@ -27,7 +27,10 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  */
 public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
 
+    /** Default limit on a buffered async request body, in bytes (16 MiB). */
     public static final int DEFAULT_MAX_BUFFERED_REQUEST_BYTES = 16 * 1024 * 1024;
+
+    /** Default limit on async request bodies collected at once. */
     public static final int DEFAULT_MAX_CONCURRENT_BODY_COLLECTORS = 8;
 
     private final ElastiCacheIntegrationsSession session;
@@ -59,17 +62,29 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         this.ownedAuthProvider = ownedAuthProvider;
     }
 
-    /** Get the interceptor to install on the SDK client. */
+    /**
+     * Get the interceptor to install on the SDK client.
+     *
+     * @return the interceptor
+     */
     public ElastiCacheIntegrationsAsyncInterceptor getInterceptor() {
         return interceptor;
     }
 
-    /** Get the Cache-first asynchronous HTTP transport. */
+    /**
+     * Get the Cache-first asynchronous HTTP transport.
+     *
+     * @return the asynchronous HTTP client
+     */
     public ElastiCacheIntegrationsAsyncHttpClient getHttpClient() {
         return httpClient;
     }
 
-    /** Get the underlying Cache session. */
+    /**
+     * Get the underlying Cache session.
+     *
+     * @return the session
+     */
     public ElastiCacheIntegrationsSession getSession() {
         return session;
     }
@@ -109,12 +124,20 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         }
     }
 
-    /** Check if the handle is open and ready. */
+    /**
+     * Check if the handle is open and ready.
+     *
+     * @return true while the handle is open and its session is open
+     */
     public synchronized boolean isOpen() {
         return state == State.OPEN && session.isOpen();
     }
 
-    /** Create a new async handle builder. */
+    /**
+     * Create a new async handle builder.
+     *
+     * @return a new builder
+     */
     public static Builder builder() {
         return new Builder();
     }
@@ -140,16 +163,34 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
 
         private Builder() {}
 
+        /**
+         * Set the cache host (required).
+         *
+         * @param host the cache host
+         * @return this builder
+         */
         public Builder host(String host) {
             this.host = host;
             return this;
         }
 
+        /**
+         * Set the cache port (default: 6379).
+         *
+         * @param port the cache port
+         * @return this builder
+         */
         public Builder port(int port) {
             this.port = port;
             return this;
         }
 
+        /**
+         * Set the SSL context (optional, uses default TLS if not specified).
+         *
+         * @param sslContext the TLS context for the cache connection
+         * @return this builder
+         */
         public Builder sslContext(SSLContext sslContext) {
             this.sslContext = sslContext;
             return this;
@@ -159,6 +200,9 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
          * Set the auth provider.
          *
          * <p>Other caller-supplied providers remain caller-owned.
+         *
+         * @param authProvider supplies AUTH credentials for each handshake
+         * @return this builder
          */
         public Builder authProvider(Supplier<AuthCredentials> authProvider) {
             if (authProvider instanceof IamAuthTokenProvider) {
@@ -169,13 +213,25 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
             return this;
         }
 
-        /** Set an IAM provider whose auto-refresh manager is owned by this handle. */
+        /**
+         * Set an IAM provider whose auto-refresh manager is owned by this handle.
+         *
+         * @param authProvider the IAM token provider
+         * @return this builder
+         */
         public Builder authProvider(IamAuthTokenProvider authProvider) {
             this.iamAuthProvider = authProvider;
             this.authProvider = null;
             return this;
         }
 
+        /**
+         * Set static auth credentials (convenience for non-IAM auth).
+         *
+         * @param userId the user ID for AUTH
+         * @param authToken the password or token for AUTH
+         * @return this builder
+         */
         public Builder authCredentials(String userId, String authToken) {
             this.authProvider = () -> new AuthCredentials(userId, authToken);
             this.iamAuthProvider = null;
@@ -183,38 +239,68 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         }
 
         /**
-         * Set the cache policy overrides sent in the {@code aws.config} handshake (optional).
+         * Set optional settings that change what Cache caches: which tables and operations to cache,
+         * and the cache entry lifetimes.
          *
-         * <p>{@code cached_tables} and {@code cached_operations} are allowlists — each empty or absent
-         * means everything — so keeping a table out of the cache means naming the tables that should be
-         * cached rather than the one that should not. The lifetimes ({@code item_ttl}, {@code
+         * <p>{@code cached_tables} and {@code cached_operations} are allowlists. Each empty or absent
+         * means everything, so keeping a table out of the cache means naming the tables that should be
+         * cached rather than naming the one that should not. The lifetimes ({@code item_ttl}, {@code
          * item_negative_ttl}, {@code query_ttl}, {@code scan_ttl}) and {@code item_write_behavior}
-         * apply connection-wide, or per table under {@code table_overrides}.
+         * apply connection-wide, or per table under {@code table_overrides}. The settings are sent
+         * through the internal {@code aws.config} command.
          *
          * <p>The map is sent as given. A field name the proxy does not recognise is ignored, so a typo
          * or a stale key is dropped without an error.
+         *
+         * @param overrides the cache policy overrides
+         * @return this builder
          */
         public Builder overrides(Map<String, Object> overrides) {
             this.overrides = overrides;
             return this;
         }
 
+        /**
+         * Set connect timeout in milliseconds (default: 5000).
+         *
+         * @param connectTimeoutMs the connect timeout in milliseconds
+         * @return this builder
+         */
         public Builder connectTimeoutMs(int connectTimeoutMs) {
             this.connectTimeoutMs = connectTimeoutMs;
             return this;
         }
 
+        /**
+         * Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000).
+         *
+         * @param initializationTimeoutMs the initialization timeout in milliseconds
+         * @return this builder
+         */
         public Builder initializationTimeoutMs(int initializationTimeoutMs) {
             this.initializationTimeoutMs = initializationTimeoutMs;
             return this;
         }
 
+        /**
+         * Set the maximum time, in milliseconds, to wait for each Cache request response (default:
+         * 5000).
+         *
+         * @param requestTimeoutMs the request timeout in milliseconds
+         * @return this builder
+         */
         public Builder requestTimeoutMs(int requestTimeoutMs) {
             this.requestTimeoutMs = requestTimeoutMs;
             return this;
         }
 
-        /** Set reconnect and origin-fallback behavior. */
+        /**
+         * Set reconnect and origin-fallback behavior.
+         *
+         * @param reconnectPolicy the reconnect policy
+         * @return this builder
+         * @throws NullPointerException if {@code reconnectPolicy} is null
+         */
         public Builder reconnectPolicy(ReconnectPolicy reconnectPolicy) {
             if (reconnectPolicy == null) {
                 throw new NullPointerException("reconnectPolicy");
@@ -224,40 +310,68 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         }
 
         /**
-         * Set how long, in seconds, the resolved config stays trusted while refreshes are failing. Past
-         * it the connection is dropped so a new one re-resolves the config. Defaults to one hour; must
-         * be a positive whole number of seconds.
+         * Set how long, in seconds, Cache may use the resolved config without confirmation from the
+         * cache. After this time, Cache reconnects to get a current config. Defaults to 3600 seconds
+         * and must be a positive whole number.
+         *
+         * @param stalenessDurationSeconds the staleness window in seconds
+         * @return this builder
          */
         public Builder stalenessDurationSeconds(long stalenessDurationSeconds) {
             this.stalenessDurationSeconds = stalenessDurationSeconds;
             return this;
         }
 
-        /** Set a caller-managed asynchronous HTTP client for origin fallback. */
+        /**
+         * Set a caller-managed asynchronous HTTP client for origin fallback.
+         *
+         * @param originHttpClient the asynchronous HTTP client for origin requests
+         * @return this builder
+         */
         public Builder originHttpClient(SdkAsyncHttpClient originHttpClient) {
             this.originHttpClient = originHttpClient;
             return this;
         }
 
-        /** Set the caller-managed executor used for blocking Cache requests. */
+        /**
+         * Set the caller-managed executor used for blocking Cache requests.
+         *
+         * @param executor the executor for blocking Cache requests
+         * @return this builder
+         */
         public Builder executor(Executor executor) {
             this.executor = executor;
             return this;
         }
 
-        /** Set the maximum async request body Cache buffers (default: 16 MiB). */
+        /**
+         * Set the maximum async request body Cache buffers (default: 16 MiB).
+         *
+         * @param maxBufferedRequestBytes the body size limit in bytes. A larger body goes to the
+         *     origin.
+         * @return this builder
+         */
         public Builder maxBufferedRequestBytes(int maxBufferedRequestBytes) {
             this.maxBufferedRequestBytes = maxBufferedRequestBytes;
             return this;
         }
 
-        /** Set the maximum request bodies collected concurrently (default: 8). */
+        /**
+         * Set the maximum request bodies collected concurrently (default: 8).
+         *
+         * @param maxConcurrentBodyCollectors the limit on bodies collected at once
+         * @return this builder
+         */
         public Builder maxConcurrentBodyCollectors(int maxConcurrentBodyCollectors) {
             this.maxConcurrentBodyCollectors = maxConcurrentBodyCollectors;
             return this;
         }
 
-        /** Build the handle. */
+        /**
+         * Build the handle.
+         *
+         * @return the handle, not yet opened
+         */
         public ElastiCacheIntegrationsAsyncHandle build() {
             validateConfiguration();
 

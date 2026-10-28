@@ -39,7 +39,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 public final class IamAuthTokenGenerator {
 
     /** SigV4 presign expiry fixed by the ElastiCache IAM toolkit contract. */
-    public static final Duration TOKEN_EXPIRY = Duration.ofSeconds(900);
+    public static final Duration TOKEN_EXPIRY = Duration.ofMinutes(15);
 
     /** Default ElastiCache IAM user for serverless caches. */
     public static final String DEFAULT_USER_ID = "default.iam-user";
@@ -105,22 +105,38 @@ public final class IamAuthTokenGenerator {
         }
     }
 
-    /** Get the user ID that will be used in generated tokens. */
+    /**
+     * Get the user ID that will be used in generated tokens.
+     *
+     * @return the user ID
+     */
     public String getUserId() {
         return userId;
     }
 
-    /** Get the cache name. */
+    /**
+     * Get the cache name.
+     *
+     * @return the ElastiCache serverless cache name
+     */
     public String getCacheName() {
         return cacheName;
     }
 
-    /** Get the region. */
+    /**
+     * Get the region.
+     *
+     * @return the AWS region
+     */
     public Region getRegion() {
         return region;
     }
 
-    /** Create a new builder. */
+    /**
+     * Create a new builder.
+     *
+     * @return a new builder
+     */
     public static Builder builder() {
         return new Builder();
     }
@@ -154,6 +170,7 @@ public final class IamAuthTokenGenerator {
          * Set the cache name (required).
          *
          * @param cacheName the ElastiCache serverless cache name
+         * @return this builder
          */
         public Builder cacheName(String cacheName) {
             this.cacheName = cacheName;
@@ -161,9 +178,10 @@ public final class IamAuthTokenGenerator {
         }
 
         /**
-         * Set the user ID (optional, defaults to "default").
+         * Set the user ID (optional, defaults to {@link IamAuthTokenGenerator#DEFAULT_USER_ID}).
          *
          * @param userId the IAM user ID
+         * @return this builder
          */
         public Builder userId(String userId) {
             this.userId = userId;
@@ -174,6 +192,7 @@ public final class IamAuthTokenGenerator {
          * Set the AWS region (required).
          *
          * @param region the AWS region
+         * @return this builder
          */
         public Builder region(Region region) {
             this.region = region;
@@ -184,6 +203,7 @@ public final class IamAuthTokenGenerator {
          * Set the credentials provider (required).
          *
          * @param credentialsProvider the AWS credentials provider
+         * @return this builder
          */
         public Builder credentialsProvider(AwsCredentialsProvider credentialsProvider) {
             this.credentialsProvider = credentialsProvider;
@@ -199,6 +219,7 @@ public final class IamAuthTokenGenerator {
          * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
+         * @return this builder
          */
         public Builder expiresIn(Duration expiresIn) {
             this.expiresIn = expiresIn;
@@ -212,6 +233,7 @@ public final class IamAuthTokenGenerator {
          * clock is rejected at build time.
          *
          * @param clock the clock to use
+         * @return this builder
          */
         public Builder clock(Clock clock) {
             this.clock = clock;

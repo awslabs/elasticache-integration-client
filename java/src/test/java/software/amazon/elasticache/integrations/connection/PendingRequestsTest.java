@@ -298,8 +298,8 @@ class PendingRequestsTest {
     void register_atCapacity_throwsElastiCacheIntegrationsError() {
         PendingRequests pending = new PendingRequests(2);
 
-        pending.registerNewRequest();
-        pending.registerNewRequest();
+        assertNotNull(pending.registerNewRequest());
+        assertNotNull(pending.registerNewRequest());
 
         // Third should fail. Capacity exhaustion does not mean the connection was lost, so
         // this is the base ElastiCacheIntegrationsError, not ElastiCacheIntegrationsConnectionLost.
@@ -314,8 +314,8 @@ class PendingRequestsTest {
     void register_afterResolve_allowsMore() {
         PendingRequests pending = new PendingRequests(2);
 
-        CompletableFuture<RespValue> f1 = pending.registerNewRequest();
-        pending.registerNewRequest();
+        assertNotNull(pending.registerNewRequest());
+        assertNotNull(pending.registerNewRequest());
 
         // At capacity
         assertThrows(ElastiCacheIntegrationsError.class, pending::registerNewRequest);
@@ -333,11 +333,11 @@ class PendingRequestsTest {
         PendingRequests pending = new PendingRequests();
         assertEquals(0, pending.size());
 
-        pending.registerNewRequest();
+        assertNotNull(pending.registerNewRequest());
         assertEquals(1, pending.size());
 
-        pending.registerNewRequest();
-        pending.registerNewRequest();
+        assertNotNull(pending.registerNewRequest());
+        assertNotNull(pending.registerNewRequest());
         assertEquals(3, pending.size());
 
         pending.resolveOldestRequest(new RespSimpleString("ok".getBytes(StandardCharsets.UTF_8)));
@@ -364,7 +364,7 @@ class PendingRequestsTest {
 
         // Producers: register futures
         for (int p = 0; p < numProducers; p++) {
-            executor.submit(
+            executor.execute(
                     () -> {
                         try {
                             startLatch.await();
@@ -383,7 +383,7 @@ class PendingRequestsTest {
         }
 
         // Consumer: resolve futures
-        executor.submit(
+        executor.execute(
                 () -> {
                     try {
                         startLatch.await();

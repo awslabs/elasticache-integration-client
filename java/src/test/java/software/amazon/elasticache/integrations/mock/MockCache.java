@@ -142,7 +142,7 @@ public class MockCache {
             return new RespError("ERR", "empty command");
         }
 
-        String cmdName = extractString(command.get(0)).toUpperCase();
+        String cmdName = extractString(command.get(0)).toUpperCase(Locale.ROOT);
         receivedCommands.add(cmdName);
         receivedCommandFrames.add(Collections.unmodifiableList(new ArrayList<>(command)));
 
@@ -304,7 +304,7 @@ public class MockCache {
         String nttl = null;
         int i = 6;
         while (i < command.size() - 1) {
-            String keyword = extractString(command.get(i)).toUpperCase();
+            String keyword = extractString(command.get(i)).toUpperCase(Locale.ROOT);
             String value = extractString(command.get(i + 1));
             if ("TTL".equals(keyword)) {
                 ttl = value;

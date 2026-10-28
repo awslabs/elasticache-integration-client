@@ -34,8 +34,13 @@ import software.amazon.elasticache.integrations.resp.RespValue;
 /** Cache-specific protocol serialization/deserialization. */
 public final class ElastiCacheIntegrationsProtocol {
 
+    /** Command that exchanges config overrides and returns the resolved config. */
     public static final String CONFIG_COMMAND = "aws.config";
+
+    /** Command that sends one HTTP request through Cache. */
     public static final String REQUEST_COMMAND = "aws.request";
+
+    /** Push kind that carries a deferred response for a request ID. */
     public static final String PUSH_KIND_RESPONSE = "aws.response";
 
     /**
@@ -72,8 +77,13 @@ public final class ElastiCacheIntegrationsProtocol {
     private ElastiCacheIntegrationsProtocol() {}
 
     /**
-     * Normalize headers: lowercase names, trim values, sort by name, exclude certain headers, join as
-     * "name:value\n..." encoded UTF-8.
+     * Produce the deterministic normalized header string as UTF-8 bytes.
+     *
+     * <p>Lowercase names, drop excluded headers, trim values, sort by name, and join {@code
+     * name:value} with LF. Returns an empty array when no headers remain.
+     *
+     * @param headers the request headers, or {@code null}
+     * @return the normalized headers, empty when there are none
      */
     public static byte[] normalizeHeaders(Map<String, String> headers) {
         if (headers == null || headers.isEmpty()) {
@@ -107,7 +117,13 @@ public final class ElastiCacheIntegrationsProtocol {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Format metadata as {@code "service=<svc>&op=<op>"} encoded UTF-8. */
+    /**
+     * Format metadata as {@code "service=<svc>&op=<op>"} encoded UTF-8.
+     *
+     * @param service the AWS service name, or {@code null} for empty
+     * @param operation the SDK operation name, or {@code null} for empty
+     * @return the encoded metadata
+     */
     public static byte[] formatMetadata(String service, String operation) {
         String svc = service != null ? service : "";
         String op = operation != null ? operation : "";
@@ -116,7 +132,7 @@ public final class ElastiCacheIntegrationsProtocol {
     }
 
     /**
-     * Serialize a config command with optional overrides.
+     * Build the {@code aws.config} command.
      *
      * <p>{@code overrides == null} means "unchanged since last send" and sends {@code aws.config}
      * with zero arguments. That form carries no JSON, so it carries no version either, and the server
@@ -131,6 +147,9 @@ public final class ElastiCacheIntegrationsProtocol {
      * <p>The caller's map is never mutated: the version is applied to a copy. A {@link LinkedHashMap}
      * keeps the version first in the serialized output, which only matters for reading a payload in a
      * log.
+     *
+     * @param overrides the config overrides, or {@code null} to send no arguments
+     * @return the {@code aws.config} command
      */
     public static SerializedCommand serializeConfig(Map<String, Object> overrides) {
         if (overrides == null) {
@@ -149,8 +168,11 @@ public final class ElastiCacheIntegrationsProtocol {
     }
 
     /**
-     * Parse a config response. Expects a JSON bulk string. Rejects arrays and errors.
+     * Parse the {@code aws.config} reply (a JSON bulk string) into a {@link ResolvedConfig}. A
+     * RESP-array shape is intentionally not supported.
      *
+     * @param value the reply to {@code aws.config}
+     * @return the resolved config
      * @throws ElastiCacheIntegrationsOverridesRejected the reply is a {@code CONFIG_INVALID} error
      */
     public static ResolvedConfig parseConfigResponse(RespValue value) {
@@ -228,7 +250,14 @@ public final class ElastiCacheIntegrationsProtocol {
         return seconds.intValue();
     }
 
-    /** Serialize a ElastiCacheIntegrationsRequest to a command. */
+    /**
+     * Build the complete {@code aws.request} command from an {@link ElastiCacheIntegrationsRequest}.
+     *
+     * <p>The arguments are {@code [method, url, normalized_headers, body, metadata]}.
+     *
+     * @param request the request to serialize
+     * @return the {@code aws.request} command
+     */
     public static SerializedCommand serializeRequest(ElastiCacheIntegrationsRequest request) {
         byte[] method = request.getMethod().getBytes(StandardCharsets.UTF_8);
         byte[] url = request.getUrl().getBytes(StandardCharsets.UTF_8);
@@ -247,8 +276,11 @@ public final class ElastiCacheIntegrationsProtocol {
     }
 
     /**
-     * Parse a request response. Expects a 3-element array [status, headers, body]. Validates status
-     * 100-599.
+     * Interpret an {@code aws.request} reply into an {@link ElastiCacheIntegrationsResponse}. Expects
+     * a 3-element array {@code [status, headers, body]} and validates a status of 100-599.
+     *
+     * @param value the reply to {@code aws.request}
+     * @return the parsed response
      */
     public static ElastiCacheIntegrationsResponse parseRequestResponse(RespValue value) {
         if (value instanceof RespError) {
@@ -266,7 +298,12 @@ public final class ElastiCacheIntegrationsProtocol {
         return deserializeResponse(array.getElements());
     }
 
-    /** Shared logic for parsing the [status, headers, body] array. */
+    /**
+     * Shared logic for parsing the [status, headers, body] array.
+     *
+     * @param elements the {@code [status, headers, body]} elements
+     * @return the parsed response
+     */
     public static ElastiCacheIntegrationsResponse deserializeResponse(List<RespValue> elements) {
         if (elements.size() != 3) {
             throw new ElastiCacheIntegrationsProtocolError(
@@ -330,7 +367,7 @@ public final class ElastiCacheIntegrationsProtocol {
         }
 
         String headerStr = decodeUtf8(headerBytes, "response headers");
-        String[] lines = headerStr.split("\n");
+        String[] lines = headerStr.split("\n", -1);
         Map<String, String> headers = new LinkedHashMap<>();
         for (String line : lines) {
             if (line.isEmpty()) {
@@ -344,7 +381,7 @@ public final class ElastiCacheIntegrationsProtocol {
             String val = line.substring(colonIdx + 1).trim();
             headers.put(name, val);
         }
-        return headers;
+        return Collections.unmodifiableMap(headers);
     }
 
     private static int parseStatus(byte[] value) {

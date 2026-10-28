@@ -152,7 +152,8 @@ class MockCacheTest {
         List<RespValue> command = Arrays.asList(bs("AUTH"), bs("iam-user"), bs("password123"));
         RespValue response = cache.handle(command);
         assertTrue(response instanceof RespSimpleString);
-        assertArrayEquals("OK".getBytes(), ((RespSimpleString) response).getValue());
+        assertArrayEquals(
+                "OK".getBytes(StandardCharsets.UTF_8), ((RespSimpleString) response).getValue());
         assertEquals("iam-user", cache.getAuthAttempts().get(0).getUserId());
         assertEquals("password123", cache.getAuthAttempts().get(0).getToken());
     }

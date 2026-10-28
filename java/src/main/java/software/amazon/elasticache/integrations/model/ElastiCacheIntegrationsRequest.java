@@ -5,8 +5,8 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
-/** Represents an HTTP request to be sent through Cache. */
-public class ElastiCacheIntegrationsRequest {
+/** An intercepted AWS SDK request to be forwarded to the cache. */
+public final class ElastiCacheIntegrationsRequest {
 
     private final String method;
     private final String url;
@@ -14,6 +14,16 @@ public class ElastiCacheIntegrationsRequest {
     private final byte[] body;
     private final RequestMetadata metadata;
 
+    /**
+     * Create a request.
+     *
+     * @param method the HTTP method
+     * @param url the request URL
+     * @param headers the request headers, or {@code null} for none
+     * @param body the request body, or {@code null} for an empty body
+     * @param metadata the originating request metadata, or {@code null} for none
+     * @throws NullPointerException if {@code method} or {@code url} is null
+     */
     public ElastiCacheIntegrationsRequest(
             String method,
             String url,
@@ -27,27 +37,61 @@ public class ElastiCacheIntegrationsRequest {
         this.metadata = metadata != null ? metadata : new RequestMetadata(null, null);
     }
 
+    /**
+     * Create a request with an empty body.
+     *
+     * @param method the HTTP method
+     * @param url the request URL
+     * @param headers the request headers, or {@code null} for none
+     * @param metadata the originating request metadata, or {@code null} for none
+     * @throws NullPointerException if {@code method} or {@code url} is null
+     */
     public ElastiCacheIntegrationsRequest(
             String method, String url, Map<String, String> headers, RequestMetadata metadata) {
         this(method, url, headers, new byte[0], metadata);
     }
 
+    /**
+     * Return the HTTP method.
+     *
+     * @return the HTTP method
+     */
     public String getMethod() {
         return method;
     }
 
+    /**
+     * Return the request URL.
+     *
+     * @return the request URL
+     */
     public String getUrl() {
         return url;
     }
 
+    /**
+     * Return the request headers.
+     *
+     * @return the request headers, empty when none were given
+     */
     public Map<String, String> getHeaders() {
         return headers;
     }
 
+    /**
+     * Return the request body.
+     *
+     * @return the request body, empty when none was given
+     */
     public byte[] getBody() {
         return body;
     }
 
+    /**
+     * Return the originating request metadata.
+     *
+     * @return the originating request metadata
+     */
     public RequestMetadata getMetadata() {
         return metadata;
     }
@@ -55,7 +99,7 @@ public class ElastiCacheIntegrationsRequest {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof ElastiCacheIntegrationsRequest)) return false;
         ElastiCacheIntegrationsRequest that = (ElastiCacheIntegrationsRequest) o;
         return Objects.equals(method, that.method)
                 && Objects.equals(url, that.url)

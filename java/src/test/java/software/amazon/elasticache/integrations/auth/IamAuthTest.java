@@ -134,7 +134,7 @@ class IamAuthTest {
                                             .cacheName("my-cache")
                                             .region(Region.US_EAST_1)
                                             .credentialsProvider(staticCredentials())
-                                            .expiresIn(Duration.ofSeconds(300))
+                                            .expiresIn(Duration.ofMinutes(5))
                                             .build());
 
             assertTrue(error.getMessage().contains("exactly 900 seconds"));

@@ -25,6 +25,7 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -547,10 +548,6 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 maxCollectors);
     }
 
-    private static ElastiCacheIntegrationsRequest cacheRequest() {
-        return cacheRequest("ListTables");
-    }
-
     private static ElastiCacheIntegrationsRequest cacheRequest(String operation) {
         return new ElastiCacheIntegrationsRequest(
                 "POST",
@@ -605,7 +602,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             started.countDown();
             while (!cancellation.isCancelled()) {
-                Thread.yield();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
             cancelled.countDown();
             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
@@ -666,19 +663,6 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             return null;
-        }
-    }
-
-    private static final class FailingSession extends OpenSession {
-        private FailingSession() {
-            super();
-        }
-
-        @Override
-        ElastiCacheIntegrationsResponse request(
-                ElastiCacheIntegrationsRequest request,
-                ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsConnectionLost("cache unavailable");
         }
     }
 

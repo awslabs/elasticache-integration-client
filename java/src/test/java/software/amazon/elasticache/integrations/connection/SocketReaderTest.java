@@ -409,7 +409,7 @@ class SocketReaderTest {
         // lossily decoded, since a mangled key could mis-correlate with another request.
         byte[] data = new byte[] {'+', (byte) 0xff, '\r', '\n'};
         PendingRequests pending = new PendingRequests();
-        pending.registerNewRequest();
+        assertNotNull(pending.registerNewRequest());
         SocketReader reader = new SocketReader(new ByteArrayInputStream(data), pending, () -> {});
 
         assertThrows(ElastiCacheIntegrationsProtocolError.class, reader::readAndResolve);

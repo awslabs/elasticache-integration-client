@@ -19,6 +19,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
@@ -909,7 +910,7 @@ class ElastiCacheIntegrationsSessionTest {
             assertNull(session.request(request()));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
             while (connectionCreationCount.get() < 3 && System.nanoTime() < deadline) {
-                Thread.yield();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
             assertTrue(connectionCreationCount.get() >= 3);
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
@@ -1079,7 +1080,7 @@ class ElastiCacheIntegrationsSessionTest {
             assertNull(session.request(request()));
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
             while (connectionCreationCount.get() < 2 && System.nanoTime() < deadline) {
-                Thread.yield();
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
             assertTrue(connectionCreationCount.get() >= 2);
 
@@ -1138,7 +1139,7 @@ class ElastiCacheIntegrationsSessionTest {
             this.predicateExpression = predicateExpression;
         }
 
-        protected void fail() {
+        void fail() {
             dead = true;
         }
 
@@ -1456,7 +1457,7 @@ class ElastiCacheIntegrationsSessionTest {
                                 throw new RuntimeException(e);
                             }
                             return new RespBulkString(
-                                    ("{\"version\":\"2.0\",\"refresh_interval\":45,\"predicates\":[]}")
+                                    "{\"version\":\"2.0\",\"refresh_interval\":45,\"predicates\":[]}"
                                             .getBytes(StandardCharsets.UTF_8));
                         }
                         return super.execute(command, args);

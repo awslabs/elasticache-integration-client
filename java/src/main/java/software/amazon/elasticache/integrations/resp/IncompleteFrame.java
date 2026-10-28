@@ -1,11 +1,16 @@
 package software.amazon.elasticache.integrations.resp;
 
 /**
- * Raised when data is incomplete (not enough bytes for a full RESP frame). NOT a subclass of
- * ElastiCacheIntegrationsError - this is a flow-control signal.
+ * Thrown by {@link RespCodec#decode} when the buffer holds only a partial frame (need more bytes).
+ * It is not an {@code ElastiCacheIntegrationsError}, because it is a flow-control signal.
  */
 public class IncompleteFrame extends Exception {
 
+    /**
+     * Create a signal that more bytes are needed.
+     *
+     * @param message the detail message
+     */
     public IncompleteFrame(String message) {
         super(message);
     }

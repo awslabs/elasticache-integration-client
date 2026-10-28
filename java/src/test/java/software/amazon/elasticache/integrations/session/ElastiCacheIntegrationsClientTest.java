@@ -51,14 +51,14 @@ class ElastiCacheIntegrationsClientTest {
     private SSLContext clientSslContext;
 
     // Common SDK client configuration for tests - fake credentials since we intercept requests
-    private final Consumer<DynamoDbClientBuilder> sdkConfig =
-            b ->
-                    b.region(Region.US_EAST_1)
-                            .credentialsProvider(
-                                    StaticCredentialsProvider.create(
-                                            AwsBasicCredentials.create(
-                                                    "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
-                            .endpointOverride(URI.create("http://localhost:8080"));
+    private static void sdkConfig(DynamoDbClientBuilder b) {
+        b.region(Region.US_EAST_1)
+                .credentialsProvider(
+                        StaticCredentialsProvider.create(
+                                AwsBasicCredentials.create(
+                                        "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
+                .endpointOverride(URI.create("http://localhost:8080"));
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -77,7 +77,7 @@ class ElastiCacheIntegrationsClientTest {
     @Test
     void builder_withEndpoint_parsesHostAndPort() {
         DynamoDbClientBuilder origin = DynamoDbClient.builder();
-        sdkConfig.accept(origin);
+        sdkConfig(origin);
 
         try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
                 ElastiCacheIntegrationsClient.builder()
@@ -101,7 +101,7 @@ class ElastiCacheIntegrationsClientTest {
                         .port(server.getPort())
                         .authCredentials(TEST_USER, TEST_TOKEN)
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
 
             assertNotNull(result.client());
@@ -195,7 +195,10 @@ class ElastiCacheIntegrationsClientTest {
 
         assertThrows(
                 ElastiCacheIntegrationsError.class,
-                () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+                () ->
+                        builder
+                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
+                                .build());
     }
 
     @Test
@@ -206,7 +209,10 @@ class ElastiCacheIntegrationsClientTest {
         ElastiCacheIntegrationsError error =
                 assertThrows(
                         ElastiCacheIntegrationsError.class,
-                        () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+                        () ->
+                                builder
+                                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
+                                        .build());
         assertTrue(error.getMessage().contains("endpoint or host is required"));
     }
 
@@ -218,7 +224,10 @@ class ElastiCacheIntegrationsClientTest {
         ElastiCacheIntegrationsError error =
                 assertThrows(
                         ElastiCacheIntegrationsError.class,
-                        () -> builder.origin(DynamoDbClient.builder(), sdkConfig).build());
+                        () ->
+                                builder
+                                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
+                                        .build());
         assertTrue(error.getMessage().contains("authProvider is required"));
     }
 
@@ -229,7 +238,7 @@ class ElastiCacheIntegrationsClientTest {
                         .endpoint("localhost:" + server.getPort())
                         .authCredentials(TEST_USER, "my-static-token")
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
 
             assertTrue(result.handle().isOpen());
@@ -243,7 +252,7 @@ class ElastiCacheIntegrationsClientTest {
                         .endpoint("localhost:" + server.getPort())
                         .authCredentials(TEST_USER, TEST_TOKEN)
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build();
 
         assertTrue(result.handle().isOpen());
@@ -260,7 +269,7 @@ class ElastiCacheIntegrationsClientTest {
                         .endpoint("localhost:" + server.getPort())
                         .authCredentials(TEST_USER, TEST_TOKEN)
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build();
 
         result.close();
@@ -284,7 +293,7 @@ class ElastiCacheIntegrationsClientTest {
                                 .sslContext(clientSslContext)
                                 .connectTimeoutMs(100)
                                 .originHttpClient(origin)
-                                .origin(DynamoDbClient.builder(), sdkConfig)
+                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                                 .build());
 
         assertNull(origin.request.get());
@@ -304,7 +313,7 @@ class ElastiCacheIntegrationsClientTest {
                         .sslContext(clientSslContext)
                         .requestTimeoutMs(100)
                         .originHttpClient(origin)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
             assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
         }
@@ -341,7 +350,7 @@ class ElastiCacheIntegrationsClientTest {
                                                 .maxDelayMs(2)
                                                 .jitterFactor(0)
                                                 .build())
-                                .origin(DynamoDbClient.builder(), sdkConfig)
+                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                                 .build()) {
             proxy.disconnectClients();
 
@@ -361,7 +370,7 @@ class ElastiCacheIntegrationsClientTest {
                         .authCredentials(TEST_USER, TEST_TOKEN)
                         .overrides(Collections.singletonMap("item_ttl", 300))
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
 
             assertNotNull(result.handle().getSession().getConfig());
@@ -378,7 +387,7 @@ class ElastiCacheIntegrationsClientTest {
                         .initializationTimeoutMs(2000)
                         .requestTimeoutMs(2000)
                         .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
 
             assertTrue(result.handle().isOpen());
@@ -415,7 +424,7 @@ class ElastiCacheIntegrationsClientTest {
                         .origin(
                                 DynamoDbClient.builder(),
                                 b -> {
-                                    sdkConfig.accept(b); // Apply base config (region, creds, endpoint)
+                                    sdkConfig(b); // Apply base config (region, creds, endpoint)
                                     b.overrideConfiguration(sdkOverride); // Add our custom override config
                                 })
                         .build()) {
@@ -436,7 +445,7 @@ class ElastiCacheIntegrationsClientTest {
                         .authCredentials(TEST_USER, TEST_TOKEN)
                         .sslContext(clientSslContext)
                         // No sdkOverrideConfiguration set
-                        .origin(DynamoDbClient.builder(), sdkConfig)
+                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
                         .build()) {
 
             assertTrue(result.handle().isOpen());

@@ -58,7 +58,8 @@ class RespCodecTest {
         byte[] data = "+OK\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespSimpleString);
-        assertArrayEquals("OK".getBytes(), ((RespSimpleString) result.getValue()).getValue());
+        assertArrayEquals(
+                "OK".getBytes(StandardCharsets.UTF_8), ((RespSimpleString) result.getValue()).getValue());
         assertEquals(data.length, result.getPosition());
     }
 
@@ -125,7 +126,8 @@ class RespCodecTest {
         byte[] data = "$5\r\nhello\r\n".getBytes(StandardCharsets.UTF_8);
         DecodeResult result = RespCodec.decode(data);
         assertTrue(result.getValue() instanceof RespBulkString);
-        assertArrayEquals("hello".getBytes(), ((RespBulkString) result.getValue()).getValue());
+        assertArrayEquals(
+                "hello".getBytes(StandardCharsets.UTF_8), ((RespBulkString) result.getValue()).getValue());
     }
 
     @Test
@@ -171,7 +173,9 @@ class RespCodecTest {
         DecodeResult result = RespCodec.decode(data);
         RespArray array = (RespArray) result.getValue();
         assertSame(RespNull.INSTANCE, array.getElements().get(0));
-        assertArrayEquals("foo".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+        assertArrayEquals(
+                "foo".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(1)).getValue());
     }
 
     @Test
@@ -180,7 +184,8 @@ class RespCodecTest {
         DecodeResult first = RespCodec.decode(data, 0);
         assertSame(RespNull.INSTANCE, first.getValue());
         DecodeResult second = RespCodec.decode(data, first.getPosition());
-        assertArrayEquals("foo".getBytes(), ((RespBulkString) second.getValue()).getValue());
+        assertArrayEquals(
+                "foo".getBytes(StandardCharsets.UTF_8), ((RespBulkString) second.getValue()).getValue());
     }
 
     // === Decode tests - Array ===
@@ -192,8 +197,12 @@ class RespCodecTest {
         assertTrue(result.getValue() instanceof RespArray);
         RespArray array = (RespArray) result.getValue();
         assertEquals(2, array.getElements().size());
-        assertArrayEquals("foo".getBytes(), ((RespBulkString) array.getElements().get(0)).getValue());
-        assertArrayEquals("bar".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+        assertArrayEquals(
+                "foo".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(0)).getValue());
+        assertArrayEquals(
+                "bar".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(1)).getValue());
     }
 
     @Test
@@ -402,10 +411,14 @@ class RespCodecTest {
         RespArray array = (RespArray) result.getValue();
         assertEquals(3, array.getElements().size());
         assertArrayEquals(
-                "aws.request".getBytes(), ((RespBulkString) array.getElements().get(0)).getValue());
-        assertArrayEquals("GET".getBytes(), ((RespBulkString) array.getElements().get(1)).getValue());
+                "aws.request".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(0)).getValue());
         assertArrayEquals(
-                "https://example.com".getBytes(), ((RespBulkString) array.getElements().get(2)).getValue());
+                "GET".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(1)).getValue());
+        assertArrayEquals(
+                "https://example.com".getBytes(StandardCharsets.UTF_8),
+                ((RespBulkString) array.getElements().get(2)).getValue());
         assertEquals(encoded.length, result.getPosition());
     }
 

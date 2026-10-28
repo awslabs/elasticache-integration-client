@@ -66,6 +66,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     /** Default staleness window: one hour. */
     public static final long DEFAULT_STALENESS_DURATION_SECONDS = 3600;
 
+    /** Session lifecycle state. */
     public enum State {
         /** Created but not opened. */
         CREATED,
@@ -113,6 +114,10 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      * Create a session around one concrete connector.
      *
      * <p>This compatibility constructor cannot create replacement connectors.
+     *
+     * @param connector the connector to open
+     * @param authProvider supplies AUTH credentials for each handshake
+     * @param overrides the {@code aws.config} overrides, or {@code null} for none
      */
     public ElastiCacheIntegrationsSession(
             ElastiCacheIntegrationsConnector connector,
@@ -181,7 +186,14 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         this.nanoClock = nanoClock != null ? nanoClock : System::nanoTime;
     }
 
-    /** Create a concrete-connector session with static credentials. */
+    /**
+     * Create a concrete-connector session with static credentials.
+     *
+     * @param connector the connector to open
+     * @param userId the user ID for AUTH
+     * @param authToken the password or token for AUTH
+     * @param overrides the {@code aws.config} overrides, or {@code null} for none
+     */
     public ElastiCacheIntegrationsSession(
             ElastiCacheIntegrationsConnector connector,
             String userId,
@@ -190,24 +202,43 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         this(connector, () -> new AuthCredentials(userId, authToken), overrides);
     }
 
-    /** Create a concrete-connector session with no config overrides. */
+    /**
+     * Create a concrete-connector session with no config overrides.
+     *
+     * @param connector the connector to open
+     * @param authProvider supplies AUTH credentials for each handshake
+     */
     public ElastiCacheIntegrationsSession(
             ElastiCacheIntegrationsConnector connector, Supplier<AuthCredentials> authProvider) {
         this(connector, authProvider, null);
     }
 
-    /** Create a concrete-connector session with static credentials and no overrides. */
+    /**
+     * Create a concrete-connector session with static credentials and no overrides.
+     *
+     * @param connector the connector to open
+     * @param userId the user ID for AUTH
+     * @param authToken the password or token for AUTH
+     */
     public ElastiCacheIntegrationsSession(
             ElastiCacheIntegrationsConnector connector, String userId, String authToken) {
         this(connector, userId, authToken, null);
     }
 
-    /** Return the current lifecycle state. */
+    /**
+     * Return the current lifecycle state.
+     *
+     * @return the current state
+     */
     public State getState() {
         return state;
     }
 
-    /** Return the latest successfully resolved Cache configuration. */
+    /**
+     * Return the latest successfully resolved Cache configuration.
+     *
+     * @return the latest config, or {@code null} before the session opens
+     */
     public ResolvedConfig getConfig() {
         return snapshot != null ? snapshot.config : null;
     }
@@ -255,6 +286,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      * in-flight open; the opener checks that it still owns the lifecycle before publishing the config
      * or starting the refreshers.
      */
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     public void open() {
         synchronized (stateLock) {
             if (state != State.CREATED) {
@@ -406,6 +438,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      * passes, then drops the connector so a new one re-resolves it. A successful refresh never drops.
      * Replies from a connector that has since been closed or replaced are discarded.
      */
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     void refreshOnce() {
         ElastiCacheIntegrationsConnector active;
         Refresher activeRefresher;
@@ -464,7 +497,11 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         configDeadlineNanos = nanoClock.getAsLong() + stalenessDurationNanos;
     }
 
-    /** Whether the config has gone unconfirmed long enough to stop trusting it. */
+    /**
+     * Whether the config has gone unconfirmed long enough to stop trusting it.
+     *
+     * @return true when no server confirmation arrived within the staleness window
+     */
     public boolean isConfigStale() {
         synchronized (stateLock) {
             return nanoClock.getAsLong() - configDeadlineNanos >= 0;
@@ -477,6 +514,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      *
      * <p>Does nothing if the connector was replaced while the refresh was in flight.
      */
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     private void refreshFailed(
             ElastiCacheIntegrationsConnector active,
             Refresher activeRefresher,
@@ -532,6 +570,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      * FIFO-correlated command path. Failures escape to the refresher, which retries with reconnect
      * backoff. A reconnect in progress has no live connector and is skipped.
      */
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     void reauthenticateOnce() {
         ElastiCacheIntegrationsConnector active;
         synchronized (stateLock) {
@@ -567,9 +606,16 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     }
 
     /**
-     * Route a request through Cache when eligible.
+     * Route a request to Cache, or return {@code null} to let the caller handle it.
      *
+     * <p>A request is passed through when it does not match any resolved predicate, or when the cache
+     * is disconnected and the fallback window is still open. In both cases, the request has not been
+     * sent, so falling back is safe.
+     *
+     * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
+     * @throws ElastiCacheIntegrationsCacheUnavailable if the cache is disconnected and the fallback
+     *     window has closed
      */
     public ElastiCacheIntegrationsResponse request(ElastiCacheIntegrationsRequest request) {
         return request(request, new ElastiCacheIntegrationsRequestCancellation());
@@ -628,6 +674,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
      * the join would risk a stall if refresh publication ever needed it too.
      */
     @Override
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     public void close() {
         ElastiCacheIntegrationsConnector active;
         ElastiCacheIntegrationsConnector openingConnector;
@@ -663,7 +710,11 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         reconnectExecutor.shutdownNow();
     }
 
-    /** Return whether requests may use this session. */
+    /**
+     * Return whether requests may use this session.
+     *
+     * @return true while the session is open or reconnecting
+     */
     public boolean isOpen() {
         State current = state;
         return current == State.OPEN || current == State.RECONNECTING;
@@ -754,6 +805,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
     }
 
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     private void beginReconnect(ElastiCacheIntegrationsConnector failed) {
         synchronized (stateLock) {
             if (state == State.CLOSED || state == State.CREATED) {
@@ -782,6 +834,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
     }
 
+    @SuppressWarnings("ReferenceEquality") // Identity tells whether a connector is still current.
     private void reconnectForever() {
         long attempt = 0;
         try {
@@ -867,11 +920,17 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             if (state != State.RECONNECTING) {
                 return false;
             }
-            try {
-                stateLock.wait(delayMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
+            // Loop so a spurious wakeup cannot cut the backoff short.
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delayMs);
+            long remainingMs = delayMs;
+            while (state == State.RECONNECTING && remainingMs > 0) {
+                try {
+                    stateLock.wait(remainingMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+                remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
             }
             return state == State.RECONNECTING;
         }

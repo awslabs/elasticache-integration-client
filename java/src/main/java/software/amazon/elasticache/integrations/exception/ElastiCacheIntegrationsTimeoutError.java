@@ -1,12 +1,23 @@
 package software.amazon.elasticache.integrations.exception;
 
-/** Per-request timeout. */
+/** A request exceeded its per-request timeout. */
 public class ElastiCacheIntegrationsTimeoutError extends ElastiCacheIntegrationsError {
 
+    /**
+     * Create a request timeout error.
+     *
+     * @param message the detail message
+     */
     public ElastiCacheIntegrationsTimeoutError(String message) {
         super(message);
     }
 
+    /**
+     * Create a request timeout error with a cause.
+     *
+     * @param message the detail message
+     * @param cause the underlying failure
+     */
     public ElastiCacheIntegrationsTimeoutError(String message, Throwable cause) {
         super(message, cause);
     }

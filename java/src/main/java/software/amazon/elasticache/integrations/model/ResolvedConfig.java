@@ -3,27 +3,49 @@ package software.amazon.elasticache.integrations.model;
 import java.util.Map;
 import java.util.Objects;
 
-/** Configuration resolved from the Cache server. */
-public class ResolvedConfig {
+/** Resolved configuration returned by the {@code aws.config} handshake. */
+public final class ResolvedConfig {
 
     private final String version;
     private final Integer refreshInterval;
     private final Map<String, Object> raw;
 
+    /**
+     * Create a resolved config.
+     *
+     * @param version the config version
+     * @param refreshInterval the config refresh interval in seconds
+     * @param raw the parsed config document
+     */
     public ResolvedConfig(String version, Integer refreshInterval, Map<String, Object> raw) {
         this.version = version;
         this.refreshInterval = refreshInterval;
         this.raw = raw;
     }
 
+    /**
+     * Return the config version.
+     *
+     * @return the config version
+     */
     public String getVersion() {
         return version;
     }
 
+    /**
+     * Return the refresh interval.
+     *
+     * @return the config refresh interval in seconds
+     */
     public Integer getRefreshInterval() {
         return refreshInterval;
     }
 
+    /**
+     * Return the parsed config document.
+     *
+     * @return the parsed config document
+     */
     public Map<String, Object> getRaw() {
         return raw;
     }
@@ -31,7 +53,7 @@ public class ResolvedConfig {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof ResolvedConfig)) return false;
         ResolvedConfig that = (ResolvedConfig) o;
         return Objects.equals(version, that.version)
                 && Objects.equals(refreshInterval, that.refreshInterval)

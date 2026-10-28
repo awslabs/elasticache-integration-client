@@ -1,8 +1,8 @@
 package software.amazon.elasticache.integrations.connection;
 
+import java.util.ArrayDeque;
 import java.util.HashMap;
 import java.util.Iterator;
-import java.util.LinkedList;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
@@ -44,7 +44,7 @@ public class PendingRequests {
     }
 
     private final Lock lock = new ReentrantLock();
-    private final Queue<PendingRequest> queue = new LinkedList<>();
+    private final Queue<PendingRequest> queue = new ArrayDeque<>();
     private final Map<String, PendingRequest> asyncResponses = new HashMap<>();
     private final int maxPending;
     private volatile boolean closed = false;
@@ -175,6 +175,8 @@ public class PendingRequests {
     /**
      * Resolve and remove a request tracked by ID.
      *
+     * @param requestId the request ID from the {@code aws.response} push
+     * @param value the response value
      * @return true when the ID was active, false for an unknown or timed-out ID
      */
     public boolean resolveAsync(String requestId, RespValue value) {
@@ -194,6 +196,7 @@ public class PendingRequests {
     /**
      * Remove a deferred request by future identity.
      *
+     * @param future the exact future returned at registration
      * @return true when the future was asynchronously tracked and removed
      */
     public boolean removeFromAsync(CompletableFuture<RespValue> future) {
@@ -261,6 +264,7 @@ public class PendingRequests {
      *
      * <p>The caller must hold {@code lock}.
      */
+    @SuppressWarnings("ReferenceEquality") // Matches the exact future, not an equal one.
     private boolean removeFromAsyncLocked(CompletableFuture<RespValue> future) {
         Iterator<Map.Entry<String, PendingRequest>> iterator = asyncResponses.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -289,7 +293,11 @@ public class PendingRequests {
         asyncResponses.clear();
     }
 
-    /** Get the current number of requests awaiting FIFO replies. */
+    /**
+     * Get the current number of requests awaiting FIFO replies.
+     *
+     * @return the number of requests awaiting FIFO replies
+     */
     public int size() {
         lock.lock();
         try {
@@ -299,7 +307,11 @@ public class PendingRequests {
         }
     }
 
-    /** Check if the queue is closed. */
+    /**
+     * Check if the queue is closed.
+     *
+     * @return true after the queue has been closed
+     */
     public boolean isClosed() {
         return closed;
     }

@@ -78,8 +78,10 @@ public final class RespCodec {
      * @param data the byte array
      * @param start the start position
      * @return a DecodeResult containing the decoded value and the position after it
-     * @throws IncompleteFrame if data is truncated
-     * @throws ElastiCacheIntegrationsProtocolError if data is malformed / garbage
+     * @throws IncompleteFrame not an error. The frame is valid so far, but the rest of its bytes have
+     *     not arrived yet. Read more from the socket and call again.
+     * @throws ElastiCacheIntegrationsProtocolError the bytes can never form a valid frame. The stream
+     *     is corrupt and the connection should be closed.
      * @throws IndexOutOfBoundsException unless {@code 0 <= start <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start) throws IncompleteFrame {
@@ -94,8 +96,10 @@ public final class RespCodec {
      * @param start the start position
      * @param end the position after the last readable byte
      * @return a DecodeResult containing the decoded value and the position after it
-     * @throws IncompleteFrame if the value does not end before {@code end}
-     * @throws ElastiCacheIntegrationsProtocolError if data is malformed / garbage
+     * @throws IncompleteFrame not an error. The frame is valid so far, but the rest of its bytes have
+     *     not arrived yet. Read more from the socket and call again.
+     * @throws ElastiCacheIntegrationsProtocolError the bytes can never form a valid frame. The stream
+     *     is corrupt and the connection should be closed.
      * @throws IndexOutOfBoundsException unless {@code 0 <= start <= end <= data.length}
      */
     public static DecodeResult decode(byte[] data, int start, int end) throws IncompleteFrame {
@@ -140,7 +144,16 @@ public final class RespCodec {
         }
     }
 
-    /** Decode one RESP3 value from the given byte array starting at position 0. */
+    /**
+     * Decode one RESP3 value from the given byte array starting at position 0.
+     *
+     * @param data the byte array
+     * @return a DecodeResult containing the decoded value and the position after it
+     * @throws IncompleteFrame not an error. The frame is valid so far, but the rest of its bytes have
+     *     not arrived yet. Read more from the socket and call again.
+     * @throws ElastiCacheIntegrationsProtocolError the bytes can never form a valid frame. The stream
+     *     is corrupt and the connection should be closed.
+     */
     public static DecodeResult decode(byte[] data) throws IncompleteFrame {
         return decode(data, 0);
     }

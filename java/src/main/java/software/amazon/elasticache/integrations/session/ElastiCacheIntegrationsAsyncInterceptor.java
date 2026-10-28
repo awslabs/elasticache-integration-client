@@ -47,7 +47,11 @@ public final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionI
                         maxConcurrentBodyCollectors);
     }
 
-    /** Get the async HTTP transport that attempts Cache before the origin service. */
+    /**
+     * Get the async HTTP transport that attempts Cache before the origin service.
+     *
+     * @return the async HTTP client to install with this interceptor
+     */
     public ElastiCacheIntegrationsAsyncHttpClient getHttpClient() {
         return httpClient;
     }

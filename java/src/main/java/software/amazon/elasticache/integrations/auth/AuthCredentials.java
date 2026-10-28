@@ -24,12 +24,20 @@ public final class AuthCredentials {
         this.token = Objects.requireNonNull(token, "token must not be null");
     }
 
-    /** Get the user ID. */
+    /**
+     * Get the user ID.
+     *
+     * @return the user ID
+     */
     public String getUserId() {
         return userId;
     }
 
-    /** Get the authentication token. */
+    /**
+     * Get the authentication token.
+     *
+     * @return the authentication token
+     */
     public String getToken() {
         return token;
     }
