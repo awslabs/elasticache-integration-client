@@ -162,18 +162,39 @@ the builder's override configuration, so the interceptors, retries, timeouts and
 metrics that the builder already has survive. It also gets an HTTP transport
 that reads from the cache first and falls back to the origin service.
 
-The SDK builder has no getter for an HTTP client that the application already
-set. Pass that client as `originHttpClient` (or `originAsyncHttpClient`) and
-leave it off the builder. A builder that already has an `httpClient` makes
-`install` throw `ElastiCacheIntegrationsConfigError` with the SDK's error as the
-cause. The SDK closes the transport that Cache creates when the application
-closes the client. Cache closes the origin transport only when it created it. A
-transport or executor that you supply stays open.
+To set HTTP settings such as socket timeouts, connection timeouts or the
+connection pool, build the HTTP client and pass it as `originHttpClient` (or
+`originAsyncHttpClient`). Leave it off the SDK builder. Requests that the cache
+does not serve go through that same client, with all of its settings:
 
-`install` puts the builder back the way it was, whether it succeeds or fails.
-Each `install` on the same builder returns a separate client with its own cache
-connection, so the builder can be installed into again after a client is closed
-or after a failed bring-up.
+```java
+SdkHttpClient origin = ApacheHttpClient.builder()
+        .socketTimeout(Duration.ofSeconds(2))
+        .connectionTimeout(Duration.ofSeconds(1))
+        .build();
+
+DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache:6379")
+        .cacheName("my-cache")
+        .originHttpClient(origin)
+        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
+```
+
+`install` sets the SDK builder's `httpClientBuilder` to the cache transport, and
+the SDK builder has no getter for an HTTP client that the application already
+set. A builder that already has an `httpClient` makes `install` throw
+`ElastiCacheIntegrationsConfigError` with the SDK's error as the cause. A
+builder that already has an `httpClientBuilder` loses it without an error, and
+the client uses the default origin transport instead. The SDK closes the
+transport that Cache creates when the application closes the client. Cache
+closes the origin transport only when it created it. A transport or executor
+that you supply stays open.
+
+`install` puts the builder's override configuration back the way it was and
+clears its `httpClientBuilder`, whether it succeeds or fails. Each `install` on
+the same builder returns a separate client with its own cache connection, so
+the builder can be installed into again after a client is closed or after a
+failed bring-up.
 
 The `origin(...)` and `buildAsync(...)` builder methods and the manual handles
 described below still work.

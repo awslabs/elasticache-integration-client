@@ -265,7 +265,8 @@ public final class ElastiCacheIntegrationsClient {
          * them.
          *
          * <p>Install replaces the transport of the SDK builder, and the SDK has no getter to read back
-         * one the application already set, so pass that client here. The SDK client does not close it.
+         * one the application already set, so pass that client here. An {@code httpClientBuilder} left
+         * on the SDK builder is replaced without an error. The SDK client does not close this client.
          * When unset, install creates the SDK Apache HTTP client and closes it with the SDK client.
          *
          * @param originHttpClient the HTTP client for origin requests
