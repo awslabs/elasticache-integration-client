@@ -70,7 +70,9 @@ function normalizeBody(body: string | Uint8Array | null | undefined): Buffer {
   if (body == null) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
   if (typeof body === "string") return Buffer.from(body, "utf8");
-  return Buffer.from(body);
+  // Buffer.from(object) calls valueOf() first, which the SDK's JSON body subclass turns into a
+  // warning and a UTF-8 round trip. copyBytesFrom reads the bytes directly.
+  return Buffer.copyBytesFrom(body);
 }
 
 /** AWS SigV4 authentication headers, removed before forwarding to ElastiCacheIntegrations. */
