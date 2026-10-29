@@ -412,9 +412,15 @@ export async function install<TClient extends InstallableClient>(
       regionError === undefined ? undefined : { cause: regionError },
     );
   }
-  if (typeof sdkClient.config.credentials !== "function") {
+  // Resolve once now, so a client with no usable credentials fails here, as it does in Python.
+  // The IAM toolkit would retry the failure past the connection timeout and hide the SDK's error.
+  // A client with no credential provider fails the same way, with the TypeError as the cause.
+  try {
+    await sdkClient.config.credentials();
+  } catch (error) {
     throw new ElastiCacheIntegrationsConfigError(
-      "This AWS SDK client has no credential provider, so the cache cannot be authenticated.",
+      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
+      { cause: error },
     );
   }
   await initialize(sdkClient, service, endpoint, {

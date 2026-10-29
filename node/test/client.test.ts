@@ -241,6 +241,26 @@ describe("install", () => {
     expect(mocks.sessionConstructor).not.toHaveBeenCalled();
   });
 
+  it("rejects a client whose credentials cannot be resolved, with the SDK's error as the cause", async () => {
+    setup();
+    const sdkError = new Error("Could not load credentials from any providers");
+    const client = new FakeClient({
+      clientCredentials: async () => {
+        throw sdkError;
+      },
+    });
+
+    const error = await install({ client: client as never, ...options }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ElastiCacheIntegrationsConfigError);
+    expect((error as Error).message).toBe(
+      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
+    );
+    expect((error as Error).cause).toBe(sdkError);
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+  });
+
   it("passes iamTokenRefreshDelay to the managed auth provider", async () => {
     setup();
 

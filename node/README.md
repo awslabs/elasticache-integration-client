@@ -97,8 +97,10 @@ configured. ElastiCacheIntegrations reads three things
 from it: the region, which also signs the cache's IAM token; the credentials,
 which sign that token; and the service id, lowercased with spaces replaced by
 `-` (`DynamoDB` becomes `dynamodb`) to match the `service` in request
-predicates. A value that is not an AWS SDK v3 client, or a client without a
-region or credentials, raises `ElastiCacheIntegrationsConfigError`. If
+predicates. A value that is not an AWS SDK v3 client, a client without a
+region, or a client whose credentials provider cannot resolve credentials
+raises `ElastiCacheIntegrationsConfigError`. In the last case, the SDK's error
+is the cause. `install()` resolves the credentials once before it connects. If
 installation fails, ElastiCacheIntegrations releases what it opened, and the
 client stays open and usable without the cache.
 Wrapped AWS requests are fully serialized and signed by the SDK before
