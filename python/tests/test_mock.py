@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from elasticache_integrations.resp import RespError, decode_resp
+from aws_elasticache_integration_client.resp import RespError, decode_resp
 from tests.mock import MockCache, Reply, _read_command
 
 _REQUEST = [b"aws.request", b"POST", b"https://x/", b"hdrs", b"body", b"service=s&op=o"]

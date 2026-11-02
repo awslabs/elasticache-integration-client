@@ -72,7 +72,7 @@ jobs:
           esac
 
           project_name="$(python scripts/release.py project-name)"
-          echo "artifact-name=elasticache-integrations-${version}" >>"${GITHUB_OUTPUT}"
+          echo "artifact-name=aws-elasticache-integration-client-${version}" >>"${GITHUB_OUTPUT}"
           echo "version=${version}" >>"${GITHUB_OUTPUT}"
           echo "project-name=${project_name}" >>"${GITHUB_OUTPUT}"
           echo "should-publish=${should_publish}" >>"${GITHUB_OUTPUT}"
@@ -84,7 +84,7 @@ jobs:
         run: python -m twine check release/dist/*
 
       - name: Check packaged idempotency catalog
-        run: unzip -l release/dist/*.whl | grep -q "elasticache_integrations/idempotent-operations.json"
+        run: unzip -l release/dist/*.whl | grep -q "aws_elasticache_integration_client/idempotent-operations.json"
 
       - name: Upload immutable release distributions
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -140,13 +140,13 @@ jobs:
           import os
           from importlib.metadata import version
 
-          import elasticache_integrations
+          import aws_elasticache_integration_client
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("elasticache-integrations") == expected
-          assert elasticache_integrations.__version__ == expected
+          assert version("aws-elasticache-integration-client") == expected
+          assert aws_elasticache_integration_client.__version__ == expected
           for name in ("client", "ElastiCacheIntegrationsCacheUnavailable", "ElastiCacheIntegrationsConfigError", "ElastiCacheIntegrationsError"):
-              assert hasattr(elasticache_integrations, name), name
+              assert hasattr(aws_elasticache_integration_client, name), name
           PY
 
   publish:
@@ -194,7 +194,7 @@ jobs:
           PROJECT_NAME: ${{ needs.build.outputs.project-name }}
         run: |
           set -euo pipefail
-          smoke_env="${RUNNER_TEMP}/elasticache-integrations-pypi-smoke"
+          smoke_env="${RUNNER_TEMP}/aws-elasticache-integration-client-pypi-smoke"
           python -m venv "${smoke_env}"
           "${smoke_env}/bin/python" -m pip install --upgrade pip
 
@@ -214,13 +214,13 @@ jobs:
           import os
           from importlib.metadata import version
 
-          import elasticache_integrations
+          import aws_elasticache_integration_client
 
           expected = os.environ["EXPECTED_VERSION"]
-          assert version("elasticache-integrations") == expected
-          assert elasticache_integrations.__version__ == expected
+          assert version("aws-elasticache-integration-client") == expected
+          assert aws_elasticache_integration_client.__version__ == expected
           for name in ("client", "ElastiCacheIntegrationsCacheUnavailable", "ElastiCacheIntegrationsConfigError", "ElastiCacheIntegrationsError"):
-              assert hasattr(elasticache_integrations, name), name
+              assert hasattr(aws_elasticache_integration_client, name), name
           PY
 
   github-release:

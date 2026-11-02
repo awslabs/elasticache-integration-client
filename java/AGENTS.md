@@ -9,7 +9,7 @@
 
 ## Layout
 
-- `src/main/java/software/amazon/elasticacheintegrations/`: production Java modules organized by
+- `src/main/java/software/amazon/elasticache/integrations/`: production Java modules organized by
   concern:
   - `connection/`: TCP/TLS socket management, FIFO/request-ID correlation.
   - `session/`: ElastiCacheIntegrationsSession, ElastiCacheIntegrationsClient (SDK integration), ElastiCacheIntegrationsInterceptor.
@@ -19,7 +19,7 @@
   - `auth/`: Cache adapters for the ElastiCache IAM toolkit dependency.
   - `model/`: ElastiCacheIntegrationsRequest, ElastiCacheIntegrationsResponse, metadata types.
   - `exception/`: Cache error hierarchy.
-- `src/test/java/software/amazon/elasticacheintegrations/`: JUnit 5 tests organized by
+- `src/test/java/software/amazon/elasticache/integrations/`: JUnit 5 tests organized by
   production concern.
 - `src/test/.../mock/`: MockCache and MockTlsServer for integration testing.
 - `build.gradle.kts`: Gradle Kotlin DSL build configuration.
@@ -47,7 +47,7 @@
   file becomes stale.
 - Target Java 8 source and bytecode compatibility; CI runs the tests on JDK 8,
   11, 17, and 21. Do not use language or library APIs introduced after Java 8.
-- Preserve the package structure `software.amazon.elasticacheintegrations.*`.
+- Preserve the package structure `software.amazon.elasticache.integrations.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
 - Use `MockCache` and `MockTlsServer` for Cache command/response integration

@@ -30,7 +30,7 @@ python -m pytest --no-cov tests/test_protocol.py              # one file
 python -m pytest --no-cov tests/test_connection.py            # connector unit + integration tests
 ```
 
-Coverage (`--cov=elasticache_integrations --cov-report=term-missing`) is enabled by default via `pyproject.toml`,
+Coverage (`--cov=aws_elasticache_integration_client --cov-report=term-missing`) is enabled by default via `pyproject.toml`,
 and the run fails if combined line and branch coverage drops below `fail_under` in
 `[tool.coverage.report]`. A subset of the suite never reaches that floor, so pass `--no-cov`
 when running individual files.
@@ -50,14 +50,14 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | File | Kind | Covers |
 |---|---|---|
 | `test_scaffolding.py` | smoke | package imports cleanly and exposes `__version__` |
-| `test_resp.py` | component | `elasticache_integrations.resp` RESP3 wire codec (encode/decode, all prefixes, `IncompleteFrame` truncation, `ElastiCacheIntegrationsProtocolError` garbage) |
-| `test_protocol.py` | component | `elasticache_integrations.protocol` (command building, header normalization, request arg-list serialization, config/request response parsing) |
-| `test_connection.py` | component + integration | `elasticache_integrations.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `ElastiCacheIntegrationsConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
-| `test_session.py` | component | `elasticache_integrations.session.ElastiCacheIntegrationsSession` sync API, driven by the `mock_connector()` autospec double |
-| `test_hooks.py` | component | `elasticache_integrations.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
+| `test_resp.py` | component | `aws_elasticache_integration_client.resp` RESP3 wire codec (encode/decode, all prefixes, `IncompleteFrame` truncation, `ElastiCacheIntegrationsProtocolError` garbage) |
+| `test_protocol.py` | component | `aws_elasticache_integration_client.protocol` (command building, header normalization, request arg-list serialization, config/request response parsing) |
+| `test_connection.py` | component + integration | `aws_elasticache_integration_client.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `ElastiCacheIntegrationsConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
+| `test_session.py` | component | `aws_elasticache_integration_client.session.ElastiCacheIntegrationsSession` sync API, driven by the `mock_connector()` autospec double |
+| `test_hooks.py` | component | `aws_elasticache_integration_client.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
 | `test_idempotency.py` | component | replay-safe operation lookup loads the shared language-neutral catalog |
 | `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
-| `test_ddb.py` | **end-to-end** | the full path `elasticache_integrations.client → boto3 GetItem → hook → ElastiCacheIntegrationsSession → real ElastiCacheIntegrationsConnector (TLS) → MockCache` |
+| `test_ddb.py` | **end-to-end** | the full path `aws_elasticache_integration_client.client → boto3 GetItem → hook → ElastiCacheIntegrationsSession → real ElastiCacheIntegrationsConnector (TLS) → MockCache` |
 
 All test doubles live in one module, `tests/mock.py` (imported by tests, not collected as test cases):
 
@@ -81,7 +81,7 @@ All test doubles live in one module, `tests/mock.py` (imported by tests, not col
 actual transport + protocol framing together:
 
 - It starts `MockCache(tls=True)` in-process with a **self-signed** certificate, and the client
-  performs real (verifying) TLS against it — `elasticache_integrations.ElastiCacheIntegrationsConnector` is patched to inject
+  performs real (verifying) TLS against it — `aws_elasticache_integration_client.ElastiCacheIntegrationsConnector` is patched to inject
   `ca_certs=cache.cert_path`; no real cache or DynamoDB is contacted.
 - The transport is pure stdlib, so there is no optional dependency — the e2e always runs.
 

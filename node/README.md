@@ -2,6 +2,8 @@
 
 ElastiCacheIntegrations implementation done for Node.js.
 
+The npm package name is `@aws-sdk/aws-elasticache-integration-client`.
+
 ## Scope
 
 This package currently ports the Python implementation's:
@@ -70,7 +72,7 @@ and a RESP3 null reply means the config is unchanged. See
 
 ```ts
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { install } from "elasticache-integrations";
+import { install } from "@aws-sdk/aws-elasticache-integration-client";
 
 const dynamodb = new DynamoDBClient({ region: "us-east-1", maxAttempts: 10 });
 

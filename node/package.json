@@ -1,8 +1,13 @@
 {
-  "name": "elasticache-integrations",
+  "name": "@aws-sdk/aws-elasticache-integration-client",
   "version": "0.0.1",
-  "description": "TypeScript parity prototype for the ElastiCacheIntegrations Node.js client.",
+  "description": "ElastiCache Integrations for AWS SDK for JavaScript v3 DynamoDB clients.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awslabs/aws-elasticache-integration-client.git",
+    "directory": "node"
+  },
   "sideEffects": false,
   "engines": {
     "node": ">=22"

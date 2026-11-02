@@ -15,12 +15,12 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from elasticache_integrations import connection_manager
-from elasticache_integrations import session as session_module
-from elasticache_integrations.config_policy import ConfigPolicy
-from elasticache_integrations.connection import ElastiCacheIntegrationsConnector
-from elasticache_integrations.connection_manager import ConnectionState
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client import connection_manager
+from aws_elasticache_integration_client import session as session_module
+from aws_elasticache_integration_client.config_policy import ConfigPolicy
+from aws_elasticache_integration_client.connection import ElastiCacheIntegrationsConnector
+from aws_elasticache_integration_client.connection_manager import ConnectionState
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConfigError,
     ElastiCacheIntegrationsConnectionError,
@@ -28,13 +28,13 @@ from elasticache_integrations.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsOverridesRejected,
 )
-from elasticache_integrations.models import (
+from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsRequest,
     ElastiCacheIntegrationsResponse,
     RequestMetadata,
 )
-from elasticache_integrations.reconnect_policy import ReconnectPolicy
-from elasticache_integrations.session import ElastiCacheIntegrationsSession
+from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 from tests.mock import (
     DEFAULT_RESOLVED_CONFIG,
     MockCache,
@@ -77,7 +77,7 @@ def get_item_request(body: bytes = b'{"TableName": "widgets"}') -> ElastiCacheIn
 class _FakeClock:
     """A monotonic clock the test moves by hand, to reach a deadline without waiting for it.
 
-    Substituted for the ``time`` module inside :mod:`elasticache_integrations.connection_manager`, which reads
+    Substituted for the ``time`` module inside :mod:`aws_elasticache_integration_client.connection_manager`, which reads
     ``monotonic()`` to open the fallback window and to check it. ``sleep`` stays real: the reconnect
     loop still has to back off.
     """
@@ -683,7 +683,7 @@ def test_close_interrupts_a_connection_being_opened():
         cache.stop()
 
     assert not [
-        t for t in threading.enumerate() if t.name == "elasticache-integrations-reconnect"
+        t for t in threading.enumerate() if t.name == "aws-elasticache-integration-client-reconnect"
     ], "close() returned with the reconnect thread still in the handshake"
     assert elapsed < 1.0, f"close() waited out the stalled handshake: {elapsed:.2f}s"
 
@@ -867,7 +867,9 @@ def test_connection_timeout_bounds_connect_and_configure():
         wait_for(
             lambda: (
                 not [
-                    t for t in threading.enumerate() if t.name == "elasticache-integrations-connect"
+                    t
+                    for t in threading.enumerate()
+                    if t.name == "aws-elasticache-integration-client-connect"
                 ]
             ),
             timeout=1.0,

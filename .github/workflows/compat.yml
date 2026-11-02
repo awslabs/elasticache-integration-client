@@ -115,7 +115,7 @@ jobs:
           consumer/bin/python - <<'PY'
           from importlib.resources import files
 
-          import elasticache_integrations
+          import aws_elasticache_integration_client
 
           for name in (
               "client",
@@ -123,13 +123,13 @@ jobs:
               "ElastiCacheIntegrationsConfigError",
               "ElastiCacheIntegrationsError",
           ):
-              assert hasattr(elasticache_integrations, name), name
+              assert hasattr(aws_elasticache_integration_client, name), name
           assert (
-              files("elasticache_integrations")
+              files("aws_elasticache_integration_client")
               .joinpath("idempotent-operations.json")
               .is_file()
           )
-          print("wheel import ok:", elasticache_integrations.__file__)
+          print("wheel import ok:", aws_elasticache_integration_client.__file__)
           PY
 
   node-latest:

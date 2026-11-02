@@ -7,7 +7,7 @@ This module holds the three authored mock classes the suite uses:
   success reply, and the error reply. A pure :meth:`MockCache.handle` method *is* the contract
   engine (validates command shape, picks a reply) and does no I/O, so it
   is unit-testable without a socket. A small synchronous, threaded TLS server wraps it so the real
-  :class:`~elasticache_integrations.connection.ElastiCacheIntegrationsConnector` can talk to it over verifying TLS.
+  :class:`~aws_elasticache_integration_client.connection.ElastiCacheIntegrationsConnector` can talk to it over verifying TLS.
 * :class:`MockSocket` — an in-memory, scriptable socket for ``_SocketReader`` unit tests.
 * :class:`MockClient` — a botocore client stand-in exposing the ``.meta.events`` emitter.
 
@@ -32,15 +32,18 @@ from unittest.mock import create_autospec
 
 from botocore.hooks import HierarchicalEmitter
 
-from elasticache_integrations.connection import ElastiCacheIntegrationsConnector
-from elasticache_integrations.models import ElastiCacheIntegrationsResponse, RequestMetadata
-from elasticache_integrations.protocol import PUSH_KIND_RESPONSE
-from elasticache_integrations.session import ElastiCacheIntegrationsSession
+from aws_elasticache_integration_client.connection import ElastiCacheIntegrationsConnector
+from aws_elasticache_integration_client.models import (
+    ElastiCacheIntegrationsResponse,
+    RequestMetadata,
+)
+from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE
+from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 
 _CRLF = b"\r\n"
 
 # The resolved config the real proxy returns for empty overrides — see
-# ElastiCacheProxyRust/src/libproxy/elasticache_integrations/config.rs::resolve. One CEL predicate caching every
+# ElastiCacheProxyRust/src/libproxy/aws_elasticache_integration_client/config.rs::resolve. One CEL predicate caching every
 # supported read regardless of table; `version` is the predicate *format* version ("1.0", constant).
 #
 # Routing only: the reply carries version, refresh_interval and predicates and no lifetime.
@@ -336,7 +339,7 @@ class MockCache:
         self.received_commands: list[list[bytes]] = []  # every command, full arg list incl. name
         self.cache_command_log: list[
             str
-        ] = []  # names of auth/elasticache_integrations.* commands, in order
+        ] = []  # names of auth/aws_elasticache_integration_client.* commands, in order
         self.requests: list[ReceivedRequest] = []  # decoded aws.request records, in order
         self.config_overrides: list[dict | None] = []  # decoded aws.config overrides, in order
         self.protocol_errors: list[str] = []  # RESP framing violations by the client, in order

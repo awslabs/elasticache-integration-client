@@ -9,12 +9,12 @@ import pytest
 from botocore.credentials import Credentials
 from developer_toolkit_elasticache import ConfigurationError, InvalidParameterError
 
-from elasticache_integrations.auth import (
+from aws_elasticache_integration_client.auth import (
     DEFAULT_USER_ID,
     ManagedIamAuthTokenProvider,
     build_cache_auth_provider,
 )
-from elasticache_integrations.exceptions import ElastiCacheIntegrationsError
+from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsError
 
 FIRST_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE"
 ROTATED_ACCESS_KEY = "ASIAROTATEDCREDENTIAL"
@@ -68,7 +68,7 @@ class TestManagedIamAuthTokenProvider:
 
 
 class TestBuildCacheAuthProvider:
-    @patch("elasticache_integrations.auth.ElastiCacheIAMAuthTokenManager")
+    @patch("aws_elasticache_integration_client.auth.ElastiCacheIAMAuthTokenManager")
     def test_passes_configuration_to_toolkit_manager(self, manager_class):
         manager_class.return_value = MagicMock()
         credentials = fake_credentials()
@@ -119,7 +119,7 @@ class TestBuildCacheAuthProvider:
                 token_refresh_delay=880,
             )
 
-    @patch("elasticache_integrations.auth.ElastiCacheIAMAuthTokenManager")
+    @patch("aws_elasticache_integration_client.auth.ElastiCacheIAMAuthTokenManager")
     def test_wraps_unexpected_constructor_errors_without_details(self, manager_class):
         manager_class.side_effect = RuntimeError("secret=credential-material")
 
@@ -145,7 +145,7 @@ class TestBuildCacheAuthProvider:
         ),
     ],
 )
-@patch("elasticache_integrations.auth.ElastiCacheIAMAuthTokenManager")
+@patch("aws_elasticache_integration_client.auth.ElastiCacheIAMAuthTokenManager")
 def test_toolkit_input_errors_reach_the_caller(manager_class, toolkit_error):
     manager_class.side_effect = toolkit_error
 

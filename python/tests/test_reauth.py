@@ -6,9 +6,9 @@ default long interval, so it does not tick during a test; `_reauth_once` is driv
 
 import pytest
 
-from elasticache_integrations.exceptions import ElastiCacheIntegrationsAuthError
-from elasticache_integrations.reconnect_policy import ReconnectPolicy
-from elasticache_integrations.session import ElastiCacheIntegrationsSession
+from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsAuthError
+from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 from tests.mock import mock_connector
 
 

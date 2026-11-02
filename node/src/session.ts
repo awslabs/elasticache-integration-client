@@ -621,14 +621,14 @@ export class ElastiCacheIntegrationsSession {
     const configRefresher = new Refresher(
       initialized.config.refreshInterval,
       () => this.refreshOnce(),
-      { jitter: this.reconnectPolicy.jitter, name: "elastiCacheIntegrations-refresher" },
+      { jitter: this.reconnectPolicy.jitter, name: "aws-elasticache-integration-client-refresher" },
     );
     const reauthRefresher = new Refresher(
       this.reconnectPolicy.authRefreshIntervalMs / 1_000,
       () => this.reauthenticateOnce(),
       {
         jitter: this.reconnectPolicy.jitter,
-        name: "elastiCacheIntegrations-reauth",
+        name: "aws-elasticache-integration-client-reauth",
         failureDelayMs: (failures) => this.delayFor(failures),
       },
     );

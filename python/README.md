@@ -21,7 +21,7 @@ Python publication is driven by annotated Git tags. Stable releases use
 PEP 440 version `MAJOR.MINOR.PATCHrcN`. A release tag applies to every language client: Node,
 Python, and Java release together and their package metadata must use the same version.
 
-Before tagging, update the version in `pyproject.toml`; `elasticache_integrations.__version__` reads that installed
+Before tagging, update the version in `pyproject.toml`; `aws_elasticache_integration_client.__version__` reads that installed
 distribution metadata. The `Python Release` workflow rejects any tag that does not match the
 project version. It runs the reusable Python CI workflow, builds one wheel and one source
 distribution, and smoke tests the wheel on Python 3.10, 3.12, and 3.14 before waiting for approval
@@ -29,8 +29,8 @@ from the protected `release` environment and publishing
 with PyPI trusted publishing and attestations. The workflow verifies the published version and
 attaches the distributions plus `python-SHA256SUMS` to the matching GitHub Release.
 
-The PyPI distribution name is `elasticache-integrations`, while the import package remains
-`elasticache_integrations`. The PyPI project must
+The PyPI distribution name is `aws-elasticache-integration-client`, and the import package is
+`aws_elasticache_integration_client`. The PyPI project must
 configure `.github/workflows/python-release.yml` as its trusted publisher for the `release`
 environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
 packaging, artifact validation, and wheel smoke stages without entering the release environment or
@@ -60,11 +60,13 @@ are the ones the cache is authenticated with.
 
 ```python
 import boto3
-import elasticache_integrations
+import aws_elasticache_integration_client
 
 ddb = boto3.client("dynamodb", region_name="us-east-1")
 
-elasticache_integrations.install(client=ddb, endpoint="my-cache:6379", cache_name="my-cache")
+aws_elasticache_integration_client.install(
+    client=ddb, endpoint="my-cache:6379", cache_name="my-cache"
+)
 
 ddb.get_item(TableName="my-table", Key={"id": {"S": "1"}})  # unchanged
 ```
@@ -89,16 +91,16 @@ have the cache installed once; a second `install()` on the same client raises
 
 ## Configuration
 
-Optional ElastiCacheIntegrations settings go in one `elasticache_integrations.ElastiCacheIntegrationsClientConfiguration`, passed as
+Optional ElastiCacheIntegrations settings go in one `aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration`, passed as
 `client_configuration`. Every field has a default, so set only what you change. Cache policy
 settings are sent to the cache through `aws.config`.
 
 ```python
-elasticache_integrations.install(
+aws_elasticache_integration_client.install(
     client=ddb,
     endpoint="my-cache:6379",
     cache_name="my-cache",
-    client_configuration=elasticache_integrations.ElastiCacheIntegrationsClientConfiguration(
+    client_configuration=aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration(
         cache_request_timeout=2.0,
         connection_timeout=2.0,
         fallback_duration=60,
@@ -190,7 +192,7 @@ The window is **per outage, not a total budget**: `fallback_duration=60` allows 
 fallback each time the connection is lost, and a connection that keeps flapping gets a fresh 60
 seconds after every successful reconnect.
 
-`elasticache_integrations.ElastiCacheIntegrationsCacheUnavailable` subclasses botocore's `ConnectionClosedError`, so it is retryable and
+`aws_elasticache_integration_client.ElastiCacheIntegrationsCacheUnavailable` subclasses botocore's `ConnectionClosedError`, so it is retryable and
 an application's existing `except botocore...` blocks already catch it. Retryable cuts both ways:
 under the SDK's default retry mode a raised request is retried, which is usually what you want — a
 retry after backoff can land once the connection is back. With `fallback_duration=0`, a routed
