@@ -1,12 +1,12 @@
-"""Tests for elasticache_integrations.resp — the standalone RESP3 wire codec."""
+"""Tests for aws_elasticache_integration_client.resp — the standalone RESP3 wire codec."""
 
 import pytest
 
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsProtocolError,
 )
-from elasticache_integrations.resp import (
+from aws_elasticache_integration_client.resp import (
     IncompleteFrame,
     RespError,
     RespPush,
@@ -199,6 +199,54 @@ def test_decode_garbage_raises_protocol_error(garbage, message):
     """Genuinely corrupt input raises ElastiCacheIntegrationsProtocolError, naming what it could not read."""
     with pytest.raises(ElastiCacheIntegrationsProtocolError, match=message):
         decode_resp(garbage)
+
+
+# --- nesting depth cap --------------------------------------------------------
+
+
+def _nested(prefix: bytes, levels: int) -> bytes:
+    """``levels`` aggregates, each holding the next, around a single ``:1`` integer.
+
+    A map level is ``%1`` with a ``:0`` key and the next level as its value; a push level is
+    ``>2`` with a ``kind`` and the next level as its item."""
+    head = {b"*": b"*1\r\n", b"%": b"%1\r\n:0\r\n", b">": b">2\r\n+kind\r\n"}[prefix]
+    return head * levels + b":1\r\n"
+
+
+@pytest.mark.parametrize("prefix", [b"*", b"%", b">"])
+def test_decode_nesting_past_the_cap_raises_protocol_error(prefix):
+    """An aggregate nested 101 levels deep is corrupt input: it raises
+    ElastiCacheIntegrationsProtocolError, not RecursionError, so the reader closes the connection."""
+    with pytest.raises(
+        ElastiCacheIntegrationsProtocolError, match="RESP nesting exceeds 100 levels"
+    ):
+        decode_resp(_nested(prefix, 101))
+
+
+@pytest.mark.parametrize("prefix", [b"*", b"%", b">"])
+def test_decode_nesting_at_the_cap_decodes(prefix):
+    """100 nested aggregates still decode and consume the whole frame."""
+    frame = _nested(prefix, 100)
+    value, nxt = decode_resp(frame)
+    for _ in range(100):
+        value = value.items[0] if isinstance(value, RespPush) else value[0]
+    assert value == 1
+    assert nxt == len(frame)
+
+
+def test_decode_nesting_past_the_cap_raises_far_past_the_stack_limit():
+    """A frame deeper than Python's recursion limit raises ElastiCacheIntegrationsProtocolError too."""
+    with pytest.raises(
+        ElastiCacheIntegrationsProtocolError, match="RESP nesting exceeds 100 levels"
+    ):
+        decode_resp(b"*1\r\n" * 5000 + b":1\r\n")
+
+
+def test_decode_truncated_nesting_under_the_cap_raises_incomplete_frame():
+    """The cap does not mask truncation: a shallow frame missing its last bytes still means
+    "need more bytes"."""
+    with pytest.raises(IncompleteFrame, match="incomplete frame"):
+        decode_resp(b"*1\r\n" * 50)
 
 
 # --- bytearray input (incremental reader buffer) -------------------------------

@@ -14,14 +14,8 @@ const tarballPath = resolve(tarballArgument);
 const listing = execFileSync("tar", ["-tzf", tarballPath], { encoding: "utf8" })
   .split("\n")
   .filter(Boolean);
-const toolkitPrefix = "package/node_modules/@aws/developer-toolkit-elasticache/";
-const forbidden = /package\/(?:test|src|coverage|\.omx)\/|\.key$|(^|\/)\.omx\//;
-const forbiddenEntries = listing.filter((entry) => {
-  if (entry.startsWith("package/node_modules/")) {
-    return !entry.startsWith(toolkitPrefix) || /\/(?:src|test)\//.test(entry);
-  }
-  return forbidden.test(entry);
-});
+const forbidden = /package\/(?:test|src|coverage|node_modules|\.omx)\/|\.key$|(^|\/)\.omx\//;
+const forbiddenEntries = listing.filter((entry) => forbidden.test(entry));
 if (forbiddenEntries.length > 0) {
   throw new Error(`Packed tarball contains forbidden entries:\n${forbiddenEntries.join("\n")}`);
 }
@@ -33,18 +27,9 @@ if (
 ) {
   throw new Error("Packed tarball is missing ESM or CommonJS runtime/type entrypoints");
 }
-if (!listing.includes(`${toolkitPrefix}dist/index.js`)) {
-  throw new Error("Packed tarball is missing the bundled ElastiCache toolkit");
-}
 
-// publint flags every file: dependency, but a bundled one ships inside the tarball.
 const lint = await publint({ pack: { tarball: readFileSync(tarballPath).buffer }, strict: true });
-const bundled = new Set(lint.pkg.bundledDependencies ?? []);
-const problems = lint.messages.filter(
-  (message) =>
-    message.type !== "suggestion" &&
-    !(message.code === "LOCAL_DEPENDENCY" && bundled.has(message.path[1])),
-);
+const problems = lint.messages.filter((message) => message.type !== "suggestion");
 if (problems.length > 0) {
   const details = problems.map((message) => formatMessage(message, lint.pkg)).join("\n");
   throw new Error(`publint found problems in the packed tarball:\n${details}`);

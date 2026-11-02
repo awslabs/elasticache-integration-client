@@ -1,10 +1,10 @@
-"""Tests for elasticache_integrations.exceptions — the connector error taxonomy."""
+"""Tests for aws_elasticache_integration_client.exceptions — the connector error taxonomy."""
 
 import pytest
 
 from botocore.exceptions import ConnectionClosedError
 
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsAuthError,
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConfigError,
@@ -80,14 +80,14 @@ def test_public_api_surface():
 
     Three errors are reachable by an application and so are named here: ``ElastiCacheIntegrationsCacheUnavailable``
     when a request cannot be served and fallback has closed, ``ElastiCacheIntegrationsConfigError`` when
-    ``elasticache_integrations.install()`` is given something unusable, and ``ElastiCacheIntegrationsError`` as the base for anything
+    ``aws_elasticache_integration_client.install()`` is given something unusable, and ``ElastiCacheIntegrationsError`` as the base for anything
     else that installing can raise. The per-failure-mode classes stay internal in
-    ``elasticache_integrations.exceptions``, because the request path converts them to botocore's transport errors
+    ``aws_elasticache_integration_client.exceptions``, because the request path converts them to botocore's transport errors
     before an application ever sees them.
     """
-    import elasticache_integrations
+    import aws_elasticache_integration_client
 
-    assert elasticache_integrations.__all__ == [
+    assert aws_elasticache_integration_client.__all__ == [
         "install",
         "ElastiCacheIntegrationsClientConfiguration",
         "ElastiCacheIntegrationsCacheUnavailable",
@@ -96,6 +96,6 @@ def test_public_api_surface():
         "__version__",
     ]
     assert (
-        elasticache_integrations.ElastiCacheIntegrationsCacheUnavailable
+        aws_elasticache_integration_client.ElastiCacheIntegrationsCacheUnavailable
         is ElastiCacheIntegrationsCacheUnavailable
     )

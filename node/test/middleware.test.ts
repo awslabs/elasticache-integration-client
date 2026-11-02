@@ -134,6 +134,24 @@ describe("awsToCacheRequest", () => {
     expect(awsToCacheRequest(request(body), "svc", "RunCommand")!.body).toEqual(expected);
   });
 
+  it("copies a Uint8Array subclass body without converting it to a string", () => {
+    // The SDK's JSON codec builds bodies as a Uint8Array subclass whose valueOf() and
+    // toString() decode to a string and log a warning, and may throw in a future version.
+    class StringConvertingBody extends Uint8Array {
+      override valueOf(): never {
+        throw new Error("valueOf called");
+      }
+      override toString(): never {
+        throw new Error("toString called");
+      }
+    }
+    const body = new StringConvertingBody(Buffer.from('{"TableName":"t"}'));
+
+    expect(awsToCacheRequest(request(body), "svc", "RunCommand")!.body).toEqual(
+      Buffer.from('{"TableName":"t"}'),
+    );
+  });
+
   it("reuses Buffer request bodies", () => {
     const body = Buffer.from("payload");
 

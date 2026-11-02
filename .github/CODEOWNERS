@@ -1,0 +1,5 @@
+# Code owners for this repository.
+#
+# GitHub requests a review from these owners on every pull request.
+
+* @awslabs/elasticache-integration-client-maintainers

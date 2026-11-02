@@ -233,7 +233,7 @@ describe("Refresher", () => {
     });
     const refresher = new Refresher(100, refreshOnce, {
       jitter: 0,
-      name: "elastiCacheIntegrations-reauth",
+      name: "aws-elasticache-integration-client-reauth",
       failureDelayMs: (failures) => failures * 1_000,
     });
 
@@ -242,7 +242,7 @@ describe("Refresher", () => {
     refresher.stop();
 
     expect(delays.slice(0, 4)).toEqual([100_000, 1_000, 2_000, 100_000]);
-    expect(warn.mock.calls[0]?.[0]).toContain("elastiCacheIntegrations-reauth");
+    expect(warn.mock.calls[0]?.[0]).toContain("aws-elasticache-integration-client-reauth");
   });
 
   it("does not reschedule after stop during an in-flight callback", async () => {

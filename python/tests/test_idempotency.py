@@ -1,7 +1,10 @@
 import json
 from pathlib import Path
 
-from elasticache_integrations.idempotency import IDEMPOTENT_OPERATIONS, is_idempotent_operation
+from aws_elasticache_integration_client.idempotency import (
+    IDEMPOTENT_OPERATIONS,
+    is_idempotent_operation,
+)
 
 
 def test_packaged_operations_match_shared_catalog():

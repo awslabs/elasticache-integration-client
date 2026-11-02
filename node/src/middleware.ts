@@ -70,7 +70,9 @@ function normalizeBody(body: string | Uint8Array | null | undefined): Buffer {
   if (body == null) return Buffer.alloc(0);
   if (Buffer.isBuffer(body)) return body;
   if (typeof body === "string") return Buffer.from(body, "utf8");
-  return Buffer.from(body);
+  // Buffer.from(object) calls valueOf() first, which the SDK's JSON body subclass turns into a
+  // warning and a UTF-8 round trip. copyBytesFrom reads the bytes directly.
+  return Buffer.copyBytesFrom(body);
 }
 
 /** AWS SigV4 authentication headers, removed before forwarding to ElastiCacheIntegrations. */
@@ -211,7 +213,7 @@ function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): v
  * Symbol.for() returns the same symbol in every copy of this module, so an app that loads both the
  * ESM and CommonJS builds still sees one install per client.
  */
-const HANDLE = Symbol.for("elasticache-integrations.handle");
+const HANDLE = Symbol.for("aws-elasticache-integration-client.handle");
 
 /** Return the handle already attached to `sdkClient`, or undefined if there is none. */
 export function installedHandle(sdkClient: object): ElastiCacheIntegrationsHandle | undefined {

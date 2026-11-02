@@ -8,20 +8,23 @@ from pathlib import Path
 
 import pytest
 
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsOverridesRejected,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
 )
-from elasticache_integrations.models import ElastiCacheIntegrationsRequest, RequestMetadata
-from elasticache_integrations.protocol import (
+from aws_elasticache_integration_client.models import (
+    ElastiCacheIntegrationsRequest,
+    RequestMetadata,
+)
+from aws_elasticache_integration_client.protocol import (
     parse_config_response,
     parse_request_response,
     serialize_config,
     serialize_request,
 )
-from elasticache_integrations.resp import decode_resp, encode_resp
+from aws_elasticache_integration_client.resp import decode_resp, encode_resp
 
 pytestmark = pytest.mark.alignment
 

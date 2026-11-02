@@ -35,12 +35,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -80,12 +76,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -120,12 +112,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Initialize Python IAM toolkit
-        run: git submodule update --init python/vendor/developer-toolkit-elasticache
-        working-directory: ${{ github.workspace }}
-
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -150,46 +138,29 @@ jobs:
           import tarfile
           import zipfile
 
-          catalog = "elasticache_integrations/idempotent-operations.json"
+          catalog = "aws_elasticache_integration_client/idempotent-operations.json"
           cache_modules = [
-              "elasticache_integrations/__init__.py",
-              "elasticache_integrations/client.py",
-              "elasticache_integrations/session.py",
-              "elasticache_integrations/connection.py",
-              "elasticache_integrations/idempotency.py",
+              "aws_elasticache_integration_client/__init__.py",
+              "aws_elasticache_integration_client/client.py",
+              "aws_elasticache_integration_client/session.py",
+              "aws_elasticache_integration_client/connection.py",
+              "aws_elasticache_integration_client/idempotency.py",
           ]
-          toolkit_modules = [
-              "developer_toolkit_elasticache/__init__.py",
-              "developer_toolkit_elasticache/LICENSE",
-              "developer_toolkit_elasticache/NOTICE",
-              "developer_toolkit_elasticache/token_generator.py",
-              "developer_toolkit_elasticache/token_manager.py",
-          ]
-          sdist_toolkit_modules = [
-              "vendor/developer-toolkit-elasticache/python/LICENSE",
-              "vendor/developer-toolkit-elasticache/python/NOTICE",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/__init__.py",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_generator.py",
-              "vendor/developer-toolkit-elasticache/python/src/developer_toolkit_elasticache/token_manager.py",
-          ]
-          junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc")
+          # The toolkit is a PyPI dependency, so neither archive may carry a copy.
+          junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc", "vendor/", "developer_toolkit_elasticache")
 
           (sdist,) = glob.glob("dist/*.tar.gz")
           (wheel,) = glob.glob("dist/*.whl")
           with tarfile.open(sdist) as archive:
-              # Members start with "elasticache-integrations-<version>/"; drop that prefix.
+              # Members start with "aws_elasticache_integration_client-<version>/"; drop that prefix.
               sdist_names = [n.split("/", 1)[1] for n in archive.getnames() if "/" in n]
           with zipfile.ZipFile(wheel) as archive:
               wheel_names = archive.namelist()
 
           errors = []
           required_by_archive = {
-              "sdist": [
-                  catalog,
-                  *cache_modules,
-                  *sdist_toolkit_modules,
-              ],
-              "wheel": [catalog, *cache_modules, *toolkit_modules],
+              "sdist": [catalog, *cache_modules],
+              "wheel": [catalog, *cache_modules],
           }
           for label, names in (("sdist", sdist_names), ("wheel", wheel_names)):
               for required in required_by_archive[label]:

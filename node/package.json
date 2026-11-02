@@ -1,8 +1,13 @@
 {
-  "name": "elasticache-integrations",
+  "name": "@aws-sdk/aws-elasticache-integration-client",
   "version": "0.0.1",
-  "description": "TypeScript parity prototype for the ElastiCacheIntegrations Node.js client.",
+  "description": "ElastiCache Integrations for AWS SDK for JavaScript v3 DynamoDB clients.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/awslabs/aws-elasticache-integration-client.git",
+    "directory": "node"
+  },
   "sideEffects": false,
   "engines": {
     "node": ">=22"
@@ -28,22 +33,18 @@
     "README.md",
     "LICENSE"
   ],
-  "workspaces": [
-    "vendor/developer-toolkit-elasticache-package"
-  ],
   "scripts": {
     "generate:idempotency": "node scripts/generate-idempotency.mjs",
     "check:idempotency": "node scripts/generate-idempotency.mjs --check",
     "clean": "node scripts/clean.mjs",
-    "build:iam": "node scripts/build-iam.mjs",
     "prebuild": "npm run check:idempotency",
-    "build": "npm run clean && npm run build:iam && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
+    "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
-    "typecheck": "npm run build:iam && tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
+    "typecheck": "tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
     "test:idempotency-catalog": "node --test scripts/idempotency-catalog.test.mjs",
-    "test": "npm run build:iam && npm run test:idempotency-catalog && vitest run --coverage",
+    "test": "npm run test:idempotency-catalog && vitest run --coverage",
     "pack:smoke": "npm run build && node scripts/package-smoke.mjs",
     "verify": "npm run check:idempotency && npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
   },
@@ -58,20 +59,17 @@
     "prettier": "3.9.10",
     "publint": "0.3.25",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.71.2",
+    "typescript-eslint": "8.72.0",
     "vitest": "5.0.5"
   },
   "dependencies": {
     "@aws-sdk/core": "^3.977.1",
     "@aws-sdk/credential-providers": "^3.1096.0",
-    "@aws/developer-toolkit-elasticache": "0.1.0-dev.0",
+    "@aws/developer-toolkit-elasticache": "^1.0.0",
     "@marcbachmann/cel-js": "^8.0.0",
     "@smithy/core": "^3.31.0",
     "@smithy/hash-node": "^4.2.7",
     "@smithy/signature-v4": "^5.6.11",
     "@smithy/types": "^4.16.1"
-  },
-  "bundleDependencies": [
-    "@aws/developer-toolkit-elasticache"
-  ]
+  }
 }

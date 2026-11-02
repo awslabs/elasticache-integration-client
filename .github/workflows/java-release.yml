@@ -26,7 +26,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-          submodules: true
 
       - name: Set up JDK
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -90,8 +89,6 @@ jobs:
     steps:
       - name: Checkout release revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
 
       - name: Set up JDK
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -123,8 +120,6 @@ jobs:
     steps:
       - name: Checkout release revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
 
       - name: Set up JDK
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -169,8 +164,6 @@ jobs:
     steps:
       - name: Checkout release revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          submodules: true
 
       - name: Set up JDK
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -184,7 +177,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pom_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations/$RELEASE_VERSION/elasticache-integrations-$RELEASE_VERSION.pom"
+          pom_url="https://repo1.maven.org/maven2/software/amazon/elasticache/aws-elasticache-integration-client/$RELEASE_VERSION/aws-elasticache-integration-client-$RELEASE_VERSION.pom"
           for attempt in $(seq 1 60); do
             if curl --fail --silent --show-error --head "$pom_url" >/dev/null; then
               ./scripts/consumer-smoke.sh "https://repo1.maven.org/maven2" "$RELEASE_VERSION"
@@ -210,8 +203,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          base_url="https://repo1.maven.org/maven2/software/amazon/elasticacheintegrations/elasticache-integrations/$RELEASE_VERSION"
-          artifact_prefix="elasticache-integrations-$RELEASE_VERSION"
+          base_url="https://repo1.maven.org/maven2/software/amazon/elasticache/aws-elasticache-integration-client/$RELEASE_VERSION"
+          artifact_prefix="aws-elasticache-integration-client-$RELEASE_VERSION"
           mkdir -p release-artifacts
           for suffix in .jar -sources.jar -javadoc.jar .pom; do
             curl --fail --silent --show-error \

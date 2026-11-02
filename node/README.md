@@ -2,6 +2,8 @@
 
 ElastiCacheIntegrations implementation done for Node.js.
 
+The npm package name is `@aws-sdk/aws-elasticache-integration-client`.
+
 ## Scope
 
 This package currently ports the Python implementation's:
@@ -70,7 +72,7 @@ and a RESP3 null reply means the config is unchanged. See
 
 ```ts
 import { DynamoDBClient, ListTablesCommand } from "@aws-sdk/client-dynamodb";
-import { install } from "elasticache-integrations";
+import { install } from "@aws-sdk/aws-elasticache-integration-client";
 
 const dynamodb = new DynamoDBClient({ region: "us-east-1", maxAttempts: 10 });
 
@@ -215,7 +217,9 @@ attempt including the capped tail. The same jitter applies to config-refresh
 and re-AUTH intervals, as in the other clients. Closing or destroying the SDK
 client interrupts reconnect backoff and prevents further attempts.
 
-The `HELLO 3 AUTH` handshake normally uses `@aws/developer-toolkit-elasticache` to cache and
+The `HELLO 3 AUTH` handshake normally uses the
+[`@aws/developer-toolkit-elasticache`](https://www.npmjs.com/package/@aws/developer-toolkit-elasticache)
+package on npm to cache and
 automatically refresh short-lived IAM tokens from the SDK client's credentials.
 The toolkit validates cache names and user IDs, normalizes them to lowercase
 before signing, and refreshes the cached token in the background. If ElastiCacheIntegrations
@@ -230,7 +234,7 @@ background after 300 seconds by default. Set
 point; it must be greater than 0 and less than 880 seconds, preserving the
 toolkit's 20-second safety margin on the 15-minute token. Refresh and retry
 behavior is described in the
-[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/release-2/node#caching-and-background-refresh).
+[toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/node#caching-and-background-refresh).
 
 `install()` creates the token manager, so destroying the SDK client also
 closes the manager and stops its timers.
@@ -263,10 +267,6 @@ before connecting instead of being silently converted to `null`.
 npm install
 npm run verify
 ```
-
-Until the ElastiCache toolkit is published to npm, it is pinned as a Git
-submodule. Initialize it after cloning with
-`git submodule update --init --recursive`.
 
 The package builds ESM and CommonJS outputs and emits TypeScript declarations.
 Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node

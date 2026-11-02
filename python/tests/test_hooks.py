@@ -1,4 +1,4 @@
-"""Unit tests for elasticache_integrations.hooks."""
+"""Unit tests for aws_elasticache_integration_client.hooks."""
 
 import io
 
@@ -9,8 +9,8 @@ import pytest
 from botocore.hooks import first_non_none_response
 from botocore.httpchecksum import AwsChunkedWrapper
 
-from elasticache_integrations import hooks
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client import hooks
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsAuthError,
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConnectionError,

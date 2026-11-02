@@ -20,7 +20,7 @@ extensions.configure<com.vanniktech.maven.publish.MavenPublishBaseExtension>("ma
 
     coordinates(
         project.group.toString(),
-        "elasticache-integrations",
+        "aws-elasticache-integration-client",
         project.version.toString()
     )
 
@@ -28,7 +28,7 @@ extensions.configure<com.vanniktech.maven.publish.MavenPublishBaseExtension>("ma
         name.set("ElastiCache Integrations Java Client")
         description.set("ElastiCache Integrations for AWS SDK for Java v2 DynamoDB clients.")
         inceptionYear.set("2026")
-        url.set("https://github.com/awslabs/photon")
+        url.set("https://github.com/awslabs/aws-elasticache-integration-client")
 
         licenses {
             license {
@@ -48,9 +48,13 @@ extensions.configure<com.vanniktech.maven.publish.MavenPublishBaseExtension>("ma
         }
 
         scm {
-            url.set("https://github.com/awslabs/photon")
-            connection.set("scm:git:https://github.com/awslabs/photon.git")
-            developerConnection.set("scm:git:ssh://git@github.com/awslabs/photon.git")
+            url.set("https://github.com/awslabs/aws-elasticache-integration-client")
+            connection.set(
+                "scm:git:https://github.com/awslabs/aws-elasticache-integration-client.git"
+            )
+            developerConnection.set(
+                "scm:git:ssh://git@github.com/awslabs/aws-elasticache-integration-client.git"
+            )
         }
     }
 }
