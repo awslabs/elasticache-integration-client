@@ -138,6 +138,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       region: "us-east-1",
       userId: "iam-user",
     });
@@ -175,6 +176,16 @@ describe("install", () => {
     );
   });
 
+  it("resolves the client's credentials once during install", async () => {
+    setup();
+    const clientCredentials = vi.fn(async () => credentials);
+
+    await install({ client: new FakeClient({ clientCredentials }), ...options });
+
+    expect(clientCredentials).toHaveBeenCalledOnce();
+    expect(mocks.buildCacheAuthProvider.mock.calls[0]![0].resolvedCredentials).toBe(credentials);
+  });
+
   it("gives session ownership of managed auth", async () => {
     setup();
 
@@ -197,6 +208,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       region: "eu-west-1",
     });
   });
@@ -273,6 +285,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       refreshAfterSeconds: 120,
       region: "us-east-1",
       userId: "iam-user",

@@ -100,9 +100,10 @@ which sign that token; and the service id, lowercased with spaces replaced by
 predicates. A value that is not an AWS SDK v3 client, a client without a
 region, or a client whose credentials provider cannot resolve credentials
 raises `ElastiCacheIntegrationsConfigError`. In the last case, the SDK's error
-is the cause. `install()` resolves the credentials once before it connects. If
-installation fails, ElastiCacheIntegrations releases what it opened, and the
-client stays open and usable without the cache.
+is the cause. `install()` resolves the credentials once before it connects and
+signs the first cache token with them. If installation fails,
+ElastiCacheIntegrations releases what it opened, and the client stays open and
+usable without the cache.
 Wrapped AWS requests are fully serialized and signed by the SDK before
 ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
 SigV4 headers only from its copied request model;
