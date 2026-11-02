@@ -921,6 +921,67 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void zeroRetryDelayReturnsWithoutWaiting() throws Exception {
+        ElastiCacheIntegrationsSession session = reconnectingSession();
+        try {
+            CompletableFuture<Boolean> retry =
+                    CompletableFuture.supplyAsync(() -> session.waitForRetry(0));
+
+            assertTrue(retry.get(1, TimeUnit.SECONDS));
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void earlyWakeupKeepsRequestedRetryDelay() throws Exception {
+        long delayMs = 200;
+        ElastiCacheIntegrationsSession session = reconnectingSession();
+        try {
+            CountDownLatch waiting = new CountDownLatch(1);
+            CompletableFuture<Long> elapsedMs =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                long start = System.nanoTime();
+                                waiting.countDown();
+                                assertTrue(session.waitForRetry(delayMs));
+                                return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+                            });
+            assertTrue(waiting.await(1, TimeUnit.SECONDS));
+            Thread.sleep(ASYNC_OBSERVATION_MS);
+            session.wakeStateWaiters();
+
+            assertTrue(elapsedMs.get(2, TimeUnit.SECONDS) >= delayMs);
+        } finally {
+            session.close();
+        }
+    }
+
+    /** Return a session stuck in RECONNECTING whose own reconnect loop sits in a long backoff. */
+    private ElastiCacheIntegrationsSession reconnectingSession() throws Exception {
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        TestConnector initialConnector = new TestConnector();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : new TestConnector(true),
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .baseDelayMs(60_000)
+                                .maxDelayMs(60_000)
+                                .jitterFactor(0)
+                                .build());
+        session.open();
+        initialConnector.fail();
+        assertNull(session.request(request()));
+        awaitState(session, ElastiCacheIntegrationsSession.State.RECONNECTING);
+        return session;
+    }
+
+    @Test
     void reconnectReevaluatesRequestWithFreshPredicates() throws Exception {
         TestConnector initialConnector = new TestConnector(false, "true");
         TestConnector replacementConnector = new TestConnector(false, "false");

@@ -915,22 +915,32 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
     }
 
-    private boolean waitForRetry(long delayMs) {
+    /** For testing: wake every thread waiting on the state lock, as a spurious wakeup would. */
+    void wakeStateWaiters() {
+        synchronized (stateLock) {
+            stateLock.notifyAll();
+        }
+    }
+
+    /** Wait out a reconnect backoff. Package-private for tests. */
+    boolean waitForRetry(long delayMs) {
         synchronized (stateLock) {
             if (state != State.RECONNECTING) {
                 return false;
             }
             // Loop so a spurious wakeup cannot cut the backoff short.
             long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(delayMs);
-            long remainingMs = delayMs;
-            while (state == State.RECONNECTING && remainingMs > 0) {
+            long remainingNanos = deadline - System.nanoTime();
+            while (state == State.RECONNECTING && remainingNanos > 0) {
+                // Round up so a sub-millisecond remainder still waits instead of ending early.
+                long waitMs = (remainingNanos + 999_999) / 1_000_000;
                 try {
-                    stateLock.wait(remainingMs);
+                    stateLock.wait(waitMs);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     return false;
                 }
-                remainingMs = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime());
+                remainingNanos = deadline - System.nanoTime();
             }
             return state == State.RECONNECTING;
         }

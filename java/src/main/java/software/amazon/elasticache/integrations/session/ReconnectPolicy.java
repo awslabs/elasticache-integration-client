@@ -167,7 +167,7 @@ public final class ReconnectPolicy {
          *   <li>{@link ReconnectPolicy#UNLIMITED_FALLBACK} (the default) or any negative value: allow
          *       fallback for the rest of the outage.
          *   <li>{@code N > 0}: allow fallback for N seconds. Later requests throw {@link
-         *       software.amazon.elasticacheintegrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
+         *       software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
          *   <li>{@code 0}: disable fallback. Requests throw as soon as the connection is lost.
          * </ul>
          *
