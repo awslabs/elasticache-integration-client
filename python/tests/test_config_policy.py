@@ -1,9 +1,12 @@
-"""Tests for elasticache_integrations.config_policy."""
+"""Tests for aws_elasticache_integration_client.config_policy."""
 
 import pytest
 
-from elasticache_integrations.config_policy import DEFAULT_STALENESS_DURATION, ConfigPolicy
-from elasticache_integrations.exceptions import ElastiCacheIntegrationsConfigError
+from aws_elasticache_integration_client.config_policy import (
+    DEFAULT_STALENESS_DURATION,
+    ConfigPolicy,
+)
+from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 
 
 def test_the_default_window_is_one_hour():

@@ -1,3 +1,4 @@
+import java.util.jar.JarFile
 import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile
 import org.gradle.api.tasks.bundling.AbstractArchiveTask
@@ -9,7 +10,7 @@ plugins {
     id("net.ltgt.errorprone") version "5.1.1"
 }
 
-group = "software.amazon.elasticacheintegrations"
+group = "software.amazon.elasticache"
 version = "0.0.1"
 
 val releasePublishing = providers.gradleProperty("releasePublishing").isPresent
@@ -56,7 +57,7 @@ sourceSets {
 }
 
 dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.3")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.4")
     implementation("dev.cel:compiler:0.14.0")
     implementation("dev.cel:runtime:0.14.0")
     // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
@@ -76,7 +77,7 @@ dependencies {
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
 
-    errorprone("com.google.errorprone:error_prone_core:2.50.0")
+    errorprone("com.google.errorprone:error_prone_core:2.51.0")
 
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
@@ -93,6 +94,9 @@ tasks.withType<JavaCompile>().configureEach {
 }
 
 tasks.jar {
+    manifest {
+        attributes("Automatic-Module-Name" to "software.amazon.elasticache.integrations")
+    }
     from("../LICENSE") {
         into("META-INF")
         rename { "LICENSE" }
@@ -180,13 +184,13 @@ val verifyJars by tasks.registering {
     doLast {
         val jars = mapOf(
             tasks.jar.get().archiveFile.get().asFile to listOf(
-                "software/amazon/elasticacheintegrations/session/ElastiCacheIntegrationsClient.class",
+                "software/amazon/elasticache/integrations/session/ElastiCacheIntegrationsClient.class",
                 "idempotent-operations.json",
                 "META-INF/LICENSE",
                 "META-INF/NOTICE"
             ),
             tasks.named<AbstractArchiveTask>(sourcesJarTaskName).get().archiveFile.get().asFile to
-                listOf("software/amazon/elasticacheintegrations/session/ElastiCacheIntegrationsClient.java"),
+                listOf("software/amazon/elasticache/integrations/session/ElastiCacheIntegrationsClient.java"),
             tasks.named<AbstractArchiveTask>(javadocJarTaskName).get().archiveFile.get().asFile to
                 listOf("index.html")
         )
@@ -204,6 +208,12 @@ val verifyJars by tasks.registering {
                 .filter { it.startsWith("software/amazon/elasticache/auth/") }
                 .toList()
             check(toolkitEntries.isEmpty()) { "Main JAR contains IAM toolkit classes: $toolkitEntries" }
+        }
+        JarFile(tasks.jar.get().archiveFile.get().asFile).use { jar ->
+            val moduleName = jar.manifest?.mainAttributes?.getValue("Automatic-Module-Name")
+            check(moduleName == "software.amazon.elasticache.integrations") {
+                "Main JAR Automatic-Module-Name is $moduleName"
+            }
         }
     }
 }

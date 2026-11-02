@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "elasticache-integrations"
+name = "aws-elasticache-integration-client"
 version = "0.0.1"
-description = "ElastiCacheIntegrations client — read-through/write-through caching for AWS SDK calls via an ElastiCache Serverless cache."
+description = "ElastiCache Integrations for AWS SDK for Python (Boto3) DynamoDB clients."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -16,6 +16,9 @@ dependencies = [
     "developer-toolkit-elasticache>=1.1,<2",  # IAM token generation and refresh
 ]
 
+[project.urls]
+Repository = "https://github.com/awslabs/aws-elasticache-integration-client"
+
 [project.optional-dependencies]
 test = [
     "pytest>=7",
@@ -24,26 +27,26 @@ test = [
     "packaging>=24",
 ]
 dev = [
-    "ruff==0.17.1",
+    "ruff==0.17.2",
     "mypy==2.4.0",
     "build==1.6.1",
     "twine==7.0.0",
 ]
 
 [tool.setuptools.packages.find]
-include = ["elasticache_integrations*"]
+include = ["aws_elasticache_integration_client*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
 python_files = ["test_*.py"]
-addopts = "--cov=elasticache_integrations --cov-report=term-missing"
+addopts = "--cov=aws_elasticache_integration_client --cov-report=term-missing"
 markers = [
     "alignment: cross-client tests that run the shared/ fixtures; CI runs them in the alignment job",
 ]
 
 [tool.coverage.run]
-source = ["elasticache_integrations"]
+source = ["aws_elasticache_integration_client"]
 branch = true
 
 [tool.coverage.report]
@@ -61,7 +64,7 @@ select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.10"
-files = ["elasticache_integrations"]
+files = ["aws_elasticache_integration_client"]
 
 [[tool.mypy.overrides]]
 module = [

@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -77,7 +77,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -113,7 +113,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
           cache: pip
@@ -138,13 +138,13 @@ jobs:
           import tarfile
           import zipfile
 
-          catalog = "elasticache_integrations/idempotent-operations.json"
+          catalog = "aws_elasticache_integration_client/idempotent-operations.json"
           cache_modules = [
-              "elasticache_integrations/__init__.py",
-              "elasticache_integrations/client.py",
-              "elasticache_integrations/session.py",
-              "elasticache_integrations/connection.py",
-              "elasticache_integrations/idempotency.py",
+              "aws_elasticache_integration_client/__init__.py",
+              "aws_elasticache_integration_client/client.py",
+              "aws_elasticache_integration_client/session.py",
+              "aws_elasticache_integration_client/connection.py",
+              "aws_elasticache_integration_client/idempotency.py",
           ]
           # The toolkit is a PyPI dependency, so neither archive may carry a copy.
           junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc", "vendor/", "developer_toolkit_elasticache")
@@ -152,7 +152,7 @@ jobs:
           (sdist,) = glob.glob("dist/*.tar.gz")
           (wheel,) = glob.glob("dist/*.whl")
           with tarfile.open(sdist) as archive:
-              # Members start with "elasticache-integrations-<version>/"; drop that prefix.
+              # Members start with "aws_elasticache_integration_client-<version>/"; drop that prefix.
               sdist_names = [n.split("/", 1)[1] for n in archive.getnames() if "/" in n]
           with zipfile.ZipFile(wheel) as archive:
               wheel_names = archive.namelist()

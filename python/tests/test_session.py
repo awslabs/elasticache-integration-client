@@ -1,8 +1,8 @@
-"""Tests for elasticache_integrations.session.
+"""Tests for aws_elasticache_integration_client.session.
 
 The connector double comes from :func:`tests.mock.mock_connector` — a ``create_autospec`` bound to
 the real :class:`ElastiCacheIntegrationsConnector`, so the session is verified against the real connector signatures
-without a network. Construction starts real :class:`~elasticache_integrations.refresh.Refresher` daemon
+without a network. Construction starts real :class:`~aws_elasticache_integration_client.refresh.Refresher` daemon
 thread (the connector is a mock, but the refresher is not), so any test that constructs a real
 ``ElastiCacheIntegrationsSession`` and reaches the refresher must call ``session.close()`` to avoid leaking it.
 
@@ -16,24 +16,27 @@ from unittest import mock
 
 import pytest
 
-from elasticache_integrations import session as session_module
-from elasticache_integrations.config_policy import ConfigPolicy
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client import session as session_module
+from aws_elasticache_integration_client.config_policy import ConfigPolicy
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConfigError,
     ElastiCacheIntegrationsOverridesRejected,
     ElastiCacheIntegrationsConfigUnevaluable,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
 )
-from elasticache_integrations.models import (
+from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsRequest,
     ElastiCacheIntegrationsResponse,
     RequestMetadata,
 )
-from elasticache_integrations.reconnect_policy import ReconnectPolicy
-from elasticache_integrations.refresh import Refresher
-from elasticache_integrations.resp import RespError
-from elasticache_integrations.session import ElastiCacheIntegrationsSession, parse_endpoint
+from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.refresh import Refresher
+from aws_elasticache_integration_client.resp import RespError
+from aws_elasticache_integration_client.session import (
+    ElastiCacheIntegrationsSession,
+    parse_endpoint,
+)
 from tests.mock import mock_connector
 
 # Short enough to read, long enough that only a deliberate advance reaches it.
@@ -43,7 +46,7 @@ STALENESS_WINDOW = 10
 class _FakeClock:
     """A monotonic clock the test moves by hand, to reach a deadline without waiting for it.
 
-    Substituted for the ``time`` module inside :mod:`elasticache_integrations.session`, which reads ``monotonic()``
+    Substituted for the ``time`` module inside :mod:`aws_elasticache_integration_client.session`, which reads ``monotonic()``
     to set the staleness deadline and to check it.
     """
 
@@ -149,7 +152,7 @@ def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog
         mock.patch.object(
             ElastiCacheIntegrationsSession, "close", side_effect=RuntimeError("cleanup failed")
         ),
-        caplog.at_level("WARNING", logger="elasticache_integrations.session"),
+        caplog.at_level("WARNING", logger="aws_elasticache_integration_client.session"),
     ):
         with pytest.raises(
             ElastiCacheIntegrationsConnectionError,
@@ -194,7 +197,7 @@ def test_close_stops_refresher_before_closing_connector(monkeypatch):
             calls.append("runner.stop")
             super().stop(timeout=timeout)
 
-    monkeypatch.setattr("elasticache_integrations.session.Refresher", _SpyRunner)
+    monkeypatch.setattr("aws_elasticache_integration_client.session.Refresher", _SpyRunner)
 
     connector = mock_connector()
     connector.close.side_effect = lambda: calls.append("connector.close")
@@ -328,7 +331,7 @@ def test_refresh_once_config_invalid_alarms_at_once_without_dropping(caplog):
     connector.execute.side_effect = ElastiCacheIntegrationsOverridesRejected(
         "aws.config rejected: CONFIG_INVALID"
     )
-    with caplog.at_level("ERROR", logger="elasticache_integrations.session"):
+    with caplog.at_level("ERROR", logger="aws_elasticache_integration_client.session"):
         session._refresh_once()  # must not raise
     connector.close.assert_not_called()
     assert any(r.levelname == "ERROR" for r in caplog.records)
@@ -351,7 +354,7 @@ def test_refresh_once_unevaluable_config_alarms_at_once_without_dropping(caplog)
             "predicates": [{"expr": "this is not (valid CEL", "vars": {}}],
         }
     ).encode()
-    with caplog.at_level("ERROR", logger="elasticache_integrations.session"):
+    with caplog.at_level("ERROR", logger="aws_elasticache_integration_client.session"):
         session._refresh_once()  # must not raise
     connector.close.assert_not_called()
     assert session._config is original_config  # untrusted config was not installed
@@ -387,7 +390,7 @@ def test_configuring_a_connection_alarms_a_config_failure_on_every_attempt(
     configured. It still fails the attempt, so the connection is closed and retried."""
     session = ElastiCacheIntegrationsSession(lambda: mock_connector())
     config = session._config
-    with caplog.at_level("ERROR", logger="elasticache_integrations.session"):
+    with caplog.at_level("ERROR", logger="aws_elasticache_integration_client.session"):
         for _ in range(2):
             connector = mock_connector()
             connector.execute.side_effect = None
@@ -414,7 +417,7 @@ def test_a_config_invalid_refresh_still_reaches_the_staleness_window(clock, capl
 
     clock.advance(1)
     connector.execute.reset_mock()
-    with caplog.at_level("WARNING", logger="elasticache_integrations.session"):
+    with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.session"):
         session._refresh_once()  # now past the window: the shared path drops the connection
     connector.close.assert_called_once_with()
     assert "dropping the connection" in caplog.text
@@ -477,7 +480,7 @@ def test_a_failing_refresh_past_the_window_drops_the_connection(clock, caplog):
     connector.execute.return_value = json.dumps({"version": "1.0"}).encode()  # no refresh_interval
     clock.advance(STALENESS_WINDOW)
 
-    with caplog.at_level("WARNING", logger="elasticache_integrations.session"):
+    with caplog.at_level("WARNING", logger="aws_elasticache_integration_client.session"):
         session._refresh_once()
 
     connector.close.assert_called_once_with()

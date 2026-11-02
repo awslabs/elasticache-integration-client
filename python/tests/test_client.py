@@ -1,4 +1,4 @@
-"""Tests for elasticache_integrations.install: its wiring and resource handling.
+"""Tests for aws_elasticache_integration_client.install: its wiring and resource handling.
 
 install() takes the application's boto3 client and the session it came from, brings up the
 ElastiCacheIntegrationsSession (IAM auth + aws.config handshake), and installs the before-send hook. The client
@@ -20,16 +20,16 @@ from botocore.client import BaseClient
 from botocore.config import Config
 from botocore.credentials import DeferredRefreshableCredentials, RefreshableCredentials
 
-from elasticache_integrations import ElastiCacheIntegrationsClientConfiguration
-from elasticache_integrations.config_policy import DEFAULT_STALENESS_DURATION
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client import ElastiCacheIntegrationsClientConfiguration
+from aws_elasticache_integration_client.config_policy import DEFAULT_STALENESS_DURATION
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConfigError,
     ElastiCacheIntegrationsError,
 )
 
-# elasticache_integrations/__init__.py re-exports install(), and `elasticache_integrations.client` is also a submodule name —
+# aws_elasticache_integration_client/__init__.py re-exports install(), and `aws_elasticache_integration_client.client` is also a submodule name —
 # so load the module object explicitly to patch its globals.
-client_mod = importlib.import_module("elasticache_integrations.client")
+client_mod = importlib.import_module("aws_elasticache_integration_client.client")
 
 
 def _sdk_client(region_name="us-east-1", credentials="sentinel"):

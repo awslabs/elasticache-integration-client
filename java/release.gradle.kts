@@ -20,7 +20,7 @@ extensions.configure<com.vanniktech.maven.publish.MavenPublishBaseExtension>("ma
 
     coordinates(
         project.group.toString(),
-        "elasticache-integrations",
+        "aws-elasticache-integration-client",
         project.version.toString()
     )
 

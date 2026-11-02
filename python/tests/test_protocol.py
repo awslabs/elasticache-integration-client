@@ -1,22 +1,22 @@
-"""Tests for elasticache_integrations's client<->cache protocol"""
+"""Tests for aws_elasticache_integration_client's client<->cache protocol"""
 
 import json
 
 import pytest
 
-from elasticache_integrations.exceptions import (
+from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsOverridesRejected,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
 )
-from elasticache_integrations.models import (
+from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsRequest,
     ElastiCacheIntegrationsResponse,
     RequestMetadata,
     ResolvedConfig,
 )
-from elasticache_integrations.protocol import (
+from aws_elasticache_integration_client.protocol import (
     CONFIG_COMMAND,
     PROTOCOL_VERSION,
     PUSH_KIND_RESPONSE,
@@ -28,7 +28,7 @@ from elasticache_integrations.protocol import (
     parse_request_response,
     parse_response_push,
 )
-from elasticache_integrations.resp import RespError, RespPush
+from aws_elasticache_integration_client.resp import RespError, RespPush
 
 
 # --- AC3: config command + parse ----------------------------------------------

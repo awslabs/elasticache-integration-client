@@ -12,7 +12,7 @@ import pytest
 from botocore import xform_name
 from botocore.compat import HAS_CRT
 
-import elasticache_integrations
+import aws_elasticache_integration_client
 from tests.mock import MockCache
 
 pytestmark = pytest.mark.alignment
@@ -58,7 +58,7 @@ def cache(monkeypatch):
 @pytest.mark.parametrize("case", CASES["cases"], ids=lambda c: c["name"])
 def test_sdk_request_case(cache, case):
     client = boto3.client(case["service"], region_name="us-east-1")
-    elasticache_integrations.install(
+    aws_elasticache_integration_client.install(
         client=client, endpoint=cache.endpoint, cache_name="test-cache"
     )
     try:

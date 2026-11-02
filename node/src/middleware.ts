@@ -211,7 +211,7 @@ function clearCachedHandlers(client: ElastiCacheIntegrationsCompatibleClient): v
  * Symbol.for() returns the same symbol in every copy of this module, so an app that loads both the
  * ESM and CommonJS builds still sees one install per client.
  */
-const HANDLE = Symbol.for("elasticache-integrations.handle");
+const HANDLE = Symbol.for("aws-elasticache-integration-client.handle");
 
 /** Return the handle already attached to `sdkClient`, or undefined if there is none. */
 export function installedHandle(sdkClient: object): ElastiCacheIntegrationsHandle | undefined {
