@@ -326,15 +326,17 @@ describe("ElastiCacheIntegrations protocol", () => {
   });
 
   it.each([99, 600, 0, -1, 1000])("rejects status %s outside HTTP range", (status) => {
-    expect(() => deserializeResponse([status, "", ""])).toThrow(ElastiCacheIntegrationsError);
+    expect(() => deserializeResponse([status, Buffer.alloc(0), Buffer.alloc(0)])).toThrow(
+      "Status code out of range",
+    );
   });
 
   it("rejects non-decimal statuses and malformed response shapes", () => {
-    expect(() => deserializeResponse([Buffer.from("not-a-number"), "", ""])).toThrow(
-      ElastiCacheIntegrationsError,
-    );
-    expect(() => deserializeResponse(["200.0", "", ""])).toThrow(ElastiCacheIntegrationsError);
-    expect(() => deserializeResponse(["0xC8", "", ""])).toThrow(ElastiCacheIntegrationsError);
+    for (const status of [Buffer.from("not-a-number"), "200.0", "0xC8"]) {
+      expect(() => deserializeResponse([status, Buffer.alloc(0), Buffer.alloc(0)])).toThrow(
+        "Invalid status code",
+      );
+    }
     for (const value of [null, undefined, [], [200], [200, ""], [200, "", "", "x"]]) {
       expect(() => deserializeResponse(value)).toThrow(ElastiCacheIntegrationsError);
     }
