@@ -1,6 +1,7 @@
 package software.amazon.elasticache.integrations.session;
 
 import java.io.Closeable;
+import java.lang.reflect.Field;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Map;
@@ -19,8 +20,11 @@ import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
 import software.amazon.awssdk.core.SdkClient;
 import software.amazon.awssdk.core.SdkServiceClientConfiguration;
 import software.amazon.awssdk.core.client.builder.SdkAsyncClientBuilder;
+import software.amazon.awssdk.core.client.builder.SdkDefaultClientBuilder;
 import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.client.config.SdkClientConfiguration;
+import software.amazon.awssdk.core.client.config.SdkClientOption;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.SdkHttpClient;
@@ -265,9 +269,10 @@ public final class ElastiCacheIntegrationsClient {
          * them.
          *
          * <p>Install replaces the transport of the SDK builder, and the SDK has no getter to read back
-         * one the application already set, so pass that client here. An {@code httpClientBuilder} left
-         * on the SDK builder is replaced without an error. The SDK client does not close this client.
-         * When unset, install creates the SDK Apache HTTP client and closes it with the SDK client.
+         * one the application already set, so pass that client here. Install rejects an SDK builder
+         * that already has an {@code httpClient} or {@code httpClientBuilder}. The SDK client does not
+         * close this client. When unset, install creates the SDK Apache HTTP client and closes it with
+         * the SDK client.
          *
          * @param originHttpClient the HTTP client for origin requests
          * @return this builder
@@ -344,9 +349,9 @@ public final class ElastiCacheIntegrationsClient {
          * session is open: connected, authenticated with {@code HELLO 3 AUTH}, and configured with
          * {@code aws.config}. Closing the returned client disconnects the cache first.
          *
-         * <p>A builder that already has an HTTP client fails, because the SDK rejects a builder that
-         * has both an HTTP client and an HTTP client builder. Pass that client to {@link
-         * #originHttpClient} and remove it from the builder.
+         * <p>A builder that already has an {@code httpClient} or {@code httpClientBuilder} fails,
+         * because install would replace its transport settings. Build that HTTP client, pass it to
+         * {@link #originHttpClient}, and remove it from the builder.
          *
          * @param sdkClientBuilder the application's client builder, for example {@code
          *     DynamoDbClient.builder().region(Region.US_EAST_1)}
@@ -358,6 +363,10 @@ public final class ElastiCacheIntegrationsClient {
                 C install(B sdkClientBuilder) {
             requireBuilder(sdkClientBuilder);
             EndpointParser.ParsedEndpoint cacheEndpoint = validateOptions();
+            rejectHttpClientBuilder(
+                    sdkClientBuilder,
+                    SdkClientOption.CONFIGURED_SYNC_HTTP_CLIENT_BUILDER,
+                    "originHttpClient");
             SSLContext sslContext = CacheTls.create(verify, caCerts);
 
             ManagedIamAuthProvider auth = new ManagedIamAuthProvider();
@@ -420,8 +429,9 @@ public final class ElastiCacheIntegrationsClient {
          * Build the application's asynchronous SDK client with the cache installed.
          *
          * <p>It does for an asynchronous builder, for example {@code DynamoDbAsyncClient.builder()},
-         * what {@link #install} does for a synchronous one. A builder that already has an HTTP client
-         * fails; pass that client to {@link #originAsyncHttpClient}.
+         * what {@link #install} does for a synchronous one. A builder that already has an {@code
+         * httpClient} or {@code httpClientBuilder} fails. Build that HTTP client and pass it to {@link
+         * #originAsyncHttpClient}.
          *
          * @param sdkClientBuilder the application's asynchronous client builder
          * @return the built client
@@ -432,6 +442,19 @@ public final class ElastiCacheIntegrationsClient {
                 C installAsync(B sdkClientBuilder) {
             requireBuilder(sdkClientBuilder);
             EndpointParser.ParsedEndpoint cacheEndpoint = validateOptions();
+            if (asyncMaxBufferedRequestBytes <= 0) {
+                throw new ElastiCacheIntegrationsConfigError(
+                        "asyncMaxBufferedRequestBytes must be positive, got " + asyncMaxBufferedRequestBytes);
+            }
+            if (asyncMaxConcurrentBodyCollectors <= 0) {
+                throw new ElastiCacheIntegrationsConfigError(
+                        "asyncMaxConcurrentBodyCollectors must be positive, got "
+                                + asyncMaxConcurrentBodyCollectors);
+            }
+            rejectHttpClientBuilder(
+                    sdkClientBuilder,
+                    SdkClientOption.CONFIGURED_ASYNC_HTTP_CLIENT_BUILDER,
+                    "originAsyncHttpClient");
             SSLContext sslContext = CacheTls.create(verify, caCerts);
 
             ManagedIamAuthProvider auth = new ManagedIamAuthProvider();
@@ -506,8 +529,28 @@ public final class ElastiCacheIntegrationsClient {
             if (cacheName == null || cacheName.isEmpty()) {
                 throw new ElastiCacheIntegrationsConfigError("cacheName is required");
             }
+            validateCacheNameAndUserId();
             try {
                 return EndpointParser.parseEndpoint(endpoint);
+            } catch (ElastiCacheIntegrationsError invalid) {
+                throw new ElastiCacheIntegrationsConfigError(invalid.getMessage(), invalid);
+            }
+        }
+
+        /**
+         * Check {@code cacheName} and {@code userId} with the IAM toolkit's rules before any client is
+         * built, through the same provider builder that {@link #bindAndOpen} uses. The region and
+         * credentials here are placeholders: the real ones come from the built SDK client, and the
+         * toolkit does not use them to check the names.
+         */
+        private void validateCacheNameAndUserId() {
+            try {
+                IamAuthTokenProvider.builder()
+                        .cacheName(cacheName)
+                        .userId(userId)
+                        .region(Region.US_EAST_1)
+                        .credentialsProvider(AnonymousCredentialsProvider.create())
+                        .build();
             } catch (ElastiCacheIntegrationsError invalid) {
                 throw new ElastiCacheIntegrationsConfigError(invalid.getMessage(), invalid);
             }
@@ -1033,6 +1076,53 @@ public final class ElastiCacheIntegrationsClient {
         return null;
     }
 
+    /**
+     * Refuse an SDK builder that already has an HTTP client builder. Install replaces it, and the SDK
+     * has no getter to read it back, so its proxy, TLS, timeout, and pool settings would be lost
+     * without an error. The SDK keeps it in a protected field, which this check reads by reflection.
+     * A builder this check cannot read, such as a wrapper around an SDK builder or an SDK version
+     * that moved the field, is refused too, because install cannot tell whether it would lose a
+     * transport.
+     */
+    private static void rejectHttpClientBuilder(
+            Object sdkClientBuilder, SdkClientOption<?> option, String originOption) {
+        rejectHttpClientBuilder(sdkClientBuilder, option, originOption, "clientConfiguration");
+    }
+
+    /** For testing: names the SDK builder field to read, so a test can make the read fail. */
+    static void rejectHttpClientBuilder(
+            Object sdkClientBuilder, SdkClientOption<?> option, String originOption, String fieldName) {
+        if (!(sdkClientBuilder instanceof SdkDefaultClientBuilder)) {
+            throw new ElastiCacheIntegrationsConfigError(
+                    uninspectable(sdkClientBuilder.getClass().getName(), originOption));
+        }
+        Object configured;
+        try {
+            Field field = SdkDefaultClientBuilder.class.getDeclaredField(fieldName);
+            field.setAccessible(true);
+            configured = ((SdkClientConfiguration.Builder) field.get(sdkClientBuilder)).option(option);
+        } catch (ReflectiveOperationException | RuntimeException unreadable) {
+            throw new ElastiCacheIntegrationsConfigError(
+                    uninspectable(sdkClientBuilder.getClass().getName(), originOption), unreadable);
+        }
+        if (configured != null) {
+            throw new ElastiCacheIntegrationsConfigError(
+                    "This AWS SDK client builder already has an httpClientBuilder, which ElastiCache"
+                            + " Integrations must replace. Build the HTTP client, pass it as "
+                            + originOption
+                            + ", and remove it from the builder.");
+        }
+    }
+
+    private static String uninspectable(String builderClass, String originOption) {
+        return "ElastiCache Integrations cannot check whether the AWS SDK client builder "
+                + builderClass
+                + " already has an httpClientBuilder, which install would replace. Use the builder"
+                + " that the SDK client's builder() method returns, and pass any HTTP client as "
+                + originOption
+                + ".";
+    }
+
     private static void closeAfterFailure(AutoCloseable owner, Throwable failure) {
         try {
             owner.close();
@@ -1041,7 +1131,7 @@ public final class ElastiCacheIntegrationsClient {
         }
     }
 
-    /** Hands the SDK the transport Photon already built. The SDK closes it with the client. */
+    /** Hands the SDK the transport that install already built. The SDK closes it with the client. */
     private static final class PrebuiltHttpClient
             implements SdkHttpClient.Builder<PrebuiltHttpClient> {
         private final SdkHttpClient client;

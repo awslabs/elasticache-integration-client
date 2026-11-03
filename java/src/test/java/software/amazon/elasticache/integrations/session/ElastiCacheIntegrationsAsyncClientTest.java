@@ -48,6 +48,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
+import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -441,6 +442,49 @@ class ElastiCacheIntegrationsAsyncClientTest {
     }
 
     @Test
+    void asyncClientRejectsABuilderWithItsOwnHttpClientBuilder() {
+        RecordingAsyncOriginBuilder ownTransport = new RecordingAsyncOriginBuilder();
+        DynamoDbAsyncClientBuilder builder =
+                DynamoDbAsyncClient.builder().httpClientBuilder(ownTransport);
+        sdkConfig(builder);
+
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().installAsync(builder));
+
+        assertTrue(error.getMessage().contains("originAsyncHttpClient"), error.getMessage());
+        assertNull(handle.get(), "no cache connection is created");
+        builder.build().close();
+        assertEquals(1, ownTransport.buildCount.get(), "the application's builder keeps its transport");
+    }
+
+    @Test
+    void asyncClientRejectsInvalidBodyLimitsBeforeConnecting() {
+        ElastiCacheIntegrationsConfigError badBuffer =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () ->
+                                installAsync(
+                                        cacheBuilder().asyncMaxBufferedRequestBytes(0),
+                                        ElastiCacheIntegrationsAsyncClientTest::sdkConfig));
+        ElastiCacheIntegrationsConfigError badCollectors =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () ->
+                                installAsync(
+                                        cacheBuilder().asyncMaxConcurrentBodyCollectors(-1),
+                                        ElastiCacheIntegrationsAsyncClientTest::sdkConfig));
+
+        assertTrue(
+                badBuffer.getMessage().contains("asyncMaxBufferedRequestBytes"), badBuffer.getMessage());
+        assertTrue(
+                badCollectors.getMessage().contains("asyncMaxConcurrentBodyCollectors"),
+                badCollectors.getMessage());
+
+        assertNull(handle.get(), "no cache connection is created");
+    }
+
+    @Test
     void asyncHandleSerializesLifecycleOperations() throws Exception {
         DynamoDbAsyncClient client = newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig);
         ElastiCacheIntegrationsAsyncHandle handle = this.handle.get();
@@ -547,6 +591,17 @@ class ElastiCacheIntegrationsAsyncClientTest {
                         new RespBulkString(
                                 "content-type:application/x-amz-json-1.0".getBytes(StandardCharsets.UTF_8)),
                         new RespBulkString(body.getBytes(StandardCharsets.UTF_8))));
+    }
+
+    private static final class RecordingAsyncOriginBuilder
+            implements SdkAsyncHttpClient.Builder<RecordingAsyncOriginBuilder> {
+        private final AtomicInteger buildCount = new AtomicInteger();
+
+        @Override
+        public SdkAsyncHttpClient buildWithDefaults(AttributeMap serviceDefaults) {
+            buildCount.incrementAndGet();
+            return new RecordingAsyncOrigin();
+        }
     }
 
     private static final class RecordingAsyncOrigin implements SdkAsyncHttpClient {

@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
+import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -35,6 +36,7 @@ import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.core.client.config.SdkClientOption;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
@@ -50,6 +52,7 @@ import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
@@ -530,6 +533,78 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    void clientRejectsABuilderWithItsOwnHttpClientBuilder() {
+        RecordingOriginClientBuilder ownTransport = new RecordingOriginClientBuilder();
+        DynamoDbClientBuilder builder = appBuilder().httpClientBuilder(ownTransport);
+
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().install(builder));
+
+        assertTrue(error.getMessage().contains("originHttpClient"), error.getMessage());
+        assertNull(handle.get(), "no cache connection is created");
+        builder.build().close();
+        assertEquals(1, ownTransport.buildCount.get(), "the application's builder keeps its transport");
+    }
+
+    @Test
+    void clientRejectsABuilderItCannotInspect() {
+        RecordingOriginClientBuilder ownTransport = new RecordingOriginClientBuilder();
+        DynamoDbClientBuilder real = appBuilder().httpClientBuilder(ownTransport);
+        DynamoDbClientBuilder wrapper =
+                (DynamoDbClientBuilder)
+                        Proxy.newProxyInstance(
+                                DynamoDbClientBuilder.class.getClassLoader(),
+                                new Class<?>[] {DynamoDbClientBuilder.class},
+                                (proxy, method, args) -> {
+                                    Object result = method.invoke(real, args);
+                                    return result == real ? proxy : result;
+                                });
+
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().install(wrapper));
+
+        assertTrue(error.getMessage().contains("originHttpClient"), error.getMessage());
+        assertNull(handle.get(), "no cache connection is created");
+        real.build().close();
+        assertEquals(1, ownTransport.buildCount.get(), "the application's builder keeps its transport");
+    }
+
+    @Test
+    void clientRejectsABuilderWhoseHttpSettingCannotBeRead() {
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () ->
+                                ElastiCacheIntegrationsClient.rejectHttpClientBuilder(
+                                        appBuilder(),
+                                        SdkClientOption.CONFIGURED_SYNC_HTTP_CLIENT_BUILDER,
+                                        "originHttpClient",
+                                        "fieldThatDoesNotExist"));
+
+        assertTrue(error.getMessage().contains("originHttpClient"), error.getMessage());
+        assertNotNull(error.getCause(), "the reflection failure is the cause");
+    }
+
+    @Test
+    void clientRejectsAnInvalidCacheNameOrUserIdBeforeConnecting() {
+        ElastiCacheIntegrationsConfigError badName =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () -> cacheBuilder().cacheName("Bad Name!").install(appBuilder()));
+        ElastiCacheIntegrationsConfigError badUser =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () -> cacheBuilder().userId("bad user!").install(appBuilder()));
+
+        assertTrue(badName.getMessage().contains("serverlessCacheName"), badName.getMessage());
+        assertTrue(badUser.getMessage().contains("userId"), badUser.getMessage());
+
+        assertNull(handle.get(), "no cache connection is created");
+    }
+
+    @Test
     void clientCloseClosesTheSession() {
         RecordingOriginClient origin = new RecordingOriginClient();
         DynamoDbClient client = cacheBuilder().originHttpClient(origin).install(appBuilder());
@@ -952,6 +1027,17 @@ class ElastiCacheIntegrationsClientTest {
                 "{\"version\":\"1.0\",\"refresh_interval\":60,"
                         + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
                         + "&& operation == 'ListTables'\",\"vars\":{}}]}");
+    }
+
+    private static final class RecordingOriginClientBuilder
+            implements SdkHttpClient.Builder<RecordingOriginClientBuilder> {
+        private final AtomicInteger buildCount = new AtomicInteger();
+
+        @Override
+        public SdkHttpClient buildWithDefaults(AttributeMap serviceDefaults) {
+            buildCount.incrementAndGet();
+            return new RecordingOriginClient();
+        }
     }
 
     private static final class RecordingOriginClient implements SdkHttpClient {

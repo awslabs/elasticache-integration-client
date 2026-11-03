@@ -182,10 +182,12 @@ DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
 
 `install` sets the SDK builder's `httpClientBuilder` to the cache transport, and
 the SDK builder has no getter for an HTTP client that the application already
-set. A builder that already has an `httpClient` makes `install` throw
-`ElastiCacheIntegrationsConfigError` with the SDK's error as the cause. A
-builder that already has an `httpClientBuilder` loses it without an error, and
-the client uses the default origin transport instead. The SDK closes the
+set. A builder that already has an `httpClient` or an `httpClientBuilder` makes
+`install` throw `ElastiCacheIntegrationsConfigError` before it connects to the
+cache, so those settings are never lost without an error. `install` also throws
+`ElastiCacheIntegrationsConfigError` for a builder it cannot inspect, such as a
+wrapper around the builder that the SDK client's `builder()` method returns.
+The SDK closes the
 transport that Cache creates when the application closes the client. Cache
 closes the origin transport only when it created it. A transport or executor
 that you supply stays open.
