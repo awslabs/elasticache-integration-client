@@ -49,11 +49,13 @@ public final class PredicateEvaluator {
     }
 
     /**
-     * Compile the ordered predicate entries in a resolved config.
+     * Compile the {@code predicates} of a resolved config into evaluatable programs, in wire order.
      *
      * <p>A missing {@code predicates} key compiles to an empty evaluator, so every request passes
      * through.
      *
+     * @param rawConfig the parsed config document, or {@code null}
+     * @return an evaluator for the config's predicates, in config order
      * @throws ElastiCacheIntegrationsConfigUnevaluable {@code predicates} is present but not a list,
      *     an entry is not an object, has no string {@code expr}, or has an expression this client
      *     cannot compile. Caching by the entries that happened to compile would route a different set
@@ -77,7 +79,15 @@ public final class PredicateEvaluator {
         return new PredicateEvaluator(compiled);
     }
 
-    /** Return true when the first compiled predicate matches the request. */
+    /**
+     * Return true when the request should go to the cache. The first match wins, and an empty list
+     * routes nothing.
+     *
+     * <p>Builds the request context once and reuses it across predicates.
+     *
+     * @param request the request to evaluate
+     * @return true to send the request through Cache, false to send it to the origin
+     */
     public boolean shouldRouteToCache(ElastiCacheIntegrationsRequest request) {
         if (predicates.isEmpty()) {
             return false;

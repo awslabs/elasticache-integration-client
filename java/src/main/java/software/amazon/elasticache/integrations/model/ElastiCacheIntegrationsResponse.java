@@ -5,31 +5,59 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 
-/** Represents an HTTP response received through Cache. */
-public class ElastiCacheIntegrationsResponse {
+/** A response returned by the cache, to be adapted into an SDK response. */
+public final class ElastiCacheIntegrationsResponse {
 
     private final int statusCode;
     private final Map<String, String> headers;
     private final byte[] body;
 
+    /**
+     * Create a response.
+     *
+     * @param statusCode the HTTP status code
+     * @param headers the response headers, or {@code null} for none
+     * @param body the response body, or {@code null} for an empty body
+     */
     public ElastiCacheIntegrationsResponse(int statusCode, Map<String, String> headers, byte[] body) {
         this.statusCode = statusCode;
         this.headers = headers != null ? headers : Collections.emptyMap();
         this.body = body != null ? body : new byte[0];
     }
 
+    /**
+     * Create a response with an empty body.
+     *
+     * @param statusCode the HTTP status code
+     * @param headers the response headers, or {@code null} for none
+     */
     public ElastiCacheIntegrationsResponse(int statusCode, Map<String, String> headers) {
         this(statusCode, headers, new byte[0]);
     }
 
+    /**
+     * Return the HTTP status code.
+     *
+     * @return the HTTP status code
+     */
     public int getStatusCode() {
         return statusCode;
     }
 
+    /**
+     * Return the response headers.
+     *
+     * @return the response headers, empty when none were given
+     */
     public Map<String, String> getHeaders() {
         return headers;
     }
 
+    /**
+     * Return the response body.
+     *
+     * @return the response body, empty when none was given
+     */
     public byte[] getBody() {
         return body;
     }
@@ -37,7 +65,7 @@ public class ElastiCacheIntegrationsResponse {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof ElastiCacheIntegrationsResponse)) return false;
         ElastiCacheIntegrationsResponse that = (ElastiCacheIntegrationsResponse) o;
         return statusCode == that.statusCode
                 && Objects.equals(headers, that.headers)

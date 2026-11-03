@@ -12,7 +12,11 @@ final class ElastiCacheIntegrationsRequestContext {
     private static final ExecutionAttribute<Boolean> PASS_THROUGH =
             new ExecutionAttribute<>("ElastiCacheIntegrationsPassThrough");
 
+    // Instance fields so that two clients on one thread keep separate attempts.
+    @SuppressWarnings("ThreadLocalUsage")
     private final ThreadLocal<ElastiCacheIntegrationsRequest> currentAttempt = new ThreadLocal<>();
+
+    @SuppressWarnings("ThreadLocalUsage")
     private final ThreadLocal<Boolean> currentPassThrough = new ThreadLocal<>();
 
     void capture(ElastiCacheIntegrationsRequest request, ExecutionAttributes executionAttributes) {

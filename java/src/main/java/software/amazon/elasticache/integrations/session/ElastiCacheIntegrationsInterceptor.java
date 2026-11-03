@@ -89,6 +89,8 @@ public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor 
      *
      * <p>This transport must be installed together with this interceptor. Using the interceptor with
      * the SDK's default transport bypasses Cache.
+     *
+     * @return the HTTP client to install with this interceptor
      */
     public ElastiCacheIntegrationsHttpClient getHttpClient() {
         return httpClient;

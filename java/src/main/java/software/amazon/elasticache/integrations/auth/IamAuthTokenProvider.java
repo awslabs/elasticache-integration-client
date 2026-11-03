@@ -75,17 +75,29 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         return new AuthCredentials(generator.getUserId(), token);
     }
 
-    /** Get the user ID that will be used in generated credentials. */
+    /**
+     * Get the user ID that will be used in generated credentials.
+     *
+     * @return the user ID
+     */
     public String getUserId() {
         return generator.getUserId();
     }
 
-    /** Get the cache name. */
+    /**
+     * Get the cache name.
+     *
+     * @return the ElastiCache serverless cache name
+     */
     public String getCacheName() {
         return generator.getCacheName();
     }
 
-    /** Get the region. */
+    /**
+     * Get the region.
+     *
+     * @return the AWS region
+     */
     public Region getRegion() {
         return generator.getRegion();
     }
@@ -95,6 +107,8 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      *
      * <p>Cache clients and handles call this automatically when this provider is passed to {@code
      * authProvider(...)}.
+     *
+     * @return a new, independent token manager
      */
     public ElastiCacheIamAuthTokenManager newTokenManager() {
         ElastiCacheIamAuthTokenManager.Builder managerBuilder =
@@ -156,7 +170,11 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         return create(cacheName, region);
     }
 
-    /** Create a new builder. */
+    /**
+     * Create a new builder.
+     *
+     * @return a new builder
+     */
     public static Builder builder() {
         return new Builder();
     }
@@ -191,6 +209,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          * Set the cache name (required).
          *
          * @param cacheName the ElastiCache serverless cache name
+         * @return this builder
          */
         public Builder cacheName(String cacheName) {
             this.cacheName = cacheName;
@@ -198,9 +217,10 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         }
 
         /**
-         * Set the user ID (optional, defaults to "default").
+         * Set the user ID (optional, defaults to {@link IamAuthTokenGenerator#DEFAULT_USER_ID}).
          *
          * @param userId the IAM user ID
+         * @return this builder
          */
         public Builder userId(String userId) {
             this.userId = userId;
@@ -211,6 +231,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          * Set the AWS region (required unless using region from default chain).
          *
          * @param region the AWS region
+         * @return this builder
          */
         public Builder region(Region region) {
             this.region = region;
@@ -221,6 +242,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          * Set the credentials provider (optional, defaults to DefaultCredentialsProvider).
          *
          * @param credentialsProvider the AWS credentials provider
+         * @return this builder
          */
         public Builder credentialsProvider(AwsCredentialsProvider credentialsProvider) {
             this.credentialsProvider = credentialsProvider;
@@ -236,6 +258,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
          * toolkit token manager documentation</a>.
          *
          * @param expiresIn the expiration duration
+         * @return this builder
          */
         public Builder expiresIn(Duration expiresIn) {
             this.expiresIn = expiresIn;
@@ -243,18 +266,27 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
         }
 
         /**
-         * Set how long after issuance Cache-managed tokens refresh.
+         * Set how long after a token is issued before the IAM toolkit signs a replacement in the
+         * background, while callers keep using the current token.
          *
          * <p>The accepted range, default, retry behavior, and safety margin are defined by the <a
          * href="https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh">
          * toolkit token manager documentation</a>.
+         *
+         * @param refreshAfter the time after issuance to refresh
+         * @return this builder
          */
         public Builder refreshAfter(Duration refreshAfter) {
             this.refreshAfter = refreshAfter;
             return this;
         }
 
-        /** Set a callback invoked after a Cache-managed token is installed. */
+        /**
+         * Set a callback invoked after a Cache-managed token is installed.
+         *
+         * @param onTokenChanged the callback, which receives the new token. Do not log the token.
+         * @return this builder
+         */
         public Builder onTokenChanged(Consumer<String> onTokenChanged) {
             this.onTokenChanged = onTokenChanged;
             return this;

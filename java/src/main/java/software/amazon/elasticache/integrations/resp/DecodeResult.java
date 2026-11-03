@@ -6,15 +6,31 @@ public class DecodeResult {
     private final RespValue value;
     private final int position;
 
+    /**
+     * Create a decode result.
+     *
+     * @param value the decoded value
+     * @param position the position after the decoded value
+     */
     public DecodeResult(RespValue value, int position) {
         this.value = value;
         this.position = position;
     }
 
+    /**
+     * Return the decoded value.
+     *
+     * @return the decoded value
+     */
     public RespValue getValue() {
         return value;
     }
 
+    /**
+     * Return the position after the decoded value.
+     *
+     * @return the index of the first byte after the decoded value
+     */
     public int getPosition() {
         return position;
     }

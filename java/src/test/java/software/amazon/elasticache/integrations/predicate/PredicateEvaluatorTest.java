@@ -316,11 +316,6 @@ class PredicateEvaluatorTest {
         return variables;
     }
 
-    @SuppressWarnings("unchecked")
-    private static List<Object> predicateEntries(Map<String, Object> config) {
-        return (List<Object>) config.get("predicates");
-    }
-
     private static ElastiCacheIntegrationsRequest request(
             String operation, String service, String body) {
         return request(operation, service, body.getBytes(StandardCharsets.UTF_8));

@@ -3,15 +3,29 @@ package software.amazon.elasticache.integrations.resp;
 import java.util.List;
 import java.util.Objects;
 
-/** RESP3 push value. */
-public class RespPush implements RespValue {
+/**
+ * A RESP3 push frame ({@code >}): an out-of-band message, not the reply to any command.
+ *
+ * <p>The first element is the kind, such as {@code aws.response}. The rest are its items.
+ */
+public final class RespPush implements RespValue {
 
     private final List<RespValue> elements;
 
+    /**
+     * Create a push value.
+     *
+     * @param elements the push elements
+     */
     public RespPush(List<RespValue> elements) {
         this.elements = elements;
     }
 
+    /**
+     * Return the push elements.
+     *
+     * @return the push elements
+     */
     public List<RespValue> getElements() {
         return elements;
     }
@@ -19,14 +33,14 @@ public class RespPush implements RespValue {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof RespPush)) return false;
         RespPush respPush = (RespPush) o;
         return Objects.equals(elements, respPush.elements);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(elements);
+        return Objects.hashCode(elements);
     }
 
     @Override

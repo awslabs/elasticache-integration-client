@@ -90,6 +90,8 @@ dependencies {
 tasks.withType<JavaCompile>().configureEach {
     if (JavaVersion.current().isJava9Compatible) {
         options.release.set(8)
+        // JDK 21 warns that release 8 is obsolete. Java 8 output is a supported target.
+        options.compilerArgs.add("-Xlint:-options")
     }
 }
 
@@ -171,7 +173,7 @@ tasks.check {
     dependsOn(tasks.jacocoTestCoverageVerification)
 }
 
-val verifyJars by tasks.registering {
+val verifyJars = tasks.register("verifyJars") {
     description = "Check that the main, sources, and Javadoc JARs contain the expected entries"
     dependsOn(tasks.jar, sourcesJarTaskName, javadocJarTaskName)
     inputs.file(tasks.jar.flatMap { it.archiveFile })

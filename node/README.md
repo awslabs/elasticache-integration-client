@@ -137,6 +137,7 @@ await install({
   cacheName: "my-cache",
   clientConfiguration: {
     cacheRequestTimeout: 2,
+    connectionTimeout: 2,
     fallbackDuration: 60,
     cachePolicyOverrides: { cached_tables: ["Users", "Sessions"] },
     iamTokenRefreshDelay: 300,
@@ -147,6 +148,7 @@ await install({
 | Field                  | Default                  | Meaning                                                                                                                                      |
 | ---------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cacheRequestTimeout`  | 5 s                      | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
+| `connectionTimeout`    | 2 s                      | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
 | `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
 | `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |
 | `cachePolicyTimeout`   | 3600 s                   | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache.                                                 |
@@ -159,23 +161,31 @@ recognise, before it connects. `cachePolicyTimeout` is described under
 
 ## Reconnection and fallback
 
-`install()` retries the initial connection a bounded number of times and
-still fails loudly if no attempt completes. After a live connection is lost,
-ElastiCacheIntegrations reconnects in the background until it succeeds or the client is
-destroyed. Idle socket loss starts recovery without waiting for a request.
-Every replacement resolves fresh credentials, repeats `HELLO 3 AUTH` and `aws.config`, and
-recompiles the resolved predicates.
+A lost connection is rebuilt in the background and retried until it succeeds or
+the client is destroyed. Idle socket loss starts recovery without waiting for a
+request. Every replacement resolves fresh credentials, repeats `HELLO 3 AUTH`
+and `aws.config`, and recompiles the resolved predicates.
 
-While there is no connection, a routed request has not been sent to ElastiCacheIntegrations and
-can safely use the origin. `clientConfiguration.fallbackDuration` controls that per-outage window:
+Right after the loss, a routed request waits up to `connectionTimeout` for the
+new connection and is served from the cache if it arrives. If the connection is
+not back by then, the request has not been sent to ElastiCacheIntegrations and
+can safely use the origin. The same timeout bounds startup: `install()` keeps
+retrying until `connectionTimeout` passes, then rejects if no connection is
+ready.
 
-| `fallbackDuration`                         | Behavior                                                                               |
-| ------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `undefined` (default), `null`, or negative | Fall back indefinitely, so a cache outage does not become an application outage.       |
-| Positive integer                           | Fall back for that many seconds, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
-| `0`                                        | Never fall back; routed requests raise immediately while disconnected.                 |
+`clientConfiguration.fallbackDuration` controls how long requests may fall
+back, counted from the end of `connectionTimeout`:
 
-The window resets after every successful reconnect. Requests that do not match
+| `fallbackDuration`                         | Behavior                                                                                                                |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `undefined` (default), `null`, or negative | Fall back indefinitely, so a cache outage does not become an application outage.                                        |
+| Positive integer                           | Fall back for that many seconds, then raise `ElastiCacheIntegrationsCacheUnavailable`.                                  |
+| `0`                                        | Never fall back; wait up to `connectionTimeout` for a connection, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
+
+The wait and the window apply to each outage, and both reset after every
+successful reconnect. A request that arrives after the wait has ended does not
+wait again. With `fallbackDuration: 0`, an SDK retry in the same outage
+therefore does not restart the wait. Requests that do not match
 the resolved predicates continue to origin even after a finite window expires.
 `ElastiCacheIntegrationsCacheUnavailable` is exported and marked retryable for the AWS SDK.
 
@@ -203,7 +213,8 @@ still keep the last confirmed policy until the cache policy timeout drops the
 connection. Refresh timeouts and connection loss
 start recovery immediately.
 
-The initial connection gets 3 attempts of 5 seconds each. Reconnect delay
+Startup attempts back off the same way and stop when `connectionTimeout`
+passes. Each background reconnect attempt is capped at 5 seconds. Reconnect delay
 starts at 100 ms and doubles up to 3.2 s, with ±20% jitter applied to every
 attempt including the capped tail. The same jitter applies to config-refresh
 and re-AUTH intervals, as in the other clients. Closing or destroying the SDK

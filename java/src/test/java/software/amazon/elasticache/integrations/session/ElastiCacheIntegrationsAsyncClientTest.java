@@ -66,14 +66,14 @@ class ElastiCacheIntegrationsAsyncClientTest {
     private MockTlsServer server;
     private SSLContext clientSslContext;
 
-    private final Consumer<DynamoDbAsyncClientBuilder> sdkConfig =
-            builder ->
-                    builder
-                            .region(Region.US_EAST_1)
-                            .credentialsProvider(
-                                    StaticCredentialsProvider.create(
-                                            AwsBasicCredentials.create("access-key", "secret-key")))
-                            .endpointOverride(URI.create("http://127.0.0.1:1"));
+    private static void sdkConfig(DynamoDbAsyncClientBuilder builder) {
+        builder
+                .region(Region.US_EAST_1)
+                .credentialsProvider(
+                        StaticCredentialsProvider.create(
+                                AwsBasicCredentials.create("access-key", "secret-key")))
+                .endpointOverride(URI.create("http://127.0.0.1:1"));
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -100,7 +100,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                         "{\"TableNames\":[\"from-cache\"]}"));
 
         try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                newClient(sdkConfig)) {
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
             assertEquals(
                     Collections.singletonList("from-cache"),
                     result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
@@ -131,7 +131,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                         "{\"TableNames\":[]}"));
 
         try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                newClient(sdkConfig)) {
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
             assertEquals(
                     Collections.emptyList(),
                     result.client().listTables().get(5, TimeUnit.SECONDS).tableNames());
@@ -157,7 +157,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                 });
 
         try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                newClient(sdkConfig)) {
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
             CompletableFuture<ListTablesResponse> listTables = result.client().listTables();
             CompletableFuture<DescribeLimitsResponse> describeLimits = result.client().describeLimits();
             CompletableFuture.allOf(listTables, describeLimits).get(5, TimeUnit.SECONDS);
@@ -194,7 +194,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                 });
 
         try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
-                newClient(sdkConfig)) {
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
             CompletableFuture<ListTablesResponse> deferred = result.client().listTables();
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
 
@@ -237,7 +237,9 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                                 .maxDelayMs(2)
                                                 .jitterFactor(0)
                                                 .build())
-                                .buildAsync(DynamoDbAsyncClient.builder(), sdkConfig)) {
+                                .buildAsync(
+                                        DynamoDbAsyncClient.builder(),
+                                        ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
             proxy.disconnectClients();
 
             awaitRecovered(result.handle().getSession(), credentialsCallCount);
@@ -323,7 +325,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
         try (ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
                 newClient(
                         builder -> {
-                            sdkConfig.accept(builder);
+                            sdkConfig(builder);
                             builder.overrideConfiguration(
                                     config -> config.addExecutionInterceptor(callerInterceptor));
                         })) {
@@ -335,7 +337,8 @@ class ElastiCacheIntegrationsAsyncClientTest {
 
     @Test
     void asyncHandleSerializesLifecycleOperations() throws Exception {
-        ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result = newClient(sdkConfig);
+        ElastiCacheIntegrationsClient.AsyncResult<DynamoDbAsyncClient> result =
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig);
         ElastiCacheIntegrationsAsyncHandle handle = result.handle();
         ExecutorService closers = Executors.newFixedThreadPool(4);
 

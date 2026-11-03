@@ -89,8 +89,10 @@ require the corresponding tests, README, and package checks to change with it.
   teardown, create parallel recovery flights, reuse stale AUTH credentials, or
   publish a connector with stale predicates. Safe path: preserve the one-way
   lifecycle, cleanup on failed open, one continuous background reconnect loop
-  with fresh AUTH and config, per-outage origin fallback while disconnected,
-  and idempotent `close()`/`destroy()`.
+  with fresh AUTH and config, a per-outage reconnect wait of
+  `connectionTimeout` followed by origin fallback while disconnected, startup
+  that retries until `connectionTimeout` passes, and idempotent
+  `close()`/`destroy()` that wake waiting requests.
 - **Middleware path:** flag changes that use a non-final serialized request,
   bypass normal SDK deserialization/retry behavior, consume a body that is not
   bytes-like, or destroy the SDK before ElastiCacheIntegrations. Safe path: preserve final

@@ -1,16 +1,24 @@
 package software.amazon.elasticache.integrations.resp;
 
-import java.util.Objects;
-
 /** RESP3 integer value. */
-public class RespInteger implements RespValue {
+public final class RespInteger implements RespValue {
 
     private final long value;
 
+    /**
+     * Create an integer value.
+     *
+     * @param value the integer
+     */
     public RespInteger(long value) {
         this.value = value;
     }
 
+    /**
+     * Return the integer.
+     *
+     * @return the integer
+     */
     public long getValue() {
         return value;
     }
@@ -18,14 +26,14 @@ public class RespInteger implements RespValue {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof RespInteger)) return false;
         RespInteger that = (RespInteger) o;
         return value == that.value;
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(value);
+        return Long.hashCode(value);
     }
 
     @Override

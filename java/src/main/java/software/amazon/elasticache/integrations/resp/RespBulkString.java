@@ -1,16 +1,27 @@
 package software.amazon.elasticache.integrations.resp;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /** RESP3 bulk string value (byte array). */
-public class RespBulkString implements RespValue {
+public final class RespBulkString implements RespValue {
 
     private final byte[] value;
 
+    /**
+     * Create a bulk string value.
+     *
+     * @param value the raw bytes
+     */
     public RespBulkString(byte[] value) {
         this.value = value;
     }
 
+    /**
+     * Return the raw bytes.
+     *
+     * @return the raw bytes
+     */
     public byte[] getValue() {
         return value;
     }
@@ -18,7 +29,7 @@ public class RespBulkString implements RespValue {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof RespBulkString)) return false;
         RespBulkString that = (RespBulkString) o;
         return Arrays.equals(value, that.value);
     }
@@ -30,6 +41,6 @@ public class RespBulkString implements RespValue {
 
     @Override
     public String toString() {
-        return "RespBulkString{" + new String(value) + "}";
+        return "RespBulkString{" + new String(value, StandardCharsets.UTF_8) + "}";
     }
 }

@@ -196,7 +196,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param sslContext the SSL context
      * @param connectTimeoutMs TCP connection timeout in milliseconds
      * @param initializationTimeoutMs TLS, HELLO, and config timeout in milliseconds
-     * @param requestTimeoutMs total timeout for each Cache request attempt
+     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each Cache request response
      * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
      */
     public ElastiCacheIntegrationsConnector(
@@ -226,7 +226,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param sslContext the SSL context
      * @param connectTimeoutMs TCP connection timeout in milliseconds
      * @param initializationTimeoutMs TLS, HELLO, and config timeout in milliseconds
-     * @param requestTimeoutMs total timeout for each Cache request attempt
+     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each Cache request response
      * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
      * @param socketReadSize most bytes to request from the socket per read
      */
@@ -565,12 +565,25 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
         return configureAndStartReader(overrides);
     }
 
-    /** Convenience: connect and handshake with empty config overrides. */
+    /**
+     * Convenience: connect and handshake with empty config overrides.
+     *
+     * @param userId the user ID for inline AUTH
+     * @param authToken the password or IAM token for inline AUTH
+     * @return the resolved configuration from the cache
+     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     */
     public ResolvedConfig connectAndAuthenticate(String userId, String authToken) {
         return connectAndAuthenticate(userId, authToken, Collections.emptyMap());
     }
 
-    /** Convenience: connect and handshake with provider and empty config overrides. */
+    /**
+     * Convenience: connect and handshake with provider and empty config overrides.
+     *
+     * @param authProvider supplies the inline AUTH credentials (called after TLS connect)
+     * @return the resolved configuration from the cache
+     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     */
     public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider) {
         return connectAndAuthenticate(authProvider, Collections.emptyMap());
     }
@@ -638,31 +651,52 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     // State queries
     // =========================================================================
 
-    /** Get the resolved config from the last successful handshake. */
+    /**
+     * Get the resolved config from the last successful handshake.
+     *
+     * @return the resolved config, or {@code null} before the first successful handshake
+     */
     public ResolvedConfig getConfig() {
         return config;
     }
 
-    /** Check if the connection is usable (connected and not dead). */
+    /**
+     * Check if the connection is usable (connected and not dead).
+     *
+     * @return true when the socket is open and the connector is neither dead nor closed
+     */
     public boolean isConnected() {
         synchronized (stateLock) {
             return socket != null && !socket.isClosed() && !dead && !closed;
         }
     }
 
-    /** Check if the connection is dead (failed and cannot be used). */
+    /**
+     * Check if the connection is dead (failed and cannot be used).
+     *
+     * @return true after the connector has failed
+     */
     public boolean isDead() {
         return dead;
     }
 
-    /** Check if the connection is fully ready for requests (reader thread running). */
+    /**
+     * Check if the connection is fully ready for requests (reader thread running).
+     *
+     * @return true when the connector is connected and its reader thread has started
+     */
     public boolean isReady() {
         synchronized (stateLock) {
             return isConnected() && readerThread != null;
         }
     }
 
-    /** Register a callback invoked once when this connector becomes unusable. */
+    /**
+     * Register a callback invoked once when this connector fails. An explicit {@link #close()} does
+     * not invoke it.
+     *
+     * @param onDisconnect the callback, which runs at once if the connector is already dead
+     */
     public void setOnDisconnect(Runnable onDisconnect) {
         this.onDisconnect = onDisconnect;
         if (dead) {
@@ -670,6 +704,12 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
         }
     }
 
+    /**
+     * Release the connection, stop the reader thread, and fail pending requests. Idempotent.
+     *
+     * <p>A connector is single-use: once closed, it never connects again. Reconnecting creates a new
+     * connector.
+     */
     @Override
     public void close() {
         synchronized (stateLock) {

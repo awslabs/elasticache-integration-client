@@ -133,6 +133,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             return result;
         }
 
+        @SuppressWarnings("FutureReturnValueIgnored") // The callback completes result itself.
         private void collectBody(SdkHttpContentPublisher publisher) {
             // Buffer an admitted body once so Cache can use the bytes and origin
             // fallback can replay them.
@@ -161,6 +162,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             submitToCache(body);
         }
 
+        @SuppressWarnings("FutureReturnValueIgnored") // The callback completes result itself.
         private void submitToCache(byte[] body) {
             ElastiCacheIntegrationsRequest cacheRequest = withBody(capturedRequest, body);
             CompletableFuture<ElastiCacheIntegrationsResponse> cacheFuture;
@@ -218,6 +220,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             }
         }
 
+        @SuppressWarnings("FutureReturnValueIgnored") // The callback completes result itself.
         private void registerCancellation() {
             // Cancellation can occur during body collection, Cache execution,
             // or origin fallback. The active reference identifies the phase.
@@ -233,6 +236,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
                     });
         }
 
+        @SuppressWarnings("FutureReturnValueIgnored") // The callback completes result itself.
         private void fallbackToOrigin(AsyncExecuteRequest originRequest) {
             if (result.isCancelled()) {
                 return;
@@ -299,6 +303,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
         return builder.build();
     }
 
+    @SuppressWarnings("FutureReturnValueIgnored") // The callback only cancels the upload.
     private static CompletableFuture<byte[]> collect(
             Publisher<ByteBuffer> publisher, int maxBufferedRequestBytes) {
         CompletableFuture<byte[]> result = new CompletableFuture<>();

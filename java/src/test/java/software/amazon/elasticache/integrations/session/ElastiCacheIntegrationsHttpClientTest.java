@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -57,7 +58,8 @@ class ElastiCacheIntegrationsHttpClientTest {
     void cacheSuccessDoesNotContactOrigin() throws Exception {
         StubSession session = new StubSession();
         session.response =
-                new ElastiCacheIntegrationsResponse(200, Collections.emptyMap(), "cache".getBytes());
+                new ElastiCacheIntegrationsResponse(
+                        200, Collections.emptyMap(), "cache".getBytes(StandardCharsets.UTF_8));
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false);
 
@@ -489,10 +491,6 @@ class ElastiCacheIntegrationsHttpClientTest {
         context.prepareAttempt(attributes);
     }
 
-    private static ElastiCacheIntegrationsRequest cacheRequest() {
-        return cacheRequest("ListTables");
-    }
-
     private static ElastiCacheIntegrationsRequest cacheRequest(String operation) {
         return new ElastiCacheIntegrationsRequest(
                 "POST",
@@ -550,7 +548,7 @@ class ElastiCacheIntegrationsHttpClientTest {
             requestStarted.countDown();
             if (blockUntilCancelled) {
                 while (!cancellation.isCancelled()) {
-                    Thread.yield();
+                    LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                 }
                 throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
             }
@@ -579,7 +577,7 @@ class ElastiCacheIntegrationsHttpClientTest {
                 public HttpExecuteResponse call() {
                     callStarted.countDown();
                     while (blockCall && !aborted.get()) {
-                        Thread.yield();
+                        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                     }
                     return HttpExecuteResponse.builder()
                             .response(SdkHttpFullResponse.builder().statusCode(201).build())

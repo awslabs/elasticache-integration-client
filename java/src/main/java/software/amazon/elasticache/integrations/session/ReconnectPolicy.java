@@ -11,12 +11,27 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 public final class ReconnectPolicy {
 
+    /**
+     * {@link Builder#fallbackDurationSeconds(long)} value that allows origin fallback indefinitely.
+     */
     public static final long UNLIMITED_FALLBACK = -1;
+
+    /** Default maximum number of initial connection attempts. */
     public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
+
+    /** Default timeout for one connection initialization attempt, in milliseconds. */
     public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+
+    /** Default interval between AUTH refreshes on a live connection, in milliseconds (15 minutes). */
     public static final long DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
+
+    /** Default first reconnect backoff delay, in milliseconds. */
     public static final long DEFAULT_BASE_DELAY_MS = 100;
+
+    /** Default reconnect backoff ceiling before jitter, in milliseconds. */
     public static final long DEFAULT_MAX_DELAY_MS = 3_200;
+
+    /** Default symmetric jitter factor applied to each backoff delay. */
     public static final double DEFAULT_JITTER_FACTOR = 0.2;
 
     private final long fallbackDurationSeconds;
@@ -37,25 +52,47 @@ public final class ReconnectPolicy {
         this.jitterFactor = builder.jitterFactor;
     }
 
+    /**
+     * Return a policy with every default.
+     *
+     * @return the default policy
+     */
     public static ReconnectPolicy defaults() {
         return builder().build();
     }
 
+    /**
+     * Create a new builder.
+     *
+     * @return a new builder
+     */
     public static Builder builder() {
         return new Builder();
     }
 
-    /** Return the origin-fallback window in seconds; negative means unlimited. */
+    /**
+     * Return the origin-fallback window in seconds; negative means unlimited.
+     *
+     * @return the fallback window in seconds, or a negative value for unlimited
+     */
     public long getFallbackDurationSeconds() {
         return fallbackDurationSeconds;
     }
 
-    /** Return the maximum number of initial connection attempts. */
+    /**
+     * Return the maximum number of initial connection attempts.
+     *
+     * @return the maximum number of initial connection attempts
+     */
     public int getConnectAttempts() {
         return connectAttempts;
     }
 
-    /** Return the timeout for one complete connection initialization attempt. */
+    /**
+     * Return the timeout for one complete connection initialization attempt.
+     *
+     * @return the timeout in milliseconds
+     */
     public long getConnectionTimeoutMs() {
         return connectionTimeoutMs;
     }
@@ -63,22 +100,36 @@ public final class ReconnectPolicy {
     /**
      * Return how often a live connection obtains fresh credentials and runs AUTH again, in
      * milliseconds.
+     *
+     * @return the AUTH refresh interval in milliseconds
      */
     public long getAuthRefreshIntervalMs() {
         return authRefreshIntervalMs;
     }
 
-    /** Return the first reconnect backoff delay. */
+    /**
+     * Return the first reconnect backoff delay.
+     *
+     * @return the first backoff delay in milliseconds
+     */
     public long getBaseDelayMs() {
         return baseDelayMs;
     }
 
-    /** Return the reconnect backoff ceiling before jitter. */
+    /**
+     * Return the reconnect backoff ceiling before jitter.
+     *
+     * @return the backoff ceiling in milliseconds
+     */
     public long getMaxDelayMs() {
         return maxDelayMs;
     }
 
-    /** Return the symmetric jitter factor applied to each backoff delay. */
+    /**
+     * Return the symmetric jitter factor applied to each backoff delay.
+     *
+     * @return the jitter factor
+     */
     public double getJitterFactor() {
         return jitterFactor;
     }
@@ -95,6 +146,7 @@ public final class ReconnectPolicy {
         return Math.max(1, Math.round(delay * multiplier));
     }
 
+    /** Builder for {@link ReconnectPolicy}. Every setting starts at its default. */
     public static final class Builder {
         private long fallbackDurationSeconds = UNLIMITED_FALLBACK;
         private int connectAttempts = DEFAULT_CONNECT_ATTEMPTS;
@@ -107,23 +159,43 @@ public final class ReconnectPolicy {
         private Builder() {}
 
         /**
-         * Set how long requests may use origin fallback while reconnecting.
+         * Set how long, in seconds, routed requests may use the origin service after the connection is
+         * lost. The window is shared by requests during one outage. A later outage gets a new window
+         * after recovery.
          *
-         * <p>A negative value allows fallback indefinitely, zero disables fallback, and a positive
-         * value allows fallback for that many seconds.
+         * <ul>
+         *   <li>{@link ReconnectPolicy#UNLIMITED_FALLBACK} (the default) or any negative value: allow
+         *       fallback for the rest of the outage.
+         *   <li>{@code N > 0}: allow fallback for N seconds. Later requests throw {@link
+         *       software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
+         *   <li>{@code 0}: disable fallback. Requests throw as soon as the connection is lost.
+         * </ul>
+         *
+         * @param fallbackDurationSeconds the fallback window in seconds
+         * @return this builder
          */
         public Builder fallbackDurationSeconds(long fallbackDurationSeconds) {
             this.fallbackDurationSeconds = fallbackDurationSeconds;
             return this;
         }
 
-        /** Set the maximum number of initial connection attempts. */
+        /**
+         * Set the maximum number of initial connection attempts.
+         *
+         * @param connectAttempts the maximum number of attempts
+         * @return this builder
+         */
         public Builder connectAttempts(int connectAttempts) {
             this.connectAttempts = connectAttempts;
             return this;
         }
 
-        /** Set the timeout for one complete connection initialization attempt. */
+        /**
+         * Set the timeout for one complete connection initialization attempt.
+         *
+         * @param connectionTimeoutMs the timeout in milliseconds
+         * @return this builder
+         */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {
             this.connectionTimeoutMs = connectionTimeoutMs;
             return this;
@@ -132,30 +204,54 @@ public final class ReconnectPolicy {
         /**
          * Set how often a live connection obtains fresh credentials and runs AUTH again, in
          * milliseconds.
+         *
+         * @param authRefreshIntervalMs the AUTH refresh interval in milliseconds
+         * @return this builder
          */
         public Builder authRefreshIntervalMs(long authRefreshIntervalMs) {
             this.authRefreshIntervalMs = authRefreshIntervalMs;
             return this;
         }
 
-        /** Set the first reconnect backoff delay. */
+        /**
+         * Set the first reconnect backoff delay.
+         *
+         * @param baseDelayMs the first backoff delay in milliseconds
+         * @return this builder
+         */
         public Builder baseDelayMs(long baseDelayMs) {
             this.baseDelayMs = baseDelayMs;
             return this;
         }
 
-        /** Set the reconnect backoff ceiling before jitter. */
+        /**
+         * Set the reconnect backoff ceiling before jitter.
+         *
+         * @param maxDelayMs the backoff ceiling in milliseconds
+         * @return this builder
+         */
         public Builder maxDelayMs(long maxDelayMs) {
             this.maxDelayMs = maxDelayMs;
             return this;
         }
 
-        /** Set symmetric reconnect jitter in the range {@code [0, 1)}. */
+        /**
+         * Set symmetric reconnect jitter in the range {@code [0, 1)}.
+         *
+         * @param jitterFactor the jitter factor
+         * @return this builder
+         */
         public Builder jitterFactor(double jitterFactor) {
             this.jitterFactor = jitterFactor;
             return this;
         }
 
+        /**
+         * Build the policy.
+         *
+         * @return the policy
+         * @throws IllegalArgumentException if a setting is out of range
+         */
         public ReconnectPolicy build() {
             requirePositive("connectAttempts", connectAttempts);
             requirePositive("connectionTimeoutMs", connectionTimeoutMs);

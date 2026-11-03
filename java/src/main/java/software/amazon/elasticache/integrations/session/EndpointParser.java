@@ -14,7 +14,7 @@ public final class EndpointParser {
     }
 
     /**
-     * Parse a host:port endpoint string.
+     * Parse a {@code host:port} endpoint into its host and port.
      *
      * <p>Examples:
      *
@@ -78,15 +78,31 @@ public final class EndpointParser {
         private final String host;
         private final int port;
 
+        /**
+         * Create a parsed endpoint.
+         *
+         * @param host the host name or address
+         * @param port the port
+         */
         public ParsedEndpoint(String host, int port) {
             this.host = host;
             this.port = port;
         }
 
+        /**
+         * Return the host.
+         *
+         * @return the host name or address
+         */
         public String getHost() {
             return host;
         }
 
+        /**
+         * Return the port.
+         *
+         * @return the port
+         */
         public int getPort() {
             return port;
         }

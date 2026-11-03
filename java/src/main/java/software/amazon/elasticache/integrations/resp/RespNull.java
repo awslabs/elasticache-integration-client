@@ -1,14 +1,17 @@
 package software.amazon.elasticache.integrations.resp;
 
 /** RESP3 null value (null bulk string or null array). */
-public class RespNull implements RespValue {
+public final class RespNull implements RespValue {
 
+    /** The shared null value. */
     public static final RespNull INSTANCE = new RespNull();
+
+    private RespNull() {}
 
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        return o != null && getClass() == o.getClass();
+        return o instanceof RespNull;
     }
 
     @Override

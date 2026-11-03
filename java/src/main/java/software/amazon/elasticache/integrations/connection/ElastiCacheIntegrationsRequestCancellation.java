@@ -12,6 +12,9 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  */
 public final class ElastiCacheIntegrationsRequestCancellation {
 
+    /** Create a request cancellation that has not been cancelled. */
+    public ElastiCacheIntegrationsRequestCancellation() {}
+
     private final AtomicBoolean cancelled = new AtomicBoolean();
     private final AtomicReference<Runnable> action = new AtomicReference<>();
 
@@ -26,7 +29,11 @@ public final class ElastiCacheIntegrationsRequestCancellation {
         }
     }
 
-    /** Return whether cancellation has been requested. */
+    /**
+     * Return whether cancellation has been requested.
+     *
+     * @return true once {@link #cancel()} has been called
+     */
     public boolean isCancelled() {
         return cancelled.get();
     }
@@ -46,6 +53,7 @@ public final class ElastiCacheIntegrationsRequestCancellation {
 
     /** Signals that an individual Cache request was canceled. */
     public static final class CancelledException extends ElastiCacheIntegrationsError {
+        /** Create the cancellation signal. */
         public CancelledException() {
             super("Cache request was cancelled");
         }
