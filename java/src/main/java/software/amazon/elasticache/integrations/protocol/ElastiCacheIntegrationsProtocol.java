@@ -112,7 +112,9 @@ public final class ElastiCacheIntegrationsProtocol {
             pairs.add(new String[] {name, entry.getValue().trim()});
         }
         pairs.sort(
-                Comparator.<String[], String>comparing(pair -> pair[0]).thenComparing(pair -> pair[1]));
+                Comparator.<String[], String>comparing(
+                                pair -> pair[0], ElastiCacheIntegrationsProtocol::compareCodePoints)
+                        .thenComparing(pair -> pair[1], ElastiCacheIntegrationsProtocol::compareCodePoints));
 
         StringBuilder sb = new StringBuilder();
         for (String[] pair : pairs) {
@@ -122,6 +124,26 @@ public final class ElastiCacheIntegrationsProtocol {
             sb.append(pair[0]).append(':').append(pair[1]);
         }
         return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Compare two strings by Unicode code point, as Python's {@code sorted()} does. {@link
+     * String#compareTo} compares UTF-16 code units, which orders a supplementary character such as
+     * U+10000 before U+E000.
+     */
+    private static int compareCodePoints(String left, String right) {
+        int i = 0;
+        int j = 0;
+        while (i < left.length() && j < right.length()) {
+            int leftCodePoint = left.codePointAt(i);
+            int rightCodePoint = right.codePointAt(j);
+            if (leftCodePoint != rightCodePoint) {
+                return Integer.compare(leftCodePoint, rightCodePoint);
+            }
+            i += Character.charCount(leftCodePoint);
+            j += Character.charCount(rightCodePoint);
+        }
+        return Integer.compare(left.length() - i, right.length() - j);
     }
 
     /**

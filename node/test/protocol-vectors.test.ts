@@ -58,7 +58,11 @@ const ERRORS = {
  * with today. A gap passes only when it fails with that message; when a fix makes it pass, the
  * test fails until the name is removed here.
  */
-const KNOWN_GAPS = new Map<string, string>();
+const KNOWN_GAPS = new Map<string, string>([
+  // normalizeHeaders sorts with `<`, which compares UTF-16 code units, so U+10000 sorts before
+  // U+E000. Python compares code points.
+  ["request_duplicate_header_values_sorted_by_code_point", "Object.is equality"],
+]);
 
 function knownGap(name: string, fragment: string, check: () => void): () => void {
   return () => {
