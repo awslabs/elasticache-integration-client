@@ -2,7 +2,7 @@
  * AWS SDK v3 interception for the ElastiCacheIntegrations client.
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
- * AWS SigV4 authentication headers, builds a ElastiCacheIntegrationsRequest, calls ElastiCacheIntegrationsSession,
+ * AWS SigV4 authentication headers and the JS SDK-only headers, builds a ElastiCacheIntegrationsRequest, calls ElastiCacheIntegrationsSession,
  * and returns a synthetic HttpResponse. Predicate declines, explicit ElastiCacheIntegrations
  * rejections, and indeterminate failures for idempotent operations return to
  * the SDK's origin pipeline while preserving its normal retry and
@@ -75,14 +75,25 @@ function normalizeBody(body: string | Uint8Array | null | undefined): Buffer {
   return Buffer.copyBytesFrom(body);
 }
 
-/** AWS SigV4 authentication headers, removed before forwarding to ElastiCacheIntegrations. */
-const SIGV4_HEADERS = new Set(["authorization", "x-amz-date", "x-amz-security-token"]);
+/**
+ * Headers removed before forwarding to ElastiCacheIntegrations: the SigV4 authentication headers,
+ * plus headers the JS SDK adds that `shared/sdk-request-cases.json` does not expect. The service
+ * routes on the frame's URL, so it does not need `host`.
+ */
+const STRIPPED_HEADERS = new Set([
+  "authorization",
+  "x-amz-date",
+  "x-amz-security-token",
+  "host",
+  "x-amz-content-sha256",
+  "x-amz-user-agent",
+]);
 
-/** Copy request headers without the AWS SigV4 authentication headers. */
+/** Copy request headers without the SigV4 and JS SDK-only headers. */
 function stripSigningHeaders(headers: Record<string, string>): Record<string, string> {
   const stripped: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
-    if (!SIGV4_HEADERS.has(name.toLowerCase())) stripped[name] = value;
+    if (!STRIPPED_HEADERS.has(name.toLowerCase())) stripped[name] = value;
   }
   return stripped;
 }
@@ -90,8 +101,8 @@ function stripSigningHeaders(headers: Record<string, string>): Record<string, st
 /**
  * Build a ElastiCacheIntegrationsRequest from a prepared AWS request and middleware metadata.
  *
- * The SDK has already signed the request by this point; the SigV4
- * authentication headers are stripped so ElastiCacheIntegrations receives an unsigned request.
+ * The SDK has already signed the request by this point. The SigV4 authentication headers and
+ * the JS SDK-only headers are stripped, so ElastiCacheIntegrations receives an unsigned request.
  * Returns undefined for a body that is not bytes-like, such as a stream; the
  * caller passes the request through to the origin.
  */
