@@ -258,6 +258,26 @@ describe("buildCacheAuthProvider", () => {
     provider.close();
   });
 
+  it("signs the first token with already-resolved credentials, then re-reads them", async () => {
+    const clientCredentials = vi.fn().mockResolvedValue(rotatedCredentials);
+
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+      credentials: clientCredentials,
+      resolvedCredentials: credentials,
+    });
+
+    const [, firstToken] = await provider();
+    expect(clientCredentials).not.toHaveBeenCalled();
+    const [, refreshedToken] = await provider.refreshAuth();
+
+    expect(firstToken).toContain(credentials.accessKeyId);
+    expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
+    expect(clientCredentials).toHaveBeenCalledExactlyOnceWith({ forceRefresh: true });
+    provider.close();
+  });
+
   it("installs a background-refreshed token for later authentication calls", async () => {
     vi.useFakeTimers();
     const credentialProvider = vi

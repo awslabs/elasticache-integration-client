@@ -87,14 +87,6 @@ describe("ElastiCacheIntegrations protocol", () => {
     expect(config.raw).toEqual({ refresh_interval: 60, predicates: [] });
   });
 
-  // Python rejects 56.0. Delete this test when the shared vector
-  // config_integral_float_refresh_interval leaves KNOWN_GAPS in protocol-vectors.test.ts.
-  it("accepts integer-valued JSON numbers such as 56.0", () => {
-    const config = parseConfigResponse(Buffer.from('{"refresh_interval":56.0,"predicates":[]}'));
-
-    expect(config.refreshInterval).toBe(56);
-  });
-
   it.each([1, 5, 3600, 3601])("accepts the positive refresh_interval %s", (refreshInterval) => {
     const config = parseConfigResponse(
       Buffer.from(`{"refresh_interval":${refreshInterval},"predicates":[]}`),
@@ -116,6 +108,9 @@ describe("ElastiCacheIntegrations protocol", () => {
     '{"refresh_interval":{},"predicates":[]}',
     // Fractional.
     '{"refresh_interval":60.5,"predicates":[]}',
+    // A JSON real, even with an integral value.
+    '{"refresh_interval":56.0,"predicates":[]}',
+    '{"refresh_interval":6e1,"predicates":[]}',
     // Not positive.
     '{"refresh_interval":0,"predicates":[]}',
     '{"refresh_interval":-1,"predicates":[]}',
@@ -331,18 +326,35 @@ describe("ElastiCacheIntegrations protocol", () => {
   });
 
   it.each([99, 600, 0, -1, 1000])("rejects status %s outside HTTP range", (status) => {
-    expect(() => deserializeResponse([status, "", ""])).toThrow(ElastiCacheIntegrationsError);
+    expect(() => deserializeResponse([status, Buffer.alloc(0), Buffer.alloc(0)])).toThrow(
+      "Status code out of range",
+    );
   });
 
   it("rejects non-decimal statuses and malformed response shapes", () => {
-    expect(() => deserializeResponse([Buffer.from("not-a-number"), "", ""])).toThrow(
-      ElastiCacheIntegrationsError,
-    );
-    expect(() => deserializeResponse(["200.0", "", ""])).toThrow(ElastiCacheIntegrationsError);
-    expect(() => deserializeResponse(["0xC8", "", ""])).toThrow(ElastiCacheIntegrationsError);
+    for (const status of [Buffer.from("not-a-number"), "200.0", "0xC8"]) {
+      expect(() => deserializeResponse([status, Buffer.alloc(0), Buffer.alloc(0)])).toThrow(
+        "Invalid status code",
+      );
+    }
     for (const value of [null, undefined, [], [200], [200, ""], [200, "", "", "x"]]) {
       expect(() => deserializeResponse(value)).toThrow(ElastiCacheIntegrationsError);
     }
+  });
+
+  it("reports Python's element-type error text", () => {
+    expect(() => deserializeResponse([200, "", Buffer.alloc(0)])).toThrow(
+      "Malformed request response elements: headers=string, body=bytes",
+    );
+  });
+
+  it("checks header and body types before the status", () => {
+    expect(() => deserializeResponse(["bad", Buffer.alloc(0), 7])).toThrow(
+      "Malformed request response elements: headers=bytes, body=number",
+    );
+    expect(() => deserializeResponse([999, Buffer.alloc(0), null])).toThrow(
+      "Malformed request response elements: headers=bytes, body=null",
+    );
   });
 
   it("rejects request response error frames", () => {

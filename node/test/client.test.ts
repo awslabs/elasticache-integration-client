@@ -138,6 +138,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       region: "us-east-1",
       userId: "iam-user",
     });
@@ -176,6 +177,16 @@ describe("install", () => {
     );
   });
 
+  it("resolves the client's credentials once during install", async () => {
+    setup();
+    const clientCredentials = vi.fn(async () => credentials);
+
+    await install({ client: new FakeClient({ clientCredentials }), ...options });
+
+    expect(clientCredentials).toHaveBeenCalledOnce();
+    expect(mocks.buildCacheAuthProvider.mock.calls[0]![0].resolvedCredentials).toBe(credentials);
+  });
+
   it("gives session ownership of managed auth", async () => {
     setup();
 
@@ -198,6 +209,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       region: "eu-west-1",
     });
   });
@@ -242,6 +254,26 @@ describe("install", () => {
     expect(mocks.sessionConstructor).not.toHaveBeenCalled();
   });
 
+  it("rejects a client whose credentials cannot be resolved, with the SDK's error as the cause", async () => {
+    setup();
+    const sdkError = new Error("Could not load credentials from any providers");
+    const client = new FakeClient({
+      clientCredentials: async () => {
+        throw sdkError;
+      },
+    });
+
+    const error = await install({ client: client as never, ...options }).catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(ElastiCacheIntegrationsConfigError);
+    expect((error as Error).message).toBe(
+      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
+    );
+    expect((error as Error).cause).toBe(sdkError);
+    expect(mocks.buildCacheAuthProvider).not.toHaveBeenCalled();
+    expect(mocks.sessionConstructor).not.toHaveBeenCalled();
+  });
+
   it("passes iamTokenRefreshDelay to the managed auth provider", async () => {
     setup();
 
@@ -254,6 +286,7 @@ describe("install", () => {
     expect(mocks.buildCacheAuthProvider).toHaveBeenCalledWith({
       cacheName: "my-cache",
       credentials: expect.any(Function),
+      resolvedCredentials: credentials,
       refreshAfterSeconds: 120,
       region: "us-east-1",
       userId: "iam-user",
