@@ -1,11 +1,17 @@
 package software.amazon.elasticache.integrations.session;
 
+import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 
@@ -156,8 +162,10 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * apply connection-wide, or per table under {@code table_overrides}.
          *
          * <p>The cache ignores a field name it does not recognise, so a typo is dropped without an
-         * error. Values must be JSON values: null, a string, a boolean, a finite number, a list, or a
-         * map with string keys.
+         * error. Values must be JSON values: null, a string, a boolean, a finite number, a collection
+         * or object array, or a map with string keys. A number must be a boxed primitive, {@link
+         * BigInteger}, or {@link BigDecimal}. A collection or array is copied as a list, and a value
+         * must not contain itself.
          */
         public Builder cachePolicyOverrides(Map<String, Object> cachePolicyOverrides) {
             this.cachePolicyOverrides = cachePolicyOverrides;
@@ -220,33 +228,50 @@ public final class ElastiCacheIntegrationsClientConfiguration {
             this.cachePolicyOverrides =
                     cachePolicyOverrides == null
                             ? null
-                            : deepCopyMap(cachePolicyOverrides, "cachePolicyOverrides");
+                            : deepCopyMap(
+                                    cachePolicyOverrides,
+                                    "cachePolicyOverrides",
+                                    Collections.newSetFromMap(new IdentityHashMap<>()));
             return new ElastiCacheIntegrationsClientConfiguration(this);
         }
 
-        private static Map<String, Object> deepCopyMap(Map<?, ?> source, String path) {
+        // `enclosing` holds the maps and collections on the path to `source`, so a value that
+        // contains itself fails here instead of recursing until StackOverflowError. The same
+        // value in two separate places is allowed.
+        private static Map<String, Object> deepCopyMap(
+                Map<?, ?> source, String path, Set<Object> enclosing) {
             Map<String, Object> copy = new LinkedHashMap<>();
+            enclosing.add(source);
             for (Map.Entry<?, ?> entry : source.entrySet()) {
                 Object key = entry.getKey();
                 if (!(key instanceof String)) {
                     throw new ElastiCacheIntegrationsConfigError(
                             path + " must have string keys, got " + typeName(key));
                 }
-                copy.put((String) key, deepCopy(entry.getValue(), path + "." + key));
+                copy.put((String) key, deepCopy(entry.getValue(), path + "." + key, enclosing));
             }
+            enclosing.remove(source);
             return Collections.unmodifiableMap(copy);
         }
 
-        private static Object deepCopy(Object value, String path) {
-            if (value instanceof Map) {
-                return deepCopyMap((Map<?, ?>) value, path);
+        private static Object deepCopy(Object value, String path, Set<Object> enclosing) {
+            if (enclosing.contains(value)) {
+                throw new ElastiCacheIntegrationsConfigError(path + " must not contain itself");
             }
-            if (value instanceof List) {
+            if (value instanceof Map) {
+                return deepCopyMap((Map<?, ?>) value, path, enclosing);
+            }
+            if (value instanceof Collection || value instanceof Object[]) {
+                // A Set or an array is sent as a JSON array, so it is copied as a List.
+                Collection<?> elements =
+                        value instanceof Collection ? (Collection<?>) value : Arrays.asList((Object[]) value);
                 List<Object> copy = new ArrayList<>();
+                enclosing.add(value);
                 int index = 0;
-                for (Object element : (List<?>) value) {
-                    copy.add(deepCopy(element, path + "[" + index++ + "]"));
+                for (Object element : elements) {
+                    copy.add(deepCopy(element, path + "[" + index++ + "]", enclosing));
                 }
+                enclosing.remove(value);
                 return Collections.unmodifiableList(copy);
             }
             if ((value instanceof Double && !Double.isFinite((Double) value))
@@ -254,10 +279,19 @@ public final class ElastiCacheIntegrationsClientConfiguration {
                 throw new ElastiCacheIntegrationsConfigError(
                         path + " must be a finite number, got " + value);
             }
+            // Only immutable Number types are kept, so a mutable one such as AtomicLong cannot
+            // change the configuration after build().
             if (value == null
                     || value instanceof String
                     || value instanceof Boolean
-                    || value instanceof Number) {
+                    || value instanceof Byte
+                    || value instanceof Short
+                    || value instanceof Integer
+                    || value instanceof Long
+                    || value instanceof Float
+                    || value instanceof Double
+                    || value instanceof BigInteger
+                    || value instanceof BigDecimal) {
                 return value;
             }
             throw new ElastiCacheIntegrationsConfigError(

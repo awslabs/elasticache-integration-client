@@ -6,11 +6,15 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 
@@ -130,6 +134,11 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                         + "got java.lang.StringBuilder"
             },
             {nonStringKey, "cachePolicyOverrides.item_ttl must have string keys, got java.lang.Integer"},
+            {
+                new AtomicLong(60),
+                "cachePolicyOverrides.item_ttl must be JSON-serializable, "
+                        + "got java.util.concurrent.atomic.AtomicLong"
+            },
         };
         for (Object[] testCase : cases) {
             Map<String, Object> overrides = new HashMap<>();
@@ -138,6 +147,42 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                     (String) testCase[1],
                     ElastiCacheIntegrationsClientConfiguration.builder().cachePolicyOverrides(overrides));
         }
+    }
+
+    @Test
+    void clientConfigurationRejectsCyclicOverrides() {
+        Map<String, Object> cyclicMap = new HashMap<>();
+        cyclicMap.put("item_ttl", cyclicMap);
+        assertConfigError(
+                "cachePolicyOverrides.item_ttl must not contain itself",
+                ElastiCacheIntegrationsClientConfiguration.builder().cachePolicyOverrides(cyclicMap));
+
+        List<Object> cyclicList = new ArrayList<>();
+        cyclicList.add(cyclicList);
+        assertConfigError(
+                "cachePolicyOverrides.cached_tables[0] must not contain itself",
+                ElastiCacheIntegrationsClientConfiguration.builder()
+                        .cachePolicyOverrides(Collections.singletonMap("cached_tables", cyclicList)));
+    }
+
+    @Test
+    void clientConfigurationCopiesSetsAndArraysAsLists() {
+        List<String> tables = Arrays.asList("Users", "Sessions");
+        Map<String, Object> overrides = new LinkedHashMap<>();
+        overrides.put("cached_tables", new LinkedHashSet<>(tables));
+        overrides.put("write_through_tables", new String[] {"Users", "Sessions"});
+        // The same list in two places is not a cycle.
+        overrides.put("table_groups", Arrays.asList(tables, tables));
+
+        Map<String, Object> copied =
+                ElastiCacheIntegrationsClientConfiguration.builder()
+                        .cachePolicyOverrides(overrides)
+                        .build()
+                        .getCachePolicyOverrides();
+
+        assertEquals(tables, copied.get("cached_tables"));
+        assertEquals(tables, copied.get("write_through_tables"));
+        assertEquals(Arrays.asList(tables, tables), copied.get("table_groups"));
     }
 
     @Test
