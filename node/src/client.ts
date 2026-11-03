@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 
+import type { AwsCredentialIdentity } from "@smithy/types";
+
 import { buildCacheAuthProvider } from "./auth.js";
 import {
   DEFAULT_REQUEST_TIMEOUT,
@@ -128,6 +130,7 @@ type InstallableClient = ElastiCacheIntegrationsCompatibleClient & {
 interface InitializeOptions {
   cacheName: string;
   region: string;
+  resolvedCredentials: AwsCredentialIdentity;
   userId?: string;
   iamTokenRefreshDelay?: number;
   connectorOptions: ElastiCacheIntegrationsConnectorOptions;
@@ -281,6 +284,7 @@ async function initialize<TClient extends ElastiCacheIntegrationsCompatibleClien
       ? {}
       : { refreshAfterSeconds: options.iamTokenRefreshDelay }),
     credentials: sdkClient.config.credentials,
+    resolvedCredentials: options.resolvedCredentials,
   });
   const connectorFactory = Object.assign(
     () =>
@@ -431,14 +435,23 @@ export async function install<TClient extends InstallableClient>(
       regionError === undefined ? undefined : { cause: regionError },
     );
   }
-  if (typeof sdkClient.config.credentials !== "function") {
+  // Resolve once now, so a client with no usable credentials fails here, as it does in Python.
+  // The IAM toolkit would retry the failure past the connection timeout and hide the SDK's error.
+  // A client with no credential provider fails the same way, with the TypeError as the cause.
+  // The first cache token is signed with these credentials, so they are resolved only once.
+  let resolvedCredentials: AwsCredentialIdentity;
+  try {
+    resolvedCredentials = await sdkClient.config.credentials();
+  } catch (error) {
     throw new ElastiCacheIntegrationsConfigError(
-      "This AWS SDK client has no credential provider, so the cache cannot be authenticated.",
+      "This AWS SDK client carries no credentials, so the cache cannot be authenticated.",
+      { cause: error },
     );
   }
   await initialize(sdkClient, service, endpoint, {
     cacheName,
     region,
+    resolvedCredentials,
     ...(userId === undefined ? {} : { userId }),
     ...(configuration.iamTokenRefreshDelay === undefined
       ? {}
