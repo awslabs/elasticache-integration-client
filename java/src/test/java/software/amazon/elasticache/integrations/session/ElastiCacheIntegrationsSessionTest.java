@@ -1812,7 +1812,9 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             handle.open();
 
-            // The SDK closes the transport it was given when the application closes the client.
+            // An SDK client built with httpClientBuilder(...) owns the transport and closes it when
+            // the application closes the client. A transport passed to httpClient(...) is never
+            // closed by the SDK, so this test closes it the way the SDK-owned path does.
             handle.getHttpClient().close();
 
             assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.getSession().getState());
@@ -1833,7 +1835,9 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             handle.open();
 
-            // The SDK closes the transport it was given when the application closes the client.
+            // An SDK client built with httpClientBuilder(...) owns the transport and closes it when
+            // the application closes the client. A transport passed to httpClient(...) is never
+            // closed by the SDK, so this test closes it the way the SDK-owned path does.
             handle.getHttpClient().close();
 
             assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.getSession().getState());
