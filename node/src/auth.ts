@@ -10,7 +10,7 @@ import type {
   ElastiCacheIAMAuthTokenProvider as ToolkitAuthTokenProvider,
   TokenGeneratorDependencies,
 } from "@aws/developer-toolkit-elasticache";
-import type { AwsCredentialIdentityProvider } from "@smithy/types";
+import type { AwsCredentialIdentity, AwsCredentialIdentityProvider } from "@smithy/types";
 
 import { ElastiCacheIntegrationsError } from "./errors.js";
 import { loadToolkit, type ToolkitModule } from "./toolkit-loader.js";
@@ -74,9 +74,20 @@ export function resolveAuthParams(input: AuthParamsInput): ResolvedAuthParams {
   };
 }
 
-function toolkitDependencies(credentials: CredentialsProvider): TokenGeneratorDependencies {
+function toolkitDependencies(
+  credentials: CredentialsProvider,
+  resolvedCredentials?: AwsCredentialIdentity,
+): TokenGeneratorDependencies {
+  let first = resolvedCredentials;
   return {
-    credentialProvider: () => credentials({ forceRefresh: true }),
+    credentialProvider: () => {
+      if (first !== undefined) {
+        const identity = first;
+        first = undefined;
+        return Promise.resolve(identity);
+      }
+      return credentials({ forceRefresh: true });
+    },
   };
 }
 
@@ -181,16 +192,18 @@ export class IamAuthTokenProvider {
  *
  * Signs with `credentials`, the provider behind the application's own client, so the cache is
  * authenticated as the same principal and rotation is preserved: the toolkit re-reads them for
- * every token it signs.
+ * every token it signs. `resolvedCredentials`, when given, signs the first token instead, so
+ * credentials the caller has just resolved are not resolved a second time.
  */
 export async function buildCacheAuthProvider(
   input: AuthParamsInput & {
     credentials: CredentialsProvider;
+    resolvedCredentials?: AwsCredentialIdentity;
     refreshAfterSeconds?: number;
   },
 ): Promise<CacheAuthProvider> {
   const toolkit = await loadToolkit();
-  const { credentials } = input;
+  const { credentials, resolvedCredentials } = input;
 
   try {
     const manager = await toolkit.ElastiCacheIAMAuthTokenManager.create(
@@ -202,7 +215,7 @@ export async function buildCacheAuthProvider(
           ? {}
           : { refreshAfterSeconds: input.refreshAfterSeconds }),
       },
-      toolkitDependencies(credentials),
+      toolkitDependencies(credentials, resolvedCredentials),
     );
     const getAuth = async (): Promise<[string, string]> => {
       try {

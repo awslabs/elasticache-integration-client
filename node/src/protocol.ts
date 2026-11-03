@@ -185,15 +185,15 @@ export function deserializeResponse(
   }
 
   const [statusRaw, headersRaw, bodyRaw] = elements;
+  if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
+    throw new ElastiCacheIntegrationsProtocolError(
+      `Malformed request response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
+    );
+  }
   const status = parseStatus(statusRaw);
   if (status < MIN_STATUS || status > MAX_STATUS) {
     throw new ElastiCacheIntegrationsProtocolError(
       `Status code out of range (${MIN_STATUS}-${MAX_STATUS}): ${status}`,
-    );
-  }
-  if (!Buffer.isBuffer(headersRaw) || !Buffer.isBuffer(bodyRaw)) {
-    throw new ElastiCacheIntegrationsProtocolError(
-      `Malformed response elements: headers=${describeType(headersRaw)}, body=${describeType(bodyRaw)}`,
     );
   }
 
@@ -254,11 +254,11 @@ export function stringifyConfig(overrides: Record<string, unknown>): string {
   }
 }
 
-/** Escape non-ASCII UTF-16 code units, such as `é`, as Python `json.dumps` does by default. */
+/** Escape DEL and non-ASCII UTF-16 code units, such as `é`, as Python `json.dumps` does by default. */
 function escapeNonAscii(value: string): string {
-  // Match UTF-16 code units from U+0080 through U+FFFF; for example, "é" becomes "\\u00e9".
+  // Match UTF-16 code units from U+007F through U+FFFF; for example, "é" becomes "\\u00e9".
   return value.replace(
-    /[\u0080-\uffff]/g,
+    /[\u007f-\uffff]/g,
     (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
   );
 }
@@ -291,9 +291,19 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   } catch (cause) {
     throw new ElastiCacheIntegrationsError("Malformed config JSON: invalid UTF-8", { cause });
   }
+  // JSON.parse reads 60.0 as 60, so only the source text tells a JSON real from an integer.
+  const intervalSources = new WeakMap<object, string>();
   let raw: unknown;
   try {
-    raw = JSON.parse(text);
+    raw = JSON.parse(
+      text,
+      function (this: object, key: string, value: unknown, context?: { source?: string }) {
+        if (key === "refresh_interval" && context?.source !== undefined) {
+          intervalSources.set(this, context.source);
+        }
+        return value;
+      },
+    );
   } catch (cause) {
     throw new ElastiCacheIntegrationsError(`Malformed config JSON: ${text}`, { cause });
   }
@@ -307,7 +317,7 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
   const object = raw as Record<string, unknown>;
   return new ResolvedConfig({
     version: object.version,
-    refreshInterval: parseRefreshInterval(object.refresh_interval),
+    refreshInterval: parseRefreshInterval(object.refresh_interval, intervalSources.get(object)),
     raw: object,
   });
 }
@@ -317,15 +327,16 @@ export function parseConfigResponse(value: RespValue): ResolvedConfig {
  *
  * The value feeds the config refresher's jittered delay arithmetic, so a
  * missing, wrongly typed, or non-positive value is treated as a malformed config rather than
- * deferred to a background timer.
+ * deferred to a background timer. `source` is the value's JSON text: a JSON real such as `60.0`
+ * or `6e1` is rejected even though it parses to an integer.
  */
-function parseRefreshInterval(value: unknown): number {
+function parseRefreshInterval(value: unknown, source: string | undefined): number {
   if (value === undefined || value === null) {
     throw new ElastiCacheIntegrationsError("Config JSON missing required field 'refresh_interval'");
   }
-  if (typeof value !== "number" || !Number.isInteger(value)) {
+  if (typeof value !== "number" || !Number.isInteger(value) || /[.eE]/.test(source ?? "")) {
     throw new ElastiCacheIntegrationsError(
-      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${JSON.stringify(value) ?? String(value)}`,
+      `Invalid 'refresh_interval': expected integer, got ${typeof value}: ${source ?? JSON.stringify(value) ?? String(value)}`,
     );
   }
   if (value <= 0) {
