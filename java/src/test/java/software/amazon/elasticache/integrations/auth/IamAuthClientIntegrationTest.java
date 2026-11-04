@@ -137,6 +137,32 @@ class IamAuthClientIntegrationTest {
     }
 
     @Test
+    void asyncClientRejectsIamRegionDifferentFromSdkClientRegion() {
+        IamAuthTokenProvider authProvider =
+                IamAuthTokenProvider.builder()
+                        .cacheName("My-Cache")
+                        .region(Region.US_WEST_2)
+                        .credentialsProvider(SDK_CREDENTIALS)
+                        .build();
+
+        ElastiCacheIntegrationsError error =
+                assertThrows(
+                        ElastiCacheIntegrationsError.class,
+                        () ->
+                                ElastiCacheIntegrationsClient.builder()
+                                        .endpoint("localhost:" + server.getPort())
+                                        .sslContext(clientSslContext)
+                                        .authProvider(authProvider)
+                                        .buildAsync(
+                                                DynamoDbAsyncClient.builder(),
+                                                builder ->
+                                                        builder.region(Region.US_EAST_1).credentialsProvider(SDK_CREDENTIALS)));
+
+        assertTrue(error.getMessage().contains("does not match AWS SDK client region"));
+        assertTrue(cache.getReceivedCommands().isEmpty());
+    }
+
+    @Test
     void nonMapHelloReplyDoesNotForceTokenRefresh() {
         AtomicInteger credentialCalls = new AtomicInteger();
         cache.setHelloReply(new RespSimpleString("NOT-OK".getBytes(StandardCharsets.UTF_8)));

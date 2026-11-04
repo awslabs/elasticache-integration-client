@@ -20,7 +20,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 /** Internal connector adapter for the toolkit's IAM token manager. */
 final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoCloseable {
     private final IamAuthTokenProvider provider;
-    private ElastiCacheIamAuthTokenManager tokenManager;
+    private volatile ElastiCacheIamAuthTokenManager tokenManager;
 
     ManagedIamAuthProvider(IamAuthTokenProvider provider) {
         this(provider, false);
@@ -56,7 +56,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     }
 
     @Override
-    public synchronized AuthCredentials get() {
+    public AuthCredentials get() {
         try {
             ElastiCacheIamAuthTokenManager.Credentials credentials = tokenManager().getCredentials();
             return new AuthCredentials(credentials.getUserId(), credentials.getToken());
@@ -67,7 +67,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
         }
     }
 
-    synchronized void refresh() {
+    void refresh() {
         try {
             tokenManager().refreshToken();
         } catch (ToolkitInputException e) {
@@ -78,10 +78,14 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     }
 
     @Override
-    public synchronized void close() {
-        if (tokenManager != null) {
-            tokenManager.close();
+    public void close() {
+        ElastiCacheIamAuthTokenManager manager;
+        synchronized (this) {
+            manager = tokenManager;
             tokenManager = null;
+        }
+        if (manager != null) {
+            manager.close();
         }
     }
 
@@ -92,7 +96,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
         return tokenManager;
     }
 
-    private static AwsCredentialsProvider asCredentialsProvider(
+    static AwsCredentialsProvider asCredentialsProvider(
             IdentityProvider<? extends AwsCredentialsIdentity> identityProvider) {
         if (identityProvider instanceof AwsCredentialsProvider) {
             return (AwsCredentialsProvider) identityProvider;
@@ -100,7 +104,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
         return () -> resolveCredentials(identityProvider);
     }
 
-    private static AwsCredentials resolveCredentials(
+    static AwsCredentials resolveCredentials(
             IdentityProvider<? extends AwsCredentialsIdentity> identityProvider) {
         AwsCredentialsIdentity identity;
         try {

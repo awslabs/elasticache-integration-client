@@ -153,4 +153,8 @@ public final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
             originClient.close();
         }
     }
+
+    boolean isClosed() {
+        return closed.get();
+    }
 }

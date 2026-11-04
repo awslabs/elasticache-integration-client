@@ -20,6 +20,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.awscore.client.builder.AwsClientBuilder;
+import software.amazon.awssdk.core.SdkClient;
+import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
@@ -33,7 +36,9 @@ import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.awssdk.services.dynamodb.DynamoDbServiceClientConfiguration;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
+import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
@@ -301,6 +306,36 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    void iamBindingFailureClosesBuiltSdkClientAndHandle() {
+        RecordingOriginClient origin = new RecordingOriginClient();
+        TrackingSdkClientBuilder sdkBuilder = new TrackingSdkClientBuilder(Region.US_EAST_1);
+        IamAuthTokenProvider authProvider =
+                IamAuthTokenProvider.builder()
+                        .cacheName("my-cache")
+                        .region(Region.US_WEST_2)
+                        .credentialsProvider(
+                                StaticCredentialsProvider.create(
+                                        AwsBasicCredentials.create("auth-access-key", "auth-secret-key")))
+                        .build();
+
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        ElastiCacheIntegrationsClient.builder()
+                                .endpoint("localhost:" + server.getPort())
+                                .authProvider(authProvider)
+                                .sslContext(clientSslContext)
+                                .originHttpClient(origin)
+                                .origin(sdkBuilder)
+                                .build());
+
+        assertNotNull(sdkBuilder.client);
+        assertEquals(1, sdkBuilder.client.closeCount.get());
+        assertTrue(((ElastiCacheIntegrationsHttpClient) sdkBuilder.httpClient).isClosed());
+        assertEquals(0, origin.closeCount.get(), "caller-managed origin must remain open");
+    }
+
+    @Test
     void clientOperation_cacheTimeoutFallsBackToOrigin() {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("aws.request");
@@ -478,6 +513,100 @@ class ElastiCacheIntegrationsClientTest {
                 @Override
                 public void abort() {}
             };
+        }
+
+        @Override
+        public void close() {
+            closeCount.incrementAndGet();
+        }
+    }
+
+    private static final class TrackingSdkClientBuilder
+            implements AwsClientBuilder<TrackingSdkClientBuilder, TrackingSdkClient>,
+                    SdkSyncClientBuilder<TrackingSdkClientBuilder, TrackingSdkClient> {
+        private final Region region;
+        private ClientOverrideConfiguration overrideConfiguration;
+        private SdkHttpClient httpClient;
+        private TrackingSdkClient client;
+
+        private TrackingSdkClientBuilder(Region region) {
+            this.region = region;
+        }
+
+        @Override
+        public TrackingSdkClient build() {
+            client =
+                    new TrackingSdkClient(
+                            DynamoDbServiceClientConfiguration.builder()
+                                    .region(region)
+                                    .credentialsProvider(
+                                            StaticCredentialsProvider.create(
+                                                    AwsBasicCredentials.create("sdk-access-key", "sdk-secret-key")))
+                                    .build());
+            return client;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder overrideConfiguration(
+                ClientOverrideConfiguration overrideConfiguration) {
+            this.overrideConfiguration = overrideConfiguration;
+            return this;
+        }
+
+        @Override
+        public ClientOverrideConfiguration overrideConfiguration() {
+            return overrideConfiguration;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder endpointOverride(URI endpointOverride) {
+            return this;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder region(Region region) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public TrackingSdkClientBuilder dualstackEnabled(Boolean dualstackEnabled) {
+            return this;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder fipsEnabled(Boolean fipsEnabled) {
+            return this;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder httpClient(SdkHttpClient httpClient) {
+            this.httpClient = httpClient;
+            return this;
+        }
+
+        @Override
+        public TrackingSdkClientBuilder httpClientBuilder(SdkHttpClient.Builder httpClientBuilder) {
+            this.httpClient = httpClientBuilder.build();
+            return this;
+        }
+    }
+
+    private static final class TrackingSdkClient implements SdkClient {
+        private final DynamoDbServiceClientConfiguration configuration;
+        private final AtomicInteger closeCount = new AtomicInteger();
+
+        private TrackingSdkClient(DynamoDbServiceClientConfiguration configuration) {
+            this.configuration = configuration;
+        }
+
+        @Override
+        public String serviceName() {
+            return "tracking";
+        }
+
+        @Override
+        public DynamoDbServiceClientConfiguration serviceClientConfiguration() {
+            return configuration;
         }
 
         @Override
