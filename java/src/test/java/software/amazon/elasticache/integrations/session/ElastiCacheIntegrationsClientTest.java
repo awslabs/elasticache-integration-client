@@ -106,6 +106,11 @@ class ElastiCacheIntegrationsClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .cacheName("my-cache")
                 .caCerts(caBundle)
+                // The 2 s default startup deadline can expire on a loaded CI runner.
+                .clientConfiguration(
+                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                .connectionTimeoutMs(10_000)
+                                .build())
                 .handleObserver(handle::set);
     }
 
@@ -414,7 +419,7 @@ class ElastiCacheIntegrationsClientTest {
 
     @Test
     void clientPassesConnectionTimeoutToTheSession() {
-        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
+        try (DynamoDbClient client = cacheBuilder().clientConfiguration(null).install(appBuilder())) {
             assertEquals(2_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
         }
 

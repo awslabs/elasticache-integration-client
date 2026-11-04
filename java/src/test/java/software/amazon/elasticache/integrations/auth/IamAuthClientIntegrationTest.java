@@ -272,7 +272,12 @@ class IamAuthClientIntegrationTest {
                 .endpoint("localhost:" + server.getPort())
                 .cacheName("My-Cache")
                 .userId("IAM-User")
-                .caCerts(caBundle);
+                .caCerts(caBundle)
+                // The 2 s default startup deadline can expire on a loaded CI runner.
+                .clientConfiguration(
+                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                .connectionTimeoutMs(10_000)
+                                .build());
     }
 
     private static ElastiCacheIntegrationsClientConfiguration fastRefresh() {
