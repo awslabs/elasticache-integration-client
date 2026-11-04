@@ -12,6 +12,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
+import software.amazon.awssdk.core.SdkClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.nio.netty.NettyNioAsyncHttpClient;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
@@ -131,6 +132,12 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
      */
     public synchronized boolean isOpen() {
         return state == State.OPEN && session.isOpen();
+    }
+
+    synchronized void bindIamAuthTo(SdkClient client) {
+        if (ownedAuthProvider != null) {
+            ownedAuthProvider.bindTo(client.serviceClientConfiguration());
+        }
     }
 
     /**
@@ -373,10 +380,20 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
          * @return the handle, not yet opened
          */
         public ElastiCacheIntegrationsAsyncHandle build() {
+            return build(false);
+        }
+
+        ElastiCacheIntegrationsAsyncHandle buildForSdkClient() {
+            return build(true);
+        }
+
+        private ElastiCacheIntegrationsAsyncHandle build(boolean deferIamInitialization) {
             validateConfiguration();
 
             ManagedIamAuthProvider ownedAuthProvider =
-                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
+                    iamAuthProvider != null
+                            ? new ManagedIamAuthProvider(iamAuthProvider, deferIamInitialization)
+                            : null;
             Supplier<AuthCredentials> resolvedAuthProvider =
                     ownedAuthProvider != null ? ownedAuthProvider : authProvider;
             boolean ownsOriginClient = originHttpClient == null;

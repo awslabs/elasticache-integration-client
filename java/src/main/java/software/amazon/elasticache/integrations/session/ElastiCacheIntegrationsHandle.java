@@ -5,6 +5,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
+import software.amazon.awssdk.core.SdkClient;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
@@ -156,6 +157,12 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
      */
     public boolean isOpen() {
         return opened && !closed && session.isOpen();
+    }
+
+    void bindIamAuthTo(SdkClient client) {
+        if (ownedAuthProvider != null) {
+            ownedAuthProvider.bindTo(client.serviceClientConfiguration());
+        }
     }
 
     /**
@@ -364,6 +371,14 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
          * @throws ElastiCacheIntegrationsError if required fields are missing
          */
         public ElastiCacheIntegrationsHandle build() {
+            return build(false);
+        }
+
+        ElastiCacheIntegrationsHandle buildForSdkClient() {
+            return build(true);
+        }
+
+        private ElastiCacheIntegrationsHandle build(boolean deferIamInitialization) {
             if (host == null || host.isEmpty()) {
                 throw new ElastiCacheIntegrationsError("host is required");
             }
@@ -381,7 +396,9 @@ public class ElastiCacheIntegrationsHandle implements Closeable {
             }
 
             ManagedIamAuthProvider ownedAuthProvider =
-                    iamAuthProvider != null ? new ManagedIamAuthProvider(iamAuthProvider) : null;
+                    iamAuthProvider != null
+                            ? new ManagedIamAuthProvider(iamAuthProvider, deferIamInitialization)
+                            : null;
             Supplier<AuthCredentials> resolvedAuthProvider =
                     ownedAuthProvider != null ? ownedAuthProvider : authProvider;
             SdkHttpClient origin = null;

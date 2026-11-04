@@ -246,7 +246,9 @@ public final class ElastiCacheIntegrationsClient {
          * }</pre>
          *
          * <p>Cache creates and closes an auto-refresh manager for an {@code IamAuthTokenProvider},
-         * including one held through a {@code Supplier} reference. Other providers remain caller-owned.
+         * including one held through a {@code Supplier} reference. The manager uses the wrapped AWS SDK
+         * client's resolved credentials provider, and client construction fails if its region differs
+         * from the IAM provider's region. Other providers remain caller-owned.
          *
          * @param authProvider supplies AUTH credentials for each handshake
          * @return this builder
@@ -491,17 +493,12 @@ public final class ElastiCacheIntegrationsClient {
         private <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
                 Result<C> build(B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             ElastiCacheIntegrationsHandle handle = buildHandle();
-
+            boolean bindIamAuth = iamAuthProvider != null;
+            C client = null;
             try {
-                handle.open();
-            } catch (RuntimeException initializationFailure) {
-                handle.close();
-                throw initializationFailure;
-            }
-
-            // Apply user's SDK configuration and build client - close handle on any failure
-            C client;
-            try {
+                if (!bindIamAuth) {
+                    handle.open();
+                }
                 if (sdkConfigurer != null) {
                     sdkConfigurer.accept(sdkClientBuilder);
                 }
@@ -516,11 +513,22 @@ public final class ElastiCacheIntegrationsClient {
                                 .overrideConfiguration(mergedConfig)
                                 .httpClient(handle.getHttpClient())
                                 .build();
+                if (bindIamAuth) {
+                    handle.bindIamAuthTo(client);
+                    handle.open();
+                }
             } catch (Exception e) {
                 try {
                     handle.close();
                 } catch (Exception closeEx) {
                     // Preserve the original exception
+                }
+                if (client != null) {
+                    try {
+                        client.close();
+                    } catch (Exception closeEx) {
+                        // Preserve the original exception
+                    }
                 }
                 throw e;
             }
@@ -555,16 +563,12 @@ public final class ElastiCacheIntegrationsClient {
         public <B extends AwsClientBuilder<B, C> & SdkAsyncClientBuilder<B, C>, C extends SdkClient>
                 AsyncResult<C> buildAsync(B sdkClientBuilder, Consumer<B> sdkConfigurer) {
             ElastiCacheIntegrationsAsyncHandle handle = buildAsyncHandle();
-
+            boolean bindIamAuth = iamAuthProvider != null;
+            C client = null;
             try {
-                handle.open();
-            } catch (RuntimeException initializationFailure) {
-                handle.close();
-                throw initializationFailure;
-            }
-
-            C client;
-            try {
+                if (!bindIamAuth) {
+                    handle.open();
+                }
                 if (sdkConfigurer != null) {
                     sdkConfigurer.accept(sdkClientBuilder);
                 }
@@ -575,11 +579,22 @@ public final class ElastiCacheIntegrationsClient {
                                 .overrideConfiguration(mergedConfig)
                                 .httpClient(handle.getHttpClient())
                                 .build();
+                if (bindIamAuth) {
+                    handle.bindIamAuthTo(client);
+                    handle.open();
+                }
             } catch (Exception e) {
                 try {
                     handle.close();
                 } catch (Exception closeEx) {
                     // Preserve the original exception
+                }
+                if (client != null) {
+                    try {
+                        client.close();
+                    } catch (Exception closeEx) {
+                        // Preserve the original exception
+                    }
                 }
                 throw e;
             }
@@ -607,7 +622,7 @@ public final class ElastiCacheIntegrationsClient {
             } else {
                 handleBuilder.authProvider(authProvider);
             }
-            return handleBuilder.build();
+            return iamAuthProvider != null ? handleBuilder.buildForSdkClient() : handleBuilder.build();
         }
 
         private ElastiCacheIntegrationsAsyncHandle buildAsyncHandle() {
@@ -633,7 +648,7 @@ public final class ElastiCacheIntegrationsClient {
             } else {
                 handleBuilder.authProvider(authProvider);
             }
-            return handleBuilder.build();
+            return iamAuthProvider != null ? handleBuilder.buildForSdkClient() : handleBuilder.build();
         }
 
         private EndpointParser.ParsedEndpoint resolveCacheEndpoint() {

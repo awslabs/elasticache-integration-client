@@ -25,7 +25,12 @@ toolkit, the
 [`software.amazon.elasticache:developer-toolkit-elasticache`](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache)
 artifact on Maven Central. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
-SigV4 signing contract. Cache sends the resulting bearer token only in the
+SigV4 signing contract. When using `ElastiCacheIntegrationsClient`, Cache signs
+authentication with the wrapped AWS SDK client's resolved credentials provider,
+so cache misses and writes use the same IAM identity as direct origin requests.
+The IAM provider and SDK client regions must match or client construction fails.
+Directly constructed handles continue to use the credentials configured on their
+`IamAuthTokenProvider`. Cache sends the resulting bearer token only in the
 TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
 before the connection becomes usable. Cache then periodically repeats plain
 `AUTH` on each live connection using the manager's latest token. A rejected
@@ -172,6 +177,12 @@ margin are defined by the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh).
 Configure a custom refresh point with
 `IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
+
+For clients created by `ElastiCacheIntegrationsClient`, the manager uses the
+wrapped SDK client's resolved credentials provider and rejects a region mismatch.
+This takes precedence over a credentials provider configured directly on
+`IamAuthTokenProvider`. Standalone handles have no SDK client to inspect and
+therefore use the provider's configured credentials.
 
 Cache asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.

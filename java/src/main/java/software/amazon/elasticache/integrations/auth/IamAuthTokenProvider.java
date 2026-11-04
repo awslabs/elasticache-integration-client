@@ -111,12 +111,27 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
      * @return a new, independent token manager
      */
     public ElastiCacheIamAuthTokenManager newTokenManager() {
+        return newTokenManager(credentialsProvider);
+    }
+
+    /**
+     * Create an independent toolkit auto-refresh manager using the supplied credentials provider.
+     *
+     * <p>{@code ElastiCacheIntegrationsClient} uses this overload so Cache authentication and the
+     * wrapped AWS SDK client always resolve the same IAM identity.
+     *
+     * @param overrideCredentialsProvider the credentials provider used to sign Cache authentication
+     * @return a new, independent token manager
+     */
+    public ElastiCacheIamAuthTokenManager newTokenManager(
+            AwsCredentialsProvider overrideCredentialsProvider) {
+        Objects.requireNonNull(overrideCredentialsProvider, "overrideCredentialsProvider");
         ElastiCacheIamAuthTokenManager.Builder managerBuilder =
                 ElastiCacheIamAuthTokenManager.builder()
                         .serverlessCacheName(getCacheName())
                         .userId(getUserId())
                         .region(getRegion())
-                        .credentialsProvider(credentialsProvider);
+                        .credentialsProvider(overrideCredentialsProvider);
         if (refreshAfter != null) {
             managerBuilder.refreshAfter(refreshAfter);
         }
