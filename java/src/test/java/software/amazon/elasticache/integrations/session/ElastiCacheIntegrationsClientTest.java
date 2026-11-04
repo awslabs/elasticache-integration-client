@@ -68,6 +68,7 @@ import software.amazon.elasticache.integrations.resp.RespSimpleString;
 class ElastiCacheIntegrationsClientTest {
 
     private static final String OWN_ACCESS_KEY = "AKIDOWNCREDENTIAL01";
+    private static final String DEFAULT_CHAIN_ACCESS_KEY = "AKIDDEFAULTCHAIN01";
     private static final String TEST_USER = "test-user";
     private static final String TEST_TOKEN = "test-token";
 
@@ -206,14 +207,23 @@ class ElastiCacheIntegrationsClientTest {
 
     @Test
     void clientSignsTheCacheTokenWithTheClientsOwnCredentials() {
-        try (DynamoDbClient client = cacheBuilder().userId("IAM-User").install(appBuilder())) {
-            assertTrue(handle.get().isOpen());
-        }
+        // The default chain resolves to another identity, so a fallback to it signs with the wrong key.
+        Map<String, String> defaultChain = new HashMap<>();
+        defaultChain.put("aws.accessKeyId", DEFAULT_CHAIN_ACCESS_KEY);
+        defaultChain.put("aws.secretAccessKey", "default-chain-secret-key");
+        withSystemProperties(
+                defaultChain,
+                () -> {
+                    try (DynamoDbClient client = cacheBuilder().userId("IAM-User").install(appBuilder())) {
+                        assertTrue(handle.get().isOpen());
+                    }
+                });
 
         MockCache.AuthAttempt attempt = cache.getAuthAttempts().get(0);
         assertEquals("iam-user", attempt.getUserId());
         assertTrue(attempt.getToken().startsWith("my-cache/"));
         assertTrue(attempt.getToken().contains("X-Amz-Credential=" + OWN_ACCESS_KEY + "%2F"));
+        assertFalse(attempt.getToken().contains(DEFAULT_CHAIN_ACCESS_KEY));
     }
 
     @Test
@@ -308,25 +318,33 @@ class ElastiCacheIntegrationsClientTest {
         properties.put("aws.configFile", emptyProfile.toString());
         properties.put("aws.sharedCredentialsFile", emptyProfile.toString());
         properties.put("aws.disableEc2Metadata", "true");
+        withSystemProperties(
+                properties,
+                () -> {
+                    DynamoDbClientBuilder noRegion =
+                            DynamoDbClient.builder()
+                                    .credentialsProvider(
+                                            StaticCredentialsProvider.create(
+                                                    AwsBasicCredentials.create(OWN_ACCESS_KEY, "own-secret-key")))
+                                    .endpointOverride(URI.create("http://127.0.0.1:1"));
+
+                    ElastiCacheIntegrationsConfigError error =
+                            assertThrows(
+                                    ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().install(noRegion));
+
+                    assertEquals(
+                            "The AWS SDK client has no region, so the cache's IAM token cannot be signed. "
+                                    + "Create the client with a region.",
+                            error.getMessage());
+                    assertTrue(cache.getAuthAttempts().isEmpty());
+                });
+    }
+
+    private static void withSystemProperties(Map<String, String> properties, Runnable body) {
         Map<String, String> previous = new HashMap<>();
         properties.forEach((key, value) -> previous.put(key, System.setProperty(key, value)));
         try {
-            DynamoDbClientBuilder noRegion =
-                    DynamoDbClient.builder()
-                            .credentialsProvider(
-                                    StaticCredentialsProvider.create(
-                                            AwsBasicCredentials.create(OWN_ACCESS_KEY, "own-secret-key")))
-                            .endpointOverride(URI.create("http://127.0.0.1:1"));
-
-            ElastiCacheIntegrationsConfigError error =
-                    assertThrows(
-                            ElastiCacheIntegrationsConfigError.class, () -> cacheBuilder().install(noRegion));
-
-            assertEquals(
-                    "The AWS SDK client has no region, so the cache's IAM token cannot be signed. "
-                            + "Create the client with a region.",
-                    error.getMessage());
-            assertTrue(cache.getAuthAttempts().isEmpty());
+            body.run();
         } finally {
             previous.forEach(
                     (key, value) -> {
