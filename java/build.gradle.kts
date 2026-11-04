@@ -7,7 +7,7 @@ plugins {
     `java-library`
     jacoco
     id("com.diffplug.spotless") version "8.10.4"
-    id("net.ltgt.errorprone") version "5.1.1"
+    id("net.ltgt.errorprone") version "5.2.0"
 }
 
 group = "software.amazon.elasticache"
@@ -58,8 +58,8 @@ sourceSets {
 
 dependencies {
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.4")
-    implementation("dev.cel:compiler:0.14.0")
-    implementation("dev.cel:runtime:0.14.0")
+    implementation("dev.cel:compiler:0.15.0")
+    implementation("dev.cel:runtime:0.15.0")
     // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
     api("software.amazon.elasticache:developer-toolkit-elasticache:1.0.0")
 

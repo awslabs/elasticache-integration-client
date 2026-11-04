@@ -136,6 +136,20 @@
         "name": "café"
       },
       "frame": "*2\r\n$10\r\naws.config\r\n$36\r\n{\"version\":\"1.0\",\"name\":\"caf\\u00e9\"}\r\n"
+    },
+    {
+      "name": "config_non_bmp_escaped",
+      "overrides": {
+        "name": "🚀"
+      },
+      "frame": "*2\r\n$10\r\naws.config\r\n$39\r\n{\"version\":\"1.0\",\"name\":\"\\ud83d\\ude80\"}\r\n"
+    },
+    {
+      "name": "config_del_escaped",
+      "overrides": {
+        "name": "a\u007fb"
+      },
+      "frame": "*2\r\n$10\r\naws.config\r\n$35\r\n{\"version\":\"1.0\",\"name\":\"a\\u007fb\"}\r\n"
     }
   ],
   "decode": [

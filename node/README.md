@@ -26,7 +26,8 @@ This package currently ports the Python implementation's:
   config on the interval the cache returns, and controls safe origin fallback
   with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
+  SigV4 headers and the `host`, `x-amz-content-sha256`, and
+  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
   origin only for operations in the shared replay-safe catalog, and marks a
   healthy-connection `ORIGIN_ERROR` retryable only for those operations;
 - an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
@@ -97,13 +98,17 @@ configured. ElastiCacheIntegrations reads three things
 from it: the region, which also signs the cache's IAM token; the credentials,
 which sign that token; and the service id, lowercased with spaces replaced by
 `-` (`DynamoDB` becomes `dynamodb`) to match the `service` in request
-predicates. A value that is not an AWS SDK v3 client, or a client without a
-region or credentials, raises `ElastiCacheIntegrationsConfigError`. If
-installation fails, ElastiCacheIntegrations releases what it opened, and the
-client stays open and usable without the cache.
+predicates. A value that is not an AWS SDK v3 client, a client without a
+region, or a client whose credentials provider cannot resolve credentials
+raises `ElastiCacheIntegrationsConfigError`. In the last case, the SDK's error
+is the cause. `install()` resolves the credentials once before it connects and
+signs the first cache token with them. If installation fails,
+ElastiCacheIntegrations releases what it opened, and the client stays open and
+usable without the cache.
 Wrapped AWS requests are fully serialized and signed by the SDK before
 ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
-SigV4 headers only from its copied request model;
+SigV4 headers, plus the `host`, `x-amz-content-sha256`, and `x-amz-user-agent`
+headers that the JS SDK adds, only from its copied request model;
 the original signed request remains untouched for origin pass-through. When the
 ElastiCacheIntegrations connection drops, failures for operations in the shared replay-safe
 catalog return to the SDK's normal origin pipeline. While the connection

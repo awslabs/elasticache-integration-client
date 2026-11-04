@@ -29,7 +29,7 @@ interface SdkRequestCase {
 // sends. The header-name check is exact, so a name missing from this list fails, and so does an
 // entry the SDK no longer adds or omits.
 const ACCEPTED_HEADER_DIFFERENCES = {
-  extra: ["host", "x-amz-content-sha256", "x-amz-user-agent"],
+  extra: [] as string[],
   missing: [] as string[],
 };
 
