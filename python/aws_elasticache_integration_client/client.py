@@ -18,7 +18,7 @@ from aws_elasticache_integration_client.connection import ElastiCacheIntegration
 from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 from aws_elasticache_integration_client.hooks import ElastiCacheIntegrationsHandle, installed_handle
 from aws_elasticache_integration_client.reconnect_policy import (
-    DEFAULT_CONNECTION_TIMEOUT,
+    DEFAULT_CONNECTION_TIMEOUT_MS,
     ReconnectPolicy,
 )
 from aws_elasticache_integration_client.session import (
@@ -38,8 +38,8 @@ class ElastiCacheIntegrationsClientConfiguration:
     Attributes:
         cache_request_timeout: Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
             Defaults to 5 seconds.
-        connection_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-            request waits for reconnection after a connection is lost. Defaults to 5 seconds.
+        connection_timeout: How long, in milliseconds, ElastiCacheIntegrations tries to connect at startup, and how
+            long a request waits for reconnection after a connection is lost. Defaults to 5000.
         fallback_duration: How long, in seconds, routed requests may use the origin service
             after an outage's reconnect wait ends without a connection. The window is shared
             by requests during one outage. A later outage gets a new window after recovery.
@@ -67,7 +67,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     """
 
     cache_request_timeout: float = 5.0
-    connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT
+    connection_timeout: int = DEFAULT_CONNECTION_TIMEOUT_MS
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
@@ -83,14 +83,9 @@ class ElastiCacheIntegrationsClientConfiguration:
             raise ElastiCacheIntegrationsConfigError(
                 "cache_request_timeout must be a positive number of seconds"
             )
-        if (
-            isinstance(self.connection_timeout, bool)
-            or not isinstance(self.connection_timeout, (int, float))
-            or not math.isfinite(self.connection_timeout)
-            or self.connection_timeout <= 0
-        ):
+        if type(self.connection_timeout) is not int or self.connection_timeout <= 0:
             raise ElastiCacheIntegrationsConfigError(
-                "connection_timeout must be a positive number of seconds"
+                "connection_timeout must be a positive whole number of milliseconds"
             )
         if self.fallback_duration is not None and (
             isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
@@ -232,7 +227,7 @@ def install(
                 verify=verify,
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
-                connection_timeout=configuration.connection_timeout,
+                connection_timeout=configuration.connection_timeout / 1000,
                 request_timeout=configuration.cache_request_timeout,
             )
 
@@ -243,7 +238,7 @@ def install(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(
                 fallback_duration=configuration.fallback_duration,
-                connection_timeout=configuration.connection_timeout,
+                connection_timeout=configuration.connection_timeout / 1000,
             ),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
             close_callback=auth_provider.close,

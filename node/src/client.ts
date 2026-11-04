@@ -33,8 +33,8 @@ export interface ElastiCacheIntegrationsClientConfiguration {
    */
   cacheRequestTimeout?: number;
   /**
-   * How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-   * request waits for reconnection after a connection is lost. Defaults to 5 seconds.
+   * How long, in milliseconds, ElastiCacheIntegrations tries to connect at startup, and how long a
+   * request waits for reconnection after a connection is lost. Defaults to 5000.
    */
   connectionTimeout?: number;
   /**
@@ -179,14 +179,24 @@ function resolveClientConfiguration(
   }
   const {
     cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
-    connectionTimeout = DEFAULT_CONNECTION_TIMEOUT / 1_000,
+    connectionTimeout = DEFAULT_CONNECTION_TIMEOUT,
     fallbackDuration,
     cachePolicyOverrides = {},
     cachePolicyTimeout,
     iamTokenRefreshDelay,
   } = configuration;
   const requestTimeoutMs = timeoutMs("cacheRequestTimeout", cacheRequestTimeout);
-  const connectionTimeoutMs = timeoutMs("connectionTimeout", connectionTimeout);
+  if (
+    typeof connectionTimeout !== "number" ||
+    !Number.isInteger(connectionTimeout) ||
+    connectionTimeout <= 0 ||
+    connectionTimeout > MAX_TIMER_DELAY_MS
+  ) {
+    throw new ElastiCacheIntegrationsConfigError(
+      `connectionTimeout must be a positive whole number of milliseconds, at most ${MAX_TIMER_DELAY_MS}`,
+    );
+  }
+  const connectionTimeoutMs = connectionTimeout;
   if (
     typeof cachePolicyOverrides !== "object" ||
     cachePolicyOverrides === null ||

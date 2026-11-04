@@ -10,7 +10,8 @@ from aws_elasticache_integration_client.exceptions import ElastiCacheIntegration
 
 #: Bounds bringing a connection up — TCP connect, TLS, ``HELLO 3 AUTH`` and the first ``aws.config``
 #: — for each attempt and across all of them.
-DEFAULT_CONNECTION_TIMEOUT = 5.0
+DEFAULT_CONNECTION_TIMEOUT_MS = 5000
+DEFAULT_CONNECTION_TIMEOUT = DEFAULT_CONNECTION_TIMEOUT_MS / 1000
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)

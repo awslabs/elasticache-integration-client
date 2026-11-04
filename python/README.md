@@ -102,7 +102,7 @@ aws_elasticache_integration_client.install(
     cache_name="my-cache",
     client_configuration=aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration(
         cache_request_timeout=2.0,
-        connection_timeout=5.0,
+        connection_timeout=5000,
         fallback_duration=60,
         cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
         iam_token_refresh_delay=300,
@@ -113,7 +113,7 @@ aws_elasticache_integration_client.install(
 | Field | Default | Meaning |
 |---|---|---|
 | `cache_request_timeout` | 5 s | How long to wait for each ElastiCacheIntegrations request's reply. |
-| `connection_timeout` | 5 s | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
+| `connection_timeout` | 5000 ms | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
 | `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |

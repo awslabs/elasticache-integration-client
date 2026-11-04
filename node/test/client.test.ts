@@ -316,7 +316,7 @@ describe("install", () => {
 
   it.each([
     [undefined, 5_000],
-    [1.5, 1_500],
+    [1_500, 1_500],
   ])("passes connectionTimeout %s to the session", async (requested, expected) => {
     setup();
 
@@ -346,16 +346,29 @@ describe("install", () => {
       2_147_484,
       "cacheRequestTimeout must be a positive number of seconds, at most 2147483",
     ],
-    ["connectionTimeout", 0, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", -1, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", NaN, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", Infinity, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", true, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", "2", "connectionTimeout must be a positive number of seconds"],
+    ["connectionTimeout", 0, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", -1, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", 1.5, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", NaN, "connectionTimeout must be a positive whole number of milliseconds"],
     [
       "connectionTimeout",
-      2_147_484,
-      "connectionTimeout must be a positive number of seconds, at most 2147483",
+      Infinity,
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      true,
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      "2000",
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      2 ** 31,
+      "connectionTimeout must be a positive whole number of milliseconds, at most 2147483647",
     ],
     ["fallbackDuration", 0.5, "fallbackDuration must be a whole number of seconds"],
     ["fallbackDuration", true, "fallbackDuration must be a whole number of seconds"],
