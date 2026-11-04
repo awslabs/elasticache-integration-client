@@ -119,7 +119,7 @@ require the corresponding tests, README, and build checks to change with it.
   the original error.
 - **Close ordering:** flag a close that skips a step or leaks a caller-owned
   resource. Safe path: the transport's `close()` closes the session, then the
-  IAM token manager, then the origin transport only when Photon created it. A
+  IAM token manager, then the origin transport only when the client created it. A
   caller-supplied origin transport or executor stays open, and repeated
   `close()` is safe.
 

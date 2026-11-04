@@ -126,6 +126,32 @@ class ElastiCacheIntegrationsAsyncClientTest {
     }
 
     @Test
+    void asyncClientSignsTheCacheTokenWithTheClientsOwnCredentials() throws Exception {
+        // The default chain resolves to another identity, so a fallback to it signs with the wrong key.
+        String previousKey = System.setProperty("aws.accessKeyId", "AKIDDEFAULTCHAIN01");
+        String previousSecret = System.setProperty("aws.secretAccessKey", "default-chain-secret-key");
+        try (DynamoDbAsyncClient client =
+                newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
+            assertTrue(handle.get().isOpen());
+        } finally {
+            restoreProperty("aws.accessKeyId", previousKey);
+            restoreProperty("aws.secretAccessKey", previousSecret);
+        }
+
+        String token = cache.getAuthAttempts().get(0).getToken();
+        assertTrue(token.contains("X-Amz-Credential=access-key%2F"));
+        assertFalse(token.contains("AKIDDEFAULTCHAIN01"));
+    }
+
+    private static void restoreProperty(String key, String value) {
+        if (value == null) {
+            System.clearProperty(key);
+        } else {
+            System.setProperty(key, value);
+        }
+    }
+
+    @Test
     void asyncOperationPreservesSdkRetries() throws Exception {
         AtomicInteger attempts = new AtomicInteger();
         cache.setReplyFunction(

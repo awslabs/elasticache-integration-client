@@ -139,7 +139,9 @@ class IamAuthClientIntegrationTest {
                                         DynamoDbClient.builder()
                                                 .region(Region.US_EAST_1)
                                                 .credentialsProvider(rotatingCredentials(credentialCalls)))) {
-            awaitAtLeast(credentialCalls, 2);
+            // The toolkit schedules the next refresh only after it installs the current token, so
+            // credential call 3 means the token from call 2 is installed.
+            awaitAtLeast(credentialCalls, 3);
 
             proxy.disconnectClients();
             awaitAuthAttempts(2);
