@@ -35,7 +35,7 @@ This package currently ports the Python implementation's:
 Automatic ElastiCacheIntegrations failover to another endpoint remains out of scope. Deferred
 cache responses are correlated by request ID and later `aws.response`
 pushes, while callers still receive ordinary promises. The per-request timeout
-defaults to 5 seconds and can be changed with the
+defaults to 5000 ms and can be changed with the
 `cacheRequestTimeout` field (see [Configuration](#configuration)). A timeout for a deferred request removes only
 that request and preserves the connection; a FIFO or write timeout remains
 connection-fatal. The middleware sends requests with no matching predicate
@@ -136,7 +136,7 @@ await install({
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
   clientConfiguration: {
-    cacheRequestTimeout: 2,
+    cacheRequestTimeout: 2_000,
     connectionTimeout: 5_000,
     fallbackDuration: 60,
     cachePolicyOverrides: { cached_tables: ["Users", "Sessions"] },
@@ -147,7 +147,7 @@ await install({
 
 | Field                  | Default                  | Meaning                                                                                                                                      |
 | ---------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cacheRequestTimeout`  | 5 s                      | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
+| `cacheRequestTimeout`  | 5000 ms                  | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
 | `connectionTimeout`    | 5000 ms                  | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
 | `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
 | `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |

@@ -30,14 +30,17 @@ from aws_elasticache_integration_client.session import (
 #: on the 15-minute token. The toolkit re-validates; this is the user-facing check.
 MAX_IAM_TOKEN_REFRESH_DELAY = 880
 
+#: Default per-request timeout, in milliseconds.
+DEFAULT_CACHE_REQUEST_TIMEOUT_MS = 5000
+
 
 @dataclass(frozen=True, kw_only=True)
 class ElastiCacheIntegrationsClientConfiguration:
     """Configuration for a ElastiCacheIntegrations client. All fields are optional and use defaults when omitted.
 
     Attributes:
-        cache_request_timeout: Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
-            Defaults to 5 seconds.
+        cache_request_timeout: Maximum time, in milliseconds, to wait for each ElastiCacheIntegrations request
+            response. Defaults to 5000.
         connection_timeout: How long, in milliseconds, ElastiCacheIntegrations tries to connect at startup, and how
             long a request waits for reconnection after a connection is lost. Defaults to 5000.
         fallback_duration: How long, in seconds, routed requests may use the origin service
@@ -66,7 +69,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     that is not usable.
     """
 
-    cache_request_timeout: float = 5.0
+    cache_request_timeout: int = DEFAULT_CACHE_REQUEST_TIMEOUT_MS
     connection_timeout: int = DEFAULT_CONNECTION_TIMEOUT_MS
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
@@ -74,14 +77,9 @@ class ElastiCacheIntegrationsClientConfiguration:
     iam_token_refresh_delay: float | None = None
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.cache_request_timeout, bool)
-            or not isinstance(self.cache_request_timeout, (int, float))
-            or not math.isfinite(self.cache_request_timeout)
-            or self.cache_request_timeout <= 0
-        ):
+        if type(self.cache_request_timeout) is not int or self.cache_request_timeout <= 0:
             raise ElastiCacheIntegrationsConfigError(
-                "cache_request_timeout must be a positive number of seconds"
+                "cache_request_timeout must be a positive whole number of milliseconds"
             )
         if type(self.connection_timeout) is not int or self.connection_timeout <= 0:
             raise ElastiCacheIntegrationsConfigError(
@@ -181,7 +179,7 @@ def install(
                 endpoint="my-cache:6379",
                 cache_name="my-cache",
                 client_configuration=ElastiCacheIntegrationsClientConfiguration(
-                    cache_request_timeout=2.0,
+                    cache_request_timeout=2000,
                     fallback_duration=60,
                     cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
                 ),
@@ -228,7 +226,7 @@ def install(
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
                 connection_timeout=configuration.connection_timeout / 1000,
-                request_timeout=configuration.cache_request_timeout,
+                request_timeout=configuration.cache_request_timeout / 1000,
             )
 
         # The session connects (HELLO 3 handshake + aws.config exchange) before the hook is

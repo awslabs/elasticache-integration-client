@@ -235,7 +235,7 @@ def test_client_rejects_clients_it_cannot_use(monkeypatch, sdk_client):
         client_mod.install(client=sdk_client, endpoint="cache:6379", cache_name="c")
 
 
-@pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])
+@pytest.mark.parametrize("requested,expected", [(None, 5.0), (1250, 1.25)])
 def test_client_passes_cache_request_timeout_to_connector_factory(monkeypatch, requested, expected):
     _, _ = _patch_common(monkeypatch)
     connector_constructor = MagicMock(return_value=MagicMock())
@@ -322,6 +322,8 @@ def test_client_configuration_rejects_unusable_connection_timeout(bad):
         ("cache_request_timeout", True),
         ("cache_request_timeout", float("nan")),
         ("cache_request_timeout", float("inf")),
+        ("cache_request_timeout", 1.5),
+        ("cache_request_timeout", "5000"),
         ("fallback_duration", 0.5),
         ("cache_policy_overrides", []),
         ("cache_policy_timeout", 0),
