@@ -1501,6 +1501,37 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void cancellingARequestEndsItsReconnectWait() throws Exception {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(10_000, 0), neverReconnects());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        ElastiCacheIntegrationsRequestCancellation cancellation =
+                new ElastiCacheIntegrationsRequestCancellation();
+        try {
+            session.open();
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(
+                            () -> session.request(request(), cancellation), requestExecutor);
+            Thread.sleep(100);
+            assertFalse(response.isDone(), "the request is waiting for the reconnect");
+
+            cancellation.cancel();
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+            assertTrue(
+                    failure.getCause()
+                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException,
+                    failure.getCause().toString());
+        } finally {
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
     void fallbackWindowStartsWhenTheWaitEnds() {
         // A 5 s connection timeout and a 1 s fallback still leave the full 1 s window after the wait.
         ElastiCacheIntegrationsSession session =

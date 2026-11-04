@@ -693,7 +693,13 @@ class ElastiCacheIntegrationsSession implements Closeable {
         ElastiCacheIntegrationsConnector active = connector;
         if (active == null || !active.isReady()) {
             beginReconnect(active);
-            active = waitForConnector();
+            Runnable wakeOnCancel = this::wakeStateWaiters;
+            cancellation.register(wakeOnCancel);
+            try {
+                active = waitForConnector(cancellation);
+            } finally {
+                cancellation.clear(wakeOnCancel);
+            }
             if (cancellation.isCancelled()) {
                 throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
             }
@@ -963,6 +969,21 @@ class ElastiCacheIntegrationsSession implements Closeable {
         connector = next;
     }
 
+    /**
+     * Return whether a request the cache cannot take right now may go to the origin: always when
+     * fallback is enabled, and only for requests the predicates do not route to the cache when {@code
+     * fallbackDurationSeconds} is 0.
+     */
+    boolean mayBypassCache(ElastiCacheIntegrationsRequest request) {
+        if (reconnectPolicy.getFallbackDurationSeconds() != 0) {
+            return true;
+        }
+        ConnectionSnapshot current = snapshot;
+        return current != null
+                && current.predicateEvaluator != null
+                && !current.predicateEvaluator.shouldRouteToCache(request);
+    }
+
     private boolean fallbackAllowed() {
         if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
             return false;
@@ -1011,9 +1032,11 @@ class ElastiCacheIntegrationsSession implements Closeable {
 
     /**
      * Wait until the current outage's ready deadline for a connector to be published. Returns the
-     * ready connector, or null when the deadline passes or the session closes.
+     * ready connector, or null when the deadline passes, the session closes, or the request is
+     * cancelled.
      */
-    private ElastiCacheIntegrationsConnector waitForConnector() {
+    private ElastiCacheIntegrationsConnector waitForConnector(
+            ElastiCacheIntegrationsRequestCancellation cancellation) {
         synchronized (stateLock) {
             while (true) {
                 ElastiCacheIntegrationsConnector current = connector;
@@ -1021,7 +1044,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     return current;
                 }
                 long remaining = nanosUntil(readyDeadlineNanos);
-                if (state != State.RECONNECTING || remaining <= 0) {
+                if (state != State.RECONNECTING || remaining <= 0 || cancellation.isCancelled()) {
                     return null;
                 }
                 try {
@@ -1034,7 +1057,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
         }
     }
 
-    /** For testing: wake every thread waiting on the state lock, as a spurious wakeup would. */
+    /** Wake every thread waiting on the state lock so it rechecks its exit conditions. */
     void wakeStateWaiters() {
         synchronized (stateLock) {
             stateLock.notifyAll();

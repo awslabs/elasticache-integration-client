@@ -130,8 +130,11 @@ CompletableFuture<ListTablesResponse> response = ddb.listTables();
 ```
 
 `install` and `installAsync` return after the connection, the
-`HELLO 3 AUTH` handshake and the `aws.config` exchange succeed. If any step
-fails, they close what they created and throw the original error. They throw
+`HELLO 3 AUTH` handshake and the `aws.config` exchange succeed. If a step
+fails, they close what they created and throw the error. When the startup
+deadline (`connectionTimeoutMs`) passes after a connection failure, they throw
+`ElastiCacheIntegrationsConnectionError` ("opening a connection timed out after
+Nms") with the last failure as its cause. They throw
 `ElastiCacheIntegrationsConfigError` when an option or the client cannot be
 used, for example a client with no region or a client built with
 `AnonymousCredentialsProvider`.
@@ -223,9 +226,10 @@ A request with an unknown length, or one that exceeds either limit, bypasses
 Cache and uses the origin transport.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
-a bounded daemon executor. If an executor supplied with `asyncExecutor(Executor)`
-rejects a request because it is at capacity, Cache sends the buffered request
-through the origin fallback.
+a bounded daemon executor. If the executor rejects a request because it is at
+capacity, Cache sends the buffered request through the origin fallback. When
+`fallbackDurationSeconds` is 0, a request the predicates route to Cache fails
+with `ElastiCacheIntegrationsCacheUnavailable` instead.
 
 ## Configuration
 
@@ -325,7 +329,8 @@ Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
 for the new connection and uses it if it arrives. If the connection is not back
 by then, the request uses the signed origin fallback. The same timeout bounds
 startup: Cache keeps retrying the first connection until `connectionTimeoutMs`
-has passed, caps each attempt by the time left, and then fails client creation.
+has passed, caps each attempt by the time left, and then fails client creation
+with `ElastiCacheIntegrationsConnectionError`.
 Reconnect delays use capped exponential backoff from 100 ms to 3.2 s with 20
 percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
 These values are not configurable.
