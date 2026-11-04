@@ -330,12 +330,12 @@ describe("SocketReader limits", () => {
 });
 
 describe("ElastiCacheIntegrationsConnector handshake timeout", () => {
-  it("uses the dedicated config timeout for HELLO", async () => {
+  it("uses the connection timeout for HELLO", async () => {
     const cache = await startCache({ failure: "hang", failureCommand: "hello" });
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
       requestTimeout: 5_000,
-      configTimeout: 25,
+      connectionTimeout: 25,
       authProvider: () => ["test-user", "test-token"],
     });
     await connector.connect();
@@ -358,12 +358,12 @@ describe("ElastiCacheIntegrationsConnector handshake timeout", () => {
 });
 
 describe("ElastiCacheIntegrationsConnector initialization timeout", () => {
-  it("uses the dedicated config timeout for aws.config", async () => {
+  it("uses the connection timeout for aws.config before the connection is up", async () => {
     const cache = await startCache({ failure: "hang", failureCommand: "aws.config" });
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
       requestTimeout: 5_000,
-      configTimeout: 25,
+      connectionTimeout: 25,
     });
     await connector.connect();
 
@@ -382,11 +382,43 @@ describe("ElastiCacheIntegrationsConnector initialization timeout", () => {
   });
 });
 
+describe("ElastiCacheIntegrationsConnector live-connection timeout", () => {
+  it("uses the request timeout for an aws.config refresh once the connection is up", async () => {
+    const cache = await startCache({ failure: "hang", failureCommand: "aws.config" });
+    const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+      tls: false,
+      requestTimeout: 25,
+      connectionTimeout: 5_000,
+    });
+    await connector.connect();
+    connector.markReady();
+
+    try {
+      await expect(
+        Promise.race([
+          connector.execute("aws.config"),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("refresh timeout exceeded")), 100),
+          ),
+        ]),
+      ).rejects.toThrow("request timed out after 25ms");
+    } finally {
+      await connector.close();
+    }
+  });
+});
+
 describe("ElastiCacheIntegrationsConnector", () => {
   it("defaults the request timeout to five seconds", () => {
     const connector = new ElastiCacheIntegrationsConnector("127.0.0.1", 1, { tls: false });
 
     expect((connector as unknown as { requestTimeout: number }).requestTimeout).toBe(5_000);
+  });
+
+  it("defaults the connection timeout to five seconds", () => {
+    const connector = new ElastiCacheIntegrationsConnector("127.0.0.1", 1, { tls: false });
+
+    expect((connector as unknown as { connectionTimeout: number }).connectionTimeout).toBe(5_000);
   });
 
   it("rejects use before connect", async () => {
@@ -596,7 +628,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const cache = await startCache({ helloResponse: Reply.requestId(42) });
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
-      configTimeout: 100,
+      connectionTimeout: 100,
     });
     await connector.connect();
 
@@ -783,7 +815,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
       requestTimeout: 25, // limits send/drain wait here
-      configTimeout: 5_000, // limits config request wait
+      connectionTimeout: 5_000, // limits config request wait
     });
     await connector.connect();
 
@@ -910,16 +942,18 @@ describe("ElastiCacheIntegrationsConnector", () => {
     await connector.close();
   });
 
-  it("uses the config timeout for re-AUTH and closes after a timeout", async () => {
+  it("uses the request timeout for re-AUTH and closes after a timeout", async () => {
     const cache = await startCache({ failure: "hang", failureCommand: "auth" });
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
       tls: false,
-      configTimeout: 25,
+      connectionTimeout: 5_000,
+      requestTimeout: 25,
       authProvider: () => ["test-user", "test-token"],
     });
 
     await connector.connect();
     await connector.handshake();
+    connector.markReady();
     await expect(connector.reauthenticate()).rejects.toThrow("IAM AUTH timed out");
     expect(connector.isDead).toBe(true);
     await connector.close();
@@ -1410,7 +1444,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     }
 
     const connector = new ElastiCacheIntegrationsConnector("127.0.0.1", address.port, {
-      connectTimeout: 25,
+      connectionTimeout: 25,
     });
     try {
       await expect(connector.connect()).rejects.toBeInstanceOf(

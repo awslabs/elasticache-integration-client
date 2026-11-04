@@ -76,7 +76,7 @@ class TestElastiCacheIntegrationsConnector:
     def connect_and_handshake(self, **kwargs) -> None:
         """connect() plus the aws.config handshake — ready to send requests."""
         self.connect(**kwargs)
-        self.conn.execute("aws.config", b"{}", timeout=self.conn.config_timeout)
+        self.conn.execute("aws.config", b"{}", timeout=self.conn.connection_timeout)
 
     def send_request(self, body: bytes = b"body", *, timeout: float | None = None) -> RespValue:
         """Send a canonical aws.request ([method, url, headers, body, metadata]) with the given."""
@@ -106,7 +106,7 @@ class TestElastiCacheIntegrationsConnector:
     def test_request_timeout_defaults_to_five_seconds(self):
         self.conn = ElastiCacheIntegrationsConnector("127.0.0.1", 1, tls=False)
 
-        assert self.conn._request_timeout == 5.0
+        assert self.conn.request_timeout == 5.0
 
     def test_connect_and_handshake(self):
         """connect() yields a working connection: the aws.config handshake round-trips
@@ -133,7 +133,7 @@ class TestElastiCacheIntegrationsConnector:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, connect_timeout=1.0)
+        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, connection_timeout=1.0)
         with pytest.raises(ElastiCacheIntegrationsConnectionError) as exc_info:
             conn.connect()
         assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
@@ -144,7 +144,7 @@ class TestElastiCacheIntegrationsConnector:
         job — this test only proves the paths function over TLS.)"""
         self.start_cache(tls=True)
         self.connect_and_handshake(tls=True, ca_certs=self.cache.cert_path)
-        assert self.send_request(timeout=self.conn.config_timeout)[0] == 200
+        assert self.send_request(timeout=self.conn.connection_timeout)[0] == 200
 
     def test_tls_untrusted_cert_refused(self):
         """With the default CA store (which does not trust the mock's self-signed cert),
@@ -1036,7 +1036,9 @@ class TestElastiCacheIntegrationsConnector:
         port = probe.getsockname()[1]
         probe.close()  # nothing is listening -> the dial fails
 
-        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, tls=False, connect_timeout=1.0)
+        conn = ElastiCacheIntegrationsConnector(
+            "127.0.0.1", port, tls=False, connection_timeout=1.0
+        )
         with pytest.raises(ElastiCacheIntegrationsConnectionError):
             conn.connect()
 

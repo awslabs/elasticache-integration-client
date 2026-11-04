@@ -4,6 +4,7 @@ import type { AwsCredentialIdentity } from "@smithy/types";
 
 import { buildCacheAuthProvider } from "./auth.js";
 import {
+  DEFAULT_CONNECTION_TIMEOUT,
   DEFAULT_REQUEST_TIMEOUT,
   ElastiCacheIntegrationsConnector,
   type ElastiCacheIntegrationsConnectorOptions,
@@ -33,7 +34,7 @@ export interface ElastiCacheIntegrationsClientConfiguration {
   cacheRequestTimeout?: number;
   /**
    * How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-   * request waits for reconnection after a connection is lost. Defaults to 2 seconds.
+   * request waits for reconnection after a connection is lost. Defaults to 5 seconds.
    */
   connectionTimeout?: number;
   /**
@@ -108,8 +109,6 @@ const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
   "clientConfiguration",
 ]);
 
-const DEFAULT_CONNECTION_TIMEOUT = 2;
-
 /** setTimeout fires after 1 ms for any delay above this, so longer timeouts are rejected. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
@@ -180,7 +179,7 @@ function resolveClientConfiguration(
   }
   const {
     cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
-    connectionTimeout = DEFAULT_CONNECTION_TIMEOUT,
+    connectionTimeout = DEFAULT_CONNECTION_TIMEOUT / 1_000,
     fallbackDuration,
     cachePolicyOverrides = {},
     cachePolicyTimeout,
@@ -458,6 +457,7 @@ export async function install<TClient extends InstallableClient>(
       : { iamTokenRefreshDelay: configuration.iamTokenRefreshDelay }),
     connectorOptions: {
       requestTimeout: configuration.requestTimeoutMs,
+      connectionTimeout: configuration.connectionTimeoutMs,
       verify,
       ...(caCertsPem === undefined ? {} : { caCerts: caCertsPem }),
     },

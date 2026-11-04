@@ -20,6 +20,7 @@
  */
 import { performance } from "node:perf_hooks";
 
+import { DEFAULT_CONNECTION_TIMEOUT } from "./connection.js";
 import type { ElastiCacheIntegrationsConnector } from "./connection.js";
 import {
   ElastiCacheIntegrationsCacheUnavailable,
@@ -48,7 +49,6 @@ import { PredicateEvaluator } from "./predicates.js";
 import { Refresher } from "./refresh.js";
 
 const AUTH_ERROR = "AUTH_ERROR";
-const DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
 /** Cap on each background reconnect attempt. */
 const RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 const DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
@@ -167,7 +167,7 @@ function resolveReconnectPolicy(options: ReconnectPolicyOptions | undefined): Re
   return {
     fallbackWindowMs: fallbackWindow(options?.fallbackDurationMs),
     connectionTimeoutMs: timerDelay(
-      options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT_MS,
+      options?.connectionTimeoutMs ?? DEFAULT_CONNECTION_TIMEOUT,
       "connectionTimeoutMs",
     ),
     authRefreshIntervalMs: jitteredTimerInterval(
@@ -653,6 +653,7 @@ export class ElastiCacheIntegrationsSession {
     if (this.disconnected.has(connector) || connector.isDead) {
       throw new ElastiCacheIntegrationsConnectionError("Connection closed during initialization");
     }
+    connector.markReady();
     // Refreshers belong to the published connection. A replacement has just authenticated
     // through HELLO, so publishing it intentionally resets both schedules and failure counts.
     const configRefresher = new Refresher(

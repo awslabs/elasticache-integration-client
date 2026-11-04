@@ -290,7 +290,7 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
     assert built["config_policy"].staleness_duration == expected
 
 
-@pytest.mark.parametrize("requested,expected", [(None, 2.0), (0.5, 0.5)])
+@pytest.mark.parametrize("requested,expected", [(None, 5.0), (0.5, 0.5)])
 def test_client_passes_connection_timeout_to_the_session(monkeypatch, requested, expected):
     _patch_common(monkeypatch)
     built: dict = {}

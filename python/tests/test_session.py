@@ -95,7 +95,7 @@ def test_connect_and_configure_order():
     connector.execute.assert_called_once_with(
         "aws.config",
         b'{"version":"1.0","flag":true}',
-        timeout=connector.config_timeout,
+        timeout=connector.connection_timeout,
     )
 
 
@@ -234,7 +234,7 @@ def test_refresh_once_sends_the_no_argument_form():
     session = ElastiCacheIntegrationsSession(lambda: connector, overrides={"flag": True})
     connector.execute.reset_mock()  # discard the configure call
     session._refresh_once()
-    connector.execute.assert_called_once_with("aws.config", timeout=connector.config_timeout)
+    connector.execute.assert_called_once_with("aws.config", timeout=connector.request_timeout)
     session.close()
 
 

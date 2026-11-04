@@ -801,9 +801,10 @@ def mock_connector() -> ElastiCacheIntegrationsConnector:
     otherwise. Override ``execute.side_effect``/``return_value`` in the test as needed.
     """
     conn = create_autospec(ElastiCacheIntegrationsConnector, instance=True)
-    # config_timeout is an instance attribute, which autospec leaves as a bare Mock; the session
-    # passes it as a timeout, so it has to be a real number.
-    conn.config_timeout = 2.0
+    # The timeouts are instance attributes, which autospec leaves as bare Mocks; the session
+    # passes them as timeouts, so they have to be real numbers.
+    conn.connection_timeout = 2.0
+    conn.request_timeout = 5.0
     # A property autospec leaves as a bare Mock; must be a real bool tests can flip.
     conn.is_alive = True
 

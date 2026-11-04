@@ -17,7 +17,10 @@ from aws_elasticache_integration_client.config_policy import (
 from aws_elasticache_integration_client.connection import ElastiCacheIntegrationsConnector
 from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 from aws_elasticache_integration_client.hooks import ElastiCacheIntegrationsHandle, installed_handle
-from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.reconnect_policy import (
+    DEFAULT_CONNECTION_TIMEOUT,
+    ReconnectPolicy,
+)
 from aws_elasticache_integration_client.session import (
     ElastiCacheIntegrationsSession,
     parse_endpoint,
@@ -36,7 +39,7 @@ class ElastiCacheIntegrationsClientConfiguration:
         cache_request_timeout: Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
             Defaults to 5 seconds.
         connection_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-            request waits for reconnection after a connection is lost. Defaults to 2 seconds.
+            request waits for reconnection after a connection is lost. Defaults to 5 seconds.
         fallback_duration: How long, in seconds, routed requests may use the origin service
             after an outage's reconnect wait ends without a connection. The window is shared
             by requests during one outage. A later outage gets a new window after recovery.
@@ -64,7 +67,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     """
 
     cache_request_timeout: float = 5.0
-    connection_timeout: float = 2.0
+    connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
@@ -229,6 +232,7 @@ def install(
                 verify=verify,
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
+                connection_timeout=configuration.connection_timeout,
                 request_timeout=configuration.cache_request_timeout,
             )
 

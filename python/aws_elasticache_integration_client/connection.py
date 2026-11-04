@@ -35,6 +35,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE, parse_response_push
+from aws_elasticache_integration_client.reconnect_policy import DEFAULT_CONNECTION_TIMEOUT
 from aws_elasticache_integration_client.resp import (
     IncompleteFrame,
     RespError,
@@ -48,9 +49,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024  # 16 MB, matching the node and java clients
-_DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
 _DEFAULT_REQUEST_TIMEOUT = 5.0
-_DEFAULT_CONFIG_TIMEOUT = 2.0  # init-phase commands: HELLO and aws.config
 _CLOSE_TIMEOUT = 0.5  # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
@@ -279,9 +278,8 @@ class ElastiCacheIntegrationsConnector:
         port: int,
         *,
         tls: bool = True,
-        connect_timeout: float = _DEFAULT_CONNECT_TIMEOUT,
+        connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT,
         request_timeout: float = _DEFAULT_REQUEST_TIMEOUT,
-        config_timeout: float = _DEFAULT_CONFIG_TIMEOUT,
         ca_certs: str | None = None,
         verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
@@ -292,11 +290,12 @@ class ElastiCacheIntegrationsConnector:
         self._host = host
         self._port = port
         self._tls = tls
-        self._connect_timeout = connect_timeout
-        self._request_timeout = request_timeout
-        self.config_timeout = (
-            config_timeout  # read by ElastiCacheIntegrationsSession for the config exchange
-        )
+        # Bounds bringing the connection up: the socket, TLS, HELLO 3 AUTH and the first
+        # aws.config. Read by ElastiCacheIntegrationsSession for that exchange.
+        self.connection_timeout = connection_timeout
+        # Bounds every command once the connection is up, the background AUTH and aws.config
+        # refresh included. Read by ElastiCacheIntegrationsSession for the refresh.
+        self.request_timeout = request_timeout
         self._ca_certs = ca_certs
         self._verify = verify
         self._read_size = socket_read_size
@@ -348,7 +347,7 @@ class ElastiCacheIntegrationsConnector:
         # The I/O thread always sets conn_ready, on success and on failure.
         # So a thread that stops early cannot leave us waiting here.
         try:
-            conn_ready.result(timeout=self._connect_timeout)
+            conn_ready.result(timeout=self.connection_timeout)
         except FuturesTimeout as exc:
             self.close()
             raise ElastiCacheIntegrationsConnectionError(
@@ -470,7 +469,7 @@ class ElastiCacheIntegrationsConnector:
                 b"AUTH",
                 user_id.encode(),
                 token.encode(),
-                timeout=self.config_timeout,
+                timeout=self.connection_timeout,
             )
         except ElastiCacheIntegrationsTimeoutError as exc:
             self.close()
@@ -528,7 +527,7 @@ class ElastiCacheIntegrationsConnector:
         user_id, token = self._auth_provider()
         try:
             reply = self.execute(
-                "AUTH", user_id.encode(), token.encode(), timeout=self.config_timeout
+                "AUTH", user_id.encode(), token.encode(), timeout=self.request_timeout
             )
         except ElastiCacheIntegrationsTimeoutError as exc:
             logger.warning("AUTH command timed out - closing connection")
@@ -702,7 +701,7 @@ class ElastiCacheIntegrationsConnector:
         # Not `timeout or ...`: an explicit timeout=0 means "do not wait for a reply", and `or`
         # would quietly turn it into the default instead.
         if timeout is None:
-            timeout = self._request_timeout
+            timeout = self.request_timeout
         try:
             return reply_future.result(timeout=timeout)
         except FuturesTimeout as exc:

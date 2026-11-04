@@ -150,6 +150,7 @@ describe("install", () => {
     connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       requestTimeout: 1234,
+      connectionTimeout: 5_000,
       verify: true,
       authProvider: generatedAuthProvider,
     });
@@ -157,7 +158,7 @@ describe("install", () => {
       expect.any(Function),
       { timeout: 42 },
       {
-        connectionTimeoutMs: 2_000,
+        connectionTimeoutMs: 5_000,
         stalenessDurationMs: 3_600_000,
       },
     );
@@ -307,14 +308,14 @@ describe("install", () => {
       { timeout: 42 },
       {
         fallbackDurationMs: 60_000,
-        connectionTimeoutMs: 2_000,
+        connectionTimeoutMs: 5_000,
         stalenessDurationMs: 3_600_000,
       },
     );
   });
 
   it.each([
-    [undefined, 2_000],
+    [undefined, 5_000],
     [1.5, 1_500],
   ])("passes connectionTimeout %s to the session", async (requested, expected) => {
     setup();
@@ -578,7 +579,7 @@ describe("install", () => {
     connectorFactory();
     expect(mocks.connection.mock.calls[0]![2]).toMatchObject({ requestTimeout: 5_000 });
     expect(mocks.sessionConstructor.mock.calls[0]![2]).toEqual({
-      connectionTimeoutMs: 2_000,
+      connectionTimeoutMs: 5_000,
       stalenessDurationMs: 3_600_000,
     });
   });
@@ -626,7 +627,7 @@ describe("install", () => {
     });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      connectionTimeoutMs: 2_000,
+      connectionTimeoutMs: 5_000,
       stalenessDurationMs: expected,
     });
   });

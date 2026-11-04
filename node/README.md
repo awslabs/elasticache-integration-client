@@ -137,7 +137,7 @@ await install({
   cacheName: "my-cache",
   clientConfiguration: {
     cacheRequestTimeout: 2,
-    connectionTimeout: 2,
+    connectionTimeout: 5,
     fallbackDuration: 60,
     cachePolicyOverrides: { cached_tables: ["Users", "Sessions"] },
     iamTokenRefreshDelay: 300,
@@ -148,7 +148,7 @@ await install({
 | Field                  | Default                  | Meaning                                                                                                                                      |
 | ---------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `cacheRequestTimeout`  | 5 s                      | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
-| `connectionTimeout`    | 2 s                      | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
+| `connectionTimeout`    | 5 s                      | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
 | `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
 | `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |
 | `cachePolicyTimeout`   | 3600 s                   | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache.                                                 |

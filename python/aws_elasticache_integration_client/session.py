@@ -194,7 +194,7 @@ class ElastiCacheIntegrationsSession:
         command, args = serialize_config(self._overrides)
         try:
             config = parse_config_response(
-                connector.execute(command, *args, timeout=connector.config_timeout)
+                connector.execute(command, *args, timeout=connector.connection_timeout)
             )
             installed = self._replace_config(config, connector)
         except (
@@ -271,7 +271,7 @@ class ElastiCacheIntegrationsSession:
             return
         command, args = serialize_config(None)
         try:
-            reply = connector.execute(command, *args, timeout=connector.config_timeout)
+            reply = connector.execute(command, *args, timeout=connector.request_timeout)
             if reply is None:
                 installed = self._confirm_config(connector)
             else:

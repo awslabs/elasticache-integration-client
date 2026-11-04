@@ -8,6 +8,10 @@ from dataclasses import dataclass
 
 from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 
+#: Bounds bringing a connection up — TCP connect, TLS, ``HELLO 3 AUTH`` and the first ``aws.config``
+#: — for each attempt and across all of them.
+DEFAULT_CONNECTION_TIMEOUT = 5.0
+
 
 @dataclass(frozen=True, kw_only=True, slots=True)
 class ReconnectPolicy:
@@ -26,7 +30,7 @@ class ReconnectPolicy:
     fallback_duration: int | None = None
     # How long to keep trying to get a connection: at startup before raising, and after a drop
     # before a waiting request falls back. Attempts back off inside it.
-    connection_timeout: float = 2.0
+    connection_timeout: float = DEFAULT_CONNECTION_TIMEOUT
     # How often to re-run AUTH in the background to refresh the connection's FAS.
     auth_refresh_interval: float = 900.0
     base_delay: float = 0.1

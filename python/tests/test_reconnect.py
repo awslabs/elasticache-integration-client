@@ -101,7 +101,7 @@ class _RealConnectors:
 
     ``built`` is what lets a test assert on connections the session owns privately — how many were
     attempted, and whether they were closed. Extra keyword arguments go to each
-    :class:`ElastiCacheIntegrationsConnector`, e.g. a long ``config_timeout`` to keep a handshake from timing out on
+    :class:`ElastiCacheIntegrationsConnector`, e.g. a long ``connection_timeout`` to keep a handshake from timing out on
     its own.
     """
 
@@ -668,7 +668,7 @@ def test_close_interrupts_a_connection_being_opened():
     proxy = MockTcpProxy(cache.host, cache.port)
     try:
         session = ElastiCacheIntegrationsSession(
-            _RealConnectors(proxy.host, proxy.port, config_timeout=30.0), policy=_fast()
+            _RealConnectors(proxy.host, proxy.port, connection_timeout=30.0), policy=_fast()
         )
         cache.failure, cache.failure_command = "hang", "hello"
         proxy.disconnect_clients()
@@ -839,7 +839,7 @@ def test_connection_timeout_bounds_connect_and_configure():
 
     The cache accepts the connection and then never answers the HELLO, so the timeout has to cover
     the configure step and not only the connect. Bounding attempts alone would wait the connector's
-    own ``config_timeout`` (2.0s) instead.
+    own ``connection_timeout`` (2.0s) instead.
     """
     cache = MockCache(failure="hang", failure_command="hello")
     cache.start()
