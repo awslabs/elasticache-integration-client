@@ -14,7 +14,10 @@ from aws_elasticache_integration_client.config_policy import (
     DEFAULT_STALENESS_DURATION,
     ConfigPolicy,
 )
-from aws_elasticache_integration_client.connection import ElastiCacheIntegrationsConnector
+from aws_elasticache_integration_client.connection import (
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    ElastiCacheIntegrationsConnector,
+)
 from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 from aws_elasticache_integration_client.hooks import ElastiCacheIntegrationsHandle, installed_handle
 from aws_elasticache_integration_client.reconnect_policy import (
@@ -29,9 +32,6 @@ from aws_elasticache_integration_client.session import (
 #: Upper bound for iam_token_refresh_delay, mirroring the toolkit's 20-second safety margin
 #: on the 15-minute token. The toolkit re-validates; this is the user-facing check.
 MAX_IAM_TOKEN_REFRESH_DELAY = 880
-
-#: Default per-request timeout, in milliseconds.
-DEFAULT_CACHE_REQUEST_TIMEOUT_MS = 5000
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -69,7 +69,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     that is not usable.
     """
 
-    cache_request_timeout: int = DEFAULT_CACHE_REQUEST_TIMEOUT_MS
+    cache_request_timeout: int = DEFAULT_REQUEST_TIMEOUT_MS
     connection_timeout: int = DEFAULT_CONNECTION_TIMEOUT_MS
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
@@ -225,8 +225,8 @@ def install(
                 verify=verify,
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
-                connection_timeout=configuration.connection_timeout / 1000,
-                request_timeout=configuration.cache_request_timeout / 1000,
+                connection_timeout_ms=configuration.connection_timeout,
+                request_timeout_ms=configuration.cache_request_timeout,
             )
 
         # The session connects (HELLO 3 handshake + aws.config exchange) before the hook is
@@ -236,7 +236,7 @@ def install(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(
                 fallback_duration=configuration.fallback_duration,
-                connection_timeout=configuration.connection_timeout / 1000,
+                connection_timeout_ms=configuration.connection_timeout,
             ),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
             close_callback=auth_provider.close,

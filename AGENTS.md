@@ -59,6 +59,11 @@ Run commands from the client directory they apply to:
   secret material.
 - Do not commit generated build, coverage, distribution, cache, or IDE files.
 - Keep changes small, reviewable, and isolated to the intended client.
+- Timeouts are whole milliseconds: an `int` in Python and Java, an integer
+  `number` in Node, both in configuration and internally. Convert to seconds
+  only at the call that needs them, such as `time.monotonic()`,
+  `Future.result()` or a socket API. Longer periods — fallback windows,
+  cache-policy lifetimes, token refresh delays — stay in seconds.
 
 ## Completion checklist
 

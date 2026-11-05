@@ -803,12 +803,12 @@ def mock_connector() -> ElastiCacheIntegrationsConnector:
     conn = create_autospec(ElastiCacheIntegrationsConnector, instance=True)
     # The timeouts are instance attributes, which autospec leaves as bare Mocks; the session
     # passes them as timeouts, so they have to be real numbers.
-    conn.connection_timeout = 2.0
-    conn.request_timeout = 5.0
+    conn.connection_timeout_ms = 2000
+    conn.request_timeout_ms = 5000
     # A property autospec leaves as a bare Mock; must be a real bool tests can flip.
     conn.is_alive = True
 
-    def _execute(command, *args, timeout=None):
+    def _execute(command, *args, timeout_ms=None):
         if command == "aws.config":
             if not args:
                 return None

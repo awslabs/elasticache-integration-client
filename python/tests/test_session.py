@@ -95,7 +95,7 @@ def test_connect_and_configure_order():
     connector.execute.assert_called_once_with(
         "aws.config",
         b'{"version":"1.0","flag":true}',
-        timeout=connector.connection_timeout,
+        timeout_ms=connector.connection_timeout_ms,
     )
 
 
@@ -120,7 +120,7 @@ def test_a_failed_configure_closes_everything(failing_step):
     # One attempt, so the assertion is about closing rather than about how often we retry.
     with pytest.raises(ElastiCacheIntegrationsError):
         ElastiCacheIntegrationsSession(
-            lambda: connector, policy=ReconnectPolicy(connection_timeout=0.05)
+            lambda: connector, policy=ReconnectPolicy(connection_timeout_ms=50)
         )
     connector.close.assert_called_once_with()
 
@@ -132,11 +132,11 @@ def test_failed_initialization_releases_owned_resource():
 
     with pytest.raises(
         ElastiCacheIntegrationsConnectionError,
-        match="opening a connection timed out after 0.05s",
+        match="opening a connection timed out after 50ms",
     ) as exc_info:
         ElastiCacheIntegrationsSession(
             lambda: connector,
-            policy=ReconnectPolicy(connection_timeout=0.05),
+            policy=ReconnectPolicy(connection_timeout_ms=50),
             close_callback=close_callback,
         )
 
@@ -156,10 +156,10 @@ def test_failed_initialization_logs_cleanup_failure_without_masking_cause(caplog
     ):
         with pytest.raises(
             ElastiCacheIntegrationsConnectionError,
-            match="opening a connection timed out after 0.05s",
+            match="opening a connection timed out after 50ms",
         ) as exc_info:
             ElastiCacheIntegrationsSession(
-                lambda: connector, policy=ReconnectPolicy(connection_timeout=0.05)
+                lambda: connector, policy=ReconnectPolicy(connection_timeout_ms=50)
             )
 
     assert str(exc_info.value.__cause__) == "bring-up rejected"
@@ -234,7 +234,7 @@ def test_refresh_once_sends_the_no_argument_form():
     session = ElastiCacheIntegrationsSession(lambda: connector, overrides={"flag": True})
     connector.execute.reset_mock()  # discard the configure call
     session._refresh_once()
-    connector.execute.assert_called_once_with("aws.config", timeout=connector.request_timeout)
+    connector.execute.assert_called_once_with("aws.config", timeout_ms=connector.request_timeout_ms)
     session.close()
 
 
@@ -494,7 +494,7 @@ def test_a_failure_from_a_replaced_connector_leaves_the_replacement(clock):
     session = stale_session(connector)
     replacement = mock_connector()
 
-    def _replaced_then_failed(command, *args, timeout=None):
+    def _replaced_then_failed(command, *args, timeout_ms=None):
         session._connection_manager._connector = replacement
         raise ElastiCacheIntegrationsError("malformed")
 
@@ -602,7 +602,7 @@ def _closes_before_install(connector, reply):
     connection can end and a replacement come up.
     """
 
-    def _execute(command, *args, timeout=None):
+    def _execute(command, *args, timeout_ms=None):
         connector.is_alive = False
         return reply
 
