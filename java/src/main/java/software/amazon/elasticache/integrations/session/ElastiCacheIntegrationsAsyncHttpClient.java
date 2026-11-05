@@ -22,7 +22,6 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -206,17 +205,7 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
                 // Executor saturation means Cache cannot accept this attempt.
-                if (session.canFallbackWithoutCache(cacheRequest)) {
-                    fallbackToOrigin(copyWithBody(request, body));
-                } else {
-                    fail(
-                            result,
-                            request.responseHandler(),
-                            RetryableException.create(
-                                    "Cache executor rejected routed write",
-                                    new ElastiCacheIntegrationsCacheUnavailable(
-                                            "Routed write was not sent because the Cache executor is at capacity")));
-                }
+                fallbackToOrigin(copyWithBody(request, body));
                 return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);

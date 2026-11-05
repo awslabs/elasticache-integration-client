@@ -1,6 +1,6 @@
 package software.amazon.elasticache.integrations.exception;
 
-/** Cache cannot safely serve a routed request or send it directly to origin. */
+/** Cache has no connection to the cache and the fallback window has closed. */
 public final class ElastiCacheIntegrationsCacheUnavailable
         extends ElastiCacheIntegrationsConnectionError {
     /**

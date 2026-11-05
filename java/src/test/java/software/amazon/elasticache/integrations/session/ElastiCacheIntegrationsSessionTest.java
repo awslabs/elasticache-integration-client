@@ -592,7 +592,7 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void authErrorOnWriteWaitsForReconnectInsteadOfPassingThrough() throws Exception {
+    void authErrorOnWritePassesThroughAndStartsReconnect() throws Exception {
         AuthRejectingConnector initialConnector = new AuthRejectingConnector();
         CountDownLatch reconnectStarted = new CountDownLatch(1);
         CountDownLatch allowReconnect = new CountDownLatch(1);
@@ -613,25 +613,16 @@ class ElastiCacheIntegrationsSessionTest {
                                 .maxDelayMs(1)
                                 .jitterFactor(0)
                                 .build());
-        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         try {
             session.open();
 
-            CompletableFuture<ElastiCacheIntegrationsResponse> response =
-                    CompletableFuture.supplyAsync(() -> session.request(writeRequest()), requestExecutor);
-
+            assertNull(session.request(writeRequest()));
             assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
-            assertFalse(response.isDone(), "the routed write must not pass through to origin");
-
-            allowReconnect.countDown();
-
-            assertEquals(200, response.get(1, TimeUnit.SECONDS).getStatusCode());
-            assertEquals(1, replacementConnector.getRequestCount());
+            assertEquals(0, replacementConnector.getRequestCount());
         } finally {
             allowReconnect.countDown();
             session.close();
-            requestExecutor.shutdownNow();
         }
     }
 
@@ -696,7 +687,7 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void writeDuringReconnectFailsWhenConnectionTimeoutExpires() throws Exception {
+    void readDuringReconnectWaitsForReplacementInsteadOfPassingThrough() throws Exception {
         TestConnector initialConnector = new TestConnector();
         CountDownLatch reconnectStarted = new CountDownLatch(1);
         CountDownLatch allowReconnect = new CountDownLatch(1);
@@ -712,25 +703,83 @@ class ElastiCacheIntegrationsSessionTest {
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                         null,
                         ReconnectPolicy.builder()
-                                .connectionTimeoutMs(5_000)
+                                .connectionTimeoutMs(30_000)
                                 .baseDelayMs(1)
                                 .maxDelayMs(1)
                                 .jitterFactor(0)
                                 .build());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         try {
             session.open();
             initialConnector.fail();
 
-            ElastiCacheIntegrationsCacheUnavailable failure =
-                    assertThrows(
-                            ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
 
             assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
-            assertTrue(failure.getMessage().contains("write"));
-            assertEquals(0, replacementConnector.getRequestCount());
+            assertFalse(response.isDone(), "the routed read must wait for the shared reconnect deadline");
+
+            allowReconnect.countDown();
+
+            assertEquals(200, response.get(1, TimeUnit.SECONDS).getStatusCode());
+            assertEquals(1, replacementConnector.getRequestCount());
         } finally {
             allowReconnect.countDown();
             session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void routedRequestsUseFallbackWindowAfterSharedReconnectWait() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        AtomicLong now = new AtomicLong();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(5_000)
+                                .fallbackDurationSeconds(1)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build(),
+                        ElastiCacheIntegrationsSession.DEFAULT_STALENESS_DURATION_SECONDS,
+                        now::get);
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            initialConnector.fail();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(writeRequest()), requestExecutor);
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(response.isDone());
+
+            now.set(TimeUnit.MILLISECONDS.toNanos(5_000));
+            session.wakeStateWaiters();
+
+            assertNull(response.get(1, TimeUnit.SECONDS));
+            assertNull(session.request(request()), "later requests share the elapsed reconnect wait");
+            assertEquals(0, replacementConnector.getRequestCount());
+
+            now.addAndGet(TimeUnit.SECONDS.toNanos(1));
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+        } finally {
+            allowReconnect.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
         }
     }
 
@@ -1152,7 +1201,7 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            assertEquals(200, session.request(request()).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
 
             assertEquals(200, session.request(request()).getStatusCode());

@@ -19,7 +19,7 @@ public final class ReconnectPolicy {
     /** Default maximum number of initial connection attempts. */
     public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
 
-    /** Default connection-attempt and routed-write recovery timeout, in milliseconds. */
+    /** Default connection-attempt and routed-request recovery timeout, in milliseconds. */
     public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
     /** Default interval between AUTH refreshes on a live connection, in milliseconds (15 minutes). */
@@ -89,7 +89,7 @@ public final class ReconnectPolicy {
     }
 
     /**
-     * Return the timeout for one connection attempt or a routed write's recovery wait.
+     * Return the timeout for one connection attempt or routed requests' shared recovery wait.
      *
      * @return the timeout in milliseconds
      */
@@ -159,16 +159,16 @@ public final class ReconnectPolicy {
         private Builder() {}
 
         /**
-         * Set how long, in seconds, routed requests may use the origin service after the connection is
-         * lost. The window is shared by requests during one outage. A later outage gets a new window
-         * after recovery.
+         * Set how long, in seconds, routed requests may use the origin service after the shared
+         * reconnect wait ends. The window is shared by requests during one outage. A later outage gets
+         * a new window after recovery.
          *
          * <ul>
          *   <li>{@link ReconnectPolicy#UNLIMITED_FALLBACK} (the default) or any negative value: allow
          *       fallback for the rest of the outage.
          *   <li>{@code N > 0}: allow fallback for N seconds. Later requests throw {@link
          *       software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
-         *   <li>{@code 0}: disable fallback. Requests throw as soon as the connection is lost.
+         *   <li>{@code 0}: disable fallback. Requests throw after the reconnect wait ends.
          * </ul>
          *
          * @param fallbackDurationSeconds the fallback window in seconds
@@ -191,7 +191,7 @@ public final class ReconnectPolicy {
         }
 
         /**
-         * Set the timeout for one complete connection initialization attempt and for a routed write
+         * Set the timeout for one complete connection initialization attempt and for routed requests
          * waiting on recovery.
          *
          * @param connectionTimeoutMs the timeout in milliseconds

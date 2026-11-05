@@ -43,11 +43,10 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  * loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and {@code aws.config}, and keeps
  * trying until it succeeds or the session closes.
  *
- * <p>While no connector is available, matching replay-safe requests use origin fallback until the
- * configured fallback duration expires. Other matching requests wait up to the connection timeout
- * for recovery, then fail without contacting origin. After a request is admitted to Cache, the HTTP
- * adapters allow direct origin fallback only when the connection drops and the operation is in the
- * shared replay-safe catalog.
+ * <p>While no connector is available, matching requests wait for recovery until the outage's shared
+ * connection deadline. They then use origin fallback until the configured fallback duration
+ * expires. After a request is admitted to Cache, the HTTP adapters allow direct origin fallback
+ * only when the connection drops and the operation is in the shared replay-safe catalog.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Cache. Requests with no matching
  * predicate are declined for origin pass-through. The background runners started by {@link #open()}
@@ -103,6 +102,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     private volatile ConnectionSnapshot snapshot;
     private volatile Refresher configRefresher;
     private volatile Refresher reauthRefresher;
+    private volatile long readyDeadlineNanos;
     private volatile long fallbackDeadlineNanos;
     private boolean opening;
     private boolean reconnectRunning;
@@ -159,7 +159,10 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                 System::nanoTime);
     }
 
-    /** Test constructor: {@code nanoClock} replaces {@link System#nanoTime()} for staleness. */
+    /**
+     * Test constructor: {@code nanoClock} replaces {@link System#nanoTime()} for staleness and outage
+     * deadlines.
+     */
     ElastiCacheIntegrationsSession(
             Supplier<ElastiCacheIntegrationsConnector> connectorFactory,
             Supplier<AuthCredentials> authProvider,
@@ -624,9 +627,9 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     /**
      * Route a request to Cache, or return {@code null} to let the caller handle it.
      *
-     * <p>A request is passed through when it does not match any resolved predicate, or when it is
-     * replay-safe, the cache is disconnected, and the fallback window is still open. A matching write
-     * waits up to the connection timeout for recovery and is never passed through silently.
+     * <p>A request is passed through when it does not match any resolved predicate, or when the cache
+     * is still disconnected after the outage's shared reconnect wait and the fallback window is open.
+     * In both cases, the request has not been sent, so falling back is safe.
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
@@ -644,8 +647,6 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         if (cancellation.isCancelled()) {
             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
         }
-        boolean replaySafe = Idempotency.isIdempotent(request.getMetadata());
-        long reconnectDeadlineNanos = 0;
         while (true) {
             ConnectionSnapshot currentSnapshot = snapshot;
             PredicateEvaluator evaluator =
@@ -657,18 +658,15 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             ElastiCacheIntegrationsConnector active = connector;
             if (active == null || !active.isReady()) {
                 beginReconnect(active);
-                if (replaySafe) {
-                    if (fallbackAllowed()) {
-                        return null;
-                    }
-                    throw new ElastiCacheIntegrationsCacheUnavailable(
-                            "Cache has no cache connection and origin fallback is no longer allowed");
+                if (awaitReconnect(cancellation)) {
+                    continue;
                 }
-                if (reconnectDeadlineNanos == 0) {
-                    reconnectDeadlineNanos = reconnectDeadline();
+                ensureUsable();
+                if (fallbackAllowed()) {
+                    return null;
                 }
-                awaitReconnectForWrite(reconnectDeadlineNanos, cancellation);
-                continue;
+                throw new ElastiCacheIntegrationsCacheUnavailable(
+                        "Cache has no cache connection and origin fallback is no longer allowed");
             }
 
             try {
@@ -676,14 +674,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             } catch (ElastiCacheIntegrationsRejectedError failure) {
                 if (AUTH_ERROR.equals(failure.getCode())) {
                     beginReconnect(active);
-                    if (replaySafe) {
-                        return null;
-                    }
-                    if (reconnectDeadlineNanos == 0) {
-                        reconnectDeadlineNanos = reconnectDeadline();
-                    }
-                    awaitReconnectForWrite(reconnectDeadlineNanos, cancellation);
-                    continue;
+                    return null;
                 }
                 throw failure;
             } catch (ElastiCacheIntegrationsError failure) {
@@ -693,19 +684,6 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                 throw failure;
             }
         }
-    }
-
-    /**
-     * Return whether a request may go to origin without first reaching Cache.
-     *
-     * <p>Package-private for the async adapter's executor-rejection path.
-     */
-    boolean canFallbackWithoutCache(ElastiCacheIntegrationsRequest request) {
-        ConnectionSnapshot currentSnapshot = snapshot;
-        PredicateEvaluator evaluator =
-                currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
-        return (evaluator != null && !evaluator.shouldRouteToCache(request))
-                || Idempotency.isIdempotent(request.getMetadata());
     }
 
     /**
@@ -863,7 +841,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                 if (current != null && current.isReady() && current != failed) {
                     return;
                 }
-                fallbackDeadlineNanos = fallbackDeadline();
+                startOutageDeadlines();
                 connector = null;
                 state = State.RECONNECTING;
                 if (current != null) {
@@ -910,6 +888,8 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         publish(next, snapshot);
                         state = State.OPEN;
+                        readyDeadlineNanos = 0;
+                        fallbackDeadlineNanos = 0;
                         stateLock.notifyAll();
                     }
                     return;
@@ -950,35 +930,38 @@ public class ElastiCacheIntegrationsSession implements Closeable {
 
     private boolean fallbackAllowed() {
         long deadline = fallbackDeadlineNanos;
-        return deadline == Long.MAX_VALUE || System.nanoTime() < deadline;
+        return deadline == Long.MAX_VALUE || nanoClock.getAsLong() < deadline;
     }
 
-    private long fallbackDeadline() {
+    private void startOutageDeadlines() {
+        long now = nanoClock.getAsLong();
+        readyDeadlineNanos =
+                saturatedAdd(now, TimeUnit.MILLISECONDS.toNanos(reconnectPolicy.getConnectionTimeoutMs()));
         long seconds = reconnectPolicy.getFallbackDurationSeconds();
         if (seconds < 0) {
+            fallbackDeadlineNanos = Long.MAX_VALUE;
+            return;
+        }
+        fallbackDeadlineNanos = saturatedAdd(readyDeadlineNanos, TimeUnit.SECONDS.toNanos(seconds));
+    }
+
+    private static long saturatedAdd(long value, long increment) {
+        try {
+            return Math.addExact(value, increment);
+        } catch (ArithmeticException overflow) {
             return Long.MAX_VALUE;
         }
-        long duration = TimeUnit.SECONDS.toNanos(seconds);
-        long now = System.nanoTime();
-        return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
     }
 
-    private long reconnectDeadline() {
-        long duration = TimeUnit.MILLISECONDS.toNanos(reconnectPolicy.getConnectionTimeoutMs());
-        long now = System.nanoTime();
-        return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
-    }
-
-    private void awaitReconnectForWrite(
-            long deadlineNanos, ElastiCacheIntegrationsRequestCancellation cancellation) {
+    private boolean awaitReconnect(ElastiCacheIntegrationsRequestCancellation cancellation) {
         synchronized (stateLock) {
             while (state == State.RECONNECTING) {
                 if (cancellation.isCancelled()) {
                     throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
                 }
-                long remainingNanos = deadlineNanos - System.nanoTime();
+                long remainingNanos = readyDeadlineNanos - nanoClock.getAsLong();
                 if (remainingNanos <= 0) {
-                    throw writeUnavailable();
+                    return false;
                 }
                 long waitMs = remainingNanos / 1_000_000 + (remainingNanos % 1_000_000 == 0 ? 0 : 1);
                 try {
@@ -989,18 +972,11 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
                     }
                     throw new ElastiCacheIntegrationsCacheUnavailable(
-                            "Interrupted while waiting to send routed write through Cache");
+                            "Interrupted while waiting for Cache to reconnect");
                 }
             }
-            if (state != State.OPEN) {
-                throw writeUnavailable();
-            }
+            return state == State.OPEN;
         }
-    }
-
-    private static ElastiCacheIntegrationsCacheUnavailable writeUnavailable() {
-        return new ElastiCacheIntegrationsCacheUnavailable(
-                "Routed write was not sent because Cache did not reconnect before the connection timeout");
     }
 
     /** For testing: wake every thread waiting on the state lock, as a spurious wakeup would. */

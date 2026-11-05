@@ -132,7 +132,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void executorRejectionOnRoutedWriteIsRetryableWithoutContactingOrigin() {
+    void executorRejectionOnRoutedWriteFallsBackToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         Executor rejectingExecutor =
                 command -> {
@@ -147,14 +147,9 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                         rejectingExecutor,
                         null);
 
-        ExecutionException failure =
-                assertThrows(
-                        ExecutionException.class,
-                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
-        assertTrue(failure.getCause() instanceof RetryableException);
-        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
-        assertEquals(0, origin.executeCount.get());
+        assertEquals(1, origin.executeCount.get());
         client.close();
     }
 

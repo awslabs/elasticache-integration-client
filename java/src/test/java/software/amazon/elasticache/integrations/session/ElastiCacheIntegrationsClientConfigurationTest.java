@@ -26,7 +26,7 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                 ElastiCacheIntegrationsClientConfiguration.defaults();
 
         assertEquals(5_000, defaults.getCacheRequestTimeoutMs());
-        assertEquals(2_000, defaults.getConnectionTimeoutMs());
+        assertEquals(5_000, defaults.getConnectionTimeoutMs());
         assertEquals(-1, defaults.getFallbackDurationSeconds());
         assertNull(defaults.getCachePolicyOverrides());
         assertEquals(3_600, defaults.getCachePolicyTimeoutSeconds());

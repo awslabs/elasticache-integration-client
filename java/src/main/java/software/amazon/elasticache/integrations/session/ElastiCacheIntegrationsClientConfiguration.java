@@ -27,8 +27,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     /** Default for {@link Builder#cacheRequestTimeoutMs(long)}: 5 seconds. */
     public static final long DEFAULT_CACHE_REQUEST_TIMEOUT_MS = 5_000;
 
-    /** Default for {@link Builder#connectionTimeoutMs(long)}: 2 seconds. */
-    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
+    /** Default for {@link Builder#connectionTimeoutMs(long)}: 5 seconds. */
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
     /** Value of {@link Builder#fallbackDurationSeconds(long)} that allows fallback indefinitely. */
     public static final long INDEFINITE_FALLBACK = -1;
@@ -126,7 +126,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
 
         /**
          * Set how long, in milliseconds, ElastiCache Integrations tries to connect at startup, and how
-         * long a request waits for reconnection after a connection is lost (default: 2000). Must be
+         * long a request waits for reconnection after a connection is lost (default: 5000). Must be
          * positive.
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {

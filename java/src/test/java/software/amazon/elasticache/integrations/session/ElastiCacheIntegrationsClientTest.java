@@ -434,7 +434,7 @@ class ElastiCacheIntegrationsClientTest {
     @Test
     void clientPassesConnectionTimeoutToTheSession() {
         try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
-            assertEquals(2_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
+            assertEquals(5_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
         }
 
         try (DynamoDbClient client =
