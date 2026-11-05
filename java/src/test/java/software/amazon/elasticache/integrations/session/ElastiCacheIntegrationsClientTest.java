@@ -26,8 +26,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
-import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -69,26 +67,12 @@ class ElastiCacheIntegrationsClientTest {
 
     private static final String OWN_ACCESS_KEY = "AKIDOWNCREDENTIAL01";
     private static final String DEFAULT_CHAIN_ACCESS_KEY = "AKIDDEFAULTCHAIN01";
-    private static final String TEST_USER = "test-user";
-    private static final String TEST_TOKEN = "test-token";
 
     @TempDir Path tempDir;
 
     private MockCache cache;
     private MockTlsServer server;
     private Path caBundle;
-    private SSLContext clientSslContext;
-
-    // Common SDK client configuration for tests - fake credentials since we intercept requests
-    private static void sdkConfig(DynamoDbClientBuilder b) {
-        b.region(Region.US_EAST_1)
-                .credentialsProvider(
-                        StaticCredentialsProvider.create(
-                                AwsBasicCredentials.create(
-                                        "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")))
-                .endpointOverride(URI.create("http://localhost:8080"));
-    }
-
     private final AtomicReference<ElastiCacheIntegrationsHandle> handle = new AtomicReference<>();
 
     @BeforeEach
@@ -99,7 +83,6 @@ class ElastiCacheIntegrationsClientTest {
         server = new MockTlsServer(cache);
         caBundle = tempDir.resolve("ca.pem");
         server.writeCaBundle(caBundle);
-        clientSslContext = server.getSslContext();
     }
 
     @AfterEach
@@ -785,266 +768,6 @@ class ElastiCacheIntegrationsClientTest {
             assertEquals(2, cache.getAuthAttempts().size());
             assertEquals(2, proxy.getAcceptedConnections());
         }
-    }
-
-    @Test
-    void builder_withEndpoint_parsesHostAndPort() {
-        DynamoDbClientBuilder origin = DynamoDbClient.builder();
-        sdkConfig(origin);
-
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(origin)
-                        .build()) {
-
-            assertNotNull(result.client());
-            assertNotNull(result.handle());
-            assertTrue(result.handle().isOpen());
-        }
-    }
-
-    @Test
-    void builder_withHostAndPort_buildsSuccessfully() {
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .host("localhost")
-                        .port(server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-
-            assertNotNull(result.client());
-            assertTrue(result.handle().isOpen());
-        }
-    }
-
-    @Test
-    void clientOperation_isServedByCacheWithoutContactingOrigin() {
-        configureListTablesPredicate();
-        cache.setReply(
-                Reply.ok(
-                        200,
-                        Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
-                        "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8)));
-
-        Consumer<DynamoDbClientBuilder> unreachableOriginConfig =
-                b ->
-                        b.region(Region.US_EAST_1)
-                                .credentialsProvider(
-                                        StaticCredentialsProvider.create(
-                                                AwsBasicCredentials.create("access-key", "secret-key")))
-                                .endpointOverride(URI.create("http://127.0.0.1:1"));
-
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), unreachableOriginConfig)
-                        .build()) {
-            assertEquals(Collections.emptyList(), result.client().listTables().tableNames());
-        }
-
-        ReceivedRequest request = cache.getLastRequest();
-        assertNotNull(request);
-        assertEquals("POST", request.getMethod());
-        assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
-        assertFalse(request.getHeaders().contains("authorization"));
-        assertFalse(request.getHeaders().contains("x-amz-date"));
-    }
-
-    @Test
-    void builder_withEndpointAndHost_throwsElastiCacheIntegrationsError() {
-        ElastiCacheIntegrationsClient.Builder builder =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("cache.example.com:6379")
-                        .host("other-host")
-                        .authCredentials(TEST_USER, TEST_TOKEN);
-
-        assertThrows(
-                ElastiCacheIntegrationsError.class,
-                () ->
-                        builder
-                                .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                                .build());
-    }
-
-    @Test
-    void builder_withoutEndpointOrHost_throwsElastiCacheIntegrationsError() {
-        ElastiCacheIntegrationsClient.Builder builder =
-                ElastiCacheIntegrationsClient.builder().authCredentials(TEST_USER, TEST_TOKEN);
-
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                builder
-                                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                                        .build());
-        assertTrue(error.getMessage().contains("endpoint or host is required"));
-    }
-
-    @Test
-    void builder_withoutAuthProvider_throwsElastiCacheIntegrationsError() {
-        ElastiCacheIntegrationsClient.Builder builder =
-                ElastiCacheIntegrationsClient.builder().endpoint("cache.example.com:6379");
-
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                builder
-                                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                                        .build());
-        assertTrue(error.getMessage().contains("authProvider is required"));
-    }
-
-    @Test
-    void builder_withStaticAuthToken_usesTokenProvider() {
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, "my-static-token")
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-
-            assertTrue(result.handle().isOpen());
-        }
-    }
-
-    @Test
-    void result_close_closesBothHandleAndClient() {
-        ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build();
-
-        assertTrue(result.handle().isOpen());
-
-        result.close();
-
-        assertFalse(result.handle().isOpen());
-    }
-
-    @Test
-    void result_close_isIdempotent() {
-        ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build();
-
-        result.close();
-        result.close(); // Should not throw
-
-        assertFalse(result.handle().isOpen());
-    }
-
-    @Test
-    void builder_withOverrides_passesToSession() {
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .overrides(Collections.singletonMap("item_ttl", 300))
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-
-            assertNotNull(result.handle().getSession().getConfig());
-        }
-    }
-
-    @Test
-    void builder_withTimeouts_appliesTimeouts() {
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .connectTimeoutMs(1000)
-                        .initializationTimeoutMs(2000)
-                        .requestTimeoutMs(2000)
-                        .sslContext(clientSslContext)
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-
-            assertTrue(result.handle().isOpen());
-        }
-    }
-
-    @Test
-    void builder_withSdkOverrideConfiguration_mergesWithElastiCacheIntegrationsInterceptor() {
-        configureListTablesPredicate();
-        // Track if our custom interceptor was installed
-        AtomicBoolean customInterceptorCalled = new AtomicBoolean(false);
-
-        ExecutionInterceptor customInterceptor =
-                new ExecutionInterceptor() {
-                    @Override
-                    public void beforeExecution(Context.BeforeExecution context, ExecutionAttributes attrs) {
-                        customInterceptorCalled.set(true);
-                    }
-                };
-
-        // Create SDK config with custom interceptor and timeout
-        ClientOverrideConfiguration sdkOverride =
-                ClientOverrideConfiguration.builder()
-                        .addExecutionInterceptor(customInterceptor)
-                        .apiCallTimeout(Duration.ofSeconds(30))
-                        .build();
-
-        // Use sdkConfigurer to set override configuration - Cache should merge with it
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        .origin(
-                                DynamoDbClient.builder(),
-                                b -> {
-                                    sdkConfig(b); // Apply base config (region, creds, endpoint)
-                                    b.overrideConfiguration(sdkOverride); // Add our custom override config
-                                })
-                        .build()) {
-
-            assertTrue(result.handle().isOpen());
-            result.client().listTables();
-            assertTrue(customInterceptorCalled.get());
-        }
-    }
-
-    @Test
-    void builder_withoutSdkOverrideConfiguration_usesDefaultConfig() {
-        // This just verifies that when no sdkOverrideConfiguration is set,
-        // the build still works (using only the Cache interceptor)
-        try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
-                ElastiCacheIntegrationsClient.builder()
-                        .endpoint("localhost:" + server.getPort())
-                        .authCredentials(TEST_USER, TEST_TOKEN)
-                        .sslContext(clientSslContext)
-                        // No sdkOverrideConfiguration set
-                        .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
-                        .build()) {
-
-            assertTrue(result.handle().isOpen());
-        }
-    }
-
-    private void configureListTablesPredicate() {
-        cache.setConfigJson(
-                "{\"version\":\"1.0\",\"refresh_interval\":60,"
-                        + "\"predicates\":[{\"expr\":\"service == 'dynamodb' "
-                        + "&& operation == 'ListTables'\",\"vars\":{}}]}");
     }
 
     private static final class RecordingOriginClientBuilder

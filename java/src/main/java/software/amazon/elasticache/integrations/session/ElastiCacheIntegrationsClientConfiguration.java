@@ -16,8 +16,9 @@ import java.util.concurrent.TimeUnit;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 
 /**
- * Optional ElastiCache Integrations settings. Every option has a default, so set only what you
- * change.
+ * Optional ElastiCache Integrations settings, passed to {@link
+ * ElastiCacheIntegrationsClient.Builder#clientConfiguration}. Every option has a default, so set
+ * only what you change.
  *
  * <p>The instance is immutable. {@link Builder#build()} throws {@link
  * ElastiCacheIntegrationsConfigError} for a value that is not usable.

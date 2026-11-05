@@ -10,6 +10,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.regions.providers.DefaultAwsRegionProviderChain;
 import software.amazon.elasticache.auth.ElastiCacheIamAuthTokenManager;
 import software.amazon.elasticache.auth.ToolkitInputException;
+import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
 /**
@@ -18,12 +19,12 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  * <p>Each call to {@link #get()} generates a fresh SigV4-presigned token, resolving credentials
  * anew so that rotated credentials (e.g., from STS or IMDS) are picked up automatically.
  *
+ * <p><b>Internal:</b> this class is not part of the supported API. {@code
+ * ElastiCacheIntegrationsClient.Builder#install} creates a provider from the region and credentials
+ * of the application's SDK client and owns the auto-refreshing manager it creates.
+ *
  * <p>This provider implements {@code Supplier<AuthCredentials>} and can be used directly with
- * {@link software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector}.
- * When passed directly to {@code ElastiCacheIntegrationsClient}, {@code
- * ElastiCacheIntegrationsHandle}, or {@code ElastiCacheIntegrationsAsyncHandle}, including through
- * a {@code Supplier} reference, Cache creates and owns an auto-refreshing manager from this
- * configuration.
+ * {@link ElastiCacheIntegrationsConnector}.
  *
  * <p>Usage:
  *
@@ -105,8 +106,7 @@ public final class IamAuthTokenProvider implements Supplier<AuthCredentials> {
     /**
      * Create an independent toolkit auto-refresh manager from this provider's configuration.
      *
-     * <p>Cache clients and handles call this automatically when this provider is passed to {@code
-     * authProvider(...)}.
+     * <p>The installer calls this once for each installed client and closes the manager with it.
      *
      * @return a new, independent token manager
      */

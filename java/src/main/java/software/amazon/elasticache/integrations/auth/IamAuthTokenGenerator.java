@@ -36,7 +36,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  *     .generateToken();
  * }</pre>
  */
-public final class IamAuthTokenGenerator {
+final class IamAuthTokenGenerator {
 
     /** SigV4 presign expiry fixed by the ElastiCache IAM toolkit contract. */
     public static final Duration TOKEN_EXPIRY = Duration.ofMinutes(15);

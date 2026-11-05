@@ -29,24 +29,11 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
  * returns the Cache response or delegates the signed request to the origin transport when no
  * predicate matches or Cache fails.
  *
- * <p><b>Important:</b> Installing this interceptor without also configuring {@link
- * #getHttpClient()} as the SDK client's HTTP transport does not enable Cache and allows the default
- * transport to contact the origin service. Prefer {@link ElastiCacheIntegrationsClient} unless
- * manual lifecycle control is required.
- *
- * <p>Usage:
- *
- * <pre>{@code
- * ElastiCacheIntegrationsInterceptor interceptor = new ElastiCacheIntegrationsInterceptor(session);
- * DynamoDbClient client = DynamoDbClient.builder()
- *     .overrideConfiguration(c -> c.addExecutionInterceptor(interceptor))
- *     .httpClient(interceptor.getHttpClient())
- *     .build();
- * }</pre>
- *
- * <p>Or use {@link ElastiCacheIntegrationsHandle} for managed attachment/detachment.
+ * <p><b>Internal:</b> {@link ElastiCacheIntegrationsClient.Builder#install} installs this
+ * interceptor together with {@link #getHttpClient()}. Using the interceptor with the SDK's default
+ * transport does not enable Cache and lets that transport contact the origin service.
  */
-public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
+class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsInterceptor.class.getName());

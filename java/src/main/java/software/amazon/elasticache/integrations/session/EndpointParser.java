@@ -7,7 +7,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  *
  * <p>Supports IPv6 addresses in bracket notation (e.g., {@code [::1]:6379}).
  */
-public final class EndpointParser {
+final class EndpointParser {
 
     private EndpointParser() {
         // Utility class

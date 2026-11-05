@@ -27,7 +27,7 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
 
 /** Asynchronous SDK HTTP transport that attempts Cache before the origin service. */
-public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient {
+final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient {
 
     private static final String CLIENT_NAME = "java-cache";
 
