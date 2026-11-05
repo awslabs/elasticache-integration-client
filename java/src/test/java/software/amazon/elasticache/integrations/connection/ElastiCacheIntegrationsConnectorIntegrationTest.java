@@ -1267,11 +1267,15 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     @Test
     void requestsWaitForPendingCapacityInsteadOfFailing() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstRequestReceived = new CountDownLatch(1);
         cache.setReplyFunction(
-                request ->
-                        sequence.getAndIncrement() == 0
-                                ? Reply.requestId(42)
-                                : Reply.ok(200, Collections.emptyMap(), request.getBody()));
+                request -> {
+                    if (sequence.getAndIncrement() == 0) {
+                        firstRequestReceived.countDown();
+                        return Reply.requestId(42);
+                    }
+                    return Reply.ok(200, Collections.emptyMap(), request.getBody());
+                });
 
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
@@ -1281,6 +1285,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             Future<ElastiCacheIntegrationsResponse> first =
                     executor.submit(() -> conn.request(testRequest("first")));
+            assertTrue(firstRequestReceived.await(1, TimeUnit.SECONDS));
             awaitFifoSize(conn, 0);
 
             Future<ElastiCacheIntegrationsResponse> second =
