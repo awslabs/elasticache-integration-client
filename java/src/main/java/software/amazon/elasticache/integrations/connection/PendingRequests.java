@@ -52,10 +52,17 @@ public class PendingRequests {
     private static final class PendingRequest {
         private final CompletableFuture<RespValue> future;
         private final boolean deferredResponseAllowed;
+        private final Runnable onRemoved;
 
-        private PendingRequest(CompletableFuture<RespValue> future, boolean deferredResponseAllowed) {
+        private PendingRequest(
+                CompletableFuture<RespValue> future, boolean deferredResponseAllowed, Runnable onRemoved) {
             this.future = future;
             this.deferredResponseAllowed = deferredResponseAllowed;
+            this.onRemoved = onRemoved;
+        }
+
+        private void removed() {
+            onRemoved.run();
         }
     }
 
@@ -98,6 +105,15 @@ public class PendingRequests {
      * return arbitrary RESP simple strings directly.
      */
     CompletableFuture<RespValue> registerNewRequest(boolean deferredResponseAllowed) {
+        return registerNewRequest(deferredResponseAllowed, PendingRequests::noop);
+    }
+
+    /**
+     * Register a new pending request with a callback that runs when its FIFO or async entry is
+     * actually removed.
+     */
+    CompletableFuture<RespValue> registerNewRequest(
+            boolean deferredResponseAllowed, Runnable onRemoved) {
         lock.lock();
         try {
             ensureOpen();
@@ -106,7 +122,7 @@ public class PendingRequests {
                 throw new ElastiCacheIntegrationsError(
                         "Too many pending requests (max=" + maxPending + ")");
             }
-            return addRequest(deferredResponseAllowed);
+            return addRequest(deferredResponseAllowed, onRemoved);
         } finally {
             lock.unlock();
         }
@@ -125,6 +141,7 @@ public class PendingRequests {
         try {
             PendingRequest pending = queue.poll();
             if (pending != null) {
+                pending.removed();
                 pending.future.complete(value);
                 return true;
             }
@@ -158,7 +175,7 @@ public class PendingRequests {
                 throw new ElastiCacheIntegrationsProtocolError("Duplicate async response ID: " + requestId);
             }
             if (pending.future.isDone()) {
-                queue.remove();
+                queue.remove().removed();
                 return true;
             }
             asyncResponses.put(requestId, queue.remove());
@@ -182,6 +199,7 @@ public class PendingRequests {
             if (pending == null) {
                 return false;
             }
+            pending.removed();
             pending.future.complete(value);
             return true;
         } finally {
@@ -264,8 +282,10 @@ public class PendingRequests {
     private boolean removeFromAsyncLocked(CompletableFuture<RespValue> future) {
         Iterator<Map.Entry<String, PendingRequest>> iterator = asyncResponses.entrySet().iterator();
         while (iterator.hasNext()) {
-            if (iterator.next().getValue().future == future) {
+            PendingRequest pending = iterator.next().getValue();
+            if (pending.future == future) {
                 iterator.remove();
+                pending.removed();
                 return true;
             }
         }
@@ -281,9 +301,11 @@ public class PendingRequests {
         closed = true;
         PendingRequest pending;
         while ((pending = queue.poll()) != null) {
+            pending.removed();
             pending.future.completeExceptionally(cause);
         }
         for (PendingRequest asyncPending : asyncResponses.values()) {
+            asyncPending.removed();
             asyncPending.future.completeExceptionally(cause);
         }
         asyncResponses.clear();
@@ -295,9 +317,12 @@ public class PendingRequests {
         }
     }
 
-    private CompletableFuture<RespValue> addRequest(boolean deferredResponseAllowed) {
+    private static void noop() {}
+
+    private CompletableFuture<RespValue> addRequest(
+            boolean deferredResponseAllowed, Runnable onRemoved) {
         CompletableFuture<RespValue> future = new CompletableFuture<>();
-        queue.add(new PendingRequest(future, deferredResponseAllowed));
+        queue.add(new PendingRequest(future, deferredResponseAllowed, onRemoved));
         return future;
     }
 

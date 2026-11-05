@@ -670,13 +670,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                 });
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost",
-                        server.getPort(),
-                        clientSslContext,
-                        5000,
-                        5000,
-                        150,
-                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 150, 1);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -911,13 +905,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost",
-                        server.getPort(),
-                        clientSslContext,
-                        5000,
-                        5000,
-                        2000,
-                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 2000, 1);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -935,9 +923,15 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                             instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException);
             assertFalse(conn.isDead());
 
+            Future<ElastiCacheIntegrationsResponse> next =
+                    executor.submit(() -> conn.request(testRequest()));
+            Thread.sleep(50);
+            assertFalse(next.isDone());
+            assertEquals(1, cache.getRequests().size());
+
             releaseFirst.countDown();
-            ElastiCacheIntegrationsResponse next = conn.request(testRequest());
-            assertEquals("next", new String(next.getBody(), StandardCharsets.UTF_8));
+            assertEquals(
+                    "next", new String(next.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
             assertFalse(conn.isDead());
         } finally {
             releaseFirst.countDown();

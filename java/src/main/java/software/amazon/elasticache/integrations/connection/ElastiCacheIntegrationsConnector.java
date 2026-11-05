@@ -831,7 +831,6 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param timeoutMs the budget for this attempt: {@code initializationTimeoutMs} for {@code
      *     aws.config}, {@code requestTimeoutMs} for everything else
      */
-    @SuppressWarnings("FutureReturnValueIgnored")
     private RespValue sendAndAwait(
             byte[] encoded,
             ElastiCacheIntegrationsRequestCancellation cancellation,
@@ -884,8 +883,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                 }
 
                 // Must register immediately before sending to maintain FIFO correlation.
-                future = pending.registerNewRequest(deferredResponseAllowed);
-                future.whenComplete((ignored, failure) -> admission.release());
+                future = pending.registerNewRequest(deferredResponseAllowed, admission::release);
                 permitHeld = false;
 
                 // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
