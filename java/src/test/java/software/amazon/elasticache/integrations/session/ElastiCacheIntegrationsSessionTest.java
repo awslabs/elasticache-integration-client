@@ -32,10 +32,12 @@ import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -590,26 +592,144 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void authErrorPassesThroughAndStartsReconnect() {
+    void authErrorOnWriteWaitsForReconnectInsteadOfPassingThrough() throws Exception {
+        AuthRejectingConnector initialConnector = new AuthRejectingConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(30_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(writeRequest()), requestExecutor);
+
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
+            assertFalse(response.isDone(), "the routed write must not pass through to origin");
+
+            allowReconnect.countDown();
+
+            assertEquals(200, response.get(1, TimeUnit.SECONDS).getStatusCode());
+            assertEquals(1, replacementConnector.getRequestCount());
+        } finally {
+            allowReconnect.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void authErrorOnReplaySafeRequestPassesThroughAndStartsReconnect() {
         cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
 
-            ElastiCacheIntegrationsResponse response =
-                    session.request(
-                            new ElastiCacheIntegrationsRequest(
-                                    "POST",
-                                    "https://dynamodb.us-east-1.amazonaws.com/",
-                                    Collections.emptyMap(),
-                                    new byte[0],
-                                    new RequestMetadata("dynamodb", "UpdateItem")));
-
-            assertNull(response);
+            assertNull(session.request(request()));
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertFalse(session.isConnectionHealthy());
         } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void writeDuringReconnectWaitsForReplacementInsteadOfPassingThrough() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(30_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            initialConnector.fail();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(writeRequest()), requestExecutor);
+
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(response.isDone(), "the routed write must not pass through to origin");
+
+            allowReconnect.countDown();
+
+            assertEquals(200, response.get(1, TimeUnit.SECONDS).getStatusCode());
+            assertEquals(1, replacementConnector.getRequestCount());
+        } finally {
+            allowReconnect.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void writeDuringReconnectFailsWhenConnectionTimeoutExpires() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(5_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build());
+        try {
+            session.open();
+            initialConnector.fail();
+
+            ElastiCacheIntegrationsCacheUnavailable failure =
+                    assertThrows(
+                            ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertTrue(failure.getMessage().contains("write"));
+            assertEquals(0, replacementConnector.getRequestCount());
+        } finally {
+            allowReconnect.countDown();
             session.close();
         }
     }
@@ -1169,6 +1289,15 @@ class ElastiCacheIntegrationsSessionTest {
                 new RequestMetadata("dynamodb", "GetItem"));
     }
 
+    private static ElastiCacheIntegrationsRequest writeRequest() {
+        return new ElastiCacheIntegrationsRequest(
+                "POST",
+                "https://dynamodb.us-east-1.amazonaws.com/",
+                Collections.emptyMap(),
+                new byte[0],
+                new RequestMetadata("dynamodb", "UpdateItem"));
+    }
+
     private static void awaitState(
             ElastiCacheIntegrationsSession session, ElastiCacheIntegrationsSession.State expected)
             throws InterruptedException {
@@ -1205,7 +1334,7 @@ class ElastiCacheIntegrationsSessionTest {
             dead = true;
         }
 
-        private int getRequestCount() {
+        int getRequestCount() {
             return requestCount.get();
         }
 
@@ -1277,6 +1406,15 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             fail();
             throw new ElastiCacheIntegrationsConnectionError("injected request failure");
+        }
+    }
+
+    private static final class AuthRejectingConnector extends TestConnector {
+        @Override
+        public ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsRejectedError("AUTH_ERROR", "missing FAS");
         }
     }
 

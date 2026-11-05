@@ -132,7 +132,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void executorRejectionFallsBackToOrigin() throws Exception {
+    void executorRejectionOnRoutedWriteIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
         Executor rejectingExecutor =
                 command -> {
@@ -140,7 +140,39 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 };
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new ImmediateSession(), preparedContext(), origin, false, rejectingExecutor, null);
+                        new ImmediateSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        rejectingExecutor,
+                        null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void executorRejectionOnRoutedReadFallsBackToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        Executor rejectingExecutor =
+                command -> {
+                    throw new RejectedExecutionException("at capacity");
+                };
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new ImmediateSession(),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        rejectingExecutor,
+                        null);
 
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 

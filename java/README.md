@@ -8,17 +8,20 @@ The Java package is `software.amazon.elasticache.integrations`.
 
 Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the
-configured DynamoDB origin transport. While reconnecting, requests that have
-not been sent to Cache use origin fallback until the configured fallback
-window expires. After a request is sent, indeterminate failures fall back only
-when the connection drops and the operation is in the shared replay-safe
-catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
-stale connection and passes the rejected request through while reconnecting.
-Other RESP errors, failures for non-idempotent operations, malformed responses,
-an expired fallback window, and shutdown are surfaced without starting an
-origin request. SDK retries, response deserialization, and caller-provided
-override configuration remain in the normal SDK pipeline.
+configured DynamoDB origin transport. While reconnecting, matching replay-safe
+requests that have not been sent to Cache use origin fallback until the
+configured fallback window expires. A matching write instead waits up to
+`connectionTimeoutMs` for recovery, then fails with a retryable
+cache-unavailable error without contacting origin. After a request is sent,
+indeterminate failures fall back only when the connection drops and the
+operation is in the shared replay-safe catalog. While the connection remains
+healthy, an `ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged
+operation. `AUTH_ERROR` closes the stale connection; replay-safe requests pass
+through, while writes follow the same bounded reconnect wait. Other RESP
+errors, failures for non-idempotent operations, malformed responses, an
+expired fallback window, and shutdown are surfaced without starting an origin
+request. SDK retries, response deserialization, and caller-provided override
+configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh come from the Amazon ElastiCache developer
 toolkit, the
@@ -225,7 +228,7 @@ ElastiCacheIntegrationsClient.builder()
 | Option | Default | Meaning |
 |---|---|---|
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
-| `connectionTimeoutMs(long)` | 2000 | How long each connection attempt (connect, HELLO/authentication, and configuration) may take, in milliseconds. Must be positive. |
+| `connectionTimeoutMs(long)` | 2000 | How long each connection attempt (connect, HELLO/authentication, and configuration) may take, and how long a routed write waits for reconnection, in milliseconds. Must be positive. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service while there is no cache connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
@@ -326,8 +329,9 @@ one that exceeds either limit, bypasses Cache and uses the origin transport.
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
 a bounded daemon executor. Applications can supply a caller-managed executor
 with `asyncExecutor(Executor)`. If that executor rejects a request because it is
-at capacity, Cache sends the buffered request through the origin fallback.
-Cache closes only transports and executors it creates itself.
+at capacity, replay-safe requests use origin fallback. A routed write instead
+fails retryably without contacting origin, so the shared cache cannot retain a
+stale value. Cache closes only transports and executors it creates itself.
 
 ## IAM token refresh
 

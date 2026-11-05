@@ -19,7 +19,7 @@ public final class ReconnectPolicy {
     /** Default maximum number of initial connection attempts. */
     public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
 
-    /** Default timeout for one connection initialization attempt, in milliseconds. */
+    /** Default connection-attempt and routed-write recovery timeout, in milliseconds. */
     public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
     /** Default interval between AUTH refreshes on a live connection, in milliseconds (15 minutes). */
@@ -89,7 +89,7 @@ public final class ReconnectPolicy {
     }
 
     /**
-     * Return the timeout for one complete connection initialization attempt.
+     * Return the timeout for one connection attempt or a routed write's recovery wait.
      *
      * @return the timeout in milliseconds
      */
@@ -191,7 +191,8 @@ public final class ReconnectPolicy {
         }
 
         /**
-         * Set the timeout for one complete connection initialization attempt.
+         * Set the timeout for one complete connection initialization attempt and for a routed write
+         * waiting on recovery.
          *
          * @param connectionTimeoutMs the timeout in milliseconds
          * @return this builder

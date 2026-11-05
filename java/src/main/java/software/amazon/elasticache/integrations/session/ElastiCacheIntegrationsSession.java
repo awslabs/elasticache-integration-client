@@ -43,10 +43,11 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  * loop obtains fresh credentials, repeats {@code HELLO 3 AUTH} and {@code aws.config}, and keeps
  * trying until it succeeds or the session closes.
  *
- * <p>While no connector is available, matching requests use origin fallback until the configured
- * fallback duration expires. After a request is admitted to Cache, the HTTP adapters allow direct
- * origin fallback only when the connection drops and the operation is in the shared replay-safe
- * catalog.
+ * <p>While no connector is available, matching replay-safe requests use origin fallback until the
+ * configured fallback duration expires. Other matching requests wait up to the connection timeout
+ * for recovery, then fail without contacting origin. After a request is admitted to Cache, the HTTP
+ * adapters allow direct origin fallback only when the connection drops and the operation is in the
+ * shared replay-safe catalog.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Cache. Requests with no matching
  * predicate are declined for origin pass-through. The background runners started by {@link #open()}
@@ -623,9 +624,9 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     /**
      * Route a request to Cache, or return {@code null} to let the caller handle it.
      *
-     * <p>A request is passed through when it does not match any resolved predicate, or when the cache
-     * is disconnected and the fallback window is still open. In both cases, the request has not been
-     * sent, so falling back is safe.
+     * <p>A request is passed through when it does not match any resolved predicate, or when it is
+     * replay-safe, the cache is disconnected, and the fallback window is still open. A matching write
+     * waits up to the connection timeout for recovery and is never passed through silently.
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
@@ -643,37 +644,68 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         if (cancellation.isCancelled()) {
             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
         }
+        boolean replaySafe = Idempotency.isIdempotent(request.getMetadata());
+        long reconnectDeadlineNanos = 0;
+        while (true) {
+            ConnectionSnapshot currentSnapshot = snapshot;
+            PredicateEvaluator evaluator =
+                    currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
+            if (evaluator != null && !evaluator.shouldRouteToCache(request)) {
+                return null;
+            }
+
+            ElastiCacheIntegrationsConnector active = connector;
+            if (active == null || !active.isReady()) {
+                beginReconnect(active);
+                if (replaySafe) {
+                    if (fallbackAllowed()) {
+                        return null;
+                    }
+                    throw new ElastiCacheIntegrationsCacheUnavailable(
+                            "Cache has no cache connection and origin fallback is no longer allowed");
+                }
+                if (reconnectDeadlineNanos == 0) {
+                    reconnectDeadlineNanos = reconnectDeadline();
+                }
+                awaitReconnectForWrite(reconnectDeadlineNanos, cancellation);
+                continue;
+            }
+
+            try {
+                return active.request(request, cancellation);
+            } catch (ElastiCacheIntegrationsRejectedError failure) {
+                if (AUTH_ERROR.equals(failure.getCode())) {
+                    beginReconnect(active);
+                    if (replaySafe) {
+                        return null;
+                    }
+                    if (reconnectDeadlineNanos == 0) {
+                        reconnectDeadlineNanos = reconnectDeadline();
+                    }
+                    awaitReconnectForWrite(reconnectDeadlineNanos, cancellation);
+                    continue;
+                }
+                throw failure;
+            } catch (ElastiCacheIntegrationsError failure) {
+                if (active.isDead()) {
+                    beginReconnect(active);
+                }
+                throw failure;
+            }
+        }
+    }
+
+    /**
+     * Return whether a request may go to origin without first reaching Cache.
+     *
+     * <p>Package-private for the async adapter's executor-rejection path.
+     */
+    boolean canFallbackWithoutCache(ElastiCacheIntegrationsRequest request) {
         ConnectionSnapshot currentSnapshot = snapshot;
         PredicateEvaluator evaluator =
                 currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
-        if (evaluator != null && !evaluator.shouldRouteToCache(request)) {
-            return null;
-        }
-
-        ElastiCacheIntegrationsConnector active = connector;
-        if (active == null || !active.isReady()) {
-            beginReconnect(active);
-            if (fallbackAllowed()) {
-                return null;
-            }
-            throw new ElastiCacheIntegrationsCacheUnavailable(
-                    "Cache has no cache connection and origin fallback is no longer allowed");
-        }
-
-        try {
-            return active.request(request, cancellation);
-        } catch (ElastiCacheIntegrationsRejectedError failure) {
-            if (AUTH_ERROR.equals(failure.getCode())) {
-                beginReconnect(active);
-                return null;
-            }
-            throw failure;
-        } catch (ElastiCacheIntegrationsError failure) {
-            if (active.isDead()) {
-                beginReconnect(active);
-            }
-            throw failure;
-        }
+        return (evaluator != null && !evaluator.shouldRouteToCache(request))
+                || Idempotency.isIdempotent(request.getMetadata());
     }
 
     /**
@@ -878,6 +910,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         publish(next, snapshot);
                         state = State.OPEN;
+                        stateLock.notifyAll();
                     }
                     return;
                 } catch (RuntimeException failure) {
@@ -928,6 +961,46 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         long duration = TimeUnit.SECONDS.toNanos(seconds);
         long now = System.nanoTime();
         return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
+    }
+
+    private long reconnectDeadline() {
+        long duration = TimeUnit.MILLISECONDS.toNanos(reconnectPolicy.getConnectionTimeoutMs());
+        long now = System.nanoTime();
+        return duration > Long.MAX_VALUE - now ? Long.MAX_VALUE : now + duration;
+    }
+
+    private void awaitReconnectForWrite(
+            long deadlineNanos, ElastiCacheIntegrationsRequestCancellation cancellation) {
+        synchronized (stateLock) {
+            while (state == State.RECONNECTING) {
+                if (cancellation.isCancelled()) {
+                    throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+                }
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    throw writeUnavailable();
+                }
+                long waitMs = remainingNanos / 1_000_000 + (remainingNanos % 1_000_000 == 0 ? 0 : 1);
+                try {
+                    stateLock.wait(waitMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    if (cancellation.isCancelled()) {
+                        throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+                    }
+                    throw new ElastiCacheIntegrationsCacheUnavailable(
+                            "Interrupted while waiting to send routed write through Cache");
+                }
+            }
+            if (state != State.OPEN) {
+                throw writeUnavailable();
+            }
+        }
+    }
+
+    private static ElastiCacheIntegrationsCacheUnavailable writeUnavailable() {
+        return new ElastiCacheIntegrationsCacheUnavailable(
+                "Routed write was not sent because Cache did not reconnect before the connection timeout");
     }
 
     /** For testing: wake every thread waiting on the state lock, as a spurious wakeup would. */
