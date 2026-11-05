@@ -115,7 +115,7 @@ final class EndpointParser {
         @Override
         public boolean equals(Object obj) {
             if (this == obj) return true;
-            if (obj == null || getClass() != obj.getClass()) return false;
+            if (!(obj instanceof ParsedEndpoint)) return false;
             ParsedEndpoint that = (ParsedEndpoint) obj;
             return port == that.port && host.equals(that.host);
         }
