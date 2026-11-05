@@ -240,3 +240,28 @@ jobs:
           -PtestJavaVersion=${{ matrix.java-version }}
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
           -Porg.gradle.java.installations.auto-download=false
+
+  java-pre-provider-name-sdk:
+    name: java (AWS SDK 2.31.63)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: 21
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Test before ContentStreamProvider.name was added
+        working-directory: java
+        run: >-
+          ./gradlew test --console=colored
+          --tests 'software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsHttpClientTest'
+          -PawsSdkRuntimeVersion=2.31.63
+          -Porg.gradle.java.installations.auto-download=false
