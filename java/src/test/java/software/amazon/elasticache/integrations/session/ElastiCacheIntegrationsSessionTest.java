@@ -142,6 +142,65 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void open_connectionTimeoutBoundsAllInitialAttempts() {
+        AtomicInteger attempts = new AtomicInteger();
+        long timeoutMs = 200;
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            attempts.incrementAndGet();
+                            return new TestConnector(true);
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectAttempts(100)
+                                .connectionTimeoutMs(timeoutMs)
+                                .baseDelayMs(20)
+                                .maxDelayMs(20)
+                                .jitterFactor(0)
+                                .build());
+
+        long started = System.nanoTime();
+        ElastiCacheIntegrationsConnectionError error =
+                assertThrows(ElastiCacheIntegrationsConnectionError.class, session::open);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+        assertTrue(error.getMessage().contains(timeoutMs + "ms"));
+        assertTrue(attempts.get() > 1);
+        assertTrue(elapsedMs >= 150, "open returned before using the connection timeout: " + elapsedMs);
+        assertTrue(elapsedMs < 1_000, "open exceeded the shared connection timeout: " + elapsedMs);
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());
+    }
+
+    @Test
+    void open_connectionTimeoutBoundsInitialConfigExchange() {
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("aws.config");
+        long timeoutMs = 200;
+        ElastiCacheIntegrationsHandle handle =
+                ElastiCacheIntegrationsHandle.builder()
+                        .host("localhost")
+                        .port(server.getPort())
+                        .sslContext(clientSslContext)
+                        .authCredentials(TEST_USER, TEST_TOKEN)
+                        .requestTimeoutMs(5_000)
+                        .reconnectPolicy(
+                                ReconnectPolicy.builder().connectAttempts(1).connectionTimeoutMs(timeoutMs).build())
+                        .build();
+
+        long started = System.nanoTime();
+        try {
+            assertThrows(ElastiCacheIntegrationsConnectionError.class, handle::open);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            assertTrue(
+                    elapsedMs < 1_000, "initial aws.config used the 5000ms request timeout: " + elapsedMs);
+        } finally {
+            handle.close();
+        }
+    }
+
+    @Test
     void reauthenticateOnce_usesFreshCredentialsOnTheLiveConnector() {
         TestConnector connector = new TestConnector();
         AtomicInteger credentialCalls = new AtomicInteger();
@@ -249,6 +308,19 @@ class ElastiCacheIntegrationsSessionTest {
         assertThrows(
                 IllegalArgumentException.class,
                 () -> ReconnectPolicy.builder().authRefreshIntervalMs(-1).build());
+    }
+
+    @Test
+    void reconnectPolicy_rejectsConnectionTimeoutOutsideIntegerMilliseconds() {
+        for (long timeoutMs : new long[] {0, -1, Integer.MAX_VALUE + 1L}) {
+            IllegalArgumentException error =
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> ReconnectPolicy.builder().connectionTimeoutMs(timeoutMs).build());
+            assertEquals(
+                    "connectionTimeoutMs must be positive and at most " + Integer.MAX_VALUE,
+                    error.getMessage());
+        }
     }
 
     private static ManagedIamAuthProvider managedAuthProvider(AtomicInteger credentialCalls) {
@@ -850,14 +922,6 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void fallbackWindowExpiresWhileReconnectContinues() throws Exception {
-        ReconnectPolicy policy =
-                ReconnectPolicy.builder()
-                        .fallbackDurationSeconds(0)
-                        .baseDelayMs(1)
-                        .maxDelayMs(1)
-                        .jitterFactor(0)
-                        .build();
-
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
             ElastiCacheIntegrationsHandle handle =
                     ElastiCacheIntegrationsHandle.builder()
@@ -865,9 +929,14 @@ class ElastiCacheIntegrationsSessionTest {
                             .port(proxy.getPort())
                             .sslContext(clientSslContext)
                             .authCredentials(TEST_USER, TEST_TOKEN)
-                            .connectTimeoutMs(100)
-                            .initializationTimeoutMs(100)
-                            .reconnectPolicy(policy)
+                            .reconnectPolicy(
+                                    ReconnectPolicy.builder()
+                                            .connectionTimeoutMs(100)
+                                            .fallbackDurationSeconds(0)
+                                            .baseDelayMs(1)
+                                            .maxDelayMs(1)
+                                            .jitterFactor(0)
+                                            .build())
                             .build();
             try {
                 handle.open();

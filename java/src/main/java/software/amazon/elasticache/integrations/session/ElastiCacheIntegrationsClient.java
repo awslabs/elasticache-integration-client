@@ -36,6 +36,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
+import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
@@ -200,9 +201,7 @@ public final class ElastiCacheIntegrationsClient {
         private Supplier<AuthCredentials> authProvider;
         private IamAuthTokenProvider iamAuthProvider;
         private Map<String, Object> overrides;
-        private int connectTimeoutMs = 5000;
-        private int initializationTimeoutMs = 5000;
-        private int requestTimeoutMs = 5000;
+        private int requestTimeoutMs = ElastiCacheIntegrationsConnector.DEFAULT_REQUEST_TIMEOUT_MS;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private long stalenessDurationSeconds =
                 ElastiCacheIntegrationsSession.DEFAULT_STALENESS_DURATION_SECONDS;
@@ -715,28 +714,6 @@ public final class ElastiCacheIntegrationsClient {
         }
 
         /**
-         * Set connect timeout in milliseconds (default: 5000).
-         *
-         * @param connectTimeoutMs the connect timeout in milliseconds
-         * @return this builder
-         */
-        public Builder connectTimeoutMs(int connectTimeoutMs) {
-            this.connectTimeoutMs = connectTimeoutMs;
-            return this;
-        }
-
-        /**
-         * Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000).
-         *
-         * @param initializationTimeoutMs the initialization timeout in milliseconds
-         * @return this builder
-         */
-        public Builder initializationTimeoutMs(int initializationTimeoutMs) {
-            this.initializationTimeoutMs = initializationTimeoutMs;
-            return this;
-        }
-
-        /**
          * Set the maximum time, in milliseconds, to wait for each Cache request response (default:
          * 5000).
          *
@@ -942,8 +919,6 @@ public final class ElastiCacheIntegrationsClient {
                             .port(resolvedEndpoint.getPort())
                             .sslContext(sslContext)
                             .overrides(overrides)
-                            .connectTimeoutMs(connectTimeoutMs)
-                            .initializationTimeoutMs(initializationTimeoutMs)
                             .requestTimeoutMs(requestTimeoutMs)
                             .reconnectPolicy(reconnectPolicy)
                             .stalenessDurationSeconds(stalenessDurationSeconds)
@@ -965,8 +940,6 @@ public final class ElastiCacheIntegrationsClient {
                             .port(resolvedEndpoint.getPort())
                             .sslContext(sslContext)
                             .overrides(overrides)
-                            .connectTimeoutMs(connectTimeoutMs)
-                            .initializationTimeoutMs(initializationTimeoutMs)
                             .requestTimeoutMs(requestTimeoutMs)
                             .reconnectPolicy(reconnectPolicy)
                             .stalenessDurationSeconds(stalenessDurationSeconds)

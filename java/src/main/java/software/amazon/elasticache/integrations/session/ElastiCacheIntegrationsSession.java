@@ -318,7 +318,13 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             RuntimeException lastFailure = null;
             ElastiCacheIntegrationsConnector established = null;
             ConnectionSnapshot establishedSnapshot = null;
+            long connectionTimeoutMs = reconnectPolicy.getConnectionTimeoutMs();
+            long deadlineNanos = deadlineAfterMillis(System.nanoTime(), connectionTimeoutMs);
             for (long attempt = 1; attempt <= reconnectPolicy.getConnectAttempts(); attempt++) {
+                long remainingMs = remainingMillis(deadlineNanos);
+                if (remainingMs <= 0) {
+                    break;
+                }
                 ElastiCacheIntegrationsConnector next = null;
                 try {
                     next = connectorFactory.get();
@@ -329,7 +335,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         candidate = next;
                     }
-                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    ConnectionSnapshot snapshot = initializeWithTimeout(next, remainingMs);
                     synchronized (stateLock) {
                         if (state != State.CREATED || !next.isReady()) {
                             next.close();
@@ -353,7 +359,11 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         next.close();
                     }
                     if (attempt < reconnectPolicy.getConnectAttempts()) {
-                        sleep(reconnectPolicy.delayFor(attempt));
+                        long retryDelayMs =
+                                Math.min(reconnectPolicy.delayFor(attempt), remainingMillis(deadlineNanos));
+                        if (retryDelayMs > 0) {
+                            sleep(retryDelayMs);
+                        }
                     }
                 }
             }
@@ -363,6 +373,11 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                     state = State.CLOSED;
                 }
                 reconnectExecutor.shutdownNow();
+                if (remainingMillis(deadlineNanos) <= 0) {
+                    throw new ElastiCacheIntegrationsConnectionError(
+                            "Opening Cache connection timed out after " + connectionTimeoutMs + "ms",
+                            lastFailure);
+                }
                 throw lastFailure != null
                         ? lastFailure
                         : new ElastiCacheIntegrationsConnectionError("Cache initial connection failed");
@@ -741,7 +756,8 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         return state == State.OPEN && active != null && active.isReady();
     }
 
-    private ConnectionSnapshot initializeWithTimeout(ElastiCacheIntegrationsConnector next) {
+    private ConnectionSnapshot initializeWithTimeout(
+            ElastiCacheIntegrationsConnector next, long timeoutMs) {
         FutureTask<ConnectionSnapshot> task = new FutureTask<>(() -> initialize(next));
         Thread thread =
                 new Thread(
@@ -749,15 +765,12 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         thread.setDaemon(true);
         thread.start();
         try {
-            return task.get(reconnectPolicy.getConnectionTimeoutMs(), TimeUnit.MILLISECONDS);
+            return task.get(timeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException e) {
             next.close();
             task.cancel(true);
             throw new ElastiCacheIntegrationsConnectionError(
-                    "Opening Cache connection timed out after "
-                            + reconnectPolicy.getConnectionTimeoutMs()
-                            + "ms",
-                    e);
+                    "Opening Cache connection timed out after " + timeoutMs + "ms", e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             next.close();
@@ -807,6 +820,22 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             }
             throw e;
         }
+    }
+
+    private static long deadlineAfterMillis(long nowNanos, long timeoutMs) {
+        long timeoutNanos = TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+        return timeoutNanos > Long.MAX_VALUE - nowNanos ? Long.MAX_VALUE : nowNanos + timeoutNanos;
+    }
+
+    private static long remainingMillis(long deadlineNanos) {
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0) {
+            return 0;
+        }
+        long millis = TimeUnit.NANOSECONDS.toMillis(remainingNanos);
+        return millis < Long.MAX_VALUE && TimeUnit.MILLISECONDS.toNanos(millis) < remainingNanos
+                ? millis + 1
+                : millis;
     }
 
     private void forceRefreshAfterRejection(ElastiCacheIntegrationsAuthError authFailure) {
@@ -865,7 +894,8 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         candidate = next;
                     }
-                    ConnectionSnapshot snapshot = initializeWithTimeout(next);
+                    ConnectionSnapshot snapshot =
+                            initializeWithTimeout(next, reconnectPolicy.getConnectionTimeoutMs());
                     synchronized (stateLock) {
                         candidate = null;
                         if (state == State.CLOSED || !next.isReady()) {

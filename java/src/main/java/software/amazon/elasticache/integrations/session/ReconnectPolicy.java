@@ -19,7 +19,7 @@ public final class ReconnectPolicy {
     /** Default maximum number of initial connection attempts. */
     public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
 
-    /** Default timeout for one connection initialization attempt, in milliseconds. */
+    /** Default startup connection budget and per-attempt cap, in milliseconds. */
     public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
     /** Default interval between AUTH refreshes on a live connection, in milliseconds (15 minutes). */
@@ -89,7 +89,7 @@ public final class ReconnectPolicy {
     }
 
     /**
-     * Return the timeout for one complete connection initialization attempt.
+     * Return the startup connection budget, which also caps each initialization attempt.
      *
      * @return the timeout in milliseconds
      */
@@ -191,9 +191,9 @@ public final class ReconnectPolicy {
         }
 
         /**
-         * Set the timeout for one complete connection initialization attempt.
+         * Set the startup connection budget, which also caps each initialization attempt.
          *
-         * @param connectionTimeoutMs the timeout in milliseconds
+         * @param connectionTimeoutMs the timeout in milliseconds, at most {@link Integer#MAX_VALUE}
          * @return this builder
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {
@@ -254,7 +254,7 @@ public final class ReconnectPolicy {
          */
         public ReconnectPolicy build() {
             requirePositive("connectAttempts", connectAttempts);
-            requirePositive("connectionTimeoutMs", connectionTimeoutMs);
+            requirePositiveIntMilliseconds("connectionTimeoutMs", connectionTimeoutMs);
             requirePositive("authRefreshIntervalMs", authRefreshIntervalMs);
             requirePositive("baseDelayMs", baseDelayMs);
             requirePositive("maxDelayMs", maxDelayMs);
@@ -270,6 +270,13 @@ public final class ReconnectPolicy {
         private static void requirePositive(String name, long value) {
             if (value <= 0) {
                 throw new IllegalArgumentException(name + " must be positive");
+            }
+        }
+
+        private static void requirePositiveIntMilliseconds(String name, long value) {
+            if (value <= 0 || value > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        name + " must be positive and at most " + Integer.MAX_VALUE);
             }
         }
     }

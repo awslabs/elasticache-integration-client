@@ -66,6 +66,7 @@ import software.amazon.elasticache.integrations.resp.RespError;
 import software.amazon.elasticache.integrations.resp.RespSimpleString;
 
 class ElastiCacheIntegrationsClientTest {
+    private static final int TEST_CONNECTION_TIMEOUT_MS = 30_000;
 
     private static final String OWN_ACCESS_KEY = "AKIDOWNCREDENTIAL01";
     private static final String DEFAULT_CHAIN_ACCESS_KEY = "AKIDDEFAULTCHAIN01";
@@ -124,6 +125,10 @@ class ElastiCacheIntegrationsClientTest {
                 .endpoint("localhost:" + server.getPort())
                 .cacheName("my-cache")
                 .caCerts(caBundle)
+                .clientConfiguration(
+                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                .connectionTimeoutMs(TEST_CONNECTION_TIMEOUT_MS)
+                                .build())
                 .handleObserver(handle::set);
     }
 
@@ -433,8 +438,8 @@ class ElastiCacheIntegrationsClientTest {
 
     @Test
     void clientPassesConnectionTimeoutToTheSession() {
-        try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
-            assertEquals(2_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
+        try (DynamoDbClient client = cacheBuilder().clientConfiguration(null).install(appBuilder())) {
+            assertEquals(5_000, handle.get().getSession().reconnectPolicy().getConnectionTimeoutMs());
         }
 
         try (DynamoDbClient client =
@@ -966,13 +971,11 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void builder_withTimeouts_appliesTimeouts() {
+    void builder_withRequestTimeout_appliesTimeout() {
         try (ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
                 ElastiCacheIntegrationsClient.builder()
                         .endpoint("localhost:" + server.getPort())
                         .authCredentials(TEST_USER, TEST_TOKEN)
-                        .connectTimeoutMs(1000)
-                        .initializationTimeoutMs(2000)
                         .requestTimeoutMs(2000)
                         .sslContext(clientSslContext)
                         .origin(DynamoDbClient.builder(), ElastiCacheIntegrationsClientTest::sdkConfig)
