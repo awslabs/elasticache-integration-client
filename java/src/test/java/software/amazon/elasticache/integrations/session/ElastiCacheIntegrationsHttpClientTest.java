@@ -240,26 +240,44 @@ class ElastiCacheIntegrationsHttpClientTest {
 
     /** Bodies the SDK names {@code Stream} or {@code File} skip Cache and reach the origin intact. */
     @ParameterizedTest
-    @ValueSource(strings = {"fromInputStream", "fromFile", "fromContentProviderWithoutLength"})
+    @ValueSource(
+            strings = {
+                "fromInputStream",
+                "fromInputStreamProvider",
+                "fromInputStreamSupplierProvider",
+                "fromFile",
+                "fromContentProviderWithoutLength"
+            })
     void uncarriableBodiesAreDeclined(String factory, @TempDir Path dir) throws Exception {
         StubSession session = new StubSession();
         RecordingHttpClient origin = new RecordingHttpClient();
         byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
-        RequestBody body;
+        ContentStreamProvider provider;
         switch (factory) {
             case "fromInputStream":
-                body = RequestBody.fromInputStream(readOnce("payload"), payload.length);
+                provider =
+                        RequestBody.fromInputStream(readOnce("payload"), payload.length)
+                                .contentStreamProvider();
+                break;
+            case "fromInputStreamProvider":
+                provider = ContentStreamProvider.fromInputStream(readOnce("payload"));
+                break;
+            case "fromInputStreamSupplierProvider":
+                provider = ContentStreamProvider.fromInputStreamSupplier(() -> readOnce("payload"));
                 break;
             case "fromFile":
-                body = RequestBody.fromFile(Files.write(dir.resolve("upload.bin"), payload));
+                provider =
+                        RequestBody.fromFile(Files.write(dir.resolve("upload.bin"), payload))
+                                .contentStreamProvider();
                 break;
             default:
-                body =
+                provider =
                         RequestBody.fromContentProvider(
-                                () -> new ByteArrayInputStream(payload), "application/octet-stream");
+                                        () -> new ByteArrayInputStream(payload), "application/octet-stream")
+                                .contentStreamProvider();
         }
 
-        sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        sendThroughInterceptor(session, origin, provider);
 
         assertEquals(0, session.requestCount.get());
         assertEquals("payload", originBody(origin));

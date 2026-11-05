@@ -43,6 +43,10 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
             "software.amazon.awssdk.core.internal.sync.FileContentStreamProvider";
     private static final String BUFFERING_PROVIDER =
             "software.amazon.awssdk.core.internal.sync.BufferingContentStreamProvider";
+    private static final String INPUT_STREAM_PROVIDER =
+            "software.amazon.awssdk.http.ContentStreamProvider$1";
+    private static final String INPUT_STREAM_SUPPLIER_PROVIDER =
+            "software.amazon.awssdk.http.ContentStreamProvider$2";
     private static final String REQUEST_BODY_LAMBDA =
             "software.amazon.awssdk.core.sync.RequestBody$$Lambda";
     private static final Method PROVIDER_NAME_METHOD = findProviderNameMethod();
@@ -150,8 +154,9 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
     /**
      * AWS SDK 2.31.64 added {@code ContentStreamProvider.name()}. Invoke it reflectively so the
      * client can still run with earlier SDK releases. Before that API existed, file and
-     * unknown-length providers had stable implementation classes, while {@code
-     * RequestBody.fromInputStream} produced a lambda that captured an {@link InputStream}.
+     * unknown-length providers had stable implementation classes, direct input-stream providers were
+     * anonymous classes, and {@code RequestBody.fromInputStream} produced a lambda that captured an
+     * {@link InputStream}.
      */
     private static boolean isStreamOrFile(ContentStreamProvider provider) {
         Optional<String> providerName = providerName(provider);
@@ -160,7 +165,10 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
         }
 
         String className = provider.getClass().getName();
-        if (FILE_PROVIDER.equals(className) || BUFFERING_PROVIDER.equals(className)) {
+        if (FILE_PROVIDER.equals(className)
+                || BUFFERING_PROVIDER.equals(className)
+                || INPUT_STREAM_PROVIDER.equals(className)
+                || INPUT_STREAM_SUPPLIER_PROVIDER.equals(className)) {
             return true;
         }
         if (!className.startsWith(REQUEST_BODY_LAMBDA)) {
