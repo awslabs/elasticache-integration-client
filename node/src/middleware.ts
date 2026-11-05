@@ -2,8 +2,9 @@
  * AWS SDK v3 interception for the ElastiCacheIntegrations client.
  *
  * The middleware receives the final serialized, signed HttpRequest, strips the
- * AWS SigV4 authentication headers and the JS SDK-only headers, builds a ElastiCacheIntegrationsRequest, calls ElastiCacheIntegrationsSession,
- * and returns a synthetic HttpResponse. Predicate declines, explicit ElastiCacheIntegrations
+ * AWS SigV4 authentication headers and the JS SDK-only headers, and builds a ElastiCacheIntegrationsRequest.
+ * A wrapper around the client's request handler, which is the only step that gets the call's
+ * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate declines, explicit ElastiCacheIntegrations
  * rejections, and indeterminate failures for idempotent operations return to
  * the SDK's origin pipeline while preserving its normal retry and
  * deserialization behavior.
@@ -18,6 +19,7 @@ import type {
   AwsCredentialIdentityProvider,
   DeserializeMiddleware,
   HandlerExecutionContext,
+  HttpHandlerOptions,
   MiddlewareStack,
 } from "@smithy/types";
 import {
@@ -51,7 +53,7 @@ function isTransportFailure(error: ElastiCacheIntegrationsError): boolean {
 
 /** The part of an AWS SDK v3 client used by ElastiCacheIntegrationsHandle. */
 export interface ElastiCacheIntegrationsCompatibleClient {
-  config: { credentials: AwsCredentialIdentityProvider };
+  config: { credentials: AwsCredentialIdentityProvider; requestHandler: object };
   middlewareStack: MiddlewareStack<any, any>;
   destroy(): void;
 }
@@ -152,17 +154,51 @@ export function cacheToHttpResponse(response: ElastiCacheIntegrationsResponse): 
   });
 }
 
+/**
+ * The deserialize-step middleware. It builds the cache request from the signed request and its
+ * command name, which only the middleware stack sees, and leaves it for the request handler.
+ */
 export function cacheMiddleware<Input extends object, Output extends object>(
   service: string,
-  session: ElastiCacheIntegrationsSession,
+  routed: WeakMap<object, ElastiCacheIntegrationsRequest>,
 ): DeserializeMiddleware<Input, Output> {
   return (next, context: HandlerExecutionContext) => async (args) => {
     const request = awsToCacheRequest(args.request, service, context.commandName);
-    if (request === undefined) return next(args);
+    if (request !== undefined) routed.set(args.request as object, request);
+    return next(args);
+  };
+}
+
+/** The terminal step of an SDK call: send the request, given the SDK's per-call options. */
+type SendRequest = (
+  request: HttpRequest,
+  options?: HttpHandlerOptions,
+) => Promise<{ response: HttpResponse }>;
+
+/**
+ * Wrap the client's request handler, so a request the middleware prepared is served from the cache.
+ * The request handler is the only step the SDK passes the call's `abortSignal` to. An abort is the
+ * SDK's `AbortError` and never falls back.
+ *
+ * A Proxy rather than a patched `handle`, because an application may share one handler between
+ * clients. Every other member reaches the real handler unchanged.
+ */
+export function cacheRequestHandler<THandler extends object>(
+  handler: THandler,
+  session: ElastiCacheIntegrationsSession,
+  routed: WeakMap<object, ElastiCacheIntegrationsRequest>,
+): THandler {
+  const send: SendRequest = (httpRequest, options) =>
+    (handler as unknown as { handle: SendRequest }).handle(httpRequest, options);
+  const handle: SendRequest = async (httpRequest, options) => {
+    const request = routed.get(httpRequest);
+    if (request === undefined) return send(httpRequest, options);
+    routed.delete(httpRequest);
+    const next = () => send(httpRequest, options);
 
     try {
-      const response = await session.request(request);
-      if (response === undefined) return next(args);
+      const response = await session.request(request, options ?? {});
+      if (response === undefined) return next();
       return { response: cacheToHttpResponse(response) };
     } catch (error) {
       if (!(error instanceof ElastiCacheIntegrationsError) || !session.isOpen) {
@@ -181,7 +217,7 @@ export function cacheMiddleware<Input extends object, Output extends object>(
       }
 
       if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
-        return next(args);
+        return next();
       }
       if (
         session.isConnectionHealthy &&
@@ -193,14 +229,21 @@ export function cacheMiddleware<Input extends object, Output extends object>(
       throw error;
     }
   };
+  return new Proxy(handler, {
+    get(target, property) {
+      if (property === "handle") return handle;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 export function installCacheMiddleware<Input extends object, Output extends object>(
   client: { middlewareStack: MiddlewareStack<Input, Output> },
   service: string,
-  session: ElastiCacheIntegrationsSession,
+  routed: WeakMap<object, ElastiCacheIntegrationsRequest>,
 ): void {
-  client.middlewareStack.addRelativeTo(cacheMiddleware<Input, Output>(service, session), {
+  client.middlewareStack.addRelativeTo(cacheMiddleware<Input, Output>(service, routed), {
     name: CACHE_MIDDLEWARE,
     relation: "after",
     toMiddleware: "deserializerMiddleware",
@@ -236,6 +279,8 @@ export class ElastiCacheIntegrationsHandle {
   installed = false;
   private destroyed = false;
   private sdkDestroy: (() => void) | undefined;
+  private sdkRequestHandler: object | undefined;
+  private cacheRequestHandler: object | undefined;
 
   constructor(
     readonly sdkClient: ElastiCacheIntegrationsCompatibleClient,
@@ -248,7 +293,11 @@ export class ElastiCacheIntegrationsHandle {
   /** Install ElastiCacheIntegrations middleware and override client destroy() for transparent teardown. */
   install(): void {
     if (this.installed || this.destroyed) return;
-    installCacheMiddleware(this.sdkClient, this.service, this.session);
+    const routed = new WeakMap<object, ElastiCacheIntegrationsRequest>();
+    installCacheMiddleware(this.sdkClient, this.service, routed);
+    this.sdkRequestHandler = this.sdkClient.config.requestHandler;
+    this.cacheRequestHandler = cacheRequestHandler(this.sdkRequestHandler, this.session, routed);
+    this.sdkClient.config.requestHandler = this.cacheRequestHandler;
     clearCachedHandlers(this.sdkClient);
     this.sdkDestroy = this.sdkClient.destroy;
     this.sdkClient.destroy = this.destroy;
@@ -260,6 +309,10 @@ export class ElastiCacheIntegrationsHandle {
   shutdown(): void {
     if (!this.installed) return;
     this.sdkClient.middlewareStack.remove(CACHE_MIDDLEWARE);
+    // Put the SDK's handler back unless the application has replaced ours since.
+    if (this.sdkClient.config.requestHandler === this.cacheRequestHandler) {
+      this.sdkClient.config.requestHandler = this.sdkRequestHandler!;
+    }
     clearCachedHandlers(this.sdkClient);
     this.sdkClient.destroy = this.sdkDestroy!;
     Reflect.deleteProperty(this.sdkClient, HANDLE);
