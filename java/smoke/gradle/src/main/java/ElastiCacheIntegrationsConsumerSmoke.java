@@ -24,16 +24,16 @@ public final class ElastiCacheIntegrationsConsumerSmoke {
     static <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
             C install(B sdkClientBuilder) {
         return ElastiCacheIntegrationsClient.builder()
-                .endpoint("cache.example.com:6379")
-                .cacheName("my-cache")
+                .endpoint("smoke-test.invalid:6379")
+                .cacheName("smoke-test")
                 .install(sdkClientBuilder);
     }
 
     static <B extends AwsClientBuilder<B, C> & SdkAsyncClientBuilder<B, C>, C extends SdkClient>
             C installAsync(B sdkClientBuilder) {
         return ElastiCacheIntegrationsClient.builder()
-                .endpoint("cache.example.com:6379")
-                .cacheName("my-cache")
+                .endpoint("smoke-test.invalid:6379")
+                .cacheName("smoke-test")
                 .installAsync(sdkClientBuilder);
     }
 }
