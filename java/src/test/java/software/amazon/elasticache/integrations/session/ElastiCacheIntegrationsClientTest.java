@@ -313,8 +313,8 @@ class ElastiCacheIntegrationsClientTest {
                         () -> cacheBuilder().install(appBuilder().credentialsProvider(failing)));
 
         assertEquals(
-                "This AWS SDK client carries no credentials, so the cache cannot be authenticated. "
-                        + "A client built with AnonymousCredentialsProvider is not supported.",
+                "The AWS SDK client's credentials provider could not resolve credentials, so the cache "
+                        + "cannot be authenticated: Unable to load credentials from any of the providers",
                 error.getMessage());
         assertSame(unresolved, error.getCause());
         assertTrue(cache.getAuthAttempts().isEmpty());
