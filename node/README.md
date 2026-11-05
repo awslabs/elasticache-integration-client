@@ -26,7 +26,8 @@ This package currently ports the Python implementation's:
   config on the interval the cache returns, and controls safe origin fallback
   with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
-  SigV4 headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
+  SigV4 headers and the `host`, `x-amz-content-sha256`, and
+  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
   origin only for operations in the shared replay-safe catalog, and marks a
   healthy-connection `ORIGIN_ERROR` retryable only for those operations;
 - an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
@@ -35,7 +36,7 @@ This package currently ports the Python implementation's:
 Automatic ElastiCacheIntegrations failover to another endpoint remains out of scope. Deferred
 cache responses are correlated by request ID and later `aws.response`
 pushes, while callers still receive ordinary promises. The per-request timeout
-defaults to 5 seconds and can be changed with the
+defaults to 5000 ms and can be changed with the
 `cacheRequestTimeout` field (see [Configuration](#configuration)). A timeout for a deferred request removes only
 that request and preserves the connection; a FIFO or write timeout remains
 connection-fatal. The middleware sends requests with no matching predicate
@@ -106,7 +107,8 @@ ElastiCacheIntegrations releases what it opened, and the client stays open and
 usable without the cache.
 Wrapped AWS requests are fully serialized and signed by the SDK before
 ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
-SigV4 headers only from its copied request model;
+SigV4 headers, plus the `host`, `x-amz-content-sha256`, and `x-amz-user-agent`
+headers that the JS SDK adds, only from its copied request model;
 the original signed request remains untouched for origin pass-through. When the
 ElastiCacheIntegrations connection drops, failures for operations in the shared replay-safe
 catalog return to the SDK's normal origin pipeline. While the connection
@@ -136,8 +138,8 @@ await install({
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
   clientConfiguration: {
-    cacheRequestTimeout: 2,
-    connectionTimeout: 2,
+    cacheRequestTimeout: 2_000,
+    connectionTimeout: 5_000,
     fallbackDuration: 60,
     cachePolicyOverrides: { cached_tables: ["Users", "Sessions"] },
     iamTokenRefreshDelay: 300,
@@ -147,8 +149,8 @@ await install({
 
 | Field                  | Default                  | Meaning                                                                                                                                      |
 | ---------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `cacheRequestTimeout`  | 5 s                      | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
-| `connectionTimeout`    | 2 s                      | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
+| `cacheRequestTimeout`  | 5000 ms                  | How long to wait for each ElastiCacheIntegrations request's reply.                                                                           |
+| `connectionTimeout`    | 5000 ms                  | How long to try at startup, and how long a request waits for reconnection after a connection is lost.                                        |
 | `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
 | `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |
 | `cachePolicyTimeout`   | 3600 s                   | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache.                                                 |

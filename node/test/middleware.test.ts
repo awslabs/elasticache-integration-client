@@ -38,7 +38,7 @@ const request = (body?: unknown) =>
     path: "/",
     query: { page: ["2"], filter: ["a b"] },
     method: "POST",
-    headers: { host: "dynamodb.us-east-1.amazonaws.com" },
+    headers: { "content-type": "application/x-amz-json-1.0" },
     body,
   });
 
@@ -61,6 +61,7 @@ function fakeConnector(
   return {
     isReady: true,
     connect: vi.fn(async () => undefined),
+    markReady: vi.fn(),
     handshake: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string) =>
       command === "aws.config"
@@ -94,7 +95,7 @@ describe("awsToCacheRequest", () => {
     expect(cacheRequest.headers).not.toBe(smithyRequest.headers);
   });
 
-  it("strips volatile authentication headers but retains content hash", () => {
+  it("strips SigV4 and JS SDK-only headers", () => {
     const signed = new HttpRequest({
       protocol: "https:",
       hostname: "dynamodb.us-east-1.amazonaws.com",
@@ -108,6 +109,7 @@ describe("awsToCacheRequest", () => {
         "X-Amz-Date": "20260806T000000Z",
         "x-amz-security-token": "token-example",
         "x-amz-content-sha256": "abc123",
+        "x-amz-user-agent": "aws-sdk-js/3.0.0",
       },
       body: Buffer.from("payload"),
     });
@@ -115,10 +117,8 @@ describe("awsToCacheRequest", () => {
     const cacheRequest = awsToCacheRequest(signed, "dynamodb", "GetItemCommand")!;
 
     expect(cacheRequest.headers).toEqual({
-      host: "dynamodb.us-east-1.amazonaws.com",
       "content-type": "application/x-amz-json-1.0",
       "x-amz-target": "DynamoDB_20120810.GetItem",
-      "x-amz-content-sha256": "abc123",
     });
   });
 
@@ -463,6 +463,7 @@ describe("elastiCacheIntegrations middleware", () => {
       connector,
       {},
       {
+        connectionTimeoutMs: 2_000,
         stalenessDurationMs: 1000,
         clock: () => clock,
       },

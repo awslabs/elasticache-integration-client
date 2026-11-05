@@ -35,6 +35,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE, parse_response_push
+from aws_elasticache_integration_client.reconnect_policy import DEFAULT_CONNECTION_TIMEOUT_MS
 from aws_elasticache_integration_client.resp import (
     IncompleteFrame,
     RespError,
@@ -48,9 +49,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_READ_SIZE = 65536
 _DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024  # 16 MB, matching the node and java clients
-_DEFAULT_CONNECT_TIMEOUT = 1.0  # TCP connect + TLS handshake
-_DEFAULT_REQUEST_TIMEOUT = 5.0
-_DEFAULT_CONFIG_TIMEOUT = 2.0  # init-phase commands: HELLO and aws.config
+DEFAULT_REQUEST_TIMEOUT_MS = 5000
 _CLOSE_TIMEOUT = 0.5  # how long close() waits for the I/O thread to stop
 OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
@@ -279,9 +278,8 @@ class ElastiCacheIntegrationsConnector:
         port: int,
         *,
         tls: bool = True,
-        connect_timeout: float = _DEFAULT_CONNECT_TIMEOUT,
-        request_timeout: float = _DEFAULT_REQUEST_TIMEOUT,
-        config_timeout: float = _DEFAULT_CONFIG_TIMEOUT,
+        connection_timeout_ms: int = DEFAULT_CONNECTION_TIMEOUT_MS,
+        request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         ca_certs: str | None = None,
         verify: bool = True,
         socket_read_size: int = _DEFAULT_READ_SIZE,
@@ -292,11 +290,12 @@ class ElastiCacheIntegrationsConnector:
         self._host = host
         self._port = port
         self._tls = tls
-        self._connect_timeout = connect_timeout
-        self._request_timeout = request_timeout
-        self.config_timeout = (
-            config_timeout  # read by ElastiCacheIntegrationsSession for the config exchange
-        )
+        # Bounds bringing the connection up: the socket, TLS, HELLO 3 AUTH and the first
+        # aws.config. Read by ElastiCacheIntegrationsSession for that exchange.
+        self.connection_timeout_ms = connection_timeout_ms
+        # Bounds every command once the connection is up, the background AUTH and aws.config
+        # refresh included. Read by ElastiCacheIntegrationsSession for the refresh.
+        self.request_timeout_ms = request_timeout_ms
         self._ca_certs = ca_certs
         self._verify = verify
         self._read_size = socket_read_size
@@ -348,7 +347,7 @@ class ElastiCacheIntegrationsConnector:
         # The I/O thread always sets conn_ready, on success and on failure.
         # So a thread that stops early cannot leave us waiting here.
         try:
-            conn_ready.result(timeout=self._connect_timeout)
+            conn_ready.result(timeout=self.connection_timeout_ms / 1000)
         except FuturesTimeout as exc:
             self.close()
             raise ElastiCacheIntegrationsConnectionError(
@@ -470,7 +469,7 @@ class ElastiCacheIntegrationsConnector:
                 b"AUTH",
                 user_id.encode(),
                 token.encode(),
-                timeout=self.config_timeout,
+                timeout_ms=self.connection_timeout_ms,
             )
         except ElastiCacheIntegrationsTimeoutError as exc:
             self.close()
@@ -528,7 +527,7 @@ class ElastiCacheIntegrationsConnector:
         user_id, token = self._auth_provider()
         try:
             reply = self.execute(
-                "AUTH", user_id.encode(), token.encode(), timeout=self.config_timeout
+                "AUTH", user_id.encode(), token.encode(), timeout_ms=self.request_timeout_ms
             )
         except ElastiCacheIntegrationsTimeoutError as exc:
             logger.warning("AUTH command timed out - closing connection")
@@ -678,11 +677,11 @@ class ElastiCacheIntegrationsConnector:
             # The abort gives the reader an EOF, which ends the connection as usual.
             self._writer.transport.abort()
 
-    def execute(self, command: str, *args: bytes, timeout: float | None = None) -> RespValue:
+    def execute(self, command: str, *args: bytes, timeout_ms: int | None = None) -> RespValue:
         """Send one command and block for its reply, returning the raw :data:`RespValue`.
          A ``RespError`` reply is returned as a value, not raised.
 
-        ``timeout`` overrides the reply wait (init commands get a larger budget). There is
+        ``timeout_ms`` overrides the reply wait (init commands get a larger budget). There is
         no send-side timeout: a send only copies bytes into the transport buffer, so it
         cannot hang. A truly stuck connection is caught by the reply timeout.
         """
@@ -699,14 +698,16 @@ class ElastiCacheIntegrationsConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled.
             raise ElastiCacheIntegrationsConnectionLost("connection closed") from exc
-        # Not `timeout or ...`: an explicit timeout=0 means "do not wait for a reply", and `or`
-        # would quietly turn it into the default instead.
-        if timeout is None:
-            timeout = self._request_timeout
+        # Not `timeout_ms or ...`: an explicit timeout_ms=0 means "do not wait for a reply", and
+        # `or` would quietly turn it into the default instead.
+        if timeout_ms is None:
+            timeout_ms = self.request_timeout_ms
         try:
-            return reply_future.result(timeout=timeout)
+            return reply_future.result(timeout=timeout_ms / 1000)
         except FuturesTimeout as exc:
-            error = ElastiCacheIntegrationsTimeoutError(f"async request timed out after {timeout}s")
+            error = ElastiCacheIntegrationsTimeoutError(
+                f"async request timed out after {timeout_ms}ms"
+            )
             if self._pending.fail_if_async(reply_future, error):
                 # Deferred request: it holds no FIFO slot, so abandoning it is harmless and
                 # the connection survives..
@@ -716,7 +717,7 @@ class ElastiCacheIntegrationsConnector:
             # every other in-flight request too.
             self.close()
             raise ElastiCacheIntegrationsTimeoutError(
-                f"request timed out after {timeout}s"
+                f"request timed out after {timeout_ms}ms"
             ) from exc
 
     # --- reader ---------------------------------------------------------------

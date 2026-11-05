@@ -5,12 +5,15 @@ import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -34,6 +37,7 @@ public class MockTlsServer implements Closeable {
     private final Thread serverThread;
     private final AtomicBoolean running = new AtomicBoolean(true);
     private final SSLContext sslContext;
+    private volatile X509Certificate certificate;
     private final Object writeLock = new Object();
     private volatile OutputStream activeOutput;
 
@@ -56,6 +60,15 @@ public class MockTlsServer implements Closeable {
 
     public SSLContext getSslContext() {
         return sslContext;
+    }
+
+    /** Write this server's self-signed certificate to {@code file} as a PEM CA bundle. */
+    public void writeCaBundle(Path file) throws Exception {
+        String body =
+                Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII))
+                        .encodeToString(certificate.getEncoded());
+        String pem = "-----BEGIN CERTIFICATE-----\n" + body + "\n-----END CERTIFICATE-----\n";
+        Files.write(file, pem.getBytes(StandardCharsets.US_ASCII));
     }
 
     private void acceptLoop() {
@@ -216,6 +229,7 @@ public class MockTlsServer implements Closeable {
         KeyPair keyPair = keyGen.generateKeyPair();
 
         X509Certificate cert = generateSelfSignedCert(keyPair);
+        this.certificate = cert;
 
         KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
         ks.load(null, null);

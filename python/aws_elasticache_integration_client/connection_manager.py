@@ -124,7 +124,7 @@ class ConnectionManager:
 
     def _start_outage_deadlines(self) -> None:
         """Set the reconnect and fallback deadlines from one clock reading."""
-        self._ready_deadline = time.monotonic() + self._policy.connection_timeout
+        self._ready_deadline = time.monotonic() + self._policy.connection_timeout_ms / 1000
         self._fallback_deadline = self._ready_deadline + self._policy.fallback_window
 
     def invalidate_connection(self, connector: ElastiCacheIntegrationsConnector) -> None:
@@ -170,7 +170,7 @@ class ConnectionManager:
     def init_connection(self) -> None:
         """Open the first connection, then watch it on a background thread.
 
-        Bounded, unlike a reconnect: attempts back off and repeat until ``policy.connection_timeout``
+        Bounded, unlike a reconnect: attempts back off and repeat until ``policy.connection_timeout_ms``
         has passed, each one capped by the time left, so the caller's startup path cannot hang.
 
         Raises:
@@ -178,7 +178,7 @@ class ConnectionManager:
                 Connection failures end with a timeout error and retain the last failure as its
                 cause. Other setup errors propagate unchanged.
         """
-        self._ready_deadline = time.monotonic() + self._policy.connection_timeout
+        self._ready_deadline = time.monotonic() + self._policy.connection_timeout_ms / 1000
         attempt = 0
         last_error: BaseException | None = None
         while True:
@@ -190,7 +190,7 @@ class ConnectionManager:
                 ):
                     raise last_error
                 raise ElastiCacheIntegrationsConnectionError(
-                    f"opening a connection timed out after {self._policy.connection_timeout}s"
+                    f"opening a connection timed out after {self._policy.connection_timeout_ms}ms"
                 ) from last_error
             attempt += 1
             try:

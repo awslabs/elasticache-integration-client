@@ -14,10 +14,16 @@ from aws_elasticache_integration_client.config_policy import (
     DEFAULT_STALENESS_DURATION,
     ConfigPolicy,
 )
-from aws_elasticache_integration_client.connection import ElastiCacheIntegrationsConnector
+from aws_elasticache_integration_client.connection import (
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    ElastiCacheIntegrationsConnector,
+)
 from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsConfigError
 from aws_elasticache_integration_client.hooks import ElastiCacheIntegrationsHandle, installed_handle
-from aws_elasticache_integration_client.reconnect_policy import ReconnectPolicy
+from aws_elasticache_integration_client.reconnect_policy import (
+    DEFAULT_CONNECTION_TIMEOUT_MS,
+    ReconnectPolicy,
+)
 from aws_elasticache_integration_client.session import (
     ElastiCacheIntegrationsSession,
     parse_endpoint,
@@ -33,10 +39,10 @@ class ElastiCacheIntegrationsClientConfiguration:
     """Configuration for a ElastiCacheIntegrations client. All fields are optional and use defaults when omitted.
 
     Attributes:
-        cache_request_timeout: Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
-            Defaults to 5 seconds.
-        connection_timeout: How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-            request waits for reconnection after a connection is lost. Defaults to 2 seconds.
+        cache_request_timeout: Maximum time, in milliseconds, to wait for each ElastiCacheIntegrations request
+            response. Defaults to 5000.
+        connection_timeout: How long, in milliseconds, ElastiCacheIntegrations tries to connect at startup, and how
+            long a request waits for reconnection after a connection is lost. Defaults to 5000.
         fallback_duration: How long, in seconds, routed requests may use the origin service
             after an outage's reconnect wait ends without a connection. The window is shared
             by requests during one outage. A later outage gets a new window after recovery.
@@ -63,31 +69,21 @@ class ElastiCacheIntegrationsClientConfiguration:
     that is not usable.
     """
 
-    cache_request_timeout: float = 5.0
-    connection_timeout: float = 2.0
+    cache_request_timeout: int = DEFAULT_REQUEST_TIMEOUT_MS
+    connection_timeout: int = DEFAULT_CONNECTION_TIMEOUT_MS
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
     iam_token_refresh_delay: float | None = None
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.cache_request_timeout, bool)
-            or not isinstance(self.cache_request_timeout, (int, float))
-            or not math.isfinite(self.cache_request_timeout)
-            or self.cache_request_timeout <= 0
-        ):
+        if type(self.cache_request_timeout) is not int or self.cache_request_timeout <= 0:
             raise ElastiCacheIntegrationsConfigError(
-                "cache_request_timeout must be a positive number of seconds"
+                "cache_request_timeout must be a positive whole number of milliseconds"
             )
-        if (
-            isinstance(self.connection_timeout, bool)
-            or not isinstance(self.connection_timeout, (int, float))
-            or not math.isfinite(self.connection_timeout)
-            or self.connection_timeout <= 0
-        ):
+        if type(self.connection_timeout) is not int or self.connection_timeout <= 0:
             raise ElastiCacheIntegrationsConfigError(
-                "connection_timeout must be a positive number of seconds"
+                "connection_timeout must be a positive whole number of milliseconds"
             )
         if self.fallback_duration is not None and (
             isinstance(self.fallback_duration, bool) or not isinstance(self.fallback_duration, int)
@@ -183,7 +179,7 @@ def install(
                 endpoint="my-cache:6379",
                 cache_name="my-cache",
                 client_configuration=ElastiCacheIntegrationsClientConfiguration(
-                    cache_request_timeout=2.0,
+                    cache_request_timeout=2000,
                     fallback_duration=60,
                     cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
                 ),
@@ -229,7 +225,8 @@ def install(
                 verify=verify,
                 ca_certs=ca_certs,
                 auth_provider=auth_provider,
-                request_timeout=configuration.cache_request_timeout,
+                connection_timeout_ms=configuration.connection_timeout,
+                request_timeout_ms=configuration.cache_request_timeout,
             )
 
         # The session connects (HELLO 3 handshake + aws.config exchange) before the hook is
@@ -239,7 +236,7 @@ def install(
             overrides=deepcopy(configuration.cache_policy_overrides),
             policy=ReconnectPolicy(
                 fallback_duration=configuration.fallback_duration,
-                connection_timeout=configuration.connection_timeout,
+                connection_timeout_ms=configuration.connection_timeout,
             ),
             config_policy=ConfigPolicy(staleness_duration=configuration.cache_policy_timeout),
             close_callback=auth_provider.close,

@@ -474,7 +474,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
             ElastiCacheIntegrationsSession session, SdkAsyncHttpClient origin, AsyncRequestBody body) {
         ElastiCacheIntegrationsAsyncInterceptor interceptor =
                 new ElastiCacheIntegrationsAsyncInterceptor(
-                        session, origin, false, Runnable::run, null, 1024, 1);
+                        session, origin, false, Runnable::run, null, 1024, 1, false, null);
         SdkHttpFullRequest httpRequest =
                 SdkHttpFullRequest.builder()
                         .method(SdkHttpMethod.POST)

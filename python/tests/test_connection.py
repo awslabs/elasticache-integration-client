@@ -76,12 +76,12 @@ class TestElastiCacheIntegrationsConnector:
     def connect_and_handshake(self, **kwargs) -> None:
         """connect() plus the aws.config handshake — ready to send requests."""
         self.connect(**kwargs)
-        self.conn.execute("aws.config", b"{}", timeout=self.conn.config_timeout)
+        self.conn.execute("aws.config", b"{}", timeout_ms=self.conn.connection_timeout_ms)
 
-    def send_request(self, body: bytes = b"body", *, timeout: float | None = None) -> RespValue:
+    def send_request(self, body: bytes = b"body", *, timeout_ms: int | None = None) -> RespValue:
         """Send a canonical aws.request ([method, url, headers, body, metadata]) with the given."""
         args = [b"POST", b"https://x/", b"", body, b"service=s&op=o"]
-        return self.conn.execute("aws.request", *args, timeout=timeout)
+        return self.conn.execute("aws.request", *args, timeout_ms=timeout_ms)
 
     def wait_until(self, condition, timeout: float = 2.0) -> bool:
         """Poll ``condition`` until it is true, up to ``timeout``. Returns its final value."""
@@ -106,7 +106,7 @@ class TestElastiCacheIntegrationsConnector:
     def test_request_timeout_defaults_to_five_seconds(self):
         self.conn = ElastiCacheIntegrationsConnector("127.0.0.1", 1, tls=False)
 
-        assert self.conn._request_timeout == 5.0
+        assert self.conn.request_timeout_ms == 5000
 
     def test_connect_and_handshake(self):
         """connect() yields a working connection: the aws.config handshake round-trips
@@ -133,7 +133,7 @@ class TestElastiCacheIntegrationsConnector:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
         probe.close()
-        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, connect_timeout=1.0)
+        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, connection_timeout_ms=1000)
         with pytest.raises(ElastiCacheIntegrationsConnectionError) as exc_info:
             conn.connect()
         assert isinstance(exc_info.value.__cause__, ConnectionRefusedError)
@@ -144,7 +144,7 @@ class TestElastiCacheIntegrationsConnector:
         job — this test only proves the paths function over TLS.)"""
         self.start_cache(tls=True)
         self.connect_and_handshake(tls=True, ca_certs=self.cache.cert_path)
-        assert self.send_request(timeout=self.conn.config_timeout)[0] == 200
+        assert self.send_request(timeout_ms=self.conn.connection_timeout_ms)[0] == 200
 
     def test_tls_untrusted_cert_refused(self):
         """With the default CA store (which does not trust the mock's self-signed cert),
@@ -241,7 +241,7 @@ class TestElastiCacheIntegrationsConnector:
         the message."""
         self.start_cache(failure="hang", failure_command="hello")
         self.connect(
-            request_timeout=0.3,
+            request_timeout_ms=300,
             auth_provider=lambda: ("test-user", "test-token"),
         )
         with pytest.raises(
@@ -467,7 +467,7 @@ class TestElastiCacheIntegrationsConnector:
         timeout must be fatal, because a late reply on a live connection would be
         FIFO-matched to the WRONG caller."""
         self.start_cache(failure="hang")
-        self.connect_and_handshake(request_timeout=0.3)
+        self.connect_and_handshake(request_timeout_ms=300)
         with pytest.raises(ElastiCacheIntegrationsTimeoutError):
             self.send_request()
         assert self.conn._closed is True
@@ -477,7 +477,7 @@ class TestElastiCacheIntegrationsConnector:
         the full request timeout."""
         self.start_cache(failure="drop")
         # Generous request_timeout so a fast failure is distinguishable from a timeout wait.
-        self.connect_and_handshake(request_timeout=5.0)
+        self.connect_and_handshake(request_timeout_ms=5000)
         with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.send_request()  # server drops -> closed
         start = time.monotonic()
@@ -489,7 +489,7 @@ class TestElastiCacheIntegrationsConnector:
         """A wedged I/O loop must not block callers forever: with the send parked behind
         the wedge, the caller's reply timeout still fires. (There is no send-side timeout
         by design — a send only copies bytes into the transport buffer.)"""
-        self.connect_and_handshake(request_timeout=0.2)
+        self.connect_and_handshake(request_timeout_ms=200)
         self.conn._io_loop_thread.call(time.sleep, 1)  # wedge the loop
         with pytest.raises(ElastiCacheIntegrationsTimeoutError):
             self.send_request()
@@ -507,7 +507,7 @@ class TestElastiCacheIntegrationsConnector:
         """A write that fails — including the wrong-typed exceptions a closing transport can
         leak on 3.12 / early 3.13 (CPython gh-136234) — fails the caller with
         ElastiCacheIntegrationsConnectionLost and kills the connection; the next send fails fast."""
-        self.connect_and_handshake(request_timeout=5.0)
+        self.connect_and_handshake(request_timeout_ms=5000)
         writer = self.wrap_writer()
         writer.write = mock.Mock(side_effect=leak)
         with pytest.raises(ElastiCacheIntegrationsConnectionLost):
@@ -547,7 +547,7 @@ class TestElastiCacheIntegrationsConnector:
     def test_quiet_connection_stays_alive(self):
         """An idle connection several request_timeouts long is normal, not a failure:
         afterwards the connection is alive and a request still round-trips."""
-        self.connect_and_handshake(request_timeout=0.2)
+        self.connect_and_handshake(request_timeout_ms=200)
         time.sleep(0.5)  # idle spell
         assert self.conn._closed is False
         self.send_request()  # still works after the quiet spell
@@ -838,7 +838,7 @@ class TestElastiCacheIntegrationsConnector:
         survives, the late push is dropped with a warning, and the next request works."""
         replies = [Reply.request_id(1), Reply.ok(body=b"after")]
         self.start_cache(response_fn=lambda req: replies.pop(0))
-        self.connect_and_handshake(request_timeout=0.3)
+        self.connect_and_handshake(request_timeout_ms=300)
 
         with pytest.raises(ElastiCacheIntegrationsTimeoutError, match="async request timed out"):
             self.send_request()
@@ -918,7 +918,7 @@ class TestElastiCacheIntegrationsConnector:
         """close() while a caller is blocked waiting for a reply: the caller gets
         ElastiCacheIntegrationsConnectionLost promptly — it must not hang until its request timeout."""
         self.start_cache(failure="hang")
-        self.connect_and_handshake(request_timeout=10.0)
+        self.connect_and_handshake(request_timeout_ms=10000)
 
         outcome: list = []
 
@@ -991,7 +991,7 @@ class TestElastiCacheIntegrationsConnector:
         the reader never anticipated still releases the connection and still fails the caller,
         rather than leaving a live loop and a caller waiting out its timeout.
         Internals: the FIFO resolve step is made to raise a type no handler catches."""
-        self.connect_and_handshake(request_timeout=5.0)
+        self.connect_and_handshake(request_timeout_ms=5000)
         thread = self.conn._io_loop_thread.thread
         self.conn._pending.resolve_oldest_request = mock.Mock(
             side_effect=ValueError("unanticipated")
@@ -1036,7 +1036,9 @@ class TestElastiCacheIntegrationsConnector:
         port = probe.getsockname()[1]
         probe.close()  # nothing is listening -> the dial fails
 
-        conn = ElastiCacheIntegrationsConnector("127.0.0.1", port, tls=False, connect_timeout=1.0)
+        conn = ElastiCacheIntegrationsConnector(
+            "127.0.0.1", port, tls=False, connection_timeout_ms=1000
+        )
         with pytest.raises(ElastiCacheIntegrationsConnectionError):
             conn.connect()
 

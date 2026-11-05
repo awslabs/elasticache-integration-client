@@ -42,7 +42,7 @@ The library delivers the happy path: intercept → serialize → `aws.config` ha
 `aws.request` → return the cached response over a real TLS RESP3 connection, with
 session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
 (`ElastiCacheIntegrationsConnector`) — no Glide or other native dependency.
-Its per-request timeout defaults to 5 seconds and can be changed with the
+Its per-request timeout defaults to 5000 ms and can be changed with the
 `cache_request_timeout` field (see below).
 
 Cache requests may complete out of order when the cache returns a request ID and later delivers
@@ -101,8 +101,8 @@ aws_elasticache_integration_client.install(
     endpoint="my-cache:6379",
     cache_name="my-cache",
     client_configuration=aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration(
-        cache_request_timeout=2.0,
-        connection_timeout=2.0,
+        cache_request_timeout=2000,
+        connection_timeout=5000,
         fallback_duration=60,
         cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
         iam_token_refresh_delay=300,
@@ -112,8 +112,8 @@ aws_elasticache_integration_client.install(
 
 | Field | Default | Meaning |
 |---|---|---|
-| `cache_request_timeout` | 5 s | How long to wait for each ElastiCacheIntegrations request's reply. |
-| `connection_timeout` | 2 s | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
+| `cache_request_timeout` | 5000 ms | How long to wait for each ElastiCacheIntegrations request's reply. |
+| `connection_timeout` | 5000 ms | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
 | `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |

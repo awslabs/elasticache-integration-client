@@ -73,10 +73,10 @@ and interval unchanged; a valid config reply atomically replaces the config and
 predicates and sets the next refresh interval.
 
 Periodic refresh pauses while reconnecting, and a late reply from a closed or
-replaced connector is ignored. See [Config staleness](#config-staleness) for
+replaced connector is ignored. See [Cache policy timeout](#cache-policy-timeout) for
 what happens when refreshes fail.
 
-## Config staleness
+## Cache policy timeout
 
 A refresh that fails changes nothing: the last config the server confirmed
 stays in force and the next refresh retries. A config the server sends, an
@@ -91,14 +91,181 @@ the window, so a healthy connection is never dropped. Requests fall back
 meanwhile under the configured origin-fallback window. A request already in
 flight when the connection drops falls back only when it is idempotent. Set the
 duration with `ElastiCacheIntegrationsClient.Builder.stalenessDurationSeconds(long)`.
+With `install`, set it with
+`ElastiCacheIntegrationsClientConfiguration.Builder.cachePolicyTimeoutSeconds(long)`.
 
 A `CONFIG_INVALID` reply (the proxy rejected the overrides,
 `ElastiCacheIntegrationsOverridesRejected`) and a config with a predicate this client cannot
 compile (`ElastiCacheIntegrationsConfigUnevaluable`) never fix themselves, so they log at
 `SEVERE` on every occurrence, including each connection attempt. On refresh
-they still keep the last good config until the staleness window drops the
+they still keep the last good config until the cache policy timeout drops the
 connection. Refresh failures that kill the connection start recovery
 immediately.
+
+## Installing into a client
+
+`install` takes the builder of an AWS SDK client that the application already
+configures and returns the built client. The client keeps its own region,
+credentials, override configuration (interceptors, retries, timeouts, metrics)
+and endpoint. The cache is authenticated with the region and credentials that
+the built client resolved.
+
+An AWS SDK for Java v2 client cannot be changed after `build()`, so `install`
+takes the builder instead of a finished client.
+
+```java
+DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache:6379")
+        .cacheName("my-cache")
+        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
+
+ddb.getItem(...);  // unchanged
+ddb.close();       // disconnects the cache, then closes the client as usual
+```
+
+`installAsync` does the same for an asynchronous builder and returns the
+asynchronous client:
+
+```java
+DynamoDbAsyncClient ddb = ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache:6379")
+        .cacheName("my-cache")
+        .installAsync(DynamoDbAsyncClient.builder().region(Region.US_EAST_1));
+
+CompletableFuture<ListTablesResponse> response = ddb.listTables();
+```
+
+`install` and `installAsync` return after the connection, the
+`HELLO 3 AUTH` handshake and the `aws.config` exchange succeed. If any step
+fails, they close what they created and throw the original error. They throw
+`ElastiCacheIntegrationsConfigError` when an option or the client cannot be
+used, for example a client with no region or a client built with
+`AnonymousCredentialsProvider`.
+
+| Builder method | Default | Meaning |
+|---|---|---|
+| `endpoint(String)` | required | Cache endpoint as `host:port`. IPv6 addresses use brackets, as in `[::1]:6379`. |
+| `cacheName(String)` | required | The ElastiCache Serverless cache name. |
+| `userId(String)` | `default.iam-user` | ElastiCache IAM user id. |
+| `verify(boolean)` | `true` | Verify the cache's TLS certificate and host name. `false` is for self-signed test rigs only. |
+| `caCerts(Path)` | system trust store | PEM CA bundle file to verify the cache's certificate against. The host name is still checked. An unreadable or invalid file throws `ElastiCacheIntegrationsConfigError`. |
+| `clientConfiguration(ElastiCacheIntegrationsClientConfiguration)` | all defaults | See [Configuration](#configuration). |
+| `originHttpClient(SdkHttpClient)` | SDK Apache HTTP client | Transport for requests that go to the origin service. |
+| `originAsyncHttpClient(SdkAsyncHttpClient)` | SDK Netty HTTP client | Transport for origin requests from `installAsync`. |
+| `asyncExecutor(Executor)` | bounded daemon pool | Executor for the blocking cache socket requests of `installAsync`. |
+| `asyncMaxBufferedRequestBytes(int)` | 16 MiB | Largest asynchronous request body Cache buffers. |
+| `asyncMaxConcurrentBodyCollectors(int)` | 8 | Most asynchronous request bodies collected at once. |
+
+These options describe the connection to the cache, which the SDK client knows
+nothing about. TLS to AWS and everything else about reaching the service stay
+the client's own configuration.
+
+### Transport
+
+The client that `install` builds gets the cache interceptor added to a copy of
+the builder's override configuration, so the interceptors, retries, timeouts and
+metrics that the builder already has survive. It also gets an HTTP transport
+that reads from the cache first and falls back to the origin service.
+
+To set HTTP settings such as socket timeouts, connection timeouts or the
+connection pool, build the HTTP client and pass it as `originHttpClient` (or
+`originAsyncHttpClient`). Leave it off the SDK builder. Requests that the cache
+does not serve go through that same client, with all of its settings:
+
+```java
+SdkHttpClient origin = ApacheHttpClient.builder()
+        .socketTimeout(Duration.ofSeconds(2))
+        .connectionTimeout(Duration.ofSeconds(1))
+        .build();
+
+DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache:6379")
+        .cacheName("my-cache")
+        .originHttpClient(origin)
+        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
+```
+
+`install` sets the SDK builder's `httpClientBuilder` to the cache transport, and
+the SDK builder has no getter for an HTTP client that the application already
+set. A builder that already has an `httpClient` or an `httpClientBuilder` makes
+`install` throw `ElastiCacheIntegrationsConfigError` before it connects to the
+cache, so those settings are never lost without an error. `install` also throws
+`ElastiCacheIntegrationsConfigError` for a builder it cannot inspect, such as a
+wrapper around the builder that the SDK client's `builder()` method returns.
+The SDK closes the
+transport that Cache creates when the application closes the client. Cache
+closes the origin transport only when it created it. A transport or executor
+that you supply stays open.
+
+`install` puts the builder's override configuration back the way it was and
+clears its `httpClientBuilder`, whether it succeeds or fails. Each `install` on
+the same builder returns a separate client with its own cache connection, so
+the builder can be installed into again after a client is closed or after a
+failed bring-up.
+
+The `origin(...)` and `buildAsync(...)` builder methods and the manual handles
+described below still work.
+
+## Configuration
+
+Optional settings go in one `ElastiCacheIntegrationsClientConfiguration`,
+passed as `clientConfiguration`. Every option has a default, so set only what
+you change. Cache policy settings are sent to the cache through `aws.config`.
+
+```java
+ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache:6379")
+        .cacheName("my-cache")
+        .clientConfiguration(ElastiCacheIntegrationsClientConfiguration.builder()
+                .cacheRequestTimeoutMs(2_000)
+                .connectionTimeoutMs(2_000)
+                .fallbackDurationSeconds(60)
+                .cachePolicyOverrides(Collections.singletonMap(
+                        "cached_tables", Arrays.asList("Users", "Sessions")))
+                .iamTokenRefreshDelay(Duration.ofSeconds(300))
+                .build())
+        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
+```
+
+| Option | Default | Meaning |
+|---|---|---|
+| `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
+| `connectionTimeoutMs(long)` | 2000 | How long each connection attempt (connect, HELLO/authentication, and configuration) may take, in milliseconds. Must be positive. |
+| `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service while there is no cache connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
+| `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
+| `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
+| `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
+
+`build()` throws `ElastiCacheIntegrationsConfigError` for a value that is not
+usable, for example `cacheRequestTimeoutMs must be a positive number of milliseconds, at most 2147483647`.
+
+### Cache policy overrides
+
+`cached_tables` and `cached_operations` are allowlists, and they intersect:
+only those operations, on only those tables. Each one empty or absent means
+everything, so the example above caches `Users` and `Sessions` and nothing else.
+There is no exclude form. To keep one table out of the cache, name the tables
+that should be in it.
+
+Lifetimes are set per category (`item_ttl`, `item_negative_ttl`, `query_ttl`,
+`scan_ttl`), connection-wide at the top level or per table under
+`table_overrides`. A `table_overrides` entry holds settings only and never puts
+a table in scope.
+
+```java
+Map<String, Object> overrides = new HashMap<>();
+overrides.put("cached_tables", Arrays.asList("Users", "Sessions"));
+overrides.put("cached_operations", Arrays.asList("GetItem", "Query"));
+overrides.put("item_ttl", 500);
+overrides.put("item_negative_ttl", 0); // do not cache "this item does not exist"
+overrides.put("table_overrides",
+        Collections.singletonMap("Users", Collections.singletonMap("item_ttl", 60)));
+```
+
+The cache refuses a value it does not allow at connect time with
+`ElastiCacheIntegrationsOverridesRejected`, rather than adjusting it. The cache
+ignores a field name it does not recognise, so a typo fails silently. The names
+above are the whole set.
 
 ## Synchronous client
 
@@ -178,11 +345,19 @@ margin are defined by the
 Configure a custom refresh point with
 `IamAuthTokenProvider.Builder.refreshAfter(Duration)` when needed.
 
-For clients created by `ElastiCacheIntegrationsClient`, the manager uses the
-wrapped SDK client's resolved credentials provider and rejects a region mismatch.
-This takes precedence over a credentials provider configured directly on
-`IamAuthTokenProvider`. Standalone handles have no SDK client to inspect and
-therefore use the provider's configured credentials.
+`install` creates the token manager from the region and credentials of the
+built SDK client, so the cache is authenticated as the same principal as the
+requests. Each newly signed token resolves the client's credentials again, so
+rotation (SSO, assume-role, container, instance metadata) keeps working. Set
+`iamTokenRefreshDelay` on `ElastiCacheIntegrationsClientConfiguration` to
+change the background signing point. It must be greater than 0 and less than
+880 seconds, which keeps the toolkit's 20-second safety margin on the 15-minute
+token. Closing the client also closes the manager.
+
+The deprecated `origin(...).build()` and `buildAsync(...)` paths also use the
+wrapped SDK client's resolved credentials provider and reject a region mismatch
+with the supplied `IamAuthTokenProvider`. Standalone handles have no SDK client
+to inspect and therefore use the provider's configured credentials.
 
 Cache asks its manager for credentials on every connection and reconnect, so a
 reconnect uses the latest valid token without synchronously signing a new one.
@@ -203,9 +378,10 @@ attempt creates a new TLS connection, resolves fresh credentials, repeats
 `HELLO 3 AUTH` and `aws.config`, and uses capped exponential backoff with jitter.
 Reconnect attempts continue until one succeeds or the session closes.
 
-Initial startup remains bounded: by default Cache makes three attempts, and
-each complete connect, HELLO/authentication, and configuration attempt is limited to
-five seconds.
+Initial startup remains bounded: Cache makes three attempts, and each complete
+connect, HELLO/authentication, and configuration attempt is limited to
+`connectionTimeoutMs` (2 seconds through `install`, 5 seconds through the
+`ReconnectPolicy` default).
 
 While reconnecting, cache-eligible requests may use the signed origin fallback.
 `fallbackDurationSeconds` controls that window: a negative value allows

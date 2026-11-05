@@ -78,10 +78,24 @@ public class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor 
             ElastiCacheIntegrationsSession session,
             SdkHttpClient originClient,
             boolean ownsOriginClient) {
+        this(session, originClient, ownsOriginClient, false, null);
+    }
+
+    ElastiCacheIntegrationsInterceptor(
+            ElastiCacheIntegrationsSession session,
+            SdkHttpClient originClient,
+            boolean ownsOriginClient,
+            boolean ownsSession,
+            ManagedIamAuthProvider ownedAuthProvider) {
         this.requestContext = new ElastiCacheIntegrationsRequestContext();
         this.httpClient =
                 new ElastiCacheIntegrationsHttpClient(
-                        session, requestContext, originClient, ownsOriginClient);
+                        session,
+                        requestContext,
+                        originClient,
+                        ownsOriginClient,
+                        ownsSession,
+                        ownedAuthProvider);
     }
 
     /**

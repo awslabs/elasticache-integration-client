@@ -124,7 +124,7 @@ const options = {
   endpoint: "cache.example.com:6379",
   cacheName: "my-cache",
   userId: "iam-user",
-  clientConfiguration: { cachePolicyOverrides: { timeout: 42 }, cacheRequestTimeout: 1.234 },
+  clientConfiguration: { cachePolicyOverrides: { timeout: 42 }, cacheRequestTimeout: 1234 },
 };
 
 describe("install", () => {
@@ -150,6 +150,7 @@ describe("install", () => {
     connectorFactory();
     expect(mocks.connection).toHaveBeenCalledWith("cache.example.com", 6379, {
       requestTimeout: 1234,
+      connectionTimeout: 5_000,
       verify: true,
       authProvider: generatedAuthProvider,
     });
@@ -157,7 +158,7 @@ describe("install", () => {
       expect.any(Function),
       { timeout: 42 },
       {
-        connectionTimeoutMs: 2_000,
+        connectionTimeoutMs: 5_000,
         stalenessDurationMs: 3_600_000,
       },
     );
@@ -307,15 +308,15 @@ describe("install", () => {
       { timeout: 42 },
       {
         fallbackDurationMs: 60_000,
-        connectionTimeoutMs: 2_000,
+        connectionTimeoutMs: 5_000,
         stalenessDurationMs: 3_600_000,
       },
     );
   });
 
   it.each([
-    [undefined, 2_000],
-    [1.5, 1_500],
+    [undefined, 5_000],
+    [1_500, 1_500],
   ])("passes connectionTimeout %s to the session", async (requested, expected) => {
     setup();
 
@@ -336,25 +337,69 @@ describe("install", () => {
   });
 
   it.each([
-    ["cacheRequestTimeout", 0, "cacheRequestTimeout must be a positive number of seconds"],
-    ["cacheRequestTimeout", true, "cacheRequestTimeout must be a positive number of seconds"],
-    ["cacheRequestTimeout", NaN, "cacheRequestTimeout must be a positive number of seconds"],
-    ["cacheRequestTimeout", Infinity, "cacheRequestTimeout must be a positive number of seconds"],
     [
       "cacheRequestTimeout",
-      2_147_484,
-      "cacheRequestTimeout must be a positive number of seconds, at most 2147483",
+      0,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
     ],
-    ["connectionTimeout", 0, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", -1, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", NaN, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", Infinity, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", true, "connectionTimeout must be a positive number of seconds"],
-    ["connectionTimeout", "2", "connectionTimeout must be a positive number of seconds"],
+    [
+      "cacheRequestTimeout",
+      -1,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      1.5,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      NaN,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      Infinity,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      true,
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      "2000",
+      "cacheRequestTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "cacheRequestTimeout",
+      2 ** 31,
+      "cacheRequestTimeout must be a positive whole number of milliseconds, at most 2147483647",
+    ],
+    ["connectionTimeout", 0, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", -1, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", 1.5, "connectionTimeout must be a positive whole number of milliseconds"],
+    ["connectionTimeout", NaN, "connectionTimeout must be a positive whole number of milliseconds"],
     [
       "connectionTimeout",
-      2_147_484,
-      "connectionTimeout must be a positive number of seconds, at most 2147483",
+      Infinity,
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      true,
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      "2000",
+      "connectionTimeout must be a positive whole number of milliseconds",
+    ],
+    [
+      "connectionTimeout",
+      2 ** 31,
+      "connectionTimeout must be a positive whole number of milliseconds, at most 2147483647",
     ],
     ["fallbackDuration", 0.5, "fallbackDuration must be a whole number of seconds"],
     ["fallbackDuration", true, "fallbackDuration must be a whole number of seconds"],
@@ -432,7 +477,7 @@ describe("install", () => {
 
   it.each([
     [undefined, 5_000],
-    [1.25, 1_250],
+    [1_250, 1_250],
   ])("passes cacheRequestTimeout %s to the connector factory", async (requested, expected) => {
     setup();
 
@@ -578,7 +623,7 @@ describe("install", () => {
     connectorFactory();
     expect(mocks.connection.mock.calls[0]![2]).toMatchObject({ requestTimeout: 5_000 });
     expect(mocks.sessionConstructor.mock.calls[0]![2]).toEqual({
-      connectionTimeoutMs: 2_000,
+      connectionTimeoutMs: 5_000,
       stalenessDurationMs: 3_600_000,
     });
   });
@@ -626,7 +671,7 @@ describe("install", () => {
     });
 
     expect(mocks.sessionConstructor).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-      connectionTimeoutMs: 2_000,
+      connectionTimeoutMs: 5_000,
       stalenessDurationMs: expected,
     });
   });

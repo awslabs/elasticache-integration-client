@@ -17,10 +17,22 @@ import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
-/** Internal connector adapter for the toolkit's IAM token manager. */
+/**
+ * Internal connector adapter for the toolkit's IAM token manager.
+ *
+ * <p>The installer needs the built SDK client's region and credentials to create the token manager,
+ * and it builds the client after the session that uses this provider. The manager is therefore
+ * attached with {@link #bind(IamAuthTokenProvider)} after construction.
+ */
 final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoCloseable {
     private final IamAuthTokenProvider provider;
     private volatile ElastiCacheIamAuthTokenManager tokenManager;
+    private volatile boolean closed;
+
+    /** Create a provider with no token manager yet. Call {@link #bind} before first use. */
+    ManagedIamAuthProvider() {
+        this.provider = null;
+    }
 
     ManagedIamAuthProvider(IamAuthTokenProvider provider) {
         this(provider, false);
@@ -29,14 +41,12 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     ManagedIamAuthProvider(IamAuthTokenProvider provider, boolean deferInitialization) {
         this.provider = provider;
         if (!deferInitialization) {
-            this.tokenManager = provider.newTokenManager();
+            bind(provider);
         }
     }
 
     synchronized void bindTo(SdkServiceClientConfiguration clientConfiguration) {
-        if (tokenManager != null) {
-            throw new ElastiCacheIntegrationsError("IAM auth provider is already initialized");
-        }
+        ensureCanBind();
         if (!(clientConfiguration instanceof AwsServiceClientConfiguration)) {
             throw new ElastiCacheIntegrationsError(
                     "AWS SDK client configuration is required for IAM authentication");
@@ -55,6 +65,21 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
                 provider.newTokenManager(asCredentialsProvider(awsConfiguration.credentialsProvider()));
     }
 
+    /** Create the token manager from {@code provider}. */
+    synchronized void bind(IamAuthTokenProvider provider) {
+        ensureCanBind();
+        tokenManager = provider.newTokenManager();
+    }
+
+    private void ensureCanBind() {
+        if (closed) {
+            throw new ElastiCacheIntegrationsError("IAM auth provider is closed");
+        }
+        if (tokenManager != null) {
+            throw new ElastiCacheIntegrationsError("IAM auth provider is already initialized");
+        }
+    }
+
     @Override
     public AuthCredentials get() {
         try {
@@ -62,6 +87,8 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
             return new AuthCredentials(credentials.getUserId(), credentials.getToken());
         } catch (ToolkitInputException e) {
             throw new ElastiCacheIntegrationsError(e.getMessage(), e);
+        } catch (ElastiCacheIntegrationsError e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new ElastiCacheIntegrationsError("Failed to obtain refreshed IAM auth token", e);
         }
@@ -72,6 +99,8 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
             tokenManager().refreshToken();
         } catch (ToolkitInputException e) {
             throw new ElastiCacheIntegrationsError(e.getMessage(), e);
+        } catch (ElastiCacheIntegrationsError e) {
+            throw e;
         } catch (RuntimeException e) {
             throw new ElastiCacheIntegrationsError("Failed to force-refresh IAM auth token", e);
         }
@@ -81,6 +110,7 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     public void close() {
         ElastiCacheIamAuthTokenManager manager;
         synchronized (this) {
+            closed = true;
             manager = tokenManager;
             tokenManager = null;
         }
@@ -90,10 +120,11 @@ final class ManagedIamAuthProvider implements Supplier<AuthCredentials>, AutoClo
     }
 
     private ElastiCacheIamAuthTokenManager tokenManager() {
-        if (tokenManager == null) {
+        ElastiCacheIamAuthTokenManager manager = tokenManager;
+        if (manager == null || closed) {
             throw new ElastiCacheIntegrationsError("IAM auth provider is not initialized");
         }
-        return tokenManager;
+        return manager;
     }
 
     static AwsCredentialsProvider asCredentialsProvider(

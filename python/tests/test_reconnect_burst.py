@@ -47,7 +47,7 @@ def _session(monkeypatch, **policy_kwargs) -> ElastiCacheIntegrationsSession:
 
 def test_request_waits_then_passes_through_when_window_open(monkeypatch):
     # No reconnect arrives within connection_timeout, and the fallback window is open -> pass through.
-    session = _session(monkeypatch, connection_timeout=0.05, fallback_duration=None)
+    session = _session(monkeypatch, connection_timeout_ms=50, fallback_duration=None)
     try:
         cm = session._connection_manager
         cm._connector = None
@@ -63,7 +63,7 @@ def test_request_waits_then_passes_through_when_window_open(monkeypatch):
 
 def test_request_waits_then_escalates_when_window_spent(monkeypatch):
     # No reconnect, and the window is spent (or strict) -> cache unavailable after the wait.
-    session = _session(monkeypatch, connection_timeout=0.05, fallback_duration=0)
+    session = _session(monkeypatch, connection_timeout_ms=50, fallback_duration=0)
     try:
         cm = session._connection_manager
         cm._connector = None
@@ -78,7 +78,7 @@ def test_request_waits_then_escalates_when_window_spent(monkeypatch):
 
 def test_request_served_when_reconnect_lands_within_the_wait(monkeypatch):
     # A reconnect arrives during the wait: the request is served from the cache, not fallen back.
-    session = _session(monkeypatch, connection_timeout=1.0, fallback_duration=0)
+    session = _session(monkeypatch, connection_timeout_ms=1000, fallback_duration=0)
     try:
         cm = session._connection_manager
         reconnected = cm._connector  # the live mock connector from bring-up
@@ -110,7 +110,7 @@ def _write() -> ElastiCacheIntegrationsRequest:
 def test_request_on_a_dead_connector_waits_for_the_reconnect(monkeypatch):
     # The connector died but the reconnect thread has not taken it down yet. A write must not be
     # sent on it and fail: it waits for the reconnect and is served on the new connector.
-    session = _session(monkeypatch, connection_timeout=2.0)
+    session = _session(monkeypatch, connection_timeout_ms=2000)
     try:
         cm = session._connection_manager
         dead = mock_connector()
@@ -128,7 +128,7 @@ def test_retry_after_an_in_flight_loss_waits_for_the_reconnect(monkeypatch):
     # and is served on the new connector instead of failing again.
     monkeypatch.setattr(session_mod, "should_route_to_cache", lambda predicates, request: True)
     session = ElastiCacheIntegrationsSession(
-        mock_connector, policy=ReconnectPolicy(connection_timeout=2.0)
+        mock_connector, policy=ReconnectPolicy(connection_timeout_ms=2000)
     )
     try:
         cm = session._connection_manager
@@ -183,7 +183,7 @@ def test_wait_for_connector_does_not_wait_after_the_hold():
 
 
 def test_strict_mode_does_not_allow_fallback_before_ready_deadline():
-    policy = ReconnectPolicy(connection_timeout=1.0, fallback_duration=0)
+    policy = ReconnectPolicy(connection_timeout_ms=1000, fallback_duration=0)
     cm = ConnectionManager(lambda: MagicMock(), lambda c: None, policy)
     cm._ready_deadline = time.monotonic() + 1.0
     cm._fallback_deadline = cm._ready_deadline
@@ -193,7 +193,7 @@ def test_strict_mode_does_not_allow_fallback_before_ready_deadline():
 
 def test_wait_for_connector_takes_a_dead_connector_out_of_service():
     cm = ConnectionManager(
-        lambda: MagicMock(), lambda c: None, ReconnectPolicy(connection_timeout=0.05)
+        lambda: MagicMock(), lambda c: None, ReconnectPolicy(connection_timeout_ms=50)
     )
     dead = MagicMock()
     dead.is_alive = False
@@ -208,7 +208,7 @@ def test_wait_for_connector_takes_a_dead_connector_out_of_service():
 
 def test_fallback_window_starts_when_the_wait_ends():
     # A connection_timeout longer than fallback_duration must still leave the full fallback window.
-    policy = ReconnectPolicy(connection_timeout=5.0, fallback_duration=1)
+    policy = ReconnectPolicy(connection_timeout_ms=5000, fallback_duration=1)
     cm = ConnectionManager(lambda: MagicMock(), lambda c: None, policy)
     conn = MagicMock()
     cm._connector = conn
@@ -221,7 +221,7 @@ def test_invalidate_connection_starts_a_hold():
     # Dropping a connection on AUTH_ERROR clears the connected flag and opens a hold, like a
     # lost connection does, so the next request waits briefly for the reconnect.
     cm = ConnectionManager(
-        lambda: MagicMock(), lambda c: None, ReconnectPolicy(connection_timeout=0.5)
+        lambda: MagicMock(), lambda c: None, ReconnectPolicy(connection_timeout_ms=500)
     )
     conn = MagicMock()
     cm._connector = conn

@@ -83,11 +83,11 @@ class ManagedIamAuthProviderTest {
 
         ElastiCacheIntegrationsError getError =
                 assertThrows(ElastiCacheIntegrationsError.class, provider::get);
-        assertEquals("IAM auth provider is not initialized", getError.getCause().getMessage());
+        assertEquals("IAM auth provider is not initialized", getError.getMessage());
 
         ElastiCacheIntegrationsError refreshError =
                 assertThrows(ElastiCacheIntegrationsError.class, provider::refresh);
-        assertEquals("IAM auth provider is not initialized", refreshError.getCause().getMessage());
+        assertEquals("IAM auth provider is not initialized", refreshError.getMessage());
 
         provider.bindTo(
                 awsConfiguration(

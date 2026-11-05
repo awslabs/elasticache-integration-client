@@ -390,7 +390,7 @@ describe("public DynamoDB client", () => {
       endpoint: hangingCache.endpoint,
       cacheName: "test-cache",
       caCerts: CA_CERTS,
-      clientConfiguration: { cacheRequestTimeout: 5 },
+      clientConfiguration: { cacheRequestTimeout: 5_000 },
     });
 
     try {

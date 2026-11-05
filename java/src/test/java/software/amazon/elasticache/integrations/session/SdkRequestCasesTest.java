@@ -155,25 +155,23 @@ class SdkRequestCasesTest {
                 Reply.ok(
                         200, Collections.singletonMap("content-type", "application/x-amz-json-1.0"), "{}"));
         try (MockTlsServer server = new MockTlsServer(cache);
-                ElastiCacheIntegrationsClient.Result<DynamoDbClient> result =
+                DynamoDbClient client =
                         ElastiCacheIntegrationsClient.builder()
                                 .endpoint("localhost:" + server.getPort())
-                                .authCredentials("test-user", "test-token")
-                                .sslContext(server.getSslContext())
+                                .cacheName("my-cache")
+                                .verify(false)
                                 .originHttpClient(new NoOriginClient())
-                                .origin(
-                                        DynamoDbClient.builder(),
-                                        b ->
-                                                b.region(Region.US_EAST_1)
-                                                        // Java hands ElastiCacheIntegrations the request before
-                                                        // SigV4 signing, so no signing header reaches it with any
-                                                        // credentials. The encode vectors cover the excluded
-                                                        // headers.
-                                                        .credentialsProvider(
-                                                                StaticCredentialsProvider.create(
-                                                                        AwsBasicCredentials.create("testkey", "testsecret"))))
-                                .build()) {
-            call.accept(result.client());
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                // Java hands ElastiCacheIntegrations the request before
+                                                // SigV4 signing, so no signing header reaches it with any
+                                                // credentials. The encode vectors cover the excluded
+                                                // headers.
+                                                .credentialsProvider(
+                                                        StaticCredentialsProvider.create(
+                                                                AwsBasicCredentials.create("testkey", "testsecret"))))) {
+            call.accept(client);
 
             assertEquals(1, cache.getRequests().size());
             ReceivedRequest request = cache.getRequests().get(0);

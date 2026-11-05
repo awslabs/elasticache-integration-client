@@ -32,6 +32,7 @@ function fakeConnector(
   return {
     isReady: true,
     connect: vi.fn(async () => undefined),
+    markReady: vi.fn(),
     handshake: vi.fn(async () => undefined),
     reauthenticate: vi.fn(async () => undefined),
     execute: vi.fn(async (command: string, ...args: Buffer[]) => {
@@ -73,6 +74,7 @@ function controlledConnector(
       await options.connect?.();
       dead = false;
     }),
+    markReady: vi.fn(),
     handshake: vi.fn(async () => {
       await options.handshake?.();
     }),
@@ -261,7 +263,11 @@ describe("ElastiCacheIntegrationsSession", () => {
       close,
     });
     Object.defineProperty(connector, "isReady", { get: () => ready });
-    const session = new ElastiCacheIntegrationsSession(connector);
+    const session = new ElastiCacheIntegrationsSession(
+      connector,
+      {},
+      { connectionTimeoutMs: 2_000 },
+    );
     await session.open();
 
     const response = await session.request(
@@ -327,6 +333,7 @@ describe("ElastiCacheIntegrationsSession", () => {
         connect: vi.fn(async () => {
           if (failure === "connect") throw original;
         }),
+        markReady: vi.fn(),
         handshake: vi.fn(async () => {
           if (failure === "handshake") throw original;
         }),
@@ -349,6 +356,7 @@ describe("ElastiCacheIntegrationsSession", () => {
     });
     const connector = fakeConnector({
       connect: vi.fn(),
+      markReady: vi.fn(),
       handshake: vi.fn(),
       execute: vi.fn(() => config),
     });
@@ -751,7 +759,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       () => {
         const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
           tls: false,
-          configTimeout: 5_000,
+          connectionTimeout: 5_000,
           authProvider: () => ["test-user", "test-token"],
         });
         connectors.push(connector);
@@ -796,6 +804,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       factory,
       {},
       {
+        connectionTimeoutMs: 2_000,
         baseDelayMs: 1,
         maxDelayMs: 1,
         jitter: 0,
@@ -872,8 +881,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       () =>
         new ElastiCacheIntegrationsConnector(proxy.host, proxy.port!, {
           tls: false,
-          connectTimeout: 500,
-          configTimeout: 500,
+          connectionTimeout: 500,
           requestTimeout: 500,
           authProvider,
         }),
@@ -1777,7 +1785,11 @@ describe("ElastiCacheIntegrationsSession config refresh", () => {
     return new ElastiCacheIntegrationsSession(
       connector,
       {},
-      { stalenessDurationMs: STALENESS_WINDOW_MS, clock: () => clock.now },
+      {
+        connectionTimeoutMs: 2_000,
+        stalenessDurationMs: STALENESS_WINDOW_MS,
+        clock: () => clock.now,
+      },
     );
   }
 

@@ -4,6 +4,7 @@ import type { AwsCredentialIdentity } from "@smithy/types";
 
 import { buildCacheAuthProvider } from "./auth.js";
 import {
+  DEFAULT_CONNECTION_TIMEOUT,
   DEFAULT_REQUEST_TIMEOUT,
   ElastiCacheIntegrationsConnector,
   type ElastiCacheIntegrationsConnectorOptions,
@@ -27,13 +28,13 @@ import {
  */
 export interface ElastiCacheIntegrationsClientConfiguration {
   /**
-   * Maximum time, in seconds, to wait for each ElastiCacheIntegrations request response.
-   * Defaults to 5 seconds.
+   * Maximum time, in milliseconds, to wait for each ElastiCacheIntegrations request response.
+   * Defaults to 5000.
    */
   cacheRequestTimeout?: number;
   /**
-   * How long, in seconds, ElastiCacheIntegrations tries to connect at startup, and how long a
-   * request waits for reconnection after a connection is lost. Defaults to 2 seconds.
+   * How long, in milliseconds, ElastiCacheIntegrations tries to connect at startup, and how long a
+   * request waits for reconnection after a connection is lost. Defaults to 5000.
    */
   connectionTimeout?: number;
   /**
@@ -108,8 +109,6 @@ const INSTALL_OPTIONS: ReadonlySet<string> = new Set([
   "clientConfiguration",
 ]);
 
-const DEFAULT_CONNECTION_TIMEOUT = 2;
-
 /** setTimeout fires after 1 ms for any delay above this, so longer timeouts are rejected. */
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
 
@@ -179,15 +178,15 @@ function resolveClientConfiguration(
     }
   }
   const {
-    cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT / 1_000,
+    cacheRequestTimeout = DEFAULT_REQUEST_TIMEOUT,
     connectionTimeout = DEFAULT_CONNECTION_TIMEOUT,
     fallbackDuration,
     cachePolicyOverrides = {},
     cachePolicyTimeout,
     iamTokenRefreshDelay,
   } = configuration;
-  const requestTimeoutMs = timeoutMs("cacheRequestTimeout", cacheRequestTimeout);
-  const connectionTimeoutMs = timeoutMs("connectionTimeout", connectionTimeout);
+  const requestTimeoutMs = timerMs("cacheRequestTimeout", cacheRequestTimeout);
+  const connectionTimeoutMs = timerMs("connectionTimeout", connectionTimeout);
   if (
     typeof cachePolicyOverrides !== "object" ||
     cachePolicyOverrides === null ||
@@ -231,20 +230,18 @@ function resolveClientConfiguration(
   };
 }
 
-/** Validate a timeout in seconds and convert it to milliseconds. */
-function timeoutMs(name: string, seconds: unknown): number {
+/** Validate a timeout: a positive whole number of milliseconds that setTimeout can hold. */
+function timerMs(name: string, milliseconds: unknown): number {
   if (
-    typeof seconds !== "number" ||
-    !Number.isFinite(seconds) ||
-    seconds <= 0 ||
-    Math.round(seconds * 1_000) > MAX_TIMER_DELAY_MS
+    !Number.isInteger(milliseconds) ||
+    (milliseconds as number) <= 0 ||
+    (milliseconds as number) > MAX_TIMER_DELAY_MS
   ) {
     throw new ElastiCacheIntegrationsConfigError(
-      `${name} must be a positive number of seconds, at most ${Math.floor(MAX_TIMER_DELAY_MS / 1_000)}`,
+      `${name} must be a positive whole number of milliseconds, at most ${MAX_TIMER_DELAY_MS}`,
     );
   }
-  // A sub-millisecond timeout still waits at least one millisecond.
-  return Math.max(1, Math.round(seconds * 1_000));
+  return milliseconds as number;
 }
 
 function stalenessDurationMs(seconds: number | undefined): number {
@@ -458,6 +455,7 @@ export async function install<TClient extends InstallableClient>(
       : { iamTokenRefreshDelay: configuration.iamTokenRefreshDelay }),
     connectorOptions: {
       requestTimeout: configuration.requestTimeoutMs,
+      connectionTimeout: configuration.connectionTimeoutMs,
       verify,
       ...(caCertsPem === undefined ? {} : { caCerts: caCertsPem }),
     },

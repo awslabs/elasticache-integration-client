@@ -235,7 +235,7 @@ def test_client_rejects_clients_it_cannot_use(monkeypatch, sdk_client):
         client_mod.install(client=sdk_client, endpoint="cache:6379", cache_name="c")
 
 
-@pytest.mark.parametrize("requested,expected", [(None, 5.0), (1.25, 1.25)])
+@pytest.mark.parametrize("requested,expected", [(None, 5000), (1250, 1250)])
 def test_client_passes_cache_request_timeout_to_connector_factory(monkeypatch, requested, expected):
     _, _ = _patch_common(monkeypatch)
     connector_constructor = MagicMock(return_value=MagicMock())
@@ -259,7 +259,7 @@ def test_client_passes_cache_request_timeout_to_connector_factory(monkeypatch, r
     )
     _call(_sdk_client(), **kwargs)
 
-    assert connector_constructor.call_args.kwargs["request_timeout"] == expected
+    assert connector_constructor.call_args.kwargs["request_timeout_ms"] == expected
 
 
 @pytest.mark.parametrize(
@@ -290,7 +290,7 @@ def test_client_passes_the_cache_policy_timeout_to_the_session(monkeypatch, kwar
     assert built["config_policy"].staleness_duration == expected
 
 
-@pytest.mark.parametrize("requested,expected", [(None, 2.0), (0.5, 0.5)])
+@pytest.mark.parametrize("requested,expected", [(None, 5000), (500, 500)])
 def test_client_passes_connection_timeout_to_the_session(monkeypatch, requested, expected):
     _patch_common(monkeypatch)
     built: dict = {}
@@ -306,10 +306,10 @@ def test_client_passes_connection_timeout_to_the_session(monkeypatch, requested,
     )
     _call(_sdk_client(), client_configuration=configuration)
 
-    assert built["policy"].connection_timeout == expected
+    assert built["policy"].connection_timeout_ms == expected
 
 
-@pytest.mark.parametrize("bad", [0, True, float("nan"), float("inf"), "2"])
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, 5000.0, float("nan"), float("inf"), "2000"])
 def test_client_configuration_rejects_unusable_connection_timeout(bad):
     with pytest.raises(ElastiCacheIntegrationsConfigError):
         ElastiCacheIntegrationsClientConfiguration(connection_timeout=bad)
@@ -322,6 +322,8 @@ def test_client_configuration_rejects_unusable_connection_timeout(bad):
         ("cache_request_timeout", True),
         ("cache_request_timeout", float("nan")),
         ("cache_request_timeout", float("inf")),
+        ("cache_request_timeout", 1.5),
+        ("cache_request_timeout", "5000"),
         ("fallback_duration", 0.5),
         ("cache_policy_overrides", []),
         ("cache_policy_timeout", 0),

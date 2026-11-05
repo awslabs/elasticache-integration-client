@@ -25,10 +25,11 @@ import {
 } from "./resp.js";
 
 const DEFAULT_READ_SIZE = 64 * 1024;
-const DEFAULT_CONNECT_TIMEOUT = 1_000; // TCP connect and TLS handshake.
+// One attempt to bring the connection up: TCP connect, TLS, HELLO 3 AUTH and the first aws.config.
+export const DEFAULT_CONNECTION_TIMEOUT = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT = 5_000;
-const DEFAULT_CONFIG_TIMEOUT = 2_000; // Initialization commands: HELLO, AUTH and aws.config.
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
+const DEFAULT_MAX_PENDING = 100;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
 
@@ -166,7 +167,7 @@ export class PendingRequests {
   private readonly queue: PendingRequest[] = [];
   private readonly asyncResponses = new Map<string, PendingRequest>();
 
-  constructor(private readonly maxPending = 100) {
+  constructor(private readonly maxPending = DEFAULT_MAX_PENDING) {
     validatePositiveInteger(maxPending, "maxPending");
   }
 
@@ -258,12 +259,16 @@ interface SentRequest {
 export interface ElastiCacheIntegrationsConnectorOptions {
   /** Use TLS with hostname verification. Defaults to `true`. */
   tls?: boolean;
-  /** TCP/TLS establishment timeout in milliseconds. */
-  connectTimeout?: number;
-  /** Per-request response timeout in milliseconds. Defaults to 5000. */
+  /**
+   * Bounds bringing the connection up, in milliseconds: TCP, TLS, HELLO 3 AUTH and the first
+   * aws.config. Defaults to 5000.
+   */
+  connectionTimeout?: number;
+  /**
+   * Per-request response timeout in milliseconds, for every command once the connection is up,
+   * the background AUTH and aws.config refresh included. Defaults to 5000.
+   */
   requestTimeout?: number;
-  /** Timeout for HELLO, AUTH, and aws.config commands in milliseconds. */
-  configTimeout?: number;
   /** PEM certificate authority data passed to Node's TLS client. */
   caCerts?: string | Buffer | Array<string | Buffer>;
   /**
@@ -342,9 +347,8 @@ export class ElastiCacheIntegrationsConnector {
   private readonly host: string;
   private readonly port: number;
   private readonly useTls: boolean;
-  private readonly connectTimeout: number;
+  private readonly connectionTimeout: number;
   private readonly requestTimeout: number;
-  private readonly configTimeout: number;
   private readonly caCerts: ElastiCacheIntegrationsConnectorOptions["caCerts"];
   private readonly verify: boolean;
   private readonly readSize: number;
@@ -357,6 +361,7 @@ export class ElastiCacheIntegrationsConnector {
   private readerTask: Promise<void> | undefined;
   private readonly pending: PendingRequests;
   private connecting = false;
+  private ready = false;
   private dead = false;
   private closed = false;
   private disconnectNotified = false;
@@ -368,9 +373,8 @@ export class ElastiCacheIntegrationsConnector {
     this.host = host;
     this.port = port;
     this.useTls = options.tls ?? true;
-    this.connectTimeout = options.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT;
+    this.connectionTimeout = options.connectionTimeout ?? DEFAULT_CONNECTION_TIMEOUT;
     this.requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
-    this.configTimeout = options.configTimeout ?? DEFAULT_CONFIG_TIMEOUT;
     this.caCerts = options.caCerts;
     this.verify = options.verify ?? true;
     this.readSize = validatePositiveInteger(options.readSize ?? DEFAULT_READ_SIZE, "readSize");
@@ -378,7 +382,7 @@ export class ElastiCacheIntegrationsConnector {
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
       "maxResponseSize",
     );
-    this.pending = new PendingRequests(options.maxPending ?? 100);
+    this.pending = new PendingRequests(options.maxPending ?? DEFAULT_MAX_PENDING);
     this.authProvider = options.authProvider;
   }
 
@@ -660,16 +664,17 @@ export class ElastiCacheIntegrationsConnector {
   }
 
   /**
-   * Select the response timeout for a command.
-   *
-   * HELLO, background AUTH, and aws.config use the larger config timeout.
-   * Send/drain waits remain bounded by requestTimeout.
+   * Mark the connection up. Until then the bring-up commands — HELLO, AUTH and aws.config — get
+   * the connection timeout; after it they get the request timeout, like every other command.
    */
+  markReady(): void {
+    this.ready = true;
+  }
+
+  /** Select the response timeout for a command. Send/drain waits stay on requestTimeout. */
   private timeoutFor(command: string): number {
-    // Bring-up commands get a larger response budget; send-side waits stay on requestTimeout.
-    return command === "HELLO" || command === "AUTH" || command === "aws.config"
-      ? this.configTimeout
-      : this.requestTimeout;
+    const bringUp = command === "HELLO" || command === "AUTH" || command === "aws.config";
+    return bringUp && !this.ready ? this.connectionTimeout : this.requestTimeout;
   }
 
   /**
@@ -728,7 +733,7 @@ export class ElastiCacheIntegrationsConnector {
         );
         socket.destroy();
         finish(error);
-      }, this.connectTimeout);
+      }, this.connectionTimeout);
 
       const finish = (value: Socket | Error) => {
         if (settled) return;
@@ -797,7 +802,7 @@ export class ElastiCacheIntegrationsConnector {
         );
         secured.destroy();
         finish(error);
-      }, this.connectTimeout);
+      }, this.connectionTimeout);
 
       const finish = (value: TLSSocket | Error) => {
         if (settled) return;

@@ -29,6 +29,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -481,6 +482,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param overrides optional configuration overrides (may be null or empty)
      * @return the resolved configuration from the cache
      * @throws ElastiCacheIntegrationsConnectionError if config handshake fails
+     * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
+     *     (CONFIG_INVALID)
      */
     public ResolvedConfig configureAndStartReader(Map<String, Object> overrides) {
         ensureConnectedNotDead();
@@ -502,7 +505,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             sendRawDirect(encoded);
             RespValue configReply = reader.readFrame();
             this.config = ElastiCacheIntegrationsProtocol.parseConfigResponse(configReply);
-        } catch (ElastiCacheIntegrationsConnectionError e) {
+        } catch (ElastiCacheIntegrationsConnectionError | ElastiCacheIntegrationsOverridesRejected e) {
+            // A rejected override is the caller's to fix, so it keeps its own type.
             markDead();
             throw e;
         } catch (Exception e) {
@@ -533,6 +537,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
+     *     (CONFIG_INVALID)
      */
     public ResolvedConfig connectAndAuthenticate(
             String userId, String authToken, Map<String, Object> overrides) {
@@ -550,6 +556,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
      * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
+     *     (CONFIG_INVALID)
      */
     public ResolvedConfig connectAndAuthenticate(
             Supplier<AuthCredentials> authProvider, Map<String, Object> overrides) {
