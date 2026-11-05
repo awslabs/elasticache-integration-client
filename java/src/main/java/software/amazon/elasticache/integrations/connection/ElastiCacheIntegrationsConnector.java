@@ -18,6 +18,7 @@ import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
@@ -87,6 +88,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
     private static final int RESP3_PROTOCOL_VERSION = 3;
+    private static final long MAX_MINIMUM_RESPONSE_BUDGET_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
     private static final RespBulkString HELLO_PROTO_KEY =
             new RespBulkString("proto".getBytes(StandardCharsets.UTF_8));
     private static final ScheduledThreadPoolExecutor TIMEOUT_EXECUTOR = createTimeoutExecutor();
@@ -113,6 +115,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     private final int requestTimeoutMs;
     private final int maxPending;
     private final int socketReadSize;
+    private final AdmissionLimiter admission;
 
     // Connection state - guarded by stateLock
     private final Object stateLock = new Object();
@@ -128,7 +131,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     private final AtomicBoolean disconnectNotified = new AtomicBoolean();
 
     // Send lock - serializes register + write to maintain FIFO correlation
-    private final Lock sendLock = new ReentrantLock();
+    private final Lock sendLock = new ReentrantLock(true);
 
     /**
      * Create a connection to the specified host and port using the given SSL context.
@@ -253,6 +256,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
         this.requestTimeoutMs = requestTimeoutMs;
         this.maxPending = maxPending;
         this.socketReadSize = socketReadSize;
+        this.admission = new AdmissionLimiter(maxPending);
     }
 
     // =========================================================================
@@ -731,6 +735,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             if (pending != null) {
                 pending.failAll(new ElastiCacheIntegrationsConnectionLost("Connection closed"));
             }
+            admission.close();
 
             // Stop reader thread
             if (readerThread != null) {
@@ -765,6 +770,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             closeSocketQuietly();
         }
         if (changed) {
+            admission.close();
             notifyDisconnect();
         }
     }
@@ -825,6 +831,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param timeoutMs the budget for this attempt: {@code initializationTimeoutMs} for {@code
      *     aws.config}, {@code requestTimeoutMs} for everything else
      */
+    @SuppressWarnings("FutureReturnValueIgnored")
     private RespValue sendAndAwait(
             byte[] encoded,
             ElastiCacheIntegrationsRequestCancellation cancellation,
@@ -836,67 +843,81 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
         CompletableFuture<RespValue> future;
         long deadlineNanos = deadlineAfter(timeoutMs);
-
-        boolean locked;
+        long minimumResponseBudgetNanos = minimumResponseBudgetNanos(timeoutMs);
+        boolean permitHeld = false;
         try {
-            locked = sendLock.tryLock(timeoutMs, TimeUnit.MILLISECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new ElastiCacheIntegrationsConnectionLost(
-                    "Interrupted while waiting to send request", e);
-        }
-        if (!locked) {
-            markDead();
-            throw new ElastiCacheIntegrationsTimeoutError(
-                    "Timed out acquiring send lock after " + timeoutMs + "ms");
-        }
-        try {
-            if (cancellation.isCancelled()) {
-                throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
-            }
-
-            // Wait for bounded on-wire capacity before sending. Because no bytes have been written
-            // yet, an admission timeout does not invalidate FIFO correlation or the connection.
-            long admissionBudgetNanos = remainingNanos(deadlineNanos);
-            if (admissionBudgetNanos <= 0) {
-                throw new ElastiCacheIntegrationsTimeoutError("Timed out waiting for connection capacity");
-            }
+            long admissionBudgetNanos =
+                    Math.max(0, remainingNanos(deadlineNanos) - minimumResponseBudgetNanos);
             try {
-                // Must register before sending to maintain FIFO correlation.
-                future =
-                        pending.registerNewRequest(
-                                deferredResponseAllowed, admissionBudgetNanos, TimeUnit.NANOSECONDS);
+                if (!admission.acquire(admissionBudgetNanos, TimeUnit.NANOSECONDS)) {
+                    throw new ElastiCacheIntegrationsTimeoutError(
+                            "Timed out waiting for connection capacity");
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new ElastiCacheIntegrationsConnectionLost(
                         "Interrupted while waiting for connection capacity", e);
             }
+            permitHeld = true;
 
-            // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
-            OutputStream out;
-            synchronized (stateLock) {
-                out = outputStream;
-                if (out == null || dead) {
-                    throw new ElastiCacheIntegrationsConnectionLost("Connection closed during send");
-                }
+            long lockBudgetNanos = remainingNanos(deadlineNanos) - minimumResponseBudgetNanos;
+            if (lockBudgetNanos <= 0) {
+                throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
             }
-
+            boolean locked;
             try {
-                writeWithDeadline(out, encoded, deadlineNanos, "Request write");
-            } catch (ElastiCacheIntegrationsTimeoutError e) {
-                markDead();
-                pending.failAll(e);
-                throw e;
-            } catch (IOException e) {
-                // Send failed - mark dead (future will be failed by markDead -> failAll)
-                markDead();
-                ElastiCacheIntegrationsConnectionLost failure =
-                        new ElastiCacheIntegrationsConnectionLost("Failed to write to socket", e);
-                pending.failAll(failure);
-                throw failure;
+                locked = sendLock.tryLock(lockBudgetNanos, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ElastiCacheIntegrationsConnectionLost(
+                        "Interrupted while waiting to send request", e);
+            }
+            if (!locked) {
+                throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
+            }
+            try {
+                if (cancellation.isCancelled()) {
+                    throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+                }
+                if (remainingNanos(deadlineNanos) <= minimumResponseBudgetNanos) {
+                    throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
+                }
+
+                // Must register immediately before sending to maintain FIFO correlation.
+                future = pending.registerNewRequest(deferredResponseAllowed);
+                future.whenComplete((ignored, failure) -> admission.release());
+                permitHeld = false;
+
+                // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
+                OutputStream out;
+                synchronized (stateLock) {
+                    out = outputStream;
+                    if (out == null || dead) {
+                        throw new ElastiCacheIntegrationsConnectionLost("Connection closed during send");
+                    }
+                }
+
+                try {
+                    writeWithDeadline(out, encoded, deadlineNanos, "Request write");
+                } catch (ElastiCacheIntegrationsTimeoutError e) {
+                    markDead();
+                    pending.failAll(e);
+                    throw e;
+                } catch (IOException e) {
+                    // Send failed - mark dead (future will be failed by markDead -> failAll)
+                    markDead();
+                    ElastiCacheIntegrationsConnectionLost failure =
+                            new ElastiCacheIntegrationsConnectionLost("Failed to write to socket", e);
+                    pending.failAll(failure);
+                    throw failure;
+                }
+            } finally {
+                sendLock.unlock();
             }
         } finally {
-            sendLock.unlock();
+            if (permitHeld) {
+                admission.release();
+            }
         }
 
         Runnable cancellationAction =
@@ -907,10 +928,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
         // Wait for response
         try {
-            long remainingNanos = remainingNanos(deadlineNanos);
-            if (remainingNanos <= 0) {
-                throw new TimeoutException();
-            }
+            long remainingNanos = Math.max(remainingNanos(deadlineNanos), minimumResponseBudgetNanos);
             return future.get(remainingNanos, TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             ElastiCacheIntegrationsTimeoutError timeout =
@@ -977,6 +995,65 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
     private static long remainingNanos(long deadlineNanos) {
         return deadlineNanos - System.nanoTime();
+    }
+
+    private static long minimumResponseBudgetNanos(int timeoutMs) {
+        return Math.min(
+                MAX_MINIMUM_RESPONSE_BUDGET_NANOS, TimeUnit.MILLISECONDS.toNanos(timeoutMs) / 2);
+    }
+
+    private static final class AdmissionLimiter {
+        private final ReentrantLock lock = new ReentrantLock(true);
+        private final Condition capacityAvailable = lock.newCondition();
+        private int available;
+        private boolean closed;
+
+        private AdmissionLimiter(int capacity) {
+            available = capacity;
+        }
+
+        private boolean acquire(long timeout, TimeUnit unit) throws InterruptedException {
+            long remainingNanos = unit.toNanos(timeout);
+            lock.lockInterruptibly();
+            try {
+                while (available == 0 && !closed) {
+                    if (remainingNanos <= 0) {
+                        return false;
+                    }
+                    remainingNanos = capacityAvailable.awaitNanos(remainingNanos);
+                }
+                if (closed) {
+                    throw new ElastiCacheIntegrationsConnectionLost("Connection is closed");
+                }
+                available--;
+                return true;
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void release() {
+            lock.lock();
+            try {
+                if (closed) {
+                    return;
+                }
+                available++;
+                capacityAvailable.signal();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void close() {
+            lock.lock();
+            try {
+                closed = true;
+                capacityAvailable.signalAll();
+            } finally {
+                lock.unlock();
+            }
+        }
     }
 
     private void writeWithDeadline(

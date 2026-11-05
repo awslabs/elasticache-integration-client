@@ -826,6 +826,48 @@ describe("ElastiCacheIntegrationsConnector", () => {
     await connector.close();
   });
 
+  it("does not send after admission consumes the request budget", async () => {
+    let requestNumber = 0;
+    const cache = await startCache({
+      responseFn: () => (++requestNumber === 1 ? Reply.requestId(42) : Reply.ok()),
+    });
+    const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+      tls: false,
+      maxPending: 1,
+      requestTimeout: 2_000,
+    });
+    await connector.connect();
+
+    const first = connector.execute("aws.request", ...requestArgs("first"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const second = connector.execute("aws.request", ...requestArgs("second"));
+      now = 3_000;
+      cache.sendPush(42);
+
+      await expect(first).resolves.toEqual([
+        200,
+        Buffer.from("content-type:application/x-amz-json-1.0"),
+        Buffer.from('{"Item": {}}'),
+      ]);
+      await expect(second).rejects.toBeInstanceOf(ElastiCacheIntegrationsTimeoutError);
+      expect(cache.requests).toHaveLength(1);
+      expect(connector.isReady).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    await expect(connector.execute("aws.request", ...requestArgs("third"))).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/x-amz-json-1.0"),
+      Buffer.from('{"Item": {}}'),
+    ]);
+    await connector.close();
+  });
+
   it("times out and tears down when socket backpressure never clears", async () => {
     const cache = await startCache();
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {

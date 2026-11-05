@@ -1012,7 +1012,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
-    void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
+    void request_sendLockContention_timesOutWithoutKillingConnection() throws Exception {
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
                         "localhost",
@@ -1027,13 +1027,18 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             sendLock.lock();
-            Future<ElastiCacheIntegrationsResponse> request =
-                    executor.submit(() -> conn.request(testRequest()));
+            try {
+                Future<ElastiCacheIntegrationsResponse> request =
+                        executor.submit(() -> conn.request(testRequest()));
 
-            ExecutionException failure =
-                    assertThrows(ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
-            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
-            assertTrue(conn.isDead());
+                ExecutionException failure =
+                        assertThrows(ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
+                assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+                assertFalse(conn.isDead());
+            } finally {
+                sendLock.unlock();
+            }
+            assertEquals(200, conn.request(testRequest()).getStatusCode());
         } finally {
             if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
                 sendLock.unlock();
@@ -1296,6 +1301,54 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                     "second", new String(second.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
             assertEquals(2, cache.getRequests().size());
         } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void expiredBudgetAfterAdmissionDoesNotSendOrKillConnection() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        cache.setReplyFunction(
+                request ->
+                        sequence.getAndIncrement() == 0
+                                ? Reply.requestId(42)
+                                : Reply.ok(200, Collections.emptyMap(), request.getBody()));
+
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 200, 1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Lock sendLock = getField(conn, "sendLock", Lock.class);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<ElastiCacheIntegrationsResponse> first =
+                    executor.submit(() -> conn.request(testRequest("first")));
+            awaitFifoSize(conn, 0);
+
+            Future<ElastiCacheIntegrationsResponse> second =
+                    executor.submit(() -> conn.request(testRequest("second")));
+            Thread.sleep(25);
+            assertTrue(sendLock.tryLock(1, TimeUnit.SECONDS));
+            assertEquals(1, cache.getRequests().size());
+
+            server.sendPush(responsePush(42, responseValue("first")));
+            assertEquals(
+                    "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> second.get(1, TimeUnit.SECONDS));
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+            assertEquals(1, cache.getRequests().size());
+            assertFalse(conn.isDead());
+
+            sendLock.unlock();
+            assertEquals(
+                    "third",
+                    new String(conn.request(testRequest("third")).getBody(), StandardCharsets.UTF_8));
+        } finally {
+            if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
+                sendLock.unlock();
+            }
             executor.shutdownNow();
             conn.close();
         }

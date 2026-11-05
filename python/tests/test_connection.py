@@ -489,6 +489,53 @@ class TestElastiCacheIntegrationsConnector:
 
         assert results == {"first": b"first", "second": b"second"}
 
+    def test_exhausted_budget_after_admission_does_not_send_or_close(self):
+        """A caller admitted at its deadline stays off the wire and leaves the connection usable."""
+        first_received = threading.Event()
+        release_first = threading.Event()
+        sequence = 0
+
+        def reply(request):
+            nonlocal sequence
+            sequence += 1
+            if sequence == 1:
+                first_received.set()
+                assert release_first.wait(2)
+            return Reply.ok(body=request.body)
+
+        self.start_cache(response_fn=reply)
+        self.connect_and_handshake(max_pending=1, request_timeout_ms=2000)
+        results: dict[str, bytes] = {}
+        errors: dict[str, Exception] = {}
+
+        def send(name: str) -> None:
+            try:
+                results[name] = self.send_request(name.encode())[2]
+            except Exception as exc:  # noqa: BLE001
+                errors[name] = exc
+
+        first = threading.Thread(target=send, args=("first",))
+        first.start()
+        assert first_received.wait(1)
+
+        now = [100.0]
+        fake_time = mock.Mock(wraps=time)
+        fake_time.monotonic.side_effect = lambda: now[0]
+        with mock.patch("aws_elasticache_integration_client.connection.time", fake_time):
+            second = threading.Thread(target=send, args=("second",))
+            second.start()
+            time.sleep(0.05)
+            now[0] = 102.0
+            release_first.set()
+            first.join(2)
+            second.join(2)
+
+        assert results == {"first": b"first"}
+        assert isinstance(errors.get("second"), ElastiCacheIntegrationsTimeoutError)
+        assert len(self.cache.requests) == 1
+        assert self.conn._closed is False
+        assert self.send_request(b"third")[2] == b"third"
+
     def test_error_reply_returned_as_value(self):
         """A -ERR reply surfaces from execute() as a RespError VALUE, not an exception —
         raising on it is the caller-facing parse_* functions' job (protocol.py)."""

@@ -30,6 +30,7 @@ export const DEFAULT_CONNECTION_TIMEOUT = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const DEFAULT_MAX_PENDING = 100;
+const MAX_MINIMUM_RESPONSE_BUDGET_MS = 1;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
 
@@ -650,12 +651,22 @@ export class ElastiCacheIntegrationsConnector {
 
     const timeout = this.timeoutFor(command);
     const deadline = Date.now() + timeout;
+    const minimumResponseBudget = Math.min(MAX_MINIMUM_RESPONSE_BUDGET_MS, timeout / 2);
     const release = this.admission.tryAcquire();
     if (release !== undefined) {
-      return this.executeAdmitted(command, args, deadline, timeout, release);
+      return this.executeAdmitted(command, args, deadline, timeout, minimumResponseBudget, release);
     }
-    const queuedRelease = await this.admission.acquire(timeout);
-    return this.executeAdmitted(command, args, deadline, timeout, queuedRelease);
+    const queuedRelease = await this.admission.acquire(
+      Math.max(0, timeout - minimumResponseBudget),
+    );
+    return this.executeAdmitted(
+      command,
+      args,
+      deadline,
+      timeout,
+      minimumResponseBudget,
+      queuedRelease,
+    );
   }
 
   private async executeAdmitted(
@@ -663,15 +674,28 @@ export class ElastiCacheIntegrationsConnector {
     args: Buffer[],
     deadline: number,
     timeout: number,
+    minimumResponseBudget: number,
     release: () => void,
   ): Promise<RespValue> {
     let sent: SentRequest | undefined;
     try {
+      if (deadline - Date.now() <= minimumResponseBudget) {
+        throw new ElastiCacheIntegrationsTimeoutError(
+          `request timed out waiting for connection capacity after ${timeout}ms`,
+        );
+      }
       sent = this.send(command, ...args);
       void sent.pending.promise.then(release, release);
-      return await this.waitForResponse(sent.response, Math.max(0, deadline - Date.now()), timeout);
+      return await this.waitForResponse(
+        sent.response,
+        Math.max(minimumResponseBudget, deadline - Date.now()),
+        timeout,
+      );
     } catch (error) {
-      if (sent === undefined) release();
+      if (sent === undefined) {
+        release();
+        throw error;
+      }
       if (error instanceof ElastiCacheIntegrationsTimeoutError) {
         // Once the request has moved out of the FIFO, a late response cannot be matched to
         // another caller. Remove that map entry and preserve the connection.

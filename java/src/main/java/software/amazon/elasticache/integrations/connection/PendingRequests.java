@@ -6,13 +6,11 @@ import java.util.Iterator;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.resp.RespValue;
 
 /**
@@ -45,8 +43,7 @@ public class PendingRequests {
         FATAL
     }
 
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Condition capacityAvailable = lock.newCondition();
+    private final Lock lock = new ReentrantLock();
     private final Queue<PendingRequest> queue = new ArrayDeque<>();
     private final Map<String, PendingRequest> asyncResponses = new HashMap<>();
     private final int maxPending;
@@ -116,32 +113,6 @@ public class PendingRequests {
     }
 
     /**
-     * Wait up to the supplied budget for pending-request capacity, then register.
-     *
-     * <p>This wait happens before the request is written, so timing out here does not invalidate FIFO
-     * correlation or the connection.
-     */
-    CompletableFuture<RespValue> registerNewRequest(
-            boolean deferredResponseAllowed, long timeout, TimeUnit unit) throws InterruptedException {
-        long remainingNanos = unit.toNanos(timeout);
-        lock.lockInterruptibly();
-        try {
-            ensureOpen();
-            while (queue.size() + asyncResponses.size() >= maxPending) {
-                if (remainingNanos <= 0) {
-                    throw new ElastiCacheIntegrationsTimeoutError(
-                            "Timed out waiting for connection capacity");
-                }
-                remainingNanos = capacityAvailable.awaitNanos(remainingNanos);
-                ensureOpen();
-            }
-            return addRequest(deferredResponseAllowed);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    /**
      * Resolve the oldest pending request with a successful response.
      *
      * <p>Called by the reader thread when a complete frame is received.
@@ -155,7 +126,6 @@ public class PendingRequests {
             PendingRequest pending = queue.poll();
             if (pending != null) {
                 pending.future.complete(value);
-                capacityAvailable.signal();
                 return true;
             }
             return false;
@@ -189,7 +159,6 @@ public class PendingRequests {
             }
             if (pending.future.isDone()) {
                 queue.remove();
-                capacityAvailable.signal();
                 return true;
             }
             asyncResponses.put(requestId, queue.remove());
@@ -214,7 +183,6 @@ public class PendingRequests {
                 return false;
             }
             pending.future.complete(value);
-            capacityAvailable.signal();
             return true;
         } finally {
             lock.unlock();
@@ -298,7 +266,6 @@ public class PendingRequests {
         while (iterator.hasNext()) {
             if (iterator.next().getValue().future == future) {
                 iterator.remove();
-                capacityAvailable.signal();
                 return true;
             }
         }
@@ -320,7 +287,6 @@ public class PendingRequests {
             asyncPending.future.completeExceptionally(cause);
         }
         asyncResponses.clear();
-        capacityAvailable.signalAll();
     }
 
     private void ensureOpen() {

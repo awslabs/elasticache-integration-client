@@ -733,8 +733,15 @@ class ElastiCacheIntegrationsConnector:
             )
         if timeout_ms is None:
             timeout_ms = self.request_timeout_ms
-        deadline = time.monotonic() + timeout_ms / 1000
-        if not self._admission.acquire(timeout_ms / 1000):
+        timeout_seconds = timeout_ms / 1000
+        minimum_response_budget = min(0.001, timeout_seconds / 2)
+        deadline = time.monotonic() + timeout_seconds
+        if not self._admission.acquire(max(0.0, timeout_seconds - minimum_response_budget)):
+            raise ElastiCacheIntegrationsTimeoutError(
+                f"request timed out waiting for connection capacity after {timeout_ms}ms"
+            )
+        if deadline - time.monotonic() <= minimum_response_budget:
+            self._admission.release()
             raise ElastiCacheIntegrationsTimeoutError(
                 f"request timed out waiting for connection capacity after {timeout_ms}ms"
             )
@@ -748,7 +755,7 @@ class ElastiCacheIntegrationsConnector:
             self._admission.release()
             raise ElastiCacheIntegrationsConnectionLost("connection closed") from exc
         reply_future.add_done_callback(lambda _future: self._admission.release())
-        remaining = max(0.0, deadline - time.monotonic())
+        remaining = max(minimum_response_budget, deadline - time.monotonic())
         try:
             return reply_future.result(timeout=remaining)
         except FuturesTimeout as exc:
