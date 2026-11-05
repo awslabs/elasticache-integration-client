@@ -21,7 +21,7 @@ final class ReconnectPolicy {
      * Default limit, in milliseconds, on how long startup keeps trying to open the first connection
      * and how long a request waits for a reconnect.
      */
-    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
 
     /** Cap on one background reconnect attempt, in milliseconds. */
     public static final long RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
@@ -172,7 +172,7 @@ final class ReconnectPolicy {
          * Set how long startup keeps trying to open the first connection, and how long a request waits
          * for a reconnect after a loss.
          *
-         * @param connectionTimeoutMs the timeout in milliseconds
+         * @param connectionTimeoutMs the timeout in milliseconds, at most {@link Integer#MAX_VALUE}
          * @return this builder
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {
@@ -232,7 +232,7 @@ final class ReconnectPolicy {
          * @throws IllegalArgumentException if a setting is out of range
          */
         public ReconnectPolicy build() {
-            requirePositive("connectionTimeoutMs", connectionTimeoutMs);
+            requirePositiveIntMilliseconds("connectionTimeoutMs", connectionTimeoutMs);
             requirePositive("authRefreshIntervalMs", authRefreshIntervalMs);
             requirePositive("baseDelayMs", baseDelayMs);
             requirePositive("maxDelayMs", maxDelayMs);
@@ -248,6 +248,13 @@ final class ReconnectPolicy {
         private static void requirePositive(String name, long value) {
             if (value <= 0) {
                 throw new IllegalArgumentException(name + " must be positive");
+            }
+        }
+
+        private static void requirePositiveIntMilliseconds(String name, long value) {
+            if (value <= 0 || value > Integer.MAX_VALUE) {
+                throw new IllegalArgumentException(
+                        name + " must be positive and at most " + Integer.MAX_VALUE);
             }
         }
     }

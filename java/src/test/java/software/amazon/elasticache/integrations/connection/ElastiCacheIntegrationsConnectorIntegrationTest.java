@@ -336,9 +336,8 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        ElastiCacheIntegrationsConnector.DEFAULT_CONNECT_TIMEOUT_MS,
-                        ElastiCacheIntegrationsConnector.DEFAULT_INITIALIZATION_TIMEOUT_MS,
-                        ElastiCacheIntegrationsConnector.DEFAULT_READ_TIMEOUT_MS,
+                        ElastiCacheIntegrationsConnector.DEFAULT_CONNECTION_TIMEOUT_MS,
+                        ElastiCacheIntegrationsConnector.DEFAULT_REQUEST_TIMEOUT_MS,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING,
                         1);
         try {
@@ -369,9 +368,8 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                                         "localhost",
                                         server.getPort(),
                                         clientSslContext,
-                                        ElastiCacheIntegrationsConnector.DEFAULT_CONNECT_TIMEOUT_MS,
-                                        ElastiCacheIntegrationsConnector.DEFAULT_INITIALIZATION_TIMEOUT_MS,
-                                        ElastiCacheIntegrationsConnector.DEFAULT_READ_TIMEOUT_MS,
+                                        ElastiCacheIntegrationsConnector.DEFAULT_CONNECTION_TIMEOUT_MS,
+                                        ElastiCacheIntegrationsConnector.DEFAULT_REQUEST_TIMEOUT_MS,
                                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING,
                                         0));
         assertEquals("socketReadSize must be positive: 0", e.getMessage());
@@ -439,7 +437,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         1000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         try {
@@ -483,7 +480,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -524,7 +520,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -557,7 +552,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         1000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         try {
@@ -584,7 +578,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -624,7 +617,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -673,7 +665,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         150,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -790,7 +781,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         100,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         try {
@@ -814,10 +804,8 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     // === Per-command timeout selection ===
 
     @Test
-    void execute_configCommand_usesInitializationTimeoutNotRequestTimeout() {
-        // A short initializationTimeoutMs and a long requestTimeoutMs: a hung aws.config sent
-        // after bring-up (a refresh tick) must time out on the short budget, proving it is not
-        // sharing the request timeout.
+    void execute_configCommand_usesRequestTimeoutAfterBringUp() {
+        // Once bring-up is complete, a hung aws.config refresh uses the request timeout.
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
                         "localhost",
@@ -825,7 +813,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         clientSslContext,
                         5000,
                         200,
-                        5000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -840,18 +827,15 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
             assertTrue(
                     elapsedMillis < 2000,
-                    "execute(aws.config) took "
-                            + elapsedMillis
-                            + "ms; expected ~200ms (initializationTimeoutMs), not 5000ms (requestTimeoutMs)");
+                    "execute(aws.config) took " + elapsedMillis + "ms; expected ~200ms (requestTimeoutMs)");
         } finally {
             conn.close();
         }
     }
 
     @Test
-    void request_usesRequestTimeoutNotInitializationTimeout() {
-        // The inverse: a long initializationTimeoutMs and a short requestTimeoutMs. A hung
-        // aws.request must time out on the short budget.
+    void request_usesRequestTimeout() {
+        // A hung aws.request must time out on the request budget.
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("aws.request");
 
@@ -860,7 +844,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         200,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -881,9 +864,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
             assertTrue(
                     elapsedMillis < 2000,
-                    "request() took "
-                            + elapsedMillis
-                            + "ms; expected ~200ms (requestTimeoutMs), not 5000ms (initializationTimeoutMs)");
+                    "request() took " + elapsedMillis + "ms; expected ~200ms (requestTimeoutMs)");
         } finally {
             conn.close();
         }
@@ -914,7 +895,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -971,7 +951,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         2000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -1019,7 +998,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         server.getPort(),
                         clientSslContext,
                         5000,
-                        5000,
                         100,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -1050,7 +1028,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         "localhost",
                         server.getPort(),
                         clientSslContext,
-                        5000,
                         5000,
                         100,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
@@ -1406,7 +1383,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
-    void reauthenticate_timeoutUsesInitializationBudgetAndClosesConnection() {
+    void reauthenticate_timeoutUsesRequestBudgetAndClosesConnection() {
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
                         "localhost",
@@ -1414,7 +1391,6 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                         clientSslContext,
                         5000,
                         200,
-                        5000,
                         ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -1431,9 +1407,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             assertTrue(error.getMessage().contains("timed out"));
             assertTrue(
                     elapsedMillis < 2000,
-                    "reauthenticate() took "
-                            + elapsedMillis
-                            + "ms; expected ~200ms (initializationTimeoutMs)");
+                    "reauthenticate() took " + elapsedMillis + "ms; expected ~200ms (requestTimeoutMs)");
             assertTrue(conn.isDead());
         } finally {
             conn.close();
@@ -1565,7 +1539,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         cache.setFailureCommand("HELLO");
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost", server.getPort(), clientSslContext, 5_000, 100, 5_000, 100);
+                        "localhost", server.getPort(), clientSslContext, 100, 5_000, 100);
         try {
             conn.connect();
 

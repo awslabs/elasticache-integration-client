@@ -255,8 +255,8 @@ ElastiCacheIntegrationsClient.builder()
 
 | Option | Default | Meaning |
 |---|---|---|
-| `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
-| `connectionTimeoutMs(long)` | 2000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Must be positive. |
+| `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for every command after the connection is ready, including cache requests, re-AUTH, and config refresh, in milliseconds. Must be positive and at most 2147483647. |
+| `connectionTimeoutMs(long)` | 5000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. It also bounds each startup attempt through connect, HELLO/authentication, and configuration. Must be positive and at most 2147483647. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |

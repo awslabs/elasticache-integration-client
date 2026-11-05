@@ -254,6 +254,19 @@ class ElastiCacheIntegrationsSessionTest {
                 () -> ReconnectPolicy.builder().authRefreshIntervalMs(-1).build());
     }
 
+    @Test
+    void reconnectPolicy_rejectsConnectionTimeoutOutsideIntegerMilliseconds() {
+        for (long timeoutMs : new long[] {0, -1, Integer.MAX_VALUE + 1L}) {
+            IllegalArgumentException error =
+                    assertThrows(
+                            IllegalArgumentException.class,
+                            () -> ReconnectPolicy.builder().connectionTimeoutMs(timeoutMs).build());
+            assertEquals(
+                    "connectionTimeoutMs must be positive and at most " + Integer.MAX_VALUE,
+                    error.getMessage());
+        }
+    }
+
     private static ManagedIamAuthProvider managedAuthProvider(AtomicInteger credentialCalls) {
         return new ManagedIamAuthProvider(
                 IamAuthTokenProvider.builder()
@@ -853,14 +866,6 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void fallbackWindowExpiresWhileReconnectContinues() throws Exception {
-        ReconnectPolicy policy =
-                ReconnectPolicy.builder()
-                        .fallbackDurationSeconds(0)
-                        .baseDelayMs(1)
-                        .maxDelayMs(1)
-                        .jitterFactor(0)
-                        .build();
-
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
             ElastiCacheIntegrationsHandle handle =
                     ElastiCacheIntegrationsHandle.builder()
@@ -868,9 +873,14 @@ class ElastiCacheIntegrationsSessionTest {
                             .port(proxy.getPort())
                             .sslContext(clientSslContext)
                             .authCredentials(TEST_USER, TEST_TOKEN)
-                            .connectTimeoutMs(100)
-                            .initializationTimeoutMs(100)
-                            .reconnectPolicy(policy)
+                            .reconnectPolicy(
+                                    ReconnectPolicy.builder()
+                                            .connectionTimeoutMs(100)
+                                            .fallbackDurationSeconds(0)
+                                            .baseDelayMs(1)
+                                            .maxDelayMs(1)
+                                            .jitterFactor(0)
+                                            .build())
                             .build();
             try {
                 handle.open();
