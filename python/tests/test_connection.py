@@ -527,8 +527,10 @@ class TestElastiCacheIntegrationsConnector:
             time.sleep(0.05)
             now[0] = 102.0
             release_first.set()
-            first.join(2)
-            second.join(2)
+            first.join(5)
+            second.join(5)
+            assert not first.is_alive()
+            assert not second.is_alive()
 
         assert results == {"first": b"first"}
         assert isinstance(errors.get("second"), ElastiCacheIntegrationsTimeoutError)

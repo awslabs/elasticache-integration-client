@@ -1308,21 +1308,26 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     @Test
     void expiredBudgetAfterAdmissionDoesNotSendOrKillConnection() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstRequestReceived = new CountDownLatch(1);
         cache.setReplyFunction(
-                request ->
-                        sequence.getAndIncrement() == 0
-                                ? Reply.requestId(42)
-                                : Reply.ok(200, Collections.emptyMap(), request.getBody()));
+                request -> {
+                    if (sequence.getAndIncrement() == 0) {
+                        firstRequestReceived.countDown();
+                        return Reply.requestId(42);
+                    }
+                    return Reply.ok(200, Collections.emptyMap(), request.getBody());
+                });
 
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 200, 1);
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 1000, 1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
         Lock sendLock = getField(conn, "sendLock", Lock.class);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             Future<ElastiCacheIntegrationsResponse> first =
                     executor.submit(() -> conn.request(testRequest("first")));
+            assertTrue(firstRequestReceived.await(1, TimeUnit.SECONDS));
             awaitFifoSize(conn, 0);
 
             Future<ElastiCacheIntegrationsResponse> second =
@@ -1335,7 +1340,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             assertEquals(
                     "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
             ExecutionException failure =
-                    assertThrows(ExecutionException.class, () -> second.get(1, TimeUnit.SECONDS));
+                    assertThrows(ExecutionException.class, () -> second.get(2, TimeUnit.SECONDS));
             assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
             assertEquals(1, cache.getRequests().size());
             assertFalse(conn.isDead());
