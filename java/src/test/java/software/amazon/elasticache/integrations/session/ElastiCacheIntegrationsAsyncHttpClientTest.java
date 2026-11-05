@@ -109,7 +109,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void collectorSaturationFallsBackWithoutSubscribing() throws Exception {
+    void collectorSaturationIsRetryableWithoutOriginBypass() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsRequestContext context = preparedContext();
         BlockingPublisher admittedBody = new BlockingPublisher();
@@ -121,10 +121,13 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         assertTrue(admittedBody.subscribed.await(2, TimeUnit.SECONDS));
         prepareAttempt(context);
 
-        client.execute(executeRequest(overflowBody)).get(2, TimeUnit.SECONDS);
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest(overflowBody)).get(2, TimeUnit.SECONDS));
 
-        // The second request bypasses Cache without subscribing while the permit is occupied.
-        assertEquals(1, origin.executeCount.get());
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertEquals(0, origin.executeCount.get());
         assertEquals(0, overflowBody.subscribeCount.get());
         admitted.cancel(true);
         assertTrue(admittedBody.cancelled.await(2, TimeUnit.SECONDS));
@@ -132,7 +135,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void executorRejectionFallsBackToOrigin() throws Exception {
+    void executorRejectionIsRetryableWithoutOriginBypass() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         Executor rejectingExecutor =
                 command -> {
@@ -142,9 +145,14 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 new ElastiCacheIntegrationsAsyncHttpClient(
                         new ImmediateSession(), preparedContext(), origin, false, rejectingExecutor, null);
 
-        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
-        assertEquals(1, origin.executeCount.get());
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof RejectedExecutionException);
+        assertEquals(0, origin.executeCount.get());
         client.close();
     }
 

@@ -793,6 +793,39 @@ describe("ElastiCacheIntegrationsConnector", () => {
     expect(synchronousWriteCount).toBe(1);
   });
 
+  it("waits for pending capacity instead of failing excess requests", async () => {
+    let requestNumber = 0;
+    const cache = await startCache({
+      responseFn: () => (++requestNumber === 1 ? Reply.requestId(42) : Reply.ok()),
+    });
+    const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+      tls: false,
+      maxPending: 1,
+      requestTimeout: 2_000,
+    });
+    await connector.connect();
+
+    const first = connector.execute("aws.request", ...requestArgs("first"));
+    await vi.waitFor(() => expect(cache.requests).toHaveLength(1));
+    const second = connector.execute("aws.request", ...requestArgs("second"));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(cache.requests).toHaveLength(1);
+    cache.sendPush(42);
+    await expect(first).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/x-amz-json-1.0"),
+      Buffer.from('{"Item": {}}'),
+    ]);
+    await expect(second).resolves.toEqual([
+      200,
+      Buffer.from("content-type:application/x-amz-json-1.0"),
+      Buffer.from('{"Item": {}}'),
+    ]);
+    expect(cache.requests).toHaveLength(2);
+    await connector.close();
+  });
+
   it("times out and tears down when socket backpressure never clears", async () => {
     const cache = await startCache();
     const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {

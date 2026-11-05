@@ -50,7 +50,9 @@ the result in a `aws.response` RESP3 push. Deferred requests do not block later 
 deferred request times out, only that request is abandoned, and a late push for its ID is dropped.
 A timeout while a request is still FIFO-correlated closes the connection to prevent reply
 misrouting. A RESP3 push with an unrecognized kind is treated as protocol corruption and closes
-the connection.
+the connection. One connection sends at most 100 requests awaiting replies at once. Additional
+callers wait for a slot within their `cache_request_timeout` instead of failing at the concurrency
+boundary.
 
 ## Installing into a client
 

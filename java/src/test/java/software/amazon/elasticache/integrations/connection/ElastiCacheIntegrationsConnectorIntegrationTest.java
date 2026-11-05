@@ -1266,6 +1266,42 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     // === PendingRequests bounds ===
 
     @Test
+    void requestsWaitForPendingCapacityInsteadOfFailing() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        cache.setReplyFunction(
+                request ->
+                        sequence.getAndIncrement() == 0
+                                ? Reply.requestId(42)
+                                : Reply.ok(200, Collections.emptyMap(), request.getBody()));
+
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 2000, 1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<ElastiCacheIntegrationsResponse> first =
+                    executor.submit(() -> conn.request(testRequest("first")));
+            awaitFifoSize(conn, 0);
+
+            Future<ElastiCacheIntegrationsResponse> second =
+                    executor.submit(() -> conn.request(testRequest("second")));
+            Thread.sleep(50);
+            assertEquals(1, cache.getRequests().size());
+
+            server.sendPush(responsePush(42, responseValue("first")));
+            assertEquals(
+                    "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            assertEquals(
+                    "second", new String(second.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            assertEquals(2, cache.getRequests().size());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
     void constructor_acceptsCustomMaxPending() throws Exception {
         // Create connection with very low max pending
         ElastiCacheIntegrationsConnector conn =

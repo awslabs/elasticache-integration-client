@@ -154,10 +154,20 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
             SdkHttpContentPublisher publisher = request.requestContentPublisher();
             boolean tooLargeToBuffer =
                     publisher.contentLength().map(length -> length > maxBufferedRequestBytes).orElse(true);
-            if (tooLargeToBuffer || !bodyCollectorPermits.tryAcquire()) {
+            if (tooLargeToBuffer) {
                 // Do not subscribe when the request cannot fit within the configured
                 // buffering budget. The origin transport consumes the original body.
                 fallbackToOrigin(request);
+                return result;
+            }
+            if (!bodyCollectorPermits.tryAcquire()) {
+                fail(
+                        result,
+                        request.responseHandler(),
+                        RetryableException.create(
+                                "Cache request body collector is at capacity",
+                                new RejectedExecutionException(
+                                        "maximum concurrent Cache body collectors reached")));
                 return result;
             }
 
@@ -204,8 +214,10 @@ public final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHtt
                         CompletableFuture.supplyAsync(
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
-                // Executor saturation means Cache cannot accept this attempt.
-                fallbackToOrigin(copyWithBody(request, body));
+                fail(
+                        result,
+                        request.responseHandler(),
+                        RetryableException.create("Cache request executor rejected request", capacityFailure));
                 return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);

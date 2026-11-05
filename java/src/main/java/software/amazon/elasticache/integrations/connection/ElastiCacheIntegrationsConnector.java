@@ -855,8 +855,22 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                 throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
             }
 
-            // Must register before sending to maintain FIFO correlation
-            future = pending.registerNewRequest(deferredResponseAllowed);
+            // Wait for bounded on-wire capacity before sending. Because no bytes have been written
+            // yet, an admission timeout does not invalidate FIFO correlation or the connection.
+            long admissionBudgetNanos = remainingNanos(deadlineNanos);
+            if (admissionBudgetNanos <= 0) {
+                throw new ElastiCacheIntegrationsTimeoutError("Timed out waiting for connection capacity");
+            }
+            try {
+                // Must register before sending to maintain FIFO correlation.
+                future =
+                        pending.registerNewRequest(
+                                deferredResponseAllowed, admissionBudgetNanos, TimeUnit.NANOSECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new ElastiCacheIntegrationsConnectionLost(
+                        "Interrupted while waiting for connection capacity", e);
+            }
 
             // Snapshot outputStream under lock to avoid NPE race with concurrent close/markDead
             OutputStream out;

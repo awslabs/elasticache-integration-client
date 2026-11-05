@@ -322,11 +322,14 @@ request and eight concurrent collectors by default. Configure these limits with
 `asyncMaxBufferedRequestBytes(int)` and
 `asyncMaxConcurrentBodyCollectors(int)`. A request with an unknown length, or
 one that exceeds either limit, bypasses Cache and uses the origin transport.
+If all body collectors are busy, the attempt fails with a retryable SDK
+exception instead of silently bypassing Cache.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
 a bounded daemon executor. Applications can supply a caller-managed executor
-with `asyncExecutor(Executor)`. If that executor rejects a request because it is
-at capacity, Cache sends the buffered request through the origin fallback.
+with `asyncExecutor(Executor)`. The default executor queues work beyond its
+worker count. If a caller-managed executor rejects a request, the attempt fails
+with a retryable SDK exception instead of silently using the origin.
 Cache closes only transports and executors it creates itself.
 
 ## IAM token refresh
@@ -407,7 +410,9 @@ that request is abandoned; a late push for its ID is dropped. A timeout while a
 request is still FIFO-correlated closes the connection to prevent reply
 misrouting. A RESP3 push with an unrecognized kind is treated as protocol
 corruption: it invalidates the stream and closes the connection, rather than
-being ignored.
+being ignored. One connection sends at most 100 requests awaiting replies at
+once. Additional callers wait for a slot within `cacheRequestTimeoutMs` instead
+of failing at the concurrency boundary.
 
 ## Manual lifecycle
 

@@ -453,6 +453,42 @@ class TestElastiCacheIntegrationsConnector:
         for i in range(n):
             assert results[i] == f"token-{i}".encode()
 
+    def test_requests_wait_for_pending_capacity_instead_of_failing(self):
+        """A request above max_pending stays off the wire until a prior reply frees capacity."""
+        first_received = threading.Event()
+        release_first = threading.Event()
+        sequence = 0
+
+        def reply(request):
+            nonlocal sequence
+            sequence += 1
+            if sequence == 1:
+                first_received.set()
+                assert release_first.wait(2)
+            return Reply.ok(body=request.body)
+
+        self.start_cache(response_fn=reply)
+        self.connect_and_handshake(max_pending=1, request_timeout_ms=2000)
+        results: dict[str, bytes] = {}
+
+        first = threading.Thread(
+            target=lambda: results.setdefault("first", self.send_request(b"first")[2])
+        )
+        second = threading.Thread(
+            target=lambda: results.setdefault("second", self.send_request(b"second")[2])
+        )
+        first.start()
+        assert first_received.wait(1)
+        second.start()
+        time.sleep(0.05)
+
+        assert len(self.cache.requests) == 1
+        release_first.set()
+        first.join(2)
+        second.join(2)
+
+        assert results == {"first": b"first", "second": b"second"}
+
     def test_error_reply_returned_as_value(self):
         """A -ERR reply surfaces from execute() as a RespError VALUE, not an exception —
         raising on it is the caller-facing parse_* functions' job (protocol.py)."""

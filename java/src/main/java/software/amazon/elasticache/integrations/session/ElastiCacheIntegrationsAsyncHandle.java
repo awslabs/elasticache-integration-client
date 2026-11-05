@@ -5,7 +5,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -467,13 +467,16 @@ public final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         }
 
         private static ExecutorService createDefaultExecutor() {
-            return new ThreadPoolExecutor(
-                    0,
-                    ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING,
-                    60,
-                    TimeUnit.SECONDS,
-                    new SynchronousQueue<>(),
-                    new ElastiCacheIntegrationsThreadFactory());
+            ThreadPoolExecutor executor =
+                    new ThreadPoolExecutor(
+                            ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING,
+                            ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING,
+                            60,
+                            TimeUnit.SECONDS,
+                            new LinkedBlockingQueue<>(),
+                            new ElastiCacheIntegrationsThreadFactory());
+            executor.allowCoreThreadTimeOut(true);
+            return executor;
         }
     }
 

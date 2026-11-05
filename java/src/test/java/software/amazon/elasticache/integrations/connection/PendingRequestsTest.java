@@ -10,7 +10,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -326,6 +328,38 @@ class PendingRequestsTest {
         // Now we can register again
         CompletableFuture<RespValue> f3 = pending.registerNewRequest();
         assertNotNull(f3);
+    }
+
+    @Test
+    void timedRegistrationWaitsForCapacity() throws Exception {
+        PendingRequests pending = new PendingRequests(1);
+        CompletableFuture<RespValue> first = pending.registerNewRequest();
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            AtomicReference<CompletableFuture<RespValue>> secondRef = new AtomicReference<>();
+            Future<?> waiting =
+                    executor.submit(
+                            () -> {
+                                try {
+                                    secondRef.set(pending.registerNewRequest(true, 1, TimeUnit.SECONDS));
+                                } catch (InterruptedException e) {
+                                    Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                }
+                            });
+            Thread.sleep(25);
+            assertFalse(waiting.isDone());
+
+            pending.resolveOldestRequest(new RespSimpleString("first".getBytes(StandardCharsets.UTF_8)));
+            waiting.get(1, TimeUnit.SECONDS);
+            CompletableFuture<RespValue> second = secondRef.get();
+
+            assertTrue(first.isDone());
+            assertNotNull(second);
+            assertFalse(second.isDone());
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     @Test

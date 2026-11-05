@@ -39,7 +39,9 @@ pushes, while callers still receive ordinary promises. The per-request timeout
 defaults to 5000 ms and can be changed with the
 `cacheRequestTimeout` field (see [Configuration](#configuration)). A timeout for a deferred request removes only
 that request and preserves the connection; a FIFO or write timeout remains
-connection-fatal. The middleware sends requests with no matching predicate
+connection-fatal. One connection sends at most 100 requests awaiting replies at once; additional
+callers wait for a slot within `cacheRequestTimeout` instead of failing at the concurrency
+boundary. The middleware sends requests with no matching predicate
 directly to origin and has a narrow origin fallback for cataloged idempotent
 requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
 returned to the SDK as retryable for a cataloged operation.
