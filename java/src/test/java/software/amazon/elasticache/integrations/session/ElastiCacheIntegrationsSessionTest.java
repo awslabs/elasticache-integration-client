@@ -16,10 +16,12 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
@@ -784,6 +786,135 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void reconnectPublicationAtReadyDeadlineDoesNotReportCacheUnavailable() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        AtomicLong now = new AtomicLong();
+        AtomicBoolean clockArmed = new AtomicBoolean();
+        AtomicInteger requestClockReads = new AtomicInteger();
+        AtomicReference<Thread> requestThread = new AtomicReference<>();
+        AtomicReference<ElastiCacheIntegrationsSession> sessionReference = new AtomicReference<>();
+        LongSupplier clock =
+                () -> {
+                    if (clockArmed.get() && Thread.currentThread() == requestThread.get()) {
+                        int read = requestClockReads.incrementAndGet();
+                        if (read == 1) {
+                            // Let publication contend for stateLock exactly as the ready deadline
+                            // expires.
+                            allowReconnect.countDown();
+                        } else if (read == 2) {
+                            // The pre-fix path read the fallback deadline after releasing stateLock.
+                            // Hold that read until publication resets the session state to expose the
+                            // race deterministically.
+                            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+                            while (sessionReference.get().getState() != ElastiCacheIntegrationsSession.State.OPEN
+                                    && System.nanoTime() < deadline) {
+                                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
+                            }
+                        }
+                    }
+                    return now.get();
+                };
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(5_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build(),
+                        ElastiCacheIntegrationsSession.DEFAULT_STALENESS_DURATION_SECONDS,
+                        clock);
+        sessionReference.set(session);
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            initialConnector.fail();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(
+                            () -> {
+                                requestThread.set(Thread.currentThread());
+                                return session.request(writeRequest());
+                            },
+                            requestExecutor);
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(response.isDone());
+
+            now.set(TimeUnit.MILLISECONDS.toNanos(5_000));
+            clockArmed.set(true);
+            session.wakeStateWaiters();
+
+            assertNull(response.get(1, TimeUnit.SECONDS));
+            awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
+            assertEquals(1, requestClockReads.get(), "fallback is decided atomically under stateLock");
+        } finally {
+            allowReconnect.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellationReleasesRequestWaitingForReconnect() throws Exception {
+        TestConnector initialConnector = new TestConnector();
+        CountDownLatch reconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowReconnect = new CountDownLatch(1);
+        BlockingConnectConnector replacementConnector =
+                new BlockingConnectConnector(reconnectStarted, allowReconnect);
+        AtomicInteger connectionCreationCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                connectionCreationCount.getAndIncrement() == 0
+                                        ? initialConnector
+                                        : replacementConnector,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(30_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(1)
+                                .jitterFactor(0)
+                                .build());
+        ElastiCacheIntegrationsRequestCancellation cancellation =
+                new ElastiCacheIntegrationsRequestCancellation();
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            initialConnector.fail();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(
+                            () -> session.request(writeRequest(), cancellation), requestExecutor);
+            assertTrue(reconnectStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(response.isDone());
+
+            cancellation.cancel();
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+            assertTrue(
+                    failure.getCause()
+                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException);
+        } finally {
+            allowReconnect.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
     void unmatchedRequest_isDeclinedWithoutCacheRoundTrip() {
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
@@ -1233,24 +1364,29 @@ class ElastiCacheIntegrationsSessionTest {
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                         null,
                         fastPolicy());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         try {
             session.open();
             ResolvedConfig initialConfig = session.getConfig();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
             assertTrue(stableStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(response.isDone());
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertSame(initialConfig, session.getConfig());
             assertTrue(failingReplacement.isDead());
 
             allowStable.countDown();
+            assertNull(response.get(1, TimeUnit.SECONDS));
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(3, connectionCreationCount.get());
         } finally {
             allowStable.countDown();
             session.close();
+            requestExecutor.shutdownNow();
         }
     }
 

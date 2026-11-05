@@ -61,6 +61,7 @@ public class ElastiCacheIntegrationsSession implements Closeable {
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsSession.class.getName());
     private static final String AUTH_ERROR = "AUTH_ERROR";
+    private static final long CANCELLATION_POLL_MS = 100;
     private static final AtomicInteger THREAD_IDS = new AtomicInteger();
 
     /** Default staleness window: one hour. */
@@ -658,15 +659,10 @@ public class ElastiCacheIntegrationsSession implements Closeable {
             ElastiCacheIntegrationsConnector active = connector;
             if (active == null || !active.isReady()) {
                 beginReconnect(active);
-                if (awaitReconnect(cancellation)) {
+                if (awaitReconnectOrFallback(cancellation)) {
                     continue;
                 }
-                ensureUsable();
-                if (fallbackAllowed()) {
-                    return null;
-                }
-                throw new ElastiCacheIntegrationsCacheUnavailable(
-                        "Cache has no cache connection and origin fallback is no longer allowed");
+                return null;
             }
 
             try {
@@ -888,8 +884,6 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                         }
                         publish(next, snapshot);
                         state = State.OPEN;
-                        readyDeadlineNanos = 0;
-                        fallbackDeadlineNanos = 0;
                         stateLock.notifyAll();
                     }
                     return;
@@ -928,11 +922,6 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         connector = next;
     }
 
-    private boolean fallbackAllowed() {
-        long deadline = fallbackDeadlineNanos;
-        return deadline == Long.MAX_VALUE || nanoClock.getAsLong() < deadline;
-    }
-
     private void startOutageDeadlines() {
         long now = nanoClock.getAsLong();
         readyDeadlineNanos =
@@ -953,17 +942,32 @@ public class ElastiCacheIntegrationsSession implements Closeable {
         }
     }
 
-    private boolean awaitReconnect(ElastiCacheIntegrationsRequestCancellation cancellation) {
+    /**
+     * Wait for this outage's shared reconnect deadline.
+     *
+     * @return true when Cache reconnected, or false when the request may fall back to origin
+     */
+    private boolean awaitReconnectOrFallback(
+            ElastiCacheIntegrationsRequestCancellation cancellation) {
         synchronized (stateLock) {
             while (state == State.RECONNECTING) {
                 if (cancellation.isCancelled()) {
                     throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
                 }
-                long remainingNanos = readyDeadlineNanos - nanoClock.getAsLong();
+                long now = nanoClock.getAsLong();
+                long remainingNanos = readyDeadlineNanos - now;
                 if (remainingNanos <= 0) {
-                    return false;
+                    long fallbackDeadline = fallbackDeadlineNanos;
+                    if (fallbackDeadline == Long.MAX_VALUE || now < fallbackDeadline) {
+                        return false;
+                    }
+                    throw new ElastiCacheIntegrationsCacheUnavailable(
+                            "Cache has no cache connection and origin fallback is no longer allowed");
                 }
                 long waitMs = remainingNanos / 1_000_000 + (remainingNanos % 1_000_000 == 0 ? 0 : 1);
+                // Cancellation has no state transition to notify this monitor. Poll at a bounded
+                // interval so an aborted request does not retain its worker until the outage deadline.
+                waitMs = Math.min(waitMs, CANCELLATION_POLL_MS);
                 try {
                     stateLock.wait(waitMs);
                 } catch (InterruptedException e) {
@@ -975,7 +979,8 @@ public class ElastiCacheIntegrationsSession implements Closeable {
                             "Interrupted while waiting for Cache to reconnect");
                 }
             }
-            return state == State.OPEN;
+            ensureUsable();
+            return true;
         }
     }
 
