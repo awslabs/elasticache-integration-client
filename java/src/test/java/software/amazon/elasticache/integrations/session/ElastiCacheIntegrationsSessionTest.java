@@ -1068,6 +1068,7 @@ class ElastiCacheIntegrationsSessionTest {
         BlockingConnectConnector stableReplacement =
                 new BlockingConnectConnector(stableStarted, allowStable, "false");
         AtomicInteger connectionCreationCount = new AtomicInteger();
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
                         () -> {
@@ -1079,25 +1080,34 @@ class ElastiCacheIntegrationsSessionTest {
                         },
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                         null,
-                        fastPolicy());
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(10_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(2)
+                                .jitterFactor(0)
+                                .build());
         try {
             session.open();
             ResolvedConfig initialConfig = session.getConfig();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            CompletableFuture<ElastiCacheIntegrationsResponse> waitingRequest =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
             assertTrue(stableStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(waitingRequest.isDone());
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertSame(initialConfig, session.getConfig());
             assertTrue(failingReplacement.isDead());
 
             allowStable.countDown();
+            assertEquals(200, waitingRequest.get(1, TimeUnit.SECONDS).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(3, connectionCreationCount.get());
         } finally {
             allowStable.countDown();
             session.close();
+            requestExecutor.shutdownNow();
         }
     }
 
