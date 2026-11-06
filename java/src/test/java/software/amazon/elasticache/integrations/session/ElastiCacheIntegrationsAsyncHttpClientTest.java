@@ -44,7 +44,6 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
-import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
@@ -62,11 +61,12 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     private static final byte[] PAYLOAD = "payload".getBytes(StandardCharsets.UTF_8);
 
     @Test
-    void knownOversizedBodyFallsBackBeforeSubscribing() throws Exception {
+    void knownOversizedWriteFallsBackBeforeSubscribing() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         TrackingPublisher body = new TrackingPublisher("oversized", 9L);
         // The reported 9-byte body exceeds the 4-byte limit; one collector is available.
-        ElastiCacheIntegrationsAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                limitedClient(origin, preparedContext("UpdateItem"), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
 
@@ -77,11 +77,12 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void unknownLengthBodyFallsBackBeforeSubscribing() throws Exception {
+    void unknownLengthWriteFallsBackBeforeSubscribing() throws Exception {
         RecordingBodyOrigin origin = new RecordingBodyOrigin();
         TrackingPublisher body = new TrackingPublisher("unknown", null);
         // Unknown lengths are not admitted because Cache cannot bound their collection.
-        ElastiCacheIntegrationsAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                limitedClient(origin, preparedContext("UpdateItem"), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
 
@@ -93,11 +94,12 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void bodyThatExceedsReportedLengthIsCancelledAndReplayedByOrigin() throws Exception {
+    void writeThatExceedsReportedLengthIsCancelledAndReplayedByOrigin() throws Exception {
         RecordingBodyOrigin origin = new RecordingBodyOrigin();
         TrackingPublisher body = new TrackingPublisher("oversized", 4L);
         // The publisher reports 4 bytes but emits 9, so collection enforces the hard limit.
-        ElastiCacheIntegrationsAsyncHttpClient client = limitedClient(origin, preparedContext(), 4, 1);
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                limitedClient(origin, preparedContext("UpdateItem"), 4, 1);
 
         client.execute(executeRequest(body)).get(2, TimeUnit.SECONDS);
 
@@ -134,24 +136,33 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void executorRejectionFallsBackToOrigin() throws Exception {
+    void collectorSaturationOnRoutedWriteIsRetryableWithoutContactingOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
-        Executor rejectingExecutor =
-                command -> {
-                    throw new RejectedExecutionException("at capacity");
-                };
-        ElastiCacheIntegrationsAsyncHttpClient client =
-                new ElastiCacheIntegrationsAsyncHttpClient(
-                        new ImmediateSession(), preparedContext(), origin, false, rejectingExecutor, null);
+        ElastiCacheIntegrationsRequestContext context = preparedContext("UpdateItem");
+        BlockingPublisher admittedBody = new BlockingPublisher();
+        TrackingPublisher overflowBody = new TrackingPublisher("second", 6L);
+        ElastiCacheIntegrationsAsyncHttpClient client = limitedClient(origin, context, 100, 1);
 
-        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+        CompletableFuture<Void> admitted = client.execute(executeRequest(admittedBody));
+        assertTrue(admittedBody.subscribed.await(2, TimeUnit.SECONDS));
+        prepareAttempt(context, "UpdateItem");
 
-        assertEquals(1, origin.executeCount.get());
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest(overflowBody)).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
+        assertEquals(0, origin.executeCount.get());
+        assertEquals(0, overflowBody.subscribeCount.get());
+        admitted.cancel(true);
+        assertTrue(admittedBody.cancelled.await(2, TimeUnit.SECONDS));
         client.close();
     }
 
     @Test
-    void executorRejectionDoesNotContactOriginWhenFallbackIsDisabled() {
+    void executorRejectionOnRoutedWriteIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
         Executor rejectingExecutor =
                 command -> {
@@ -159,18 +170,43 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 };
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new NoFallbackSession(), preparedContext(), origin, false, rejectingExecutor, null);
+                        new ImmediateSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        rejectingExecutor,
+                        null);
 
         ExecutionException failure =
                 assertThrows(
                         ExecutionException.class,
                         () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
-        assertTrue(
-                failure.getCause() instanceof RetryableException
-                        && failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable,
-                failure.getCause().toString());
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
         assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void executorRejectionOnRoutedReadFallsBackToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        Executor rejectingExecutor =
+                command -> {
+                    throw new RejectedExecutionException("at capacity");
+                };
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new ImmediateSession(),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        rejectingExecutor,
+                        null);
+
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
         client.close();
     }
 
@@ -688,22 +724,6 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         @Override
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
             delegate.subscribe(subscriber);
-        }
-    }
-
-    /** An open session configured with {@code fallbackDurationSeconds(0)}. */
-    private static final class NoFallbackSession extends ElastiCacheIntegrationsSession {
-        private NoFallbackSession() {
-            super(
-                    () -> new ElastiCacheIntegrationsConnector("unused", 1, null),
-                    () -> new AuthCredentials("user", "token"),
-                    null,
-                    ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
-        }
-
-        @Override
-        public boolean isOpen() {
-            return true;
         }
     }
 
