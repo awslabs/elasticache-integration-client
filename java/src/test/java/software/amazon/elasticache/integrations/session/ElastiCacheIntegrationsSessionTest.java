@@ -2,6 +2,7 @@ package software.amazon.elasticache.integrations.session;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -11,6 +12,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -32,6 +34,7 @@ import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -1000,11 +1003,13 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            // Routed before the loss, so it waits for the reconnect and is served on the replacement.
+            assertEquals(200, session.request(request()).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
+            // Routed after the reconnect, the fresh predicates decline it.
             assertNull(session.request(request()));
             assertEquals(2, connectionCreationCount.get());
-            assertEquals(0, replacementConnector.getRequestCount());
+            assertEquals(1, replacementConnector.getRequestCount());
         } finally {
             session.close();
         }
@@ -1032,7 +1037,8 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            // The wait outlasts the replacement that dies before publication.
+            assertEquals(200, session.request(request()).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
 
             assertEquals(200, session.request(request()).getStatusCode());
@@ -1153,6 +1159,421 @@ class ElastiCacheIntegrationsSessionTest {
             assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());
         } finally {
             session.close();
+        }
+    }
+
+    // === Connection timeout: startup and the reconnect wait ===
+
+    private static ReconnectPolicy timeoutPolicy(long connectionTimeoutMs, long fallbackSeconds) {
+        return ReconnectPolicy.builder()
+                .connectionTimeoutMs(connectionTimeoutMs)
+                .fallbackDurationSeconds(fallbackSeconds)
+                .baseDelayMs(1)
+                .maxDelayMs(2)
+                .jitterFactor(0)
+                .build();
+    }
+
+    private static long elapsedMs(long startedNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedNanos);
+    }
+
+    @Test
+    void creatingASessionGivesUpAfterConnectionTimeout() throws Exception {
+        int unusedPort;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            unusedPort = socket.getLocalPort();
+        }
+        List<ElastiCacheIntegrationsConnector> built = new CopyOnWriteArrayList<>();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            ElastiCacheIntegrationsConnector connector =
+                                    new ElastiCacheIntegrationsConnector(
+                                            "localhost", unusedPort, clientSslContext, 100, 100);
+                            built.add(connector);
+                            return connector;
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(200, -1));
+
+        long started = System.nanoTime();
+        ElastiCacheIntegrationsConnectionError thrown =
+                assertThrows(ElastiCacheIntegrationsConnectionError.class, session::open);
+        long elapsed = elapsedMs(started);
+
+        assertEquals("opening a connection timed out after 200ms", thrown.getMessage());
+        assertTrue(built.size() >= 2, "a refused connection is retried inside the timeout");
+        assertTrue(elapsed < 1_000, "gave up well after the timeout: " + elapsed + "ms");
+        for (ElastiCacheIntegrationsConnector connector : built) {
+            assertFalse(connector.isReady());
+        }
+    }
+
+    @Test
+    void creatingASessionUsesFullConnectionTimeout() {
+        List<TestConnector> built = new CopyOnWriteArrayList<>();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            TestConnector connector = new TestConnector(true);
+                            built.add(connector);
+                            return connector;
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(300, -1));
+
+        long started = System.nanoTime();
+        ElastiCacheIntegrationsConnectionError thrown =
+                assertThrows(ElastiCacheIntegrationsConnectionError.class, session::open);
+        long elapsed = elapsedMs(started);
+
+        assertEquals("opening a connection timed out after 300ms", thrown.getMessage());
+        assertEquals("injected connection failure", thrown.getCause().getMessage());
+        assertTrue(elapsed >= 290, "gave up before the timeout: " + elapsed + "ms");
+        assertTrue(built.size() > 3, "attempts are no longer fixed at three: " + built.size());
+        for (TestConnector connector : built) {
+            assertTrue(connector.isDead());
+        }
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());
+    }
+
+    @Test
+    void creatingASessionPreservesNonConnectionSetupError() {
+        // Each attempt fails at once, so no attempt is still running when the deadline passes. One
+        // cut off by the deadline would be a timeout instead, as in Python.
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                new TestConnector() {
+                                    @Override
+                                    public void connect() {
+                                        throw new ElastiCacheIntegrationsOverridesRejected("unknown override key");
+                                    }
+                                },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(300, -1));
+
+        long started = System.nanoTime();
+        ElastiCacheIntegrationsOverridesRejected thrown =
+                assertThrows(ElastiCacheIntegrationsOverridesRejected.class, session::open);
+        long elapsed = elapsedMs(started);
+
+        assertTrue(thrown.getMessage().contains("unknown override key"));
+        assertTrue(elapsed >= 290, "rethrown before the timeout: " + elapsed + "ms");
+    }
+
+    @Test
+    void connectionTimeoutBoundsConnectAndConfigure() throws Exception {
+        // The cache accepts the connection and never answers HELLO, so the timeout has to cover the
+        // handshake, not only the connect. The connector's own 5 s read timeout would otherwise apply.
+        cache.setFailureMode(MockCache.FailureMode.HANG);
+        cache.setFailureCommand("HELLO");
+        List<ElastiCacheIntegrationsConnector> built = new CopyOnWriteArrayList<>();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            ElastiCacheIntegrationsConnector connector =
+                                    new ElastiCacheIntegrationsConnector(
+                                            "localhost", server.getPort(), clientSslContext, 1_000, 5_000);
+                            built.add(connector);
+                            return connector;
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(300, -1));
+
+        long started = System.nanoTime();
+        ElastiCacheIntegrationsConnectionError thrown =
+                assertThrows(ElastiCacheIntegrationsConnectionError.class, session::open);
+        long elapsed = elapsedMs(started);
+
+        assertEquals("opening a connection timed out after 300ms", thrown.getMessage());
+        // The hung attempt uses up the whole budget, so there is no time left for another.
+        assertEquals(1, built.size());
+        assertTrue(elapsed >= 290, "gave up before the timeout: " + elapsed + "ms");
+        assertTrue(elapsed < 1_500, "the timeout did not cover HELLO: " + elapsed + "ms");
+        // A timed-out attempt leaks neither a connection nor the thread that was bringing it up.
+        assertFalse(built.get(0).isReady());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (connectThreadAlive() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertFalse(connectThreadAlive(), "the connect thread outlived the timed-out attempt");
+    }
+
+    private static boolean connectThreadAlive() {
+        for (Thread thread : Thread.getAllStackTraces().keySet()) {
+            if (thread.isAlive() && thread.getName().startsWith("cache-connect-")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** A session whose first connector fails its first request, which loses the connection. */
+    private static ElastiCacheIntegrationsSession sessionAfterLoss(
+            ReconnectPolicy policy, Supplier<ElastiCacheIntegrationsConnector> replacements) {
+        AtomicInteger created = new AtomicInteger();
+        RequestFailingConnector initial = new RequestFailingConnector();
+        return new ElastiCacheIntegrationsSession(
+                () -> created.getAndIncrement() == 0 ? initial : replacements.get(),
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                policy);
+    }
+
+    private static void loseConnection(ElastiCacheIntegrationsSession session) {
+        assertThrows(ElastiCacheIntegrationsConnectionError.class, () -> session.request(request()));
+    }
+
+    private static Supplier<ElastiCacheIntegrationsConnector> neverReconnects() {
+        return () -> new TestConnector(true);
+    }
+
+    @Test
+    void requestWaitsThenPassesThroughWhenWindowOpen() {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(200, -1), neverReconnects());
+        try {
+            session.open();
+            loseConnection(session);
+
+            long started = System.nanoTime();
+            assertNull(session.request(request()));
+            long elapsed = elapsedMs(started);
+
+            assertTrue(elapsed >= 150, "fell back without waiting: " + elapsed + "ms");
+            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void requestWaitsThenEscalatesWhenWindowSpent() {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(200, 0), neverReconnects());
+        try {
+            session.open();
+            loseConnection(session);
+
+            long started = System.nanoTime();
+            assertThrows(ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(request()));
+            long elapsed = elapsedMs(started);
+
+            assertTrue(elapsed >= 150, "raised without waiting: " + elapsed + "ms");
+            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void requestServedWhenReconnectLandsWithinTheWait() throws Exception {
+        CountDownLatch reconnecting = new CountDownLatch(1);
+        CountDownLatch land = new CountDownLatch(1);
+        TestConnector replacement = new BlockingConnectConnector(reconnecting, land);
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(5_000, 0), () -> replacement);
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+            assertTrue(reconnecting.await(2, TimeUnit.SECONDS));
+            assertFalse(response.isDone(), "the request should wait for the reconnect");
+
+            land.countDown();
+            assertEquals(200, response.get(2, TimeUnit.SECONDS).getStatusCode());
+            assertEquals(1, replacement.getRequestCount());
+        } finally {
+            land.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void requestOnADeadConnectorWaitsForTheReconnect() throws Exception {
+        TestConnector initial = new TestConnector();
+        CountDownLatch reconnecting = new CountDownLatch(1);
+        CountDownLatch land = new CountDownLatch(1);
+        TestConnector replacement = new BlockingConnectConnector(reconnecting, land);
+        AtomicInteger created = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> created.getAndIncrement() == 0 ? initial : replacement,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(5_000, 0));
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            // Dead, but nothing has taken it out of service yet.
+            initial.fail();
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+            assertTrue(reconnecting.await(2, TimeUnit.SECONDS));
+            assertFalse(response.isDone(), "the request should wait for the reconnect");
+
+            land.countDown();
+            assertEquals(200, response.get(2, TimeUnit.SECONDS).getStatusCode());
+            assertEquals(0, initial.getRequestCount());
+            assertEquals(1, replacement.getRequestCount());
+        } finally {
+            land.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void retryAfterAnInFlightLossWaitsForTheReconnect() throws Exception {
+        CountDownLatch reconnecting = new CountDownLatch(1);
+        CountDownLatch land = new CountDownLatch(1);
+        TestConnector replacement = new BlockingConnectConnector(reconnecting, land);
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(5_000, 0), () -> replacement);
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            // The request that was in flight fails and the session does not replay it.
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> retry =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+            assertTrue(reconnecting.await(2, TimeUnit.SECONDS));
+            assertFalse(retry.isDone(), "the retry should wait for the reconnect");
+
+            land.countDown();
+            assertEquals(200, retry.get(2, TimeUnit.SECONDS).getStatusCode());
+        } finally {
+            land.countDown();
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void requestDoesNotWaitAfterTheReconnectWait() {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(150, -1), neverReconnects());
+        try {
+            session.open();
+            loseConnection(session);
+            assertNull(session.request(request())); // Waits until the ready deadline.
+
+            long started = System.nanoTime();
+            assertNull(session.request(request()));
+            long elapsed = elapsedMs(started);
+
+            assertTrue(elapsed < 75, "waited again after the reconnect wait: " + elapsed + "ms");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void strictModeDoesNotAllowFallbackBeforeReadyDeadline() throws Exception {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(5_000, 0), neverReconnects());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+            Thread.sleep(100);
+
+            assertFalse(response.isDone(), "strict mode must wait, not fall back or raise early");
+        } finally {
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void cancellingARequestEndsItsReconnectWait() throws Exception {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(10_000, 0), neverReconnects());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        ElastiCacheIntegrationsRequestCancellation cancellation =
+                new ElastiCacheIntegrationsRequestCancellation();
+        try {
+            session.open();
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> response =
+                    CompletableFuture.supplyAsync(
+                            () -> session.request(request(), cancellation), requestExecutor);
+            Thread.sleep(100);
+            assertFalse(response.isDone(), "the request is waiting for the reconnect");
+
+            cancellation.cancel();
+
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
+            assertTrue(
+                    failure.getCause()
+                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException,
+                    failure.getCause().toString());
+        } finally {
+            session.close();
+            requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void fallbackWindowStartsWhenTheWaitEnds() {
+        // A 5 s connection timeout and a 1 s fallback still leave the full 1 s window after the wait.
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(5_000, 1), neverReconnects());
+        try {
+            session.open();
+            long before = System.nanoTime();
+            loseConnection(session);
+            long after = System.nanoTime();
+
+            long ready = session.readyDeadlineNanos();
+            assertTrue(ready - before >= TimeUnit.SECONDS.toNanos(5));
+            assertTrue(ready - after <= TimeUnit.SECONDS.toNanos(5));
+            assertEquals(ready + TimeUnit.SECONDS.toNanos(1), session.fallbackDeadlineNanos());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void closingTheSessionWakesAWaitingRequest() throws Exception {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(10_000, -1), neverReconnects());
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
+        try {
+            session.open();
+            loseConnection(session);
+
+            CompletableFuture<ElastiCacheIntegrationsResponse> waiting =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+            Thread.sleep(100);
+            assertFalse(waiting.isDone(), "the request should be waiting for the reconnect");
+
+            long closed = System.nanoTime();
+            session.close();
+
+            // The woken request falls back to the origin, as Python's does.
+            assertNull(waiting.get(2, TimeUnit.SECONDS));
+            assertTrue(elapsedMs(closed) < 1_000);
+        } finally {
+            session.close();
+            requestExecutor.shutdownNow();
         }
     }
 
@@ -1620,7 +2041,7 @@ class ElastiCacheIntegrationsSessionTest {
             assertTrue(refreshStarted.await(5, TimeUnit.SECONDS), "refresh did not start");
 
             initialConnector.fail();
-            assertNull(session.request(request()));
+            assertEquals(200, session.request(request()).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             ResolvedConfig replacementConfig = session.getConfig();
             assertEquals("replacement", replacementConfig.getVersion());
@@ -1933,10 +2354,9 @@ class ElastiCacheIntegrationsSessionTest {
         cache.setConfigError(new RespError("CONFIG_INVALID", "unknown override key"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
-                        this::createConnection,
+                        createConnection(),
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
-                        Collections.singletonMap("item_ttl", 60),
-                        fastPolicy());
+                        Collections.singletonMap("item_ttl", 60));
         try {
             ElastiCacheIntegrationsOverridesRejected thrown =
                     assertThrows(ElastiCacheIntegrationsOverridesRejected.class, session::open);
@@ -1954,10 +2374,7 @@ class ElastiCacheIntegrationsSessionTest {
                         + "\"predicates\":[{\"expr\":\"this is not (valid CEL\"}]}");
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
-                        this::createConnection,
-                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
-                        null,
-                        fastPolicy());
+                        createConnection(), () -> new AuthCredentials(TEST_USER, TEST_TOKEN), null);
         try {
             assertThrows(ElastiCacheIntegrationsConfigUnevaluable.class, session::open);
             assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());

@@ -113,13 +113,17 @@ class IamAuthClientIntegrationTest {
                 ElastiCacheIntegrationsConnectionError.class,
                 () ->
                         cacheBuilder()
+                                .clientConfiguration(
+                                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                                .connectionTimeoutMs(1_000)
+                                                .build())
                                 .install(
                                         DynamoDbClient.builder()
                                                 .region(Region.US_EAST_1)
                                                 .credentialsProvider(sdkCredentials)));
 
         assertEquals(1, credentialCalls.get());
-        assertEquals(3, cache.getAuthAttempts().size());
+        assertTrue(cache.getAuthAttempts().size() >= 2, "startup retries until the timeout");
         assertTrue(
                 cache.getAuthAttempts().stream()
                         .allMatch(attempt -> attempt.getToken().contains(FIRST_ACCESS_KEY)));
@@ -225,20 +229,18 @@ class IamAuthClientIntegrationTest {
                                 ? new RespError("invalid-iam-credentials", "credentials rejected")
                                 : new RespError("ERR", "unexpected token"));
 
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                cacheBuilder()
-                                        .install(
-                                                DynamoDbClient.builder()
-                                                        .region(Region.US_EAST_1)
-                                                        .credentialsProvider(
-                                                                () ->
-                                                                        AwsBasicCredentials.create(
-                                                                                "AKIAINVALIDCREDENTIAL", "invalid-secret"))));
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        cacheBuilder()
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(
+                                                        () ->
+                                                                AwsBasicCredentials.create(
+                                                                        "AKIAINVALIDCREDENTIAL", "invalid-secret"))));
 
-        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertFalse(cache.getAuthAttempts().isEmpty());
         assertTrue(
                 cache.getAuthAttempts().stream()
@@ -251,18 +253,16 @@ class IamAuthClientIntegrationTest {
         cache.setAuthReplyFunction(
                 (userId, token) -> new RespError("expired-iam-token", "token expired"));
 
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () ->
-                                cacheBuilder()
-                                        .install(
-                                                DynamoDbClient.builder()
-                                                        .region(Region.US_EAST_1)
-                                                        .credentialsProvider(
-                                                                () -> AwsBasicCredentials.create(FIRST_ACCESS_KEY, "secret"))));
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () ->
+                        cacheBuilder()
+                                .install(
+                                        DynamoDbClient.builder()
+                                                .region(Region.US_EAST_1)
+                                                .credentialsProvider(
+                                                        () -> AwsBasicCredentials.create(FIRST_ACCESS_KEY, "secret"))));
 
-        assertTrue(error.getMessage().contains("HELLO 3 rejected"));
         assertTrue(cache.getAuthAttempts().get(0).getToken().startsWith("my-cache/"));
         assertHelloOnly(cache.getReceivedCommands());
     }
@@ -272,7 +272,12 @@ class IamAuthClientIntegrationTest {
                 .endpoint("localhost:" + server.getPort())
                 .cacheName("My-Cache")
                 .userId("IAM-User")
-                .caCerts(caBundle);
+                .caCerts(caBundle)
+                // The 2 s default startup deadline can expire on a loaded CI runner.
+                .clientConfiguration(
+                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                .connectionTimeoutMs(10_000)
+                                .build());
     }
 
     private static ElastiCacheIntegrationsClientConfiguration fastRefresh() {

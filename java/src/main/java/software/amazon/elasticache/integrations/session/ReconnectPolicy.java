@@ -5,9 +5,10 @@ import java.util.concurrent.ThreadLocalRandom;
 /**
  * Reconnect and origin-fallback settings for a Cache session.
  *
- * <p>Initial connection attempts are bounded. After an established connection is lost, reconnect
- * attempts continue until one succeeds or the session is closed. The same backoff schedule is used
- * when background AUTH refresh fails.
+ * <p>The connection timeout bounds the first connection: startup keeps trying until it has passed.
+ * It also sets how long a request waits for a reconnect after an established connection is lost.
+ * The background reconnect continues until one attempt succeeds or the session is closed. The same
+ * backoff schedule is used when background AUTH refresh fails.
  */
 final class ReconnectPolicy {
 
@@ -16,11 +17,14 @@ final class ReconnectPolicy {
      */
     public static final long UNLIMITED_FALLBACK = -1;
 
-    /** Default maximum number of initial connection attempts. */
-    public static final int DEFAULT_CONNECT_ATTEMPTS = 3;
+    /**
+     * Default limit, in milliseconds, on how long startup keeps trying to open the first connection
+     * and how long a request waits for a reconnect.
+     */
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
 
-    /** Default timeout for one connection initialization attempt, in milliseconds. */
-    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+    /** Cap on one background reconnect attempt, in milliseconds. */
+    public static final long RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000;
 
     /** Default interval between AUTH refreshes on a live connection, in milliseconds (15 minutes). */
     public static final long DEFAULT_AUTH_REFRESH_INTERVAL_MS = 900_000;
@@ -35,7 +39,6 @@ final class ReconnectPolicy {
     public static final double DEFAULT_JITTER_FACTOR = 0.2;
 
     private final long fallbackDurationSeconds;
-    private final int connectAttempts;
     private final long connectionTimeoutMs;
     private final long authRefreshIntervalMs;
     private final long baseDelayMs;
@@ -44,7 +47,6 @@ final class ReconnectPolicy {
 
     private ReconnectPolicy(Builder builder) {
         this.fallbackDurationSeconds = builder.fallbackDurationSeconds;
-        this.connectAttempts = builder.connectAttempts;
         this.connectionTimeoutMs = builder.connectionTimeoutMs;
         this.authRefreshIntervalMs = builder.authRefreshIntervalMs;
         this.baseDelayMs = builder.baseDelayMs;
@@ -80,16 +82,8 @@ final class ReconnectPolicy {
     }
 
     /**
-     * Return the maximum number of initial connection attempts.
-     *
-     * @return the maximum number of initial connection attempts
-     */
-    public int getConnectAttempts() {
-        return connectAttempts;
-    }
-
-    /**
-     * Return the timeout for one complete connection initialization attempt.
+     * Return how long startup keeps trying to open the first connection, and how long a request waits
+     * for a reconnect after a loss.
      *
      * @return the timeout in milliseconds
      */
@@ -149,7 +143,6 @@ final class ReconnectPolicy {
     /** Builder for {@link ReconnectPolicy}. Every setting starts at its default. */
     public static final class Builder {
         private long fallbackDurationSeconds = UNLIMITED_FALLBACK;
-        private int connectAttempts = DEFAULT_CONNECT_ATTEMPTS;
         private long connectionTimeoutMs = DEFAULT_CONNECTION_TIMEOUT_MS;
         private long authRefreshIntervalMs = DEFAULT_AUTH_REFRESH_INTERVAL_MS;
         private long baseDelayMs = DEFAULT_BASE_DELAY_MS;
@@ -163,13 +156,9 @@ final class ReconnectPolicy {
          * lost. The window is shared by requests during one outage. A later outage gets a new window
          * after recovery.
          *
-         * <ul>
-         *   <li>{@link ReconnectPolicy#UNLIMITED_FALLBACK} (the default) or any negative value: allow
-         *       fallback for the rest of the outage.
-         *   <li>{@code N > 0}: allow fallback for N seconds. Later requests throw {@link
-         *       software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
-         *   <li>{@code 0}: disable fallback. Requests throw as soon as the connection is lost.
-         * </ul>
+         * <p>The window starts when the reconnect wait ends. A negative value allows fallback
+         * indefinitely, zero disables fallback so a request raises once the wait ends, and a positive
+         * value allows fallback for that many seconds.
          *
          * @param fallbackDurationSeconds the fallback window in seconds
          * @return this builder
@@ -180,18 +169,8 @@ final class ReconnectPolicy {
         }
 
         /**
-         * Set the maximum number of initial connection attempts.
-         *
-         * @param connectAttempts the maximum number of attempts
-         * @return this builder
-         */
-        public Builder connectAttempts(int connectAttempts) {
-            this.connectAttempts = connectAttempts;
-            return this;
-        }
-
-        /**
-         * Set the timeout for one complete connection initialization attempt.
+         * Set how long startup keeps trying to open the first connection, and how long a request waits
+         * for a reconnect after a loss.
          *
          * @param connectionTimeoutMs the timeout in milliseconds
          * @return this builder
@@ -253,7 +232,6 @@ final class ReconnectPolicy {
          * @throws IllegalArgumentException if a setting is out of range
          */
         public ReconnectPolicy build() {
-            requirePositive("connectAttempts", connectAttempts);
             requirePositive("connectionTimeoutMs", connectionTimeoutMs);
             requirePositive("authRefreshIntervalMs", authRefreshIntervalMs);
             requirePositive("baseDelayMs", baseDelayMs);
