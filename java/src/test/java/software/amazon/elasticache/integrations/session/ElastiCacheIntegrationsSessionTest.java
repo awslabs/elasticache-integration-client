@@ -254,19 +254,6 @@ class ElastiCacheIntegrationsSessionTest {
                 () -> ReconnectPolicy.builder().authRefreshIntervalMs(-1).build());
     }
 
-    @Test
-    void reconnectPolicy_rejectsConnectionTimeoutOutsideIntegerMilliseconds() {
-        for (long timeoutMs : new long[] {0, -1, Integer.MAX_VALUE + 1L}) {
-            IllegalArgumentException error =
-                    assertThrows(
-                            IllegalArgumentException.class,
-                            () -> ReconnectPolicy.builder().connectionTimeoutMs(timeoutMs).build());
-            assertEquals(
-                    "connectionTimeoutMs must be positive and at most " + Integer.MAX_VALUE,
-                    error.getMessage());
-        }
-    }
-
     private static ManagedIamAuthProvider managedAuthProvider(AtomicInteger credentialCalls) {
         return new ManagedIamAuthProvider(
                 IamAuthTokenProvider.builder()

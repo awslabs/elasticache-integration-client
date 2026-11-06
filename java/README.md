@@ -244,7 +244,6 @@ ElastiCacheIntegrationsClient.builder()
         .cacheName("my-cache")
         .clientConfiguration(ElastiCacheIntegrationsClientConfiguration.builder()
                 .cacheRequestTimeoutMs(2_000)
-                .connectionTimeoutMs(2_000)
                 .fallbackDurationSeconds(60)
                 .cachePolicyOverrides(Collections.singletonMap(
                         "cached_tables", Arrays.asList("Users", "Sessions")))

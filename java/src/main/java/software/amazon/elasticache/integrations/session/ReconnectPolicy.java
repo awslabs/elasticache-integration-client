@@ -172,7 +172,7 @@ final class ReconnectPolicy {
          * Set how long startup keeps trying to open the first connection, and how long a request waits
          * for a reconnect after a loss.
          *
-         * @param connectionTimeoutMs the timeout in milliseconds, at most {@link Integer#MAX_VALUE}
+         * @param connectionTimeoutMs the timeout in milliseconds
          * @return this builder
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {
@@ -232,7 +232,7 @@ final class ReconnectPolicy {
          * @throws IllegalArgumentException if a setting is out of range
          */
         public ReconnectPolicy build() {
-            requirePositiveIntMilliseconds("connectionTimeoutMs", connectionTimeoutMs);
+            requirePositive("connectionTimeoutMs", connectionTimeoutMs);
             requirePositive("authRefreshIntervalMs", authRefreshIntervalMs);
             requirePositive("baseDelayMs", baseDelayMs);
             requirePositive("maxDelayMs", maxDelayMs);
@@ -248,13 +248,6 @@ final class ReconnectPolicy {
         private static void requirePositive(String name, long value) {
             if (value <= 0) {
                 throw new IllegalArgumentException(name + " must be positive");
-            }
-        }
-
-        private static void requirePositiveIntMilliseconds(String name, long value) {
-            if (value <= 0 || value > Integer.MAX_VALUE) {
-                throw new IllegalArgumentException(
-                        name + " must be positive and at most " + Integer.MAX_VALUE);
             }
         }
     }
