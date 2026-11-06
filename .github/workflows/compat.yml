@@ -241,8 +241,8 @@ jobs:
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
           -Porg.gradle.java.installations.auto-download=false
 
-  java-pre-provider-name-sdk:
-    name: java (AWS SDK 2.31.63)
+  java-minimum-sdk:
+    name: java (minimum AWS SDK 2.25.70)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -258,10 +258,9 @@ jobs:
           distribution: 'corretto'
           cache: 'gradle'
 
-      - name: Test before ContentStreamProvider.name was added
+      - name: Test the minimum supported AWS SDK
         working-directory: java
         run: >-
           ./gradlew test --console=colored
-          --tests 'software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsHttpClientTest'
-          -PawsSdkRuntimeVersion=2.31.63
+          -PawsSdkRuntimeVersion=2.25.70
           -Porg.gradle.java.installations.auto-download=false

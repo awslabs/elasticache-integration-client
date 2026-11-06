@@ -230,8 +230,7 @@ class ElastiCacheIntegrationsHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         RequestBody body = RequestBody.fromInputStream(readOnce("payload"), 7);
 
-        HttpExecuteResponse response =
-                sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        HttpExecuteResponse response = sendThroughInterceptor(session, origin, body);
 
         assertEquals(201, response.httpResponse().statusCode());
         assertEquals(0, session.requestCount.get());
@@ -320,8 +319,7 @@ class ElastiCacheIntegrationsHttpClientTest {
                                 "application/octet-stream");
         }
 
-        HttpExecuteResponse response =
-                sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        HttpExecuteResponse response = sendThroughInterceptor(session, origin, body);
 
         assertEquals(200, response.httpResponse().statusCode());
         assertEquals(expected, new String(session.lastRequest.getBody(), StandardCharsets.UTF_8));
@@ -442,16 +440,36 @@ class ElastiCacheIntegrationsHttpClientTest {
 
     /** Drive the sync interceptor and its transport in the order the SDK calls them. */
     private static HttpExecuteResponse sendThroughInterceptor(
+            ElastiCacheIntegrationsSession session, SdkHttpClient origin, RequestBody body)
+            throws IOException {
+        return sendThroughInterceptor(
+                session, origin, body.contentStreamProvider(), body.optionalContentLength().orElse(null));
+    }
+
+    /** Drive the sync interceptor with a provider whose content length is not known. */
+    private static HttpExecuteResponse sendThroughInterceptor(
             ElastiCacheIntegrationsSession session, SdkHttpClient origin, ContentStreamProvider body)
+            throws IOException {
+        return sendThroughInterceptor(session, origin, body, null);
+    }
+
+    private static HttpExecuteResponse sendThroughInterceptor(
+            ElastiCacheIntegrationsSession session,
+            SdkHttpClient origin,
+            ContentStreamProvider body,
+            Long contentLength)
             throws IOException {
         ElastiCacheIntegrationsInterceptor interceptor =
                 new ElastiCacheIntegrationsInterceptor(session, origin);
-        SdkHttpFullRequest httpRequest =
+        SdkHttpFullRequest.Builder httpRequestBuilder =
                 SdkHttpFullRequest.builder()
                         .method(SdkHttpMethod.POST)
                         .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                        .contentStreamProvider(body)
-                        .build();
+                        .contentStreamProvider(body);
+        if (contentLength != null) {
+            httpRequestBuilder.putHeader("Content-Length", Long.toString(contentLength));
+        }
+        SdkHttpFullRequest httpRequest = httpRequestBuilder.build();
         InterceptorContext context =
                 InterceptorContext.builder()
                         .request(PutItemRequest.builder().build())

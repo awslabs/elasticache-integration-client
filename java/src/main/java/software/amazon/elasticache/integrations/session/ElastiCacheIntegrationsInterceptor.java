@@ -147,18 +147,20 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
     private static boolean isCarriableBody(SdkHttpFullRequest sdkRequest) {
         return !sdkRequest
                 .contentStreamProvider()
-                .map(ElastiCacheIntegrationsInterceptor::isStreamOrFile)
+                .map(provider -> isStreamOrFile(provider, sdkRequest))
                 .orElse(false);
     }
 
     /**
      * AWS SDK 2.31.64 added {@code ContentStreamProvider.name()}. Invoke it reflectively so the
-     * client can still run with earlier SDK releases. Before that API existed, file and
-     * unknown-length providers had stable implementation classes, direct input-stream providers were
-     * anonymous classes, and {@code RequestBody.fromInputStream} produced a lambda that captured an
-     * {@link InputStream}.
+     * client can still run with earlier SDK releases. Before that API existed, file and direct
+     * input-stream providers were anonymous classes, and {@code RequestBody.fromInputStream} produced
+     * a lambda that captured an {@link InputStream}. SDK releases before the buffering provider used
+     * the caller's provider directly, so the absence of {@code Content-Length} identifies an
+     * unknown-length stream.
      */
-    private static boolean isStreamOrFile(ContentStreamProvider provider) {
+    private static boolean isStreamOrFile(
+            ContentStreamProvider provider, SdkHttpFullRequest sdkRequest) {
         Optional<String> providerName = providerName(provider);
         if (providerName.isPresent()) {
             return "Stream".equals(providerName.get()) || "File".equals(providerName.get());
@@ -171,15 +173,14 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
                 || INPUT_STREAM_SUPPLIER_PROVIDER.equals(className)) {
             return true;
         }
-        if (!className.startsWith(REQUEST_BODY_LAMBDA)) {
-            return false;
-        }
-        for (Field field : provider.getClass().getDeclaredFields()) {
-            if (InputStream.class.isAssignableFrom(field.getType())) {
-                return true;
+        if (className.startsWith(REQUEST_BODY_LAMBDA)) {
+            for (Field field : provider.getClass().getDeclaredFields()) {
+                if (InputStream.class.isAssignableFrom(field.getType())) {
+                    return true;
+                }
             }
         }
-        return false;
+        return !sdkRequest.firstMatchingHeader("Content-Length").isPresent();
     }
 
     private static Optional<String> providerName(ContentStreamProvider provider) {
