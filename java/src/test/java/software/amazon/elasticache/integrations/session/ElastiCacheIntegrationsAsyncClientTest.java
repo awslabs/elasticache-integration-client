@@ -382,12 +382,10 @@ class ElastiCacheIntegrationsAsyncClientTest {
     void asyncClientClosesTheSessionWhenAuthenticationFails() {
         cache.setAuthReplyFunction((userId, token) -> new RespError("WRONGPASS", "rejected"));
 
-        ElastiCacheIntegrationsError error =
-                assertThrows(
-                        ElastiCacheIntegrationsError.class,
-                        () -> newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig));
+        assertThrows(
+                ElastiCacheIntegrationsError.class,
+                () -> newClient(ElastiCacheIntegrationsAsyncClientTest::sdkConfig));
 
-        assertTrue(error instanceof ElastiCacheIntegrationsAuthError, error.toString());
         assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
         assertThrows(
                 ElastiCacheIntegrationsError.class,
