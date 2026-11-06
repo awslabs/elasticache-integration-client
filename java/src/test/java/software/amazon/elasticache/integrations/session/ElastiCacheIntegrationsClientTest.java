@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -32,9 +33,11 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import software.amazon.awssdk.auth.credentials.AnonymousCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.client.config.SdkClientOption;
+import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
@@ -223,17 +226,18 @@ class ElastiCacheIntegrationsClientTest {
                                                 "AKIDROTATING" + calls.incrementAndGet(), "rotating-secret"));
 
         try (DynamoDbClient client = cacheBuilder().install(builder)) {
-            handle.get().getOwnedAuthProvider().refresh();
+            int firstCall = calls.get();
             MockCache.AuthAttempt first = cache.getAuthAttempts().get(0);
+            handle.get().getOwnedAuthProvider().refresh();
 
-            assertTrue(first.getToken().contains("X-Amz-Credential=AKIDROTATING1%2F"));
+            assertTrue(first.getToken().contains("X-Amz-Credential=AKIDROTATING" + firstCall + "%2F"));
             assertTrue(
                     handle
                             .get()
                             .getOwnedAuthProvider()
                             .get()
                             .getToken()
-                            .contains("X-Amz-Credential=AKIDROTATING2%2F"));
+                            .contains("X-Amz-Credential=AKIDROTATING" + (firstCall + 1) + "%2F"));
         }
     }
 
@@ -290,6 +294,29 @@ class ElastiCacheIntegrationsClientTest {
                 "This AWS SDK client carries no credentials, so the cache cannot be authenticated. "
                         + "A client built with AnonymousCredentialsProvider is not supported.",
                 error.getMessage());
+        assertTrue(cache.getAuthAttempts().isEmpty());
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
+    }
+
+    @Test
+    void clientRejectsAClientWhoseCredentialsCannotBeResolved() {
+        SdkClientException unresolved =
+                SdkClientException.create("Unable to load credentials from any of the providers");
+        AwsCredentialsProvider failing =
+                () -> {
+                    throw unresolved;
+                };
+
+        ElastiCacheIntegrationsConfigError error =
+                assertThrows(
+                        ElastiCacheIntegrationsConfigError.class,
+                        () -> cacheBuilder().install(appBuilder().credentialsProvider(failing)));
+
+        assertEquals(
+                "The AWS SDK client's credentials provider could not resolve credentials, so the cache "
+                        + "cannot be authenticated: Unable to load credentials from any of the providers",
+                error.getMessage());
+        assertSame(unresolved, error.getCause());
         assertTrue(cache.getAuthAttempts().isEmpty());
         assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, handle.get().getSession().getState());
     }

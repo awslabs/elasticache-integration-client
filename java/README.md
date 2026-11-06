@@ -137,8 +137,9 @@ deadline (`connectionTimeoutMs`) passes after a connection failure, they throw
 `ElastiCacheIntegrationsConnectionError` ("opening a connection timed out after
 Nms") with the last failure as its cause. They throw
 `ElastiCacheIntegrationsConfigError` when an option or the client cannot be
-used, for example a client with no region or a client built with
-`AnonymousCredentialsProvider`.
+used, for example a client with no region, a client built with
+`AnonymousCredentialsProvider`, or a client whose credentials provider cannot
+resolve credentials. In the last case, the SDK's exception is the cause.
 
 | Builder method | Default | Meaning |
 |---|---|---|
