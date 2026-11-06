@@ -23,7 +23,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
-import software.amazon.elasticache.integrations.mock.MockTcpProxy;
+import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.resp.RespError;
 import software.amazon.elasticache.integrations.resp.RespSimpleString;
@@ -134,10 +134,10 @@ class IamAuthClientIntegrationTest {
     void reconnectUsesTokenInstalledByBackgroundRefresh() throws Exception {
         AtomicInteger credentialCalls = new AtomicInteger();
 
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort());
                 DynamoDbClient client =
                         cacheBuilder()
-                                .endpoint("localhost:" + proxy.getPort())
+                                .endpoint("localhost:" + relay.getPort())
                                 .clientConfiguration(fastRefresh())
                                 .install(
                                         DynamoDbClient.builder()
@@ -147,7 +147,7 @@ class IamAuthClientIntegrationTest {
             // credential call 3 means the token from call 2 is installed.
             awaitAtLeast(credentialCalls, 3);
 
-            proxy.disconnectClients();
+            relay.disconnectClients();
             awaitAuthAttempts(2);
 
             List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();

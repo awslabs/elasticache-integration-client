@@ -66,7 +66,7 @@ the original signed SDK request continues to the configured origin transport
 without a cache round trip. Evaluation errors and malformed or non-object JSON
 bodies count as no match. A predicate that cannot be compiled is different: one
 bad entry rejects the whole config rather than caching by the entries that did
-compile, because those would route a different set of requests than the proxy
+compile, because those would route a different set of requests than the cache
 resolved. `install()` fails on such a config, a reconnect retries, and a refresh
 keeps the last good config.
 
@@ -222,7 +222,7 @@ policy, and a healthy connection is never dropped. Requests follow the
 request already in flight when the connection drops is returned to the SDK for
 retry, so the retry applies the same reconnection wait and fallback window.
 
-A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a policy with a
+A `CONFIG_INVALID` reply (the cache rejected the overrides) and a policy with a
 predicate this client cannot compile never fix themselves, so they log at error
 level on every occurrence, including each connection attempt. On refresh they
 still keep the last confirmed policy until the cache policy timeout drops the

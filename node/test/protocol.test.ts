@@ -181,7 +181,7 @@ describe("ElastiCacheIntegrations protocol", () => {
     ]);
   });
 
-  it("lowercases the service so it matches the proxy's predicates", () => {
+  it("lowercases the service so it matches the cache's predicates", () => {
     const request = new ElastiCacheIntegrationsRequest({
       method: "POST",
       url: "https://x/",

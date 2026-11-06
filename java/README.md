@@ -50,14 +50,14 @@ bound by the predicate's `vars` object.
 
 A request is sent to Cache when any predicate evaluates to `true`. Otherwise,
 the original signed SDK request is passed to the configured origin HTTP
-transport without a cache round trip. This supports the proxy's read-through
+transport without a cache round trip. This supports the cache's read-through
 and write-through routing, including table allowlists for batch and transaction
 operations.
 
 Evaluation errors and malformed or non-object JSON bodies count as no match. A
 predicate that cannot be compiled is different: one bad entry rejects the whole
 config rather than caching by the entries that did compile, because those would
-route a different set of requests than the proxy resolved. Opening the session
+route a different set of requests than the cache resolved. Opening the session
 fails on such a config, a reconnect retries, and a refresh keeps the last good
 config. The resolved config is
 compiled when the session opens, after every successful reconnect, and whenever
@@ -94,7 +94,7 @@ meanwhile under the configured origin-fallback window. A request already in
 flight when the connection drops falls back only when it is idempotent. Set the
 duration with `ElastiCacheIntegrationsClientConfiguration.Builder.cachePolicyTimeoutSeconds(long)`.
 
-A `CONFIG_INVALID` reply (the proxy rejected the overrides,
+A `CONFIG_INVALID` reply (the cache rejected the overrides,
 `ElastiCacheIntegrationsOverridesRejected`) and a config with a predicate this client cannot
 compile (`ElastiCacheIntegrationsConfigUnevaluable`) never fix themselves, so they log at
 `SEVERE` on every occurrence, including each connection attempt. On refresh

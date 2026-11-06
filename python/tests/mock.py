@@ -42,12 +42,11 @@ from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSe
 
 _CRLF = b"\r\n"
 
-# The resolved config the real proxy returns for empty overrides — see
-# ElastiCacheProxyRust/src/libproxy/aws_elasticache_integration_client/config.rs::resolve. One CEL predicate caching every
+# The resolved config the cache returns for empty overrides. One CEL predicate caching every
 # supported read regardless of table; `version` is the predicate *format* version ("1.0", constant).
 #
 # Routing only: the reply carries version, refresh_interval and predicates and no lifetime.
-# The proxy applies the TTLs itself and echoes none of them, which is why an out-of-range
+# The cache applies the TTLs itself and echoes none of them, which is why an out-of-range
 # lifetime is refused at the handshake rather than quietly adjusted — a clamp would be
 # invisible here.
 DEFAULT_RESOLVED_CONFIG = {
@@ -76,7 +75,7 @@ DEFAULT_RESOLVED_CONFIG = {
 
 
 def table_allowlist_config(*tables: str) -> dict:
-    """A resolved config restricting caching to ``tables`` — the three CEL predicates the proxy
+    """A resolved config restricting caching to ``tables`` — the three CEL predicates the cache
     emits for a ``cached_tables`` allowlist, one per body shape: single-table operations on
     ``body.TableName``, the batch ones on the keys of ``body.RequestItems``, and the
     transactional ones nested under ``body.TransactItems``."""
@@ -626,12 +625,12 @@ class MockCache:
 
 
 # --------------------------------------------------------------------------- #
-# MockTcpProxy — a controllable TCP relay, for driving reconnect
+# MockTcpRelay — a controllable TCP relay, for driving reconnect
 # --------------------------------------------------------------------------- #
-class MockTcpProxy:
+class MockTcpRelay:
     """TCP relay in front of a :class:`MockCache` for testing reconnect behavior.
 
-    The proxy can disconnect existing connections, reject new connections, or
+    The relay can disconnect existing connections, reject new connections, or
     resume forwarding, allowing tests to exercise reconnects without requiring
     the cache itself to fail.
 
@@ -659,7 +658,7 @@ class MockTcpProxy:
         self._listener.listen(16)
         self.host, self.port = self._listener.getsockname()[:2]
         self._accept_thread = threading.Thread(
-            target=self._accept_loop, name="mock-proxy-accept", daemon=True
+            target=self._accept_loop, name="mock-relay-accept", daemon=True
         )
         self._accept_thread.start()
 
@@ -718,7 +717,7 @@ class MockTcpProxy:
             self._sockets.extend((client, upstream))
         for src, dst in ((client, upstream), (upstream, client)):
             threading.Thread(
-                target=self._pump, args=(src, dst), name="mock-proxy-pump", daemon=True
+                target=self._pump, args=(src, dst), name="mock-relay-pump", daemon=True
             ).start()
 
     def _pump(self, src: socket.socket, dst: socket.socket) -> None:

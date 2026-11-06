@@ -617,7 +617,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
     /** The cause of a permanent config failure, worded the same on every path. */
     private static String configFailureCause(ElastiCacheIntegrationsError e) {
         return e instanceof ElastiCacheIntegrationsOverridesRejected
-                ? "the proxy rejected the overrides (CONFIG_INVALID)"
+                ? "the cache rejected the overrides (CONFIG_INVALID)"
                 : "the config has a predicate this client cannot evaluate";
     }
 

@@ -30,13 +30,13 @@ PROTOCOL_VERSION = "1.0"
 """Protocol version this client speaks, sent in every ``aws.config`` overrides payload.
 
 Mandatory server-side: an exchange without it is rejected rather than defaulted. The server
-answers in the newest version it supports at or below this one, so a client ahead of its proxy
+answers in the newest version it supports at or below this one, so a client ahead of the server
 is clamped down rather than refused -- and learns which version it got from
 :attr:`ResolvedConfig.version`, which carries the *negotiated* version, not an echo of this.
 """
 
 CONFIG_INVALID_CODE = "CONFIG_INVALID"
-"""RESP error code the proxy returns when it rejects the ``aws.config`` overrides."""
+"""RESP error code the cache returns when it rejects the ``aws.config`` overrides."""
 
 PUSH_KIND_RESPONSE = b"aws.response"
 """Push kind for an out-of-band response. The only kind defined today."""

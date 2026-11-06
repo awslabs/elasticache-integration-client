@@ -35,7 +35,7 @@ class PredicateEvaluatorTest {
             Arrays.asList("GetItem", "Query", "Scan", "PutItem", "UpdateItem", "DeleteItem");
 
     @Test
-    void compilesTheDefaultProxyConfig() {
+    void compilesTheDefaultCacheConfig() {
         assertEquals(1, PredicateEvaluator.compile(defaultConfig()).size());
     }
 
@@ -58,7 +58,7 @@ class PredicateEvaluatorTest {
     }
 
     // One bad entry taints the whole config: caching by the entries that did compile would route
-    // a different set of requests than the proxy resolved.
+    // a different set of requests than the cache resolved.
     @Test
     void anyUnevaluableEntryRejectsTheWholeConfig() {
         Map<Object, Object> nonStringKeyVariables = new LinkedHashMap<>();

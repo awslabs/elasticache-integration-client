@@ -43,7 +43,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.mock.MockCache;
-import software.amazon.elasticache.integrations.mock.MockTcpProxy;
+import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.mock.Reply;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -598,7 +598,7 @@ class ElastiCacheIntegrationsSessionTest {
     @ParameterizedTest
     @ValueSource(strings = {"GetItem", "PutItem"})
     void authErrorPassesThroughAndStartsReconnect(String operation) {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing credentials"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
@@ -622,7 +622,7 @@ class ElastiCacheIntegrationsSessionTest {
     @ParameterizedTest
     @ValueSource(strings = {"GetItem", "PutItem"})
     void authErrorWithFallbackClosedRaisesAtOnce(String operation) {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing credentials"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
                         this::createConnection,
@@ -652,7 +652,7 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void zeroWindowAuthErrorRaisesAndReconnects() throws Exception {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing credentials"));
         AtomicInteger connectionCount = new AtomicInteger();
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
@@ -843,15 +843,15 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void reconnectsThroughProxyWithFreshCredentials() throws Exception {
+    void reconnectsThroughRelayWithFreshCredentials() throws Exception {
         AtomicInteger credentialsCallCount = new AtomicInteger();
         cache.setReply(Reply.ok(200, Collections.emptyMap(), "reconnected"));
 
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort())) {
             ElastiCacheIntegrationsHandle handle =
                     ElastiCacheIntegrationsHandle.builder()
                             .host("localhost")
-                            .port(proxy.getPort())
+                            .port(relay.getPort())
                             .sslContext(clientSslContext)
                             .authProvider(
                                     () ->
@@ -861,7 +861,7 @@ class ElastiCacheIntegrationsSessionTest {
                             .build();
             try {
                 handle.open();
-                proxy.disconnectClients();
+                relay.disconnectClients();
 
                 try {
                     handle.getSession().request(request());
@@ -873,7 +873,7 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsResponse response = handle.getSession().request(request());
                 assertEquals("reconnected", new String(response.getBody(), StandardCharsets.UTF_8));
                 assertEquals(2, credentialsCallCount.get());
-                assertEquals(2, proxy.getAcceptedConnections());
+                assertEquals(2, relay.getAcceptedConnections());
             } finally {
                 handle.close();
             }
@@ -920,11 +920,11 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void fallbackWindowExpiresWhileReconnectContinues() throws Exception {
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort())) {
             ElastiCacheIntegrationsHandle handle =
                     ElastiCacheIntegrationsHandle.builder()
                             .host("localhost")
-                            .port(proxy.getPort())
+                            .port(relay.getPort())
                             .sslContext(clientSslContext)
                             .authCredentials(TEST_USER, TEST_TOKEN)
                             .reconnectPolicy(
@@ -938,14 +938,14 @@ class ElastiCacheIntegrationsSessionTest {
                             .build();
             try {
                 handle.open();
-                proxy.disableForwardingAndDisconnectClients();
+                relay.disableForwardingAndDisconnectClients();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.RECONNECTING);
                 assertThrows(
                         software.amazon.elasticache.integrations.exception
                                 .ElastiCacheIntegrationsCacheUnavailable.class,
                         () -> handle.getSession().request(request()));
 
-                proxy.enableForwarding();
+                relay.enableForwarding();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.OPEN);
                 assertEquals(200, handle.getSession().request(request()).getStatusCode());
             } finally {

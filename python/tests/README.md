@@ -56,14 +56,14 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | `test_session.py` | component | `aws_elasticache_integration_client.session.ElastiCacheIntegrationsSession` sync API, driven by the `mock_connector()` autospec double |
 | `test_hooks.py` | component | `aws_elasticache_integration_client.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
 | `test_idempotency.py` | component | replay-safe operation lookup loads the shared language-neutral catalog |
-| `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
+| `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation) |
 | `test_ddb.py` | **end-to-end** | the full path `aws_elasticache_integration_client.client → boto3 GetItem → hook → ElastiCacheIntegrationsSession → real ElastiCacheIntegrationsConnector (TLS) → MockCache` |
 
 All test doubles live in one module, `tests/mock.py` (imported by tests, not collected as test cases):
 
 - `MockCache` — an in-process, synchronous, threaded RESP mock of the cache that answers
   `aws.config` and `aws.request`. Its pure `handle()` method is the contract engine
-  (command-shape validation, `TTL`/`NTTL` parsing, reply selection); a thin threaded server wraps
+  (command-shape validation, reply selection); a thin threaded server wraps
   it. **Plaintext by default** (`tls=False`); pass `tls=True` for a verifying TLS server (mints a
   self-signed cert, exposed via `cert_path`). Replies are configured with `Reply.ok`/`Reply.error`,
   a `response_fn` callable (e.g. reflect), or the `response_*` defaults; `failure="hang"|"drop"`

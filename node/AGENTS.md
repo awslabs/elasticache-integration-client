@@ -171,7 +171,7 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   constructing the connector directly in tests.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material. Wrapped requests are fully serialized but not
-  origin-signed; Roxy owns origin signing. ElastiCache IAM `elasticache:connect`
+  origin-signed; the cache owns origin signing. ElastiCache IAM `elasticache:connect`
   token signing remains separate and is confined to `AUTH`.
 - Prefer hermetic tests and local mocks over live AWS or ElastiCacheIntegrations endpoints.
 - The checked-in TLS certificate and key under `test/fixtures/tls/` are

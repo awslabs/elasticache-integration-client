@@ -10,7 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayInputStream;
-import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -60,7 +59,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
-import software.amazon.elasticache.integrations.mock.MockTcpProxy;
+import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.mock.ReceivedRequest;
 import software.amazon.elasticache.integrations.mock.Reply;
@@ -432,7 +431,7 @@ class ElastiCacheIntegrationsClientTest {
 
     @Test
     void authErrorWithZeroFallbackRaisesThroughInstalledClientAndSkipsOrigin() {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing credentials"));
         RecordingOriginClient origin = new RecordingOriginClient();
 
         try (DynamoDbClient client =
@@ -610,12 +609,12 @@ class ElastiCacheIntegrationsClientTest {
         DynamoDbClientBuilder real = appBuilder().httpClientBuilder(ownTransport);
         DynamoDbClientBuilder wrapper =
                 (DynamoDbClientBuilder)
-                        Proxy.newProxyInstance(
+                        java.lang.reflect.Proxy.newProxyInstance(
                                 DynamoDbClientBuilder.class.getClassLoader(),
                                 new Class<?>[] {DynamoDbClientBuilder.class},
-                                (proxy, method, args) -> {
+                                (wrapperInstance, method, args) -> {
                                     Object result = method.invoke(real, args);
-                                    return result == real ? proxy : result;
+                                    return result == real ? wrapperInstance : result;
                                 });
 
         ElastiCacheIntegrationsConfigError error =
@@ -807,22 +806,22 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void syncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+    void syncClientUsesRecoveredConnectionThroughRelay() throws Exception {
         replyWithTables("reconnected");
         RecordingOriginClient origin = new RecordingOriginClient();
 
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort());
                 DynamoDbClient client =
                         cacheBuilder()
-                                .endpoint("localhost:" + proxy.getPort())
+                                .endpoint("localhost:" + relay.getPort())
                                 .originHttpClient(origin)
                                 .install(appBuilder())) {
-            proxy.disconnectClients();
+            relay.disconnectClients();
 
             awaitRecovered(handle.get().getSession());
             assertEquals(Collections.singletonList("reconnected"), client.listTables().tableNames());
             assertEquals(2, cache.getAuthAttempts().size());
-            assertEquals(2, proxy.getAcceptedConnections());
+            assertEquals(2, relay.getAcceptedConnections());
         }
     }
 

@@ -31,7 +31,7 @@ class ReconnectPolicy:
     # How long to keep trying to get a connection: at startup before raising, and after a drop
     # before a waiting request falls back. Attempts back off inside it.
     connection_timeout_ms: int = DEFAULT_CONNECTION_TIMEOUT_MS
-    # How often to re-run AUTH in the background to refresh the connection's FAS.
+    # How often to re-run AUTH in the background to renew the connection's authentication.
     auth_refresh_interval: float = 900.0
     base_delay: float = 0.1
     max_delay: float = 3.2

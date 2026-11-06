@@ -98,7 +98,7 @@ function isPermanentConfigFailure(error: ElastiCacheIntegrationsError): boolean 
 /** The cause of a permanent config failure, worded the same on every path. */
 function configFailureCause(error: ElastiCacheIntegrationsError): string {
   return error instanceof ElastiCacheIntegrationsOverridesRejected
-    ? "the proxy rejected the overrides (CONFIG_INVALID)"
+    ? "the cache rejected the overrides (CONFIG_INVALID)"
     : "the config has a predicate this client cannot evaluate";
 }
 

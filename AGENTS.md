@@ -45,6 +45,10 @@ Run commands from the client directory they apply to:
   to fix formatting.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
+- Repository: run `scripts/check-denylist.sh` from any directory. It fails when
+  a file that git tracks, or an untracked file that `.gitignore` doesn't
+  exclude, uses an internal term listed in `scripts/denylist.txt`. CI runs it on
+  every pull request.
 - Before reporting completion, state which validation commands actually ran and
   which expected checks were not run.
 

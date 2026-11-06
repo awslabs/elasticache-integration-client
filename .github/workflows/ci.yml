@@ -60,6 +60,20 @@ jobs:
             fi
           done
 
+  # Fail when a tracked file uses an internal term from scripts/denylist.txt.
+  # Runs on every change, because any file can reintroduce one.
+  denylist:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check for denylisted terms
+        run: scripts/check-denylist.sh
+
   python:
     needs: changes
     if: needs.changes.outputs.python == 'true'
@@ -139,7 +153,7 @@ jobs:
   # Stable aggregate check for branch protection.
   ci:
     if: always()
-    needs: [changes, python, java, node, alignment, java-dependency-graph, dependency-review]
+    needs: [changes, denylist, python, java, node, alignment, java-dependency-graph, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

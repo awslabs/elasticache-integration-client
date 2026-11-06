@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Controllable TCP pass-through used to exercise TLS connection recovery. */
-public final class MockTcpProxy implements Closeable {
+public final class MockTcpRelay implements Closeable {
 
     private final String targetHost;
     private final int targetPort;
@@ -27,7 +27,7 @@ public final class MockTcpProxy implements Closeable {
     private final AtomicBoolean forwarding = new AtomicBoolean(true);
     private final AtomicInteger acceptedConnections = new AtomicInteger();
 
-    public MockTcpProxy(String targetHost, int targetPort) throws IOException {
+    public MockTcpRelay(String targetHost, int targetPort) throws IOException {
         this.targetHost = targetHost;
         this.targetPort = targetPort;
         // Port 0 asks the OS for a free ephemeral port. Bind loopback, not the wildcard address,

@@ -61,7 +61,7 @@ _AUTH_ERROR = "AUTH_ERROR"
 def _config_failure_cause(exc: ElastiCacheIntegrationsError) -> str:
     """The cause of a config failure that cannot fix itself, worded the same on every path."""
     if isinstance(exc, ElastiCacheIntegrationsOverridesRejected):
-        return "the proxy rejected the overrides (CONFIG_INVALID)"
+        return "the cache rejected the overrides (CONFIG_INVALID)"
     return "the config has a predicate this client cannot evaluate"
 
 
@@ -110,7 +110,7 @@ class ElastiCacheIntegrationsSession:
 
         Args:
             connector_factory: Returns a new, unconnected connector each time it is called.
-            overrides: ``aws.config`` overrides to send when configuring. The proxy resolves
+            overrides: ``aws.config`` overrides to send when configuring. The cache resolves
                 them and answers with the config the session then routes by.
             policy: Reconnect and fallback behavior; see
                 :class:`~aws_elasticache_integration_client.reconnect_policy.ReconnectPolicy`. ``None`` uses the defaults.
@@ -149,7 +149,7 @@ class ElastiCacheIntegrationsSession:
                 jitter=policy.jitter,
             )
             self._config_refresher.start()
-            # Keep the connection's FAS fresh in the background. Started only after bring-up
+            # Keep the connection's authentication fresh in the background. Started only after bring-up
             # succeeds, so a failed bring-up still throws without leaving a thread behind.
             self._reauth_runner = Refresher(
                 policy.auth_refresh_interval,
@@ -306,7 +306,7 @@ class ElastiCacheIntegrationsSession:
             self._connection_manager.invalidate_connection(connector)
 
     def _reauth_once(self) -> None:
-        """Re-run AUTH on the live connector to refresh its FAS. Runs in the background.
+        """Re-run AUTH on the live connector to renew its authentication. Runs in the background.
 
         Sends plain ``AUTH`` (not the ``HELLO 3`` bring-up handshake): the connection has already
         negotiated RESP3, so a refresh only needs to re-authenticate with a fresh token.

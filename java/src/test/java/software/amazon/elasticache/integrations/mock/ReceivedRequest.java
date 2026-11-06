@@ -10,8 +10,6 @@ public class ReceivedRequest {
     private final String headers;
     private final byte[] body;
     private final String metadata;
-    private final String ttl;
-    private final String nttl;
     private final List<byte[]> rawArgs;
 
     public ReceivedRequest(
@@ -20,16 +18,12 @@ public class ReceivedRequest {
             String headers,
             byte[] body,
             String metadata,
-            String ttl,
-            String nttl,
             List<byte[]> rawArgs) {
         this.method = method;
         this.url = url;
         this.headers = headers;
         this.body = body;
         this.metadata = metadata;
-        this.ttl = ttl;
-        this.nttl = nttl;
         this.rawArgs = rawArgs;
     }
 
@@ -51,14 +45,6 @@ public class ReceivedRequest {
 
     public String getMetadata() {
         return metadata;
-    }
-
-    public String getTtl() {
-        return ttl;
-    }
-
-    public String getNttl() {
-        return nttl;
     }
 
     public List<byte[]> getRawArgs() {

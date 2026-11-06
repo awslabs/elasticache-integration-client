@@ -24,7 +24,7 @@ import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { RespError } from "../src/resp.js";
 import { ElastiCacheIntegrationsSession, parseEndpoint } from "../src/session.js";
 import type { Refresher } from "../src/refresh.js";
-import { MockCache, MockTcpProxy, Reply } from "./mock-cache.js";
+import { MockCache, MockTcpRelay, Reply } from "./mock-cache.js";
 
 function fakeConnector(
   overrides: Partial<ElastiCacheIntegrationsConnector> = {},
@@ -258,7 +258,7 @@ describe("ElastiCacheIntegrationsSession", () => {
           ? Buffer.from(
               '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
             )
-          : new RespError("AUTH_ERROR", "missing FAS"),
+          : new RespError("AUTH_ERROR", "missing credentials"),
       ),
       close,
     });
@@ -306,7 +306,7 @@ describe("ElastiCacheIntegrationsSession", () => {
             ? Buffer.from(
                 '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
               )
-            : new RespError("AUTH_ERROR", "missing FAS"),
+            : new RespError("AUTH_ERROR", "missing credentials"),
         ),
       });
       const session = new ElastiCacheIntegrationsSession(
@@ -342,7 +342,7 @@ describe("ElastiCacheIntegrationsSession", () => {
   it("zero window auth error raises and reconnects", async () => {
     const cache = new MockCache({
       config: { predicates: [{ expr: "true", vars: {} }] },
-      response: Reply.error("AUTH_ERROR", "no FAS"),
+      response: Reply.error("AUTH_ERROR", "no credentials"),
     });
     await cache.start();
     const factory = vi.fn(
@@ -951,12 +951,12 @@ describe("ElastiCacheIntegrationsSession", () => {
       responseBody: Buffer.from("reconnected"),
     });
     await cache.start();
-    const proxy = new MockTcpProxy(cache.host, cache.port!);
-    await proxy.start();
+    const relay = new MockTcpRelay(cache.host, cache.port!);
+    await relay.start();
     const authProvider = vi.fn(async () => ["test-user", "test-token"] as [string, string]);
     const factory = vi.fn(
       () =>
-        new ElastiCacheIntegrationsConnector(proxy.host, proxy.port!, {
+        new ElastiCacheIntegrationsConnector(relay.host, relay.port!, {
           tls: false,
           connectionTimeout: 500,
           requestTimeout: 500,
@@ -974,7 +974,7 @@ describe("ElastiCacheIntegrationsSession", () => {
     );
     try {
       await session.open();
-      proxy.disconnectClients();
+      relay.disconnectClients();
 
       await vi.waitFor(
         () => {
@@ -991,7 +991,7 @@ describe("ElastiCacheIntegrationsSession", () => {
       expect(cache.cacheCommandLog.filter((command) => command === "aws.config")).toHaveLength(2);
     } finally {
       await session.close();
-      await proxy.stop();
+      await relay.stop();
       await cache.stop();
     }
   });

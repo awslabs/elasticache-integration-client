@@ -91,7 +91,7 @@ export class PredicateEvaluator {
    * @throws ElastiCacheIntegrationsConfigUnevaluable `predicates` is present but not an array,
    *   an entry is not an object, has no string `expr`, or has an expression
    *   this client cannot compile. Caching by the entries that happened to
-   *   compile would route a different set of requests than the proxy resolved.
+   *   compile would route a different set of requests than the cache resolved.
    */
   static compile(rawConfig: Record<string, unknown> | undefined): PredicateEvaluator {
     if (rawConfig === undefined || rawConfig === null || !("predicates" in rawConfig)) {
