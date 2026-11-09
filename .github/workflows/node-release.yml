@@ -175,6 +175,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - name: Download validated tarball
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -189,7 +190,7 @@ jobs:
           cd .artifacts
           shasum -a 256 -c "$TARBALL.sha256"
 
-      - name: Verify trusted publishing prerequisites
+      - name: Verify npm publishing prerequisites
         env:
           MINIMUM_NODE_VERSION: "22.14.0"
           MINIMUM_NPM_VERSION: "11.5.1"
@@ -202,8 +203,15 @@ jobs:
       - name: Publish validated tarball
         env:
           DIST_TAG: ${{ needs.package.outputs.dist-tag }}
+          # A new npm package cannot configure trusted publishing until after its
+          # first publication. Set this release-environment secret to a short-lived
+          # granular token for that bootstrap only, then revoke and delete it.
+          # Once the trusted publisher exists, npm uses GitHub OIDC instead.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           TARBALL: ${{ needs.package.outputs.tarball }}
-        run: npm publish ".artifacts/$TARBALL" --ignore-scripts --provenance --access public --tag "$DIST_TAG"
+        # Do not force provenance while the source repository is private. npm
+        # trusted publishing adds provenance automatically after it becomes public.
+        run: npm publish ".artifacts/$TARBALL" --ignore-scripts --access public --tag "$DIST_TAG"
 
       - name: Wait for npm propagation
         env:

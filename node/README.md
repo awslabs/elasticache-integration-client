@@ -277,7 +277,20 @@ The package builds ESM and CommonJS outputs and emits TypeScript declarations.
 Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
 release workflow. It validates the tag against `package.json`, tests and
 inspects one tarball, then publishes that exact artifact through the protected
-`release` environment using npm trusted publishing. Release candidates use the
-`next` npm distribution tag; stable releases use `latest`. A manual workflow
-run performs the same validation and uploads the tarball and checksum without
-entering the release environment or publishing to npm.
+`release` environment. Release candidates use the `next` npm distribution tag;
+stable releases use `latest`. A manual workflow run performs the same
+validation and uploads the tarball and checksum without entering the release
+environment or publishing to npm.
+
+Normal releases use npm trusted publishing with GitHub OIDC. Configure the npm
+publisher for the `awslabs/aws-elasticache-integration-client` repository,
+`node-release.yml` workflow, and `release` environment, with direct
+`npm publish` access. Because npm requires a package to exist before its
+trusted publisher can be configured, the first publication may use a
+short-lived granular npm token stored as the `NPM_BOOTSTRAP_TOKEN` secret on
+the `release` environment. Revoke the token and delete the secret immediately
+after the package exists and trusted publishing is configured.
+
+The workflow does not force provenance while the GitHub repository is private.
+npm trusted publishing generates provenance automatically for subsequent
+public-repository releases.
