@@ -1145,7 +1145,9 @@ class ElastiCacheIntegrationsSessionTest {
             assertTrue(failingReplacement.isDead());
 
             allowStable.countDown();
-            assertEquals(200, waitingRequest.get(1, TimeUnit.SECONDS).getStatusCode());
+            assertNull(
+                    waitingRequest.get(1, TimeUnit.SECONDS),
+                    "the replacement's fresh predicates decline the waiting request");
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(3, connectionCreationCount.get());
