@@ -125,7 +125,7 @@ describe("generateIamAuthToken", () => {
     ).rejects.toThrow("serverlessCacheName");
   });
 
-  it("requests fresh credentials for every token", async () => {
+  it("reads the SDK client's credentials without forcing a refresh", async () => {
     const credentialProvider = vi.fn(async () => credentials);
 
     await generateIamAuthToken({
@@ -141,8 +141,8 @@ describe("generateIamAuthToken", () => {
       credentials: credentialProvider,
     });
 
-    expect(credentialProvider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
-    expect(credentialProvider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(credentialProvider).toHaveBeenNthCalledWith(1);
+    expect(credentialProvider).toHaveBeenNthCalledWith(2);
   });
 });
 
@@ -230,7 +230,7 @@ describe("buildCacheAuthProvider", () => {
     }
   });
 
-  it("caches and force-refreshes rotated credentials", async () => {
+  it("caches the token and re-reads rotated credentials on refresh", async () => {
     const clientCredentials = vi
       .fn()
       .mockResolvedValueOnce(credentials)
@@ -247,8 +247,8 @@ describe("buildCacheAuthProvider", () => {
     const [, refreshedToken] = await provider.refreshAuth();
 
     expect(clientCredentials).toHaveBeenCalledTimes(2);
-    expect(clientCredentials).toHaveBeenNthCalledWith(1, { forceRefresh: true });
-    expect(clientCredentials).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(clientCredentials).toHaveBeenNthCalledWith(1);
+    expect(clientCredentials).toHaveBeenNthCalledWith(2);
     expect(firstToken).toContain(credentials.accessKeyId);
     expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
     expect(cachedToken).toBe(firstToken);
@@ -274,7 +274,7 @@ describe("buildCacheAuthProvider", () => {
 
     expect(firstToken).toContain(credentials.accessKeyId);
     expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
-    expect(clientCredentials).toHaveBeenCalledExactlyOnceWith({ forceRefresh: true });
+    expect(clientCredentials).toHaveBeenCalledExactlyOnceWith();
     provider.close();
   });
 
