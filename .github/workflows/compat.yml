@@ -249,7 +249,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - aws-sdk-version: 2.21.22
+          - aws-sdk-version: 2.21.0
             coverage: minimum
           - aws-sdk-version: 2.25.70
             coverage: legacy provider

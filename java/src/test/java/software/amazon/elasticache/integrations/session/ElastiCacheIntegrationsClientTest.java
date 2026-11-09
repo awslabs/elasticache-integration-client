@@ -36,7 +36,6 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
-import software.amazon.awssdk.core.client.config.SdkClientOption;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
@@ -610,9 +609,9 @@ class ElastiCacheIntegrationsClientTest {
                         () ->
                                 ElastiCacheIntegrationsClient.rejectHttpClientBuilder(
                                         appBuilder(),
-                                        SdkClientOption.CONFIGURED_SYNC_HTTP_CLIENT_BUILDER,
-                                        "originHttpClient",
-                                        "fieldThatDoesNotExist"));
+                                        "FIELD_THAT_DOES_NOT_EXIST",
+                                        "fieldThatDoesNotExist",
+                                        "originHttpClient"));
 
         assertTrue(error.getMessage().contains("originHttpClient"), error.getMessage());
         assertNotNull(error.getCause(), "the reflection failure is the cause");

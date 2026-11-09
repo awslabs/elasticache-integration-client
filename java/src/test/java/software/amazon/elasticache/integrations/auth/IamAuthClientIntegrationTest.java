@@ -66,23 +66,19 @@ class IamAuthClientIntegrationTest {
         AtomicInteger credentialCalls = new AtomicInteger();
         AwsCredentialsProvider sdkCredentials = rotatingCredentials(credentialCalls);
 
-        try (DynamoDbClient client =
+        try (DynamoDbClient ignored =
                 cacheBuilder()
                         .install(
                                 DynamoDbClient.builder()
                                         .region(Region.US_EAST_1)
-                                        .credentialsProvider(sdkCredentials))) {
-            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
-        }
+                                        .credentialsProvider(sdkCredentials))) {}
 
-        try (DynamoDbAsyncClient client =
+        try (DynamoDbAsyncClient ignored =
                 cacheBuilder()
                         .installAsync(
                                 DynamoDbAsyncClient.builder()
                                         .region(Region.US_EAST_1)
-                                        .credentialsProvider(sdkCredentials))) {
-            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
-        }
+                                        .credentialsProvider(sdkCredentials))) {}
 
         assertEquals(4, credentialCalls.get());
         List<MockCache.AuthAttempt> attempts = cache.getAuthAttempts();
