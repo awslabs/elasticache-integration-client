@@ -23,7 +23,7 @@ const stsOptions: Parameters<typeof install<typeof sts>>[0] = {
 
 describe("ElastiCacheIntegrations package entry point", () => {
   it("exports the package version", () => {
-    expect(version).toBe("0.0.1");
+    expect(version).toBe("0.0.2-rc.1");
   });
 
   it("exports install and its type surface", () => {

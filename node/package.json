@@ -1,6 +1,6 @@
 {
   "name": "@aws-sdk/aws-elasticache-integration-client",
-  "version": "0.0.1",
+  "version": "0.0.2-rc.1",
   "description": "ElastiCache Integrations for AWS SDK for JavaScript v3 DynamoDB clients.",
   "license": "Apache-2.0",
   "repository": {
