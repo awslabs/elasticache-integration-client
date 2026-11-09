@@ -31,9 +31,6 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  */
 public class PendingRequests {
 
-    /** Default maximum requests awaiting either a FIFO or a deferred reply. */
-    public static final int DEFAULT_MAX_PENDING = 100;
-
     enum TimeoutDisposition {
         /** An async request was removed; the connection can remain usable. */
         ASYNC_REMOVED,
@@ -61,7 +58,7 @@ public class PendingRequests {
 
     /** Create a pending requests queue with default max size. */
     public PendingRequests() {
-        this(DEFAULT_MAX_PENDING);
+        this(ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
     }
 
     /**

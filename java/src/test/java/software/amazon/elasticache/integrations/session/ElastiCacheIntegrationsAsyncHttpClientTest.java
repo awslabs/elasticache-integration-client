@@ -44,6 +44,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
+import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
@@ -145,6 +146,30 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
 
         assertEquals(1, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void executorRejectionDoesNotContactOriginWhenFallbackIsDisabled() {
+        RecordingOrigin origin = new RecordingOrigin();
+        Executor rejectingExecutor =
+                command -> {
+                    throw new RejectedExecutionException("at capacity");
+                };
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new NoFallbackSession(), preparedContext(), origin, false, rejectingExecutor, null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(
+                failure.getCause() instanceof RetryableException
+                        && failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable,
+                failure.getCause().toString());
+        assertEquals(0, origin.executeCount.get());
         client.close();
     }
 
@@ -644,6 +669,22 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         @Override
         public void subscribe(Subscriber<? super ByteBuffer> subscriber) {
             delegate.subscribe(subscriber);
+        }
+    }
+
+    /** An open session configured with {@code fallbackDurationSeconds(0)}. */
+    private static final class NoFallbackSession extends ElastiCacheIntegrationsSession {
+        private NoFallbackSession() {
+            super(
+                    () -> new ElastiCacheIntegrationsConnector("unused", 1, null),
+                    () -> new AuthCredentials("user", "token"),
+                    null,
+                    ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
+        }
+
+        @Override
+        public boolean isOpen() {
+            return true;
         }
     }
 

@@ -22,6 +22,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -205,7 +206,15 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
                 // Executor saturation means Cache cannot accept this attempt.
-                fallbackToOrigin(copyWithBody(request, body));
+                if (session.mayBypassCache(cacheRequest)) {
+                    fallbackToOrigin(copyWithBody(request, body));
+                } else {
+                    handleCacheCompletion(
+                            body,
+                            null,
+                            new ElastiCacheIntegrationsCacheUnavailable(
+                                    "Cache executor is at capacity and origin fallback is disabled"));
+                }
                 return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);

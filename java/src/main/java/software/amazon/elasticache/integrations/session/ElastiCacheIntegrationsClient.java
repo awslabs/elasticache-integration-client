@@ -61,6 +61,9 @@ public final class ElastiCacheIntegrationsClient {
     private static final String NO_CREDENTIALS =
             "This AWS SDK client carries no credentials, so the cache cannot be authenticated. "
                     + "A client built with AnonymousCredentialsProvider is not supported.";
+    private static final String UNRESOLVED_CREDENTIALS =
+            "The AWS SDK client's credentials provider could not resolve credentials, so the cache "
+                    + "cannot be authenticated: ";
 
     private ElastiCacheIntegrationsClient() {
         // Factory class
@@ -472,13 +475,22 @@ public final class ElastiCacheIntegrationsClient {
             if (credentials == null || credentials instanceof AnonymousCredentialsProvider) {
                 throw new ElastiCacheIntegrationsConfigError(NO_CREDENTIALS);
             }
+            AwsCredentialsProvider credentialsProvider = asAwsCredentialsProvider(credentials);
+            // Resolve once now, so a client with no usable credentials fails here, as it does in
+            // Python. The token manager would retry the failure past the connection timeout and
+            // hide the SDK's error.
+            try {
+                credentialsProvider.resolveCredentials();
+            } catch (RuntimeException e) {
+                throw new ElastiCacheIntegrationsConfigError(UNRESOLVED_CREDENTIALS + e.getMessage(), e);
+            }
 
             IamAuthTokenProvider.Builder iam =
                     IamAuthTokenProvider.builder()
                             .cacheName(cacheName)
                             .userId(userId)
                             .region(region)
-                            .credentialsProvider(asAwsCredentialsProvider(credentials));
+                            .credentialsProvider(credentialsProvider);
             if (clientConfiguration.getIamTokenRefreshDelay() != null) {
                 iam.refreshAfter(clientConfiguration.getIamTokenRefreshDelay());
             }

@@ -130,9 +130,7 @@ class ElastiCacheIntegrationsHandle implements Closeable {
         private IamAuthTokenProvider iamAuthProvider;
         private ManagedIamAuthProvider managedAuthProvider;
         private Map<String, Object> overrides;
-        private int connectTimeoutMs = 5000;
-        private int initializationTimeoutMs = 5000;
-        private int requestTimeoutMs = 5000;
+        private int requestTimeoutMs = ElastiCacheIntegrationsConnector.DEFAULT_REQUEST_TIMEOUT_MS;
         private ReconnectPolicy reconnectPolicy = ReconnectPolicy.defaults();
         private long stalenessDurationSeconds =
                 ElastiCacheIntegrationsSession.DEFAULT_STALENESS_DURATION_SECONDS;
@@ -246,28 +244,6 @@ class ElastiCacheIntegrationsHandle implements Closeable {
         }
 
         /**
-         * Set connect timeout in milliseconds (default: 5000).
-         *
-         * @param connectTimeoutMs the connect timeout in milliseconds
-         * @return this builder
-         */
-        public Builder connectTimeoutMs(int connectTimeoutMs) {
-            this.connectTimeoutMs = connectTimeoutMs;
-            return this;
-        }
-
-        /**
-         * Set the HELLO/authentication and configuration timeout in milliseconds (default: 5000).
-         *
-         * @param initializationTimeoutMs the initialization timeout in milliseconds
-         * @return this builder
-         */
-        public Builder initializationTimeoutMs(int initializationTimeoutMs) {
-            this.initializationTimeoutMs = initializationTimeoutMs;
-            return this;
-        }
-
-        /**
          * Set the maximum time, in milliseconds, to wait for each Cache request response (default:
          * 5000).
          *
@@ -360,8 +336,7 @@ class ElastiCacheIntegrationsHandle implements Closeable {
                                                 host,
                                                 port,
                                                 resolvedSsl,
-                                                connectTimeoutMs,
-                                                initializationTimeoutMs,
+                                                Math.toIntExact(reconnectPolicy.getConnectionTimeoutMs()),
                                                 requestTimeoutMs,
                                                 ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING),
                                 resolvedAuthProvider,
