@@ -160,6 +160,11 @@ class SdkRequestCasesTest {
                                 .endpoint("localhost:" + server.getPort())
                                 .cacheName("my-cache")
                                 .verify(false)
+                                // The default startup deadline can expire on a loaded CI runner.
+                                .clientConfiguration(
+                                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                                .connectionTimeoutMs(10_000)
+                                                .build())
                                 .originHttpClient(new NoOriginClient())
                                 .install(
                                         DynamoDbClient.builder()

@@ -161,6 +161,28 @@ mistake this contract for a review finding; intentional scope changes require
 README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
+One timeout, `connectionTimeoutMs` (default 5000), bounds startup and the
+reconnect wait. Within each attempt it also bounds each step: the TCP connect
+and TLS handshake together, `HELLO 3 AUTH`, and the first `aws.config`. The
+periodic re-AUTH and `aws.config` refresh on a live connection use the request
+timeout. `open()` keeps retrying the first connection with backoff until
+it passes, caps each attempt by the time left, and sleeps no longer than the time
+left. On failure it closes every connector it built. A connection failure is
+thrown as `ElastiCacheIntegrationsConnectionError` ("opening a connection
+timed out after Nms") with the last failure as its cause. Any other last failure
+(`ElastiCacheIntegrationsAuthError`, `ElastiCacheIntegrationsOverridesRejected`,
+`ElastiCacheIntegrationsConfigUnevaluable`) is rethrown unchanged. A session built
+around one concrete connector makes a single attempt. When a live connection is
+lost, one clock reading sets `readyDeadline = now + connectionTimeout` and
+`fallbackDeadline = readyDeadline + fallbackDuration`, both with a saturating add.
+A routed request with no ready connector starts the reconnect and waits until
+`readyDeadline` for a connector, on the caller's thread for the sync transport and
+on the executor thread for the async transport. It is served on the connector if one
+arrives. Otherwise it falls back to the origin if `fallbackAllowed()`, and raises
+`ElastiCacheIntegrationsCacheUnavailable` if not. `fallbackDurationSeconds == 0`
+never allows fallback. `close()` wakes every waiting request. The background
+reconnect has its own 5000 ms cap per attempt, not `connectionTimeoutMs`.
+
 Periodic config refresh is in scope: each config `Refresher` tick sends
 `aws.config`, using the zero-argument form once the session's overrides
 have been acknowledged by the server (an unacknowledged override map, including

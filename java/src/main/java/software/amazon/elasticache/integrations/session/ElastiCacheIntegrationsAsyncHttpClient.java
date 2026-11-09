@@ -22,6 +22,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.http.async.SdkAsyncHttpResponseHandler;
 import software.amazon.awssdk.http.async.SdkHttpContentPublisher;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -154,20 +155,10 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
             SdkHttpContentPublisher publisher = request.requestContentPublisher();
             boolean tooLargeToBuffer =
                     publisher.contentLength().map(length -> length > maxBufferedRequestBytes).orElse(true);
-            if (tooLargeToBuffer) {
+            if (tooLargeToBuffer || !bodyCollectorPermits.tryAcquire()) {
                 // Do not subscribe when the request cannot fit within the configured
                 // buffering budget. The origin transport consumes the original body.
                 fallbackToOrigin(request);
-                return result;
-            }
-            if (!bodyCollectorPermits.tryAcquire()) {
-                fail(
-                        result,
-                        request.responseHandler(),
-                        RetryableException.create(
-                                "Cache request body collector is at capacity",
-                                new RejectedExecutionException(
-                                        "maximum concurrent Cache body collectors reached")));
                 return result;
             }
 
@@ -214,10 +205,16 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
                         CompletableFuture.supplyAsync(
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
-                fail(
-                        result,
-                        request.responseHandler(),
-                        RetryableException.create("Cache request executor rejected request", capacityFailure));
+                // Executor saturation means Cache cannot accept this attempt.
+                if (session.mayBypassCache(cacheRequest)) {
+                    fallbackToOrigin(copyWithBody(request, body));
+                } else {
+                    handleCacheCompletion(
+                            body,
+                            null,
+                            new ElastiCacheIntegrationsCacheUnavailable(
+                                    "Cache executor is at capacity and origin fallback is disabled"));
+                }
                 return;
             } catch (Throwable submissionFailure) {
                 fail(result, request.responseHandler(), submissionFailure);

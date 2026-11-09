@@ -31,6 +31,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
@@ -574,11 +575,134 @@ class TestElastiCacheIntegrationsConnector:
     def test_wedged_loop_does_not_block_callers_forever(self):
         """A wedged I/O loop must not block callers forever: with the send parked behind
         the wedge, the caller's reply timeout still fires. (There is no send-side timeout
-        by design — a send only copies bytes into the transport buffer.)"""
+        by design — a send only copies bytes into the transport buffer.)
+
+        The send never ran, so this reports ElastiCacheIntegrationsNotSentError rather than a
+        timeout: a wedged loop is a client-side fault and must be alarmable apart from a slow
+        cache. It stays a ElastiCacheIntegrationsConnectionLost, so existing callers are
+        unaffected.
+        """
         self.connect_and_handshake(request_timeout_ms=200)
         self.conn._io_loop_thread.call(time.sleep, 1)  # wedge the loop
-        with pytest.raises(ElastiCacheIntegrationsTimeoutError):
+        with pytest.raises(ElastiCacheIntegrationsNotSentError) as caught:
             self.send_request()
+        assert isinstance(caught.value, ElastiCacheIntegrationsConnectionLost)
+        # The wedge outlives the caller's timeout, so the parked send is refused by the
+        # liveness guard once it finally runs: the frame must never reach the cache.
+        time.sleep(1.2)
+        assert self.cache.last_request is None
+
+    def test_reply_timeout_after_a_real_send_is_still_a_timeout(self):
+        """A cache that accepts the frame and never answers must stay a timeout.
+
+        The counterpart to the wedged-loop test: this is the case where the bytes did reach the
+        socket, so the command may have been applied and must never be reported as "not sent".
+        """
+        self.start_cache(failure="hang")
+        self.connect_and_handshake(request_timeout_ms=200)
+        with pytest.raises(ElastiCacheIntegrationsTimeoutError) as caught:
+            self.send_request()
+        assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
+        assert self.cache.last_request is not None  # the frame really did go out
+
+    def test_send_refused_after_close_reports_not_sent(self):
+        """A send parked behind a wedge and overtaken by close() never reaches the transport.
+
+        The _send liveness guard rejects it, so the caller learns the command was not sent
+        instead of waiting out its full reply timeout.
+        """
+        self.connect_and_handshake(request_timeout_ms=5000)
+        self.conn._io_loop_thread.call(time.sleep, 0.3)  # park the send behind this
+        outcome: list = []
+        queued = threading.Event()
+        schedule = self.conn._io_loop_thread.call
+
+        def schedule_then_signal(*args):
+            schedule(*args)
+            queued.set()
+
+        def caller():
+            try:
+                self.send_request()
+                outcome.append("returned")
+            except BaseException as exc:  # noqa: BLE001
+                outcome.append(exc)
+
+        thread = threading.Thread(target=caller)
+        # Pin the interleaving to the path under test. Every other not-sent path raises the
+        # same class — the execute() pre-check even raises the same message — so without
+        # waiting for the send to be queued, a close() that won the race outright would
+        # satisfy these assertions without the liveness guard ever running.
+        with mock.patch.object(self.conn._io_loop_thread, "call", side_effect=schedule_then_signal):
+            thread.start()
+            assert queued.wait(timeout=5), "execute() never scheduled the send"
+        # The send is on the loop's queue behind the wedge and the caller is blocked on its
+        # future, so close() can only overtake it in _send.
+        self.conn.close()
+        thread.join(timeout=10)
+        assert len(outcome) == 1, outcome
+        assert isinstance(outcome[0], ElastiCacheIntegrationsNotSentError), outcome[0]
+        assert self.cache.last_request is None
+
+    def test_execute_after_close_reports_not_sent(self):
+        """execute() on a closed connector never touches a transport, so it reports not-sent."""
+        self.connect()
+        self.conn.close()
+        with pytest.raises(ElastiCacheIntegrationsNotSentError):
+            self.conn.execute("aws.request", b"x")
+
+    def test_execute_reports_not_sent_when_the_loop_is_gone(self):
+        """The call_soon_threadsafe arm: the loop dies between the pre-check and the schedule.
+
+        execute() checks for a live loop, then hands _send to it; a close() in that window makes
+        the schedule raise RuntimeError. Nothing was written, so it reports not-sent.
+        """
+        self.connect_and_handshake()
+        with mock.patch.object(
+            self.conn._io_loop_thread, "call", side_effect=RuntimeError("loop closed")
+        ):
+            with pytest.raises(ElastiCacheIntegrationsNotSentError):
+                self.send_request()
+        assert self.cache.last_request is None
+
+    def test_write_failure_is_not_reported_as_not_sent(self):
+        """write() is the boundary: a failure there is indeterminate, never "not sent".
+
+        asyncio's transport attempts a synchronous partial send inside write(), so bytes may
+        already be in flight when it raises. Claiming the command was not sent would invite a
+        caller to re-issue something the cache may have applied.
+        """
+        self.connect_and_handshake(request_timeout_ms=5000)
+        writer = self.wrap_writer()
+        writer.write = mock.Mock(side_effect=OSError("broken pipe"))
+        with pytest.raises(ElastiCacheIntegrationsConnectionLost) as caught:
+            self.send_request()
+        assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
+
+    def test_admission_timeout_is_not_reported_as_transport_not_sent(self):
+        """Admission exhaustion keeps its dedicated error rather than a transport failure."""
+        self.start_cache(failure="hang")  # the first request is sent but never answered
+        self.connect_and_handshake(max_pending=1)
+        blocked = threading.Thread(
+            target=lambda: self._swallow(self.send_request, timeout_ms=30000)
+        )
+        blocked.start()
+        try:
+            # The slot is only taken once _send has registered the hanging request.
+            assert self.wait_until(lambda: len(self.conn._pending._queue) >= 1, timeout=3.0)
+            with pytest.raises(ElastiCacheIntegrationsRequestNotSent) as caught:
+                self.send_request(timeout_ms=200)
+            assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
+            assert "waiting for connection capacity" in str(caught.value)
+        finally:
+            self.conn.close()  # releases the blocked caller instead of waiting out its timeout
+            blocked.join(timeout=10)
+
+    def _swallow(self, fn, **kwargs):
+        try:
+            fn(**kwargs)
+        except BaseException:  # noqa: BLE001
+            pass
 
     @pytest.mark.parametrize(
         "leak",

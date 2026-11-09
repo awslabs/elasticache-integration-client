@@ -54,7 +54,7 @@ public final class AuthCredentials {
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (o == null || getClass() != o.getClass()) return false;
+        if (!(o instanceof AuthCredentials)) return false;
         AuthCredentials that = (AuthCredentials) o;
         return userId.equals(that.userId) && token.equals(that.token);
     }

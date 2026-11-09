@@ -52,6 +52,21 @@ class ElastiCacheIntegrationsConnectionLost(ElastiCacheIntegrationsError):
     """The socket died mid-flight; pending requests are failed."""
 
 
+class ElastiCacheIntegrationsNotSentError(ElastiCacheIntegrationsConnectionLost):
+    """The command never reached the socket, so re-issuing it cannot duplicate a side effect.
+
+    A narrower ``ElastiCacheIntegrationsConnectionLost``: every caller that catches the base
+    class keeps catching this, so origin pass-through in ``hooks.py`` is unchanged. It only adds
+    fidelity — a command rejected before the transport was touched is independently alarmable
+    from one that may have been applied by the cache.
+
+    The distinction is drawn conservatively. The boundary is ``_writer.write(frame)``, and that
+    call is treated as indeterminate rather than "not sent", because asyncio's transport attempts
+    a synchronous partial send inside it. Anything at or past that line stays a plain
+    ``ElastiCacheIntegrationsConnectionLost`` or ``ElastiCacheIntegrationsTimeoutError``.
+    """
+
+
 class ElastiCacheIntegrationsTimeoutError(ElastiCacheIntegrationsError):
     """A request exceeded its per-request timeout (named to avoid shadowing the builtin)."""
 
