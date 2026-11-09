@@ -853,14 +853,6 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void fallbackWindowExpiresWhileReconnectContinues() throws Exception {
-        ReconnectPolicy policy =
-                ReconnectPolicy.builder()
-                        .fallbackDurationSeconds(0)
-                        .baseDelayMs(1)
-                        .maxDelayMs(1)
-                        .jitterFactor(0)
-                        .build();
-
         try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort())) {
             ElastiCacheIntegrationsHandle handle =
                     ElastiCacheIntegrationsHandle.builder()
@@ -868,9 +860,14 @@ class ElastiCacheIntegrationsSessionTest {
                             .port(proxy.getPort())
                             .sslContext(clientSslContext)
                             .authCredentials(TEST_USER, TEST_TOKEN)
-                            .connectTimeoutMs(100)
-                            .initializationTimeoutMs(100)
-                            .reconnectPolicy(policy)
+                            .reconnectPolicy(
+                                    ReconnectPolicy.builder()
+                                            .connectionTimeoutMs(100)
+                                            .fallbackDurationSeconds(0)
+                                            .baseDelayMs(1)
+                                            .maxDelayMs(1)
+                                            .jitterFactor(0)
+                                            .build())
                             .build();
             try {
                 handle.open();
@@ -1058,6 +1055,7 @@ class ElastiCacheIntegrationsSessionTest {
         BlockingConnectConnector stableReplacement =
                 new BlockingConnectConnector(stableStarted, allowStable, "false");
         AtomicInteger connectionCreationCount = new AtomicInteger();
+        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
                         () -> {
@@ -1069,25 +1067,34 @@ class ElastiCacheIntegrationsSessionTest {
                         },
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                         null,
-                        fastPolicy());
+                        ReconnectPolicy.builder()
+                                .connectionTimeoutMs(10_000)
+                                .baseDelayMs(1)
+                                .maxDelayMs(2)
+                                .jitterFactor(0)
+                                .build());
         try {
             session.open();
             ResolvedConfig initialConfig = session.getConfig();
             initialConnector.fail();
 
-            assertNull(session.request(request()));
+            CompletableFuture<ElastiCacheIntegrationsResponse> waitingRequest =
+                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
             assertTrue(stableStarted.await(1, TimeUnit.SECONDS));
+            assertFalse(waitingRequest.isDone());
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertSame(initialConfig, session.getConfig());
             assertTrue(failingReplacement.isDead());
 
             allowStable.countDown();
+            assertEquals(200, waitingRequest.get(1, TimeUnit.SECONDS).getStatusCode());
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(3, connectionCreationCount.get());
         } finally {
             allowStable.countDown();
             session.close();
+            requestExecutor.shutdownNow();
         }
     }
 
@@ -1233,7 +1240,7 @@ class ElastiCacheIntegrationsSessionTest {
         assertEquals("opening a connection timed out after 300ms", thrown.getMessage());
         assertEquals("injected connection failure", thrown.getCause().getMessage());
         assertTrue(elapsed >= 290, "gave up before the timeout: " + elapsed + "ms");
-        assertTrue(built.size() >= 2, "a failed connection is retried inside the timeout");
+        assertTrue(built.size() >= 2, "connection failure was not retried: " + built.size());
         for (TestConnector connector : built) {
             assertTrue(connector.isDead());
         }

@@ -161,7 +161,7 @@ mistake this contract for a review finding; intentional scope changes require
 README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
-One timeout, `connectionTimeoutMs` (default 2000), bounds startup and the
+One timeout, `connectionTimeoutMs` (default 5000), bounds startup and the
 reconnect wait. `open()` keeps retrying the first connection with backoff until
 it passes, caps each attempt by the time left, and sleeps no longer than the time
 left. On failure it closes every connector it built. A connection failure is
