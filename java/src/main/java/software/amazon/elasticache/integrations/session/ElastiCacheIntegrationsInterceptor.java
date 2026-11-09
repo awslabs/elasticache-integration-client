@@ -152,12 +152,13 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
     }
 
     /**
-     * AWS SDK 2.31.64 added {@code ContentStreamProvider.name()}. Invoke it reflectively so the
-     * client can still run with earlier SDK releases. Before that API existed, file and direct
-     * input-stream providers were anonymous classes, and {@code RequestBody.fromInputStream} produced
-     * a lambda that captured an {@link InputStream}. SDK releases before the buffering provider used
-     * the caller's provider directly, so the absence of {@code Content-Length} identifies an
-     * unknown-length stream.
+     * AWS SDK 2.31.64 added the authoritative {@code ContentStreamProvider.name()}; invoke it
+     * reflectively so the client can still run with earlier SDK releases. On older SDKs this is a
+     * conservative heuristic: match the SDK's known file, buffering, and direct-stream provider class
+     * names, identify {@code RequestBody.fromInputStream} lambdas by their captured {@link
+     * InputStream} field, and decline any provider without {@code Content-Length}. The last check
+     * treats unknown-length custom providers as streams rather than risk consuming them before the
+     * origin request.
      */
     private static boolean isStreamOrFile(
             ContentStreamProvider provider, SdkHttpFullRequest sdkRequest) {

@@ -251,6 +251,8 @@ jobs:
         include:
           - aws-sdk-version: 2.21.0
             coverage: minimum
+          # This version has the direct stream-provider factories but predates name(), so their
+          # compatibility cases execute against the anonymous provider implementations.
           - aws-sdk-version: 2.25.70
             coverage: legacy provider
     steps:

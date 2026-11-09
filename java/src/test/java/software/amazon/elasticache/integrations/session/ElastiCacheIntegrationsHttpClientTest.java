@@ -11,6 +11,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -286,7 +287,9 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     private static void assumeContentStreamProviderFactory(String name) {
-        for (java.lang.reflect.Method method : ContentStreamProvider.class.getMethods()) {
+        // The 2.25.70 compatibility job has these factories and executes both provider cases. The
+        // 2.21.0 minimum job skips only the APIs that do not exist in that SDK.
+        for (Method method : ContentStreamProvider.class.getMethods()) {
             if (name.equals(method.getName())) {
                 return;
             }
