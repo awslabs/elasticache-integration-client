@@ -350,9 +350,10 @@ misrouting. A RESP3 push with an unrecognized kind is treated as protocol
 corruption: it invalidates the stream and closes the connection, rather than
 being ignored. One connection sends at most 100 requests awaiting replies at
 once. Additional callers wait for a slot within `cacheRequestTimeoutMs` instead
-of failing at the concurrency boundary. If that wait leaves too little time to
-send and receive a reply, the request is not sent to the cache and continues to
-origin regardless of operation idempotency.
+of failing at the concurrency boundary. Queue admission uses at most 75% of
+that timeout, reserving 25% to send and receive a reply. If that budget is
+exhausted, the request is not sent to the cache and continues to origin
+regardless of operation idempotency.
 
 ## Development
 

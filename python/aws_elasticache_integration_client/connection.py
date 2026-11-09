@@ -735,7 +735,7 @@ class ElastiCacheIntegrationsConnector:
         if timeout_ms is None:
             timeout_ms = self.request_timeout_ms
         timeout_seconds = timeout_ms / 1000
-        minimum_response_budget = min(0.001, timeout_seconds / 2)
+        minimum_response_budget = timeout_seconds / 4
         deadline = time.monotonic() + timeout_seconds
         if not self._admission.acquire(max(0.0, timeout_seconds - minimum_response_budget)):
             raise ElastiCacheIntegrationsRequestNotSent(

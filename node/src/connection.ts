@@ -31,7 +31,7 @@ export const DEFAULT_CONNECTION_TIMEOUT = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const DEFAULT_MAX_PENDING = 100;
-const MAX_MINIMUM_RESPONSE_BUDGET_MS = 1;
+const RESPONSE_BUDGET_FRACTION = 0.25;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
 
@@ -652,7 +652,7 @@ export class ElastiCacheIntegrationsConnector {
 
     const timeout = this.timeoutFor(command);
     const deadline = Date.now() + timeout;
-    const minimumResponseBudget = Math.min(MAX_MINIMUM_RESPONSE_BUDGET_MS, timeout / 2);
+    const minimumResponseBudget = timeout * RESPONSE_BUDGET_FRACTION;
     const release = this.admission.tryAcquire();
     if (release !== undefined) {
       return this.executeAdmitted(command, args, deadline, timeout, minimumResponseBudget, release);

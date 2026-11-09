@@ -1307,7 +1307,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
-    void expiredBudgetAfterAdmissionDoesNotSendOrKillConnection() throws Exception {
+    void reservedResponseBudgetAfterAdmissionDoesNotSendOrKillConnection() throws Exception {
         AtomicInteger sequence = new AtomicInteger();
         CountDownLatch firstRequestReceived = new CountDownLatch(1);
         cache.setReplyFunction(
@@ -1321,9 +1321,8 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 1000, 1);
+                        "localhost", server.getPort(), clientSslContext, 5000, 5000, 400, 1);
         ExecutorService executor = Executors.newFixedThreadPool(2);
-        Lock sendLock = getField(conn, "sendLock", Lock.class);
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             Future<ElastiCacheIntegrationsResponse> first =
@@ -1333,8 +1332,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
             Future<ElastiCacheIntegrationsResponse> second =
                     executor.submit(() -> conn.request(testRequest("second")));
-            Thread.sleep(25);
-            assertTrue(sendLock.tryLock(1, TimeUnit.SECONDS));
+            Thread.sleep(325);
             assertEquals(1, cache.getRequests().size());
 
             server.sendPush(responsePush(42, responseValue("first")));
@@ -1346,14 +1344,10 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             assertEquals(1, cache.getRequests().size());
             assertFalse(conn.isDead());
 
-            sendLock.unlock();
             assertEquals(
                     "third",
                     new String(conn.request(testRequest("third")).getBody(), StandardCharsets.UTF_8));
         } finally {
-            if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
-                sendLock.unlock();
-            }
             executor.shutdownNow();
             conn.close();
         }

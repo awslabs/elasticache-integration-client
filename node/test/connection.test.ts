@@ -846,7 +846,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
     try {
       const second = connector.execute("aws.request", ...requestArgs("second"));
-      now = 3_000;
+      now = 2_500;
       cache.sendPush(42);
 
       await expect(first).resolves.toEqual([

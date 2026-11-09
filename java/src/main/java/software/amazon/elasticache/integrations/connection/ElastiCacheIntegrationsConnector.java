@@ -89,7 +89,6 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
     private static final String[] PREFERRED_TLS_PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
     private static final int RESP3_PROTOCOL_VERSION = 3;
-    private static final long MAX_MINIMUM_RESPONSE_BUDGET_NANOS = TimeUnit.MILLISECONDS.toNanos(1);
     private static final RespBulkString HELLO_PROTO_KEY =
             new RespBulkString("proto".getBytes(StandardCharsets.UTF_8));
     private static final ScheduledThreadPoolExecutor TIMEOUT_EXECUTOR = createTimeoutExecutor();
@@ -997,8 +996,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     }
 
     private static long minimumResponseBudgetNanos(int timeoutMs) {
-        return Math.min(
-                MAX_MINIMUM_RESPONSE_BUDGET_NANOS, TimeUnit.MILLISECONDS.toNanos(timeoutMs) / 2);
+        return TimeUnit.MILLISECONDS.toNanos(timeoutMs) / 4;
     }
 
     private static final class AdmissionLimiter {

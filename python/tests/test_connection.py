@@ -526,7 +526,7 @@ class TestElastiCacheIntegrationsConnector:
             second = threading.Thread(target=send, args=("second",))
             second.start()
             time.sleep(0.05)
-            now[0] = 102.0
+            now[0] = 101.5
             release_first.set()
             first.join(5)
             second.join(5)
