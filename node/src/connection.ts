@@ -11,6 +11,7 @@ import {
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "./errors.js";
 import { PUSH_KIND_RESPONSE, REQUEST_COMMAND } from "./protocol.js";
@@ -199,7 +200,7 @@ class AdmissionLimiter {
         timer: setTimeout(() => {
           waiter.active = false;
           reject(
-            new ElastiCacheIntegrationsTimeoutError(
+            new ElastiCacheIntegrationsRequestNotSent(
               `request timed out waiting for connection capacity after ${timeoutMs}ms`,
             ),
           );
@@ -680,7 +681,7 @@ export class ElastiCacheIntegrationsConnector {
     let sent: SentRequest | undefined;
     try {
       if (deadline - Date.now() <= minimumResponseBudget) {
-        throw new ElastiCacheIntegrationsTimeoutError(
+        throw new ElastiCacheIntegrationsRequestNotSent(
           `request timed out waiting for connection capacity after ${timeout}ms`,
         );
       }

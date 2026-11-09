@@ -16,6 +16,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsOriginError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 
@@ -29,6 +30,7 @@ _SUBCLASSES = [
     ElastiCacheIntegrationsRejectedError,
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsTimeoutError,
+    ElastiCacheIntegrationsRequestNotSent,
 ]
 
 

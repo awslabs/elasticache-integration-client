@@ -33,6 +33,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -1027,7 +1028,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
                 ExecutionException failure =
                         assertThrows(ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
-                assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+                assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestNotSent);
                 assertFalse(conn.isDead());
             } finally {
                 sendLock.unlock();
@@ -1341,7 +1342,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                     "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
             ExecutionException failure =
                     assertThrows(ExecutionException.class, () -> second.get(2, TimeUnit.SECONDS));
-            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestNotSent);
             assertEquals(1, cache.getRequests().size());
             assertFalse(conn.isDead());
 

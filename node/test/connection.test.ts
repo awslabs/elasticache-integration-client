@@ -16,6 +16,7 @@ import {
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "../src/errors.js";
 import { parseRequestResponse } from "../src/protocol.js";
@@ -853,7 +854,7 @@ describe("ElastiCacheIntegrationsConnector", () => {
         Buffer.from("content-type:application/x-amz-json-1.0"),
         Buffer.from('{"Item": {}}'),
       ]);
-      await expect(second).rejects.toBeInstanceOf(ElastiCacheIntegrationsTimeoutError);
+      await expect(second).rejects.toBeInstanceOf(ElastiCacheIntegrationsRequestNotSent);
       expect(cache.requests).toHaveLength(1);
       expect(connector.isReady).toBe(true);
     } finally {

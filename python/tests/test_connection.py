@@ -32,6 +32,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE
@@ -533,7 +534,7 @@ class TestElastiCacheIntegrationsConnector:
             assert not second.is_alive()
 
         assert results == {"first": b"first"}
-        assert isinstance(errors.get("second"), ElastiCacheIntegrationsTimeoutError)
+        assert isinstance(errors.get("second"), ElastiCacheIntegrationsRequestNotSent)
         assert len(self.cache.requests) == 1
         assert self.conn._closed is False
         assert self.send_request(b"third")[2] == b"third"

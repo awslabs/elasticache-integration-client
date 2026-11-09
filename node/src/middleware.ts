@@ -25,6 +25,7 @@ import {
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsRejectedError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "./errors.js";
 import { isIdempotentOperation } from "./idempotency.js";
@@ -167,6 +168,10 @@ export function cacheMiddleware<Input extends object, Output extends object>(
     } catch (error) {
       if (!(error instanceof ElastiCacheIntegrationsError) || !session.isOpen) {
         throw error;
+      }
+
+      if (error instanceof ElastiCacheIntegrationsRequestNotSent) {
+        return next(args);
       }
 
       const idempotent = isIdempotentOperation(

@@ -33,6 +33,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE, parse_response_push
@@ -737,12 +738,12 @@ class ElastiCacheIntegrationsConnector:
         minimum_response_budget = min(0.001, timeout_seconds / 2)
         deadline = time.monotonic() + timeout_seconds
         if not self._admission.acquire(max(0.0, timeout_seconds - minimum_response_budget)):
-            raise ElastiCacheIntegrationsTimeoutError(
+            raise ElastiCacheIntegrationsRequestNotSent(
                 f"request timed out waiting for connection capacity after {timeout_ms}ms"
             )
         if deadline - time.monotonic() <= minimum_response_budget:
             self._admission.release()
-            raise ElastiCacheIntegrationsTimeoutError(
+            raise ElastiCacheIntegrationsRequestNotSent(
                 f"request timed out waiting for connection capacity after {timeout_ms}ms"
             )
 

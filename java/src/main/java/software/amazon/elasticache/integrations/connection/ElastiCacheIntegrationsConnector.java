@@ -32,6 +32,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -849,7 +850,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                     Math.max(0, remainingNanos(deadlineNanos) - minimumResponseBudgetNanos);
             try {
                 if (!admission.acquire(admissionBudgetNanos, TimeUnit.NANOSECONDS)) {
-                    throw new ElastiCacheIntegrationsTimeoutError(
+                    throw new ElastiCacheIntegrationsRequestNotSent(
                             "Timed out waiting for connection capacity");
                 }
             } catch (InterruptedException e) {
@@ -861,7 +862,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
             long lockBudgetNanos = remainingNanos(deadlineNanos) - minimumResponseBudgetNanos;
             if (lockBudgetNanos <= 0) {
-                throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
+                throw new ElastiCacheIntegrationsRequestNotSent("Timed out before request could be sent");
             }
             boolean locked;
             try {
@@ -872,14 +873,14 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                         "Interrupted while waiting to send request", e);
             }
             if (!locked) {
-                throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
+                throw new ElastiCacheIntegrationsRequestNotSent("Timed out before request could be sent");
             }
             try {
                 if (cancellation.isCancelled()) {
                     throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
                 }
                 if (remainingNanos(deadlineNanos) <= minimumResponseBudgetNanos) {
-                    throw new ElastiCacheIntegrationsTimeoutError("Timed out before request could be sent");
+                    throw new ElastiCacheIntegrationsRequestNotSent("Timed out before request could be sent");
                 }
 
                 // Must register immediately before sending to maintain FIFO correlation.

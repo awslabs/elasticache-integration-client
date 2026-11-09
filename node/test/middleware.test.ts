@@ -12,6 +12,7 @@ import {
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
   ElastiCacheIntegrationsRejectedError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "../src/errors.js";
 import {
@@ -587,6 +588,25 @@ describe("elastiCacheIntegrations middleware", () => {
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it("passes a non-idempotent request that was not sent to the cache through to origin", async () => {
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw new ElastiCacheIntegrationsRequestNotSent("admission timed out");
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
+      response: new HttpResponse({ statusCode: 200 }),
+    }));
+    const handler = cacheMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).resolves.toEqual({
+      response: expect.any(HttpResponse),
+    });
+    expect(next).toHaveBeenCalledOnce();
   });
 
   it("does not mark a nominally healthy connection-loss error retryable", async () => {

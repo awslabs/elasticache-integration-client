@@ -38,6 +38,9 @@ export class ElastiCacheIntegrationsConnectionLost extends ElastiCacheIntegratio
 /** A request exceeded its per-request timeout (named to avoid shadowing the builtin). */
 export class ElastiCacheIntegrationsTimeoutError extends ElastiCacheIntegrationsError {}
 
+/** A request exhausted its admission budget before any bytes were sent to the cache. */
+export class ElastiCacheIntegrationsRequestNotSent extends ElastiCacheIntegrationsError {}
+
 /** A background re-authentication was rejected or returned an invalid reply. */
 export class ElastiCacheIntegrationsAuthError extends ElastiCacheIntegrationsError {}
 

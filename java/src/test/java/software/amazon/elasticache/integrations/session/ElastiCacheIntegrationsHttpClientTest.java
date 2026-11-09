@@ -47,6 +47,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -97,6 +98,19 @@ class ElastiCacheIntegrationsHttpClientTest {
 
         assertSame(session.failure, failure);
         assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void nonIdempotentRequestNotSentDelegatesToOrigin() throws Exception {
+        StubSession session = new StubSession();
+        session.failure = new ElastiCacheIntegrationsRequestNotSent("admission timed out");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        HttpExecuteResponse response = client.prepareRequest(signedRequest()).call();
+
+        assertEquals(201, response.httpResponse().statusCode());
+        assertEquals(1, origin.prepareCount.get());
     }
 
     @Test

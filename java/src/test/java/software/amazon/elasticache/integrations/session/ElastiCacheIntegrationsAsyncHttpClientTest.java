@@ -50,6 +50,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
@@ -258,6 +259,24 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
 
         assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
         assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void nonIdempotentRequestNotSentDelegatesToOrigin() throws Exception {
+        RecordingOrigin origin = new RecordingOrigin();
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new RequestNotSentSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
+
+        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+
+        assertEquals(1, origin.executeCount.get());
         client.close();
     }
 
@@ -684,6 +703,15 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             throw new ElastiCacheIntegrationsTimeoutError("cache timed out");
+        }
+    }
+
+    private static final class RequestNotSentSession extends OpenSession {
+        @Override
+        ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsRequestNotSent("admission timed out");
         }
     }
 
