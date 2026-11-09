@@ -203,14 +203,11 @@ jobs:
       - name: Publish validated tarball
         env:
           DIST_TAG: ${{ needs.package.outputs.dist-tag }}
-          # A new npm package cannot configure trusted publishing until after its
-          # first publication. Set this release-environment secret to a short-lived
-          # granular token for that bootstrap only, then revoke and delete it.
-          # Once the trusted publisher exists, npm uses GitHub OIDC instead.
+          # TODO: After the first publication, configure npm trusted publishing,
+          # revoke NPM_BOOTSTRAP_TOKEN, and remove this NODE_AUTH_TOKEN binding.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           TARBALL: ${{ needs.package.outputs.tarball }}
-        # Do not force provenance while the source repository is private. npm
-        # trusted publishing adds provenance automatically after it becomes public.
+        # npm trusted publishing adds provenance automatically.
         run: npm publish ".artifacts/$TARBALL" --ignore-scripts --access public --tag "$DIST_TAG"
 
       - name: Wait for npm propagation

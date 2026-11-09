@@ -285,12 +285,4 @@ environment or publishing to npm.
 Normal releases use npm trusted publishing with GitHub OIDC. Configure the npm
 publisher for the `awslabs/aws-elasticache-integration-client` repository,
 `node-release.yml` workflow, and `release` environment, with direct
-`npm publish` access. Because npm requires a package to exist before its
-trusted publisher can be configured, the first publication may use a
-short-lived granular npm token stored as the `NPM_BOOTSTRAP_TOKEN` secret on
-the `release` environment. Revoke the token and delete the secret immediately
-after the package exists and trusted publishing is configured.
-
-The workflow does not force provenance while the GitHub repository is private.
-npm trusted publishing generates provenance automatically for subsequent
-public-repository releases.
+`npm publish` access.

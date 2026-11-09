@@ -186,10 +186,7 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   one npm tarball, and publishes that exact artifact through the protected
   `release` environment. Manual dispatches are non-publishing dry runs. Keep npm
   publication tokenless through trusted publishing after the package has been
-  bootstrapped. The first publication may use only the short-lived
-  `NPM_BOOTSTRAP_TOKEN` release-environment secret; revoke it and delete the
-  secret after configuring the trusted publisher. Do not force npm provenance
-  while the source repository is private; trusted publishing adds it
-  automatically once the repository is public.
+  bootstrapped. Do not force npm provenance; trusted publishing adds it
+  automatically.
 
 Keep changes small and reviewable.
