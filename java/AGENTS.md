@@ -162,7 +162,10 @@ README, tests, and an explicit contract decision. Normal AWS SDK
 retry/deserialization behavior remains in scope.
 
 One timeout, `connectionTimeoutMs` (default 5000), bounds startup and the
-reconnect wait. `open()` keeps retrying the first connection with backoff until
+reconnect wait. Within each attempt it also bounds each step: the TCP connect
+and TLS handshake together, `HELLO 3 AUTH`, and the first `aws.config`. The
+periodic re-AUTH and `aws.config` refresh on a live connection use the request
+timeout. `open()` keeps retrying the first connection with backoff until
 it passes, caps each attempt by the time left, and sleeps no longer than the time
 left. On failure it closes every connector it built. A connection failure is
 thrown as `ElastiCacheIntegrationsConnectionError` ("opening a connection

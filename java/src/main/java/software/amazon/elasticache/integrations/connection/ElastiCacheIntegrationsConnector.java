@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -22,6 +23,7 @@ import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLException;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
@@ -73,7 +75,10 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  */
 public class ElastiCacheIntegrationsConnector implements Closeable {
 
-    /** Default connection timeout in milliseconds. */
+    /**
+     * Default connection timeout in milliseconds: the budget for each step of bringing a connection
+     * up.
+     */
     public static final int DEFAULT_CONNECTION_TIMEOUT_MS = 5000;
 
     /** Default request timeout in milliseconds. */
@@ -149,8 +154,11 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param host the cache host
      * @param port the cache port
      * @param sslContext the SSL context
-     * @param connectionTimeoutMs connection bring-up timeout in milliseconds
-     * @param requestTimeoutMs request timeout in milliseconds
+     * @param connectionTimeoutMs maximum time, in milliseconds, for each step of bringing the
+     *     connection up: the TCP connect and TLS handshake together, {@code HELLO 3 AUTH}, and the
+     *     first {@code aws.config}
+     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each command on a live
+     *     connection
      */
     public ElastiCacheIntegrationsConnector(
             String host, int port, SSLContext sslContext, int connectionTimeoutMs, int requestTimeoutMs) {
@@ -163,8 +171,10 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param host the cache host
      * @param port the cache port
      * @param sslContext the SSL context
-     * @param connectionTimeoutMs connection bring-up timeout in milliseconds
-     * @param requestTimeoutMs request timeout in milliseconds
+     * @param connectionTimeoutMs maximum time, in milliseconds, for each step of bringing the
+     *     connection up
+     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each command on a live
+     *     connection
      * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
      */
     public ElastiCacheIntegrationsConnector(
@@ -190,8 +200,10 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param host the cache host
      * @param port the cache port
      * @param sslContext the SSL context
-     * @param connectionTimeoutMs TCP, TLS, HELLO, and initial config timeout in milliseconds
-     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each Cache request response
+     * @param connectionTimeoutMs maximum time, in milliseconds, for each step of bringing the
+     *     connection up
+     * @param requestTimeoutMs maximum time, in milliseconds, to wait for each command on a live
+     *     connection
      * @param maxPending maximum requests awaiting either a FIFO or a deferred reply
      * @param socketReadSize most bytes to request from the socket per read
      */
@@ -224,9 +236,11 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * Establish the TCP + TLS connection.
      *
      * <p>After this returns, the socket is connected and TLS handshake is complete, but no Cache
-     * protocol handshake has occurred. Call {@link #handshake(String, String)} next.
+     * protocol handshake has occurred. Call {@link #handshake(String, String)} next. The TCP connect
+     * and the TLS handshake share one {@code connectionTimeoutMs} deadline: the handshake gets what
+     * the TCP connect left, and does not start when nothing is left.
      *
-     * @throws ElastiCacheIntegrationsConnectionError if the connection fails
+     * @throws ElastiCacheIntegrationsConnectionError if the connection fails or the deadline passes
      */
     public void connect() {
         Socket plainSocket = null;
@@ -241,6 +255,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                 throw new IllegalStateException("Connection is dead and cannot be reconnected");
             }
 
+            long connectDeadlineNanos = deadlineAfter(connectionTimeoutMs);
             try {
                 SSLSocketFactory factory = sslContext.getSocketFactory();
                 plainSocket = new Socket();
@@ -254,7 +269,6 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                 plainSocket = null; // Transfer ownership succeeded
 
                 socket = sslSocket;
-                socket.setSoTimeout(connectionTimeoutMs);
 
                 // Enable hostname verification - validates that the server's certificate
                 // matches the hostname we're connecting to. SSLContext.getDefault() validates
@@ -269,7 +283,17 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                     throw new IOException("No supported TLS protocols (need TLS 1.2 or higher)");
                 }
                 socket.setEnabledProtocols(enabledProtocols);
-                runWithDeadline(socket::startHandshake, connectionTimeoutMs, "TLS handshake");
+                long handshakeTimeoutMs =
+                        TimeUnit.NANOSECONDS.toMillis(remainingNanos(connectDeadlineNanos));
+                if (handshakeTimeoutMs <= 0) {
+                    throw new ElastiCacheIntegrationsTimeoutError(
+                            "TCP connect used the whole " + connectionTimeoutMs + "ms connection timeout");
+                }
+                socket.setSoTimeout((int) handshakeTimeoutMs);
+                runWithDeadline(socket::startHandshake, (int) handshakeTimeoutMs, "TLS handshake");
+                // HELLO 3 AUTH and the first aws.config each get a full connection timeout; the
+                // session bounds the whole attempt with the same value.
+                socket.setSoTimeout(connectionTimeoutMs);
 
                 outputStream = socket.getOutputStream();
 
@@ -282,10 +306,20 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                                 this::markDead,
                                 SocketReader.DEFAULT_MAX_RESPONSE_SIZE,
                                 socketReadSize);
+            } catch (ElastiCacheIntegrationsTimeoutError | SocketTimeoutException e) {
+                closeSocketQuietly();
+                throw new ElastiCacheIntegrationsConnectionError(
+                        "Timed out connecting to " + host + ":" + port, e);
+            } catch (SSLException e) {
+                // Ahead of IOException, which SSLException extends: a rejected certificate must not
+                // report as an unreachable cache.
+                closeSocketQuietly();
+                throw new ElastiCacheIntegrationsConnectionError(
+                        "TLS handshake failed to " + host + ":" + port, e);
             } catch (IOException e) {
                 closeSocketQuietly();
                 throw new ElastiCacheIntegrationsConnectionError(
-                        "Failed to establish TLS connection to " + host + ":" + port, e);
+                        "Failed to connect to " + host + ":" + port, e);
             } catch (RuntimeException e) {
                 // Catches IllegalArgumentException from setEnabledProtocols if protocols unsupported
                 closeSocketQuietly();
