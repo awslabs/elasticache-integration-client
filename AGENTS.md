@@ -48,7 +48,9 @@ Run commands from the client directory they apply to:
 - Repository: run `scripts/check-denylist.sh` from any directory. It fails when
   a file that git tracks, or an untracked file that `.gitignore` doesn't
   exclude, uses an internal term listed in `scripts/denylist.txt`. CI runs it on
-  every pull request.
+  every pull request after a maintainer approves the `denylist` job in the
+  `maintainer-approval` environment. The job is not in the `ci` aggregate, so a
+  pending or failed run does not block merge.
 - Before reporting completion, state which validation commands actually ran and
   which expected checks were not run.
 

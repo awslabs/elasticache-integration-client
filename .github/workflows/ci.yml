@@ -60,10 +60,14 @@ jobs:
             fi
           done
 
-  # Fail when a tracked file uses an internal term from scripts/denylist.txt.
-  # Runs on every change, because any file can reintroduce one.
+  # Report when a tracked file uses an internal term from scripts/denylist.txt.
+  # Runs on every change, because any file can reintroduce one. The
+  # maintainer-approval environment requires a maintainer to approve the run.
+  # The ci aggregate job does not need this job, so a pending or failed run
+  # does not block merge.
   denylist:
     runs-on: ubuntu-latest
+    environment: maintainer-approval
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -153,7 +157,7 @@ jobs:
   # Stable aggregate check for branch protection.
   ci:
     if: always()
-    needs: [changes, denylist, python, java, node, alignment, java-dependency-graph, dependency-review]
+    needs: [changes, python, java, node, alignment, java-dependency-graph, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
