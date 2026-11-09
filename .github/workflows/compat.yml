@@ -242,9 +242,17 @@ jobs:
           -Porg.gradle.java.installations.auto-download=false
 
   java-minimum-sdk:
-    name: java (minimum AWS SDK 2.25.70)
+    name: java (${{ matrix.coverage }} AWS SDK ${{ matrix.aws-sdk-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - aws-sdk-version: 2.21.22
+            coverage: minimum
+          - aws-sdk-version: 2.25.70
+            coverage: legacy provider
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -258,9 +266,9 @@ jobs:
           distribution: 'corretto'
           cache: 'gradle'
 
-      - name: Test the minimum supported AWS SDK
+      - name: Test AWS SDK compatibility
         working-directory: java
         run: >-
           ./gradlew test --console=colored
-          -PawsSdkRuntimeVersion=2.25.70
+          -PawsSdkRuntimeVersion=${{ matrix.aws-sdk-version }}
           -Porg.gradle.java.installations.auto-download=false

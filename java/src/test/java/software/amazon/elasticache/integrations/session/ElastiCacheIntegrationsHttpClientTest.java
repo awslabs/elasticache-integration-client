@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -259,9 +260,11 @@ class ElastiCacheIntegrationsHttpClientTest {
                                 .contentStreamProvider();
                 break;
             case "fromInputStreamProvider":
+                assumeContentStreamProviderFactory("fromInputStream");
                 provider = ContentStreamProvider.fromInputStream(readOnce("payload"));
                 break;
             case "fromInputStreamSupplierProvider":
+                assumeContentStreamProviderFactory("fromInputStreamSupplier");
                 provider = ContentStreamProvider.fromInputStreamSupplier(() -> readOnce("payload"));
                 break;
             case "fromFile":
@@ -280,6 +283,15 @@ class ElastiCacheIntegrationsHttpClientTest {
 
         assertEquals(0, session.requestCount.get());
         assertEquals("payload", originBody(origin));
+    }
+
+    private static void assumeContentStreamProviderFactory(String name) {
+        for (java.lang.reflect.Method method : ContentStreamProvider.class.getMethods()) {
+            if (name.equals(method.getName())) {
+                return;
+            }
+        }
+        Assumptions.assumeTrue(false, name + " is not available in this AWS SDK");
     }
 
     /**
