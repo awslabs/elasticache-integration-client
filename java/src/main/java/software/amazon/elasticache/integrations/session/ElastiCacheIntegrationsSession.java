@@ -669,8 +669,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
-     * @throws ElastiCacheIntegrationsCacheUnavailable if the cache is disconnected and the fallback
-     *     window has closed
+     * @throws ElastiCacheIntegrationsCacheUnavailable if the cache is disconnected, or replied {@code
+     *     AUTH_ERROR}, and the fallback window has closed
      */
     public ElastiCacheIntegrationsResponse request(ElastiCacheIntegrationsRequest request) {
         return request(request, new ElastiCacheIntegrationsRequestCancellation());
@@ -719,6 +719,10 @@ class ElastiCacheIntegrationsSession implements Closeable {
         } catch (ElastiCacheIntegrationsRejectedError failure) {
             if (AUTH_ERROR.equals(failure.getCode())) {
                 beginReconnect(active);
+                if (!fallbackAllowed()) {
+                    throw new ElastiCacheIntegrationsCacheUnavailable(
+                            "Cache has no cache connection and origin fallback is no longer allowed");
+                }
                 return null;
             }
             throw failure;

@@ -18,7 +18,9 @@ to the origin only for cataloged operations after the cache connection drops;
 mixed or unknown operations are treated as non-idempotent. On a healthy
 connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
 `AUTH_ERROR` closes the stale connection and safely passes the rejected
-request through while reconnecting. Other RESP errors are non-retryable and do
+request through while reconnecting. With the fallback set to 0, the rejected
+request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
+RESP errors are non-retryable and do
 not trigger origin fallback.
 
 `shared/protocol-vectors.json` holds wire vectors: the exact RESP bytes each
