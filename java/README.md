@@ -236,11 +236,12 @@ as well as reads because Cache cannot safely materialize the body to evaluate
 its predicates.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
-a bounded daemon executor. If the bounded body collectors or executor reject a
-request because they are at capacity, replay-safe requests use origin fallback
-when `fallbackDurationSeconds` is nonzero. When it is zero, any request routed
-to Cache fails retryably without contacting origin. Routed writes also fail
-retryably without contacting origin regardless of the fallback setting.
+a bounded daemon executor. If the bounded body collectors are at capacity,
+replay-safe requests use origin fallback and writes fail retryably without
+contacting origin. If the executor rejects a request because it is at capacity,
+replay-safe requests use origin fallback when `fallbackDurationSeconds` is
+nonzero. Otherwise a request routed to Cache fails retryably without contacting
+origin.
 
 ## Configuration
 
