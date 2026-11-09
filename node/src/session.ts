@@ -516,6 +516,9 @@ export class ElastiCacheIntegrationsSession {
     } catch (error) {
       if (error instanceof ElastiCacheIntegrationsRejectedError && error.code === AUTH_ERROR) {
         this.handleDisconnect(currentConnector);
+        if (!this.fallbackAllowed()) {
+          throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
+        }
         return undefined;
       }
       throw error;

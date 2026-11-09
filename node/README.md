@@ -44,9 +44,10 @@ directly to origin and has a narrow origin fallback for cataloged idempotent
 requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
 returned to the SDK as retryable for a cataloged operation.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
-passes the explicitly rejected request through. Other RESP errors, malformed
-responses, and failures for non-idempotent operations propagate without origin
-fallback.
+passes the explicitly rejected request through. With `fallbackDuration` set to
+0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
+instead. Other RESP errors, malformed responses, and failures for
+non-idempotent operations propagate without origin fallback.
 
 ## Request routing
 
