@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -38,6 +37,7 @@ import software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsC
 class IamAuthClientIntegrationTest {
     private static final String FIRST_ACCESS_KEY = "AKIAIOSFODNN7EXAMPLE";
     private static final String ROTATED_ACCESS_KEY = "ASIAROTATEDCREDENTIAL";
+    private static final long FAST_REFRESH_SECONDS = 1;
 
     @TempDir Path tempDir;
 
@@ -282,7 +282,7 @@ class IamAuthClientIntegrationTest {
 
     private static ElastiCacheIntegrationsClientConfiguration fastRefresh() {
         return ElastiCacheIntegrationsClientConfiguration.builder()
-                .iamTokenRefreshDelay(Duration.ofMillis(10))
+                .iamTokenRefreshDelaySeconds(FAST_REFRESH_SECONDS)
                 .build();
     }
 
@@ -325,7 +325,8 @@ class IamAuthClientIntegrationTest {
             throws InterruptedException {
         Thread.sleep(50);
         int callsAfterClose = credentialCalls.get();
-        Thread.sleep(100);
+        // Longer than one refresh period, so a refresh that kept running would be seen.
+        Thread.sleep(TimeUnit.SECONDS.toMillis(2 * FAST_REFRESH_SECONDS));
 
         assertEquals(callsAfterClose, credentialCalls.get());
     }
