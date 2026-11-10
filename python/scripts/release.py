@@ -10,6 +10,7 @@ from packaging.version import InvalidVersion, Version
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?$")
+PYPI_RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:rc[0-9]+)?$")
 
 
 def project_metadata(pyproject: Path = PYTHON_ROOT / "pyproject.toml") -> tuple[str, str]:
@@ -33,7 +34,14 @@ def normalize_version(value: str) -> str:
 
 
 def stamp_project_version(value: str, pyproject: Path = PYTHON_ROOT / "pyproject.toml") -> str:
-    version = normalize_version(value)
+    # The workflow resolves a shared SemVer release candidate to its canonical
+    # PEP 440 form before passing it between jobs and steps.
+    if RELEASE_VERSION.fullmatch(value):
+        version = normalize_version(value)
+    elif PYPI_RELEASE_VERSION.fullmatch(value):
+        version = str(Version(value))
+    else:
+        raise InvalidVersion(f"unsupported PyPI release version: {value!r}")
     lines = pyproject.read_text().splitlines(keepends=True)
     in_project = False
     replacements = 0

@@ -292,8 +292,3 @@ publishes that exact artifact through the protected `release` environment.
 Release candidates use the `next` npm distribution tag; stable releases use
 `latest`. A manual workflow run can accept a version and performs the same
 validation without entering the release environment or publishing to npm.
-
-Normal releases use npm trusted publishing with GitHub OIDC. Configure the npm
-publisher for the `awslabs/aws-elasticache-integration-client` repository,
-`node-release.yml` workflow, and `release` environment, with direct
-`npm publish` access.
