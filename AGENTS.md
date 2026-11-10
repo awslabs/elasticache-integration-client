@@ -45,12 +45,14 @@ Run commands from the client directory they apply to:
   to fix formatting.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
-- Repository: run `scripts/check-denylist.sh` from any directory. It fails when
-  a file that git tracks, or an untracked file that `.gitignore` doesn't
-  exclude, uses an internal term listed in `scripts/denylist.txt`. CI runs it on
-  every pull request after a maintainer approves the `denylist` job in the
-  `maintainer-approval` environment. The job is not in the `ci` aggregate, so a
-  pending or failed run does not block merge.
+- Repository: run `scripts/check-denylist.sh < <path>` from any directory.
+  `<path>` is a file of case-insensitive Perl regular expressions, one per
+  line, kept outside the repository. It fails when a file that git
+  tracks, or an untracked file that `.gitignore` doesn't exclude, matches one of
+  them. CI runs it on pull requests from this repository and on pushes to `main`
+  with the `DENYLIST` secret. Fork pull requests skip it because they get no
+  secrets. The job is not in the `ci` aggregate, so a failed run does not block
+  merge.
 - Before reporting completion, state which validation commands actually ran and
   which expected checks were not run.
 
