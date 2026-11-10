@@ -712,11 +712,11 @@ class ElastiCacheIntegrationsSession implements Closeable {
             } catch (ElastiCacheIntegrationsRejectedError failure) {
                 if (AUTH_ERROR.equals(failure.getCode())) {
                     beginReconnect(active);
+                    if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
+                        throw new ElastiCacheIntegrationsCacheUnavailable(
+                                "Cache rejected the request with AUTH_ERROR and origin fallback is disabled");
+                    }
                     if (replaySafe) {
-                        if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
-                            throw new ElastiCacheIntegrationsCacheUnavailable(
-                                    "Cache rejected the request with AUTH_ERROR and origin fallback is disabled");
-                        }
                         return null;
                     }
                     if (retriedAfterAuthError) {
