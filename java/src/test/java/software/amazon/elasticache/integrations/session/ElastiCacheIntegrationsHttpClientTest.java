@@ -11,6 +11,7 @@ import java.io.ByteArrayInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -22,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -244,8 +246,7 @@ class ElastiCacheIntegrationsHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         RequestBody body = RequestBody.fromInputStream(readOnce("payload"), 7);
 
-        HttpExecuteResponse response =
-                sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        HttpExecuteResponse response = sendThroughInterceptor(session, origin, body);
 
         assertEquals(201, response.httpResponse().statusCode());
         assertEquals(0, session.requestCount.get());
@@ -254,29 +255,60 @@ class ElastiCacheIntegrationsHttpClientTest {
 
     /** Bodies the SDK names {@code Stream} or {@code File} skip Cache and reach the origin intact. */
     @ParameterizedTest
-    @ValueSource(strings = {"fromInputStream", "fromFile", "fromContentProviderWithoutLength"})
+    @ValueSource(
+            strings = {
+                "fromInputStream",
+                "fromInputStreamProvider",
+                "fromInputStreamSupplierProvider",
+                "fromFile",
+                "fromContentProviderWithoutLength"
+            })
     void uncarriableBodiesAreDeclined(String factory, @TempDir Path dir) throws Exception {
         StubSession session = new StubSession();
         RecordingHttpClient origin = new RecordingHttpClient();
         byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
-        RequestBody body;
+        ContentStreamProvider provider;
         switch (factory) {
             case "fromInputStream":
-                body = RequestBody.fromInputStream(readOnce("payload"), payload.length);
+                provider =
+                        RequestBody.fromInputStream(readOnce("payload"), payload.length)
+                                .contentStreamProvider();
+                break;
+            case "fromInputStreamProvider":
+                assumeContentStreamProviderFactory("fromInputStream");
+                provider = ContentStreamProvider.fromInputStream(readOnce("payload"));
+                break;
+            case "fromInputStreamSupplierProvider":
+                assumeContentStreamProviderFactory("fromInputStreamSupplier");
+                provider = ContentStreamProvider.fromInputStreamSupplier(() -> readOnce("payload"));
                 break;
             case "fromFile":
-                body = RequestBody.fromFile(Files.write(dir.resolve("upload.bin"), payload));
+                provider =
+                        RequestBody.fromFile(Files.write(dir.resolve("upload.bin"), payload))
+                                .contentStreamProvider();
                 break;
             default:
-                body =
+                provider =
                         RequestBody.fromContentProvider(
-                                () -> new ByteArrayInputStream(payload), "application/octet-stream");
+                                        () -> new ByteArrayInputStream(payload), "application/octet-stream")
+                                .contentStreamProvider();
         }
 
-        sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        sendThroughInterceptor(session, origin, provider);
 
         assertEquals(0, session.requestCount.get());
         assertEquals("payload", originBody(origin));
+    }
+
+    private static void assumeContentStreamProviderFactory(String name) {
+        // The 2.25.70 compatibility job has these factories and executes both provider cases. The
+        // 2.21.0 minimum job skips only the APIs that do not exist in that SDK.
+        for (Method method : ContentStreamProvider.class.getMethods()) {
+            if (name.equals(method.getName())) {
+                return;
+            }
+        }
+        Assumptions.assumeTrue(false, name + " is not available in this AWS SDK");
     }
 
     /**
@@ -316,8 +348,7 @@ class ElastiCacheIntegrationsHttpClientTest {
                                 "application/octet-stream");
         }
 
-        HttpExecuteResponse response =
-                sendThroughInterceptor(session, origin, body.contentStreamProvider());
+        HttpExecuteResponse response = sendThroughInterceptor(session, origin, body);
 
         assertEquals(200, response.httpResponse().statusCode());
         assertEquals(expected, new String(session.lastRequest.getBody(), StandardCharsets.UTF_8));
@@ -438,16 +469,36 @@ class ElastiCacheIntegrationsHttpClientTest {
 
     /** Drive the sync interceptor and its transport in the order the SDK calls them. */
     private static HttpExecuteResponse sendThroughInterceptor(
+            ElastiCacheIntegrationsSession session, SdkHttpClient origin, RequestBody body)
+            throws IOException {
+        return sendThroughInterceptor(
+                session, origin, body.contentStreamProvider(), body.optionalContentLength().orElse(null));
+    }
+
+    /** Drive the sync interceptor with a provider whose content length is not known. */
+    private static HttpExecuteResponse sendThroughInterceptor(
             ElastiCacheIntegrationsSession session, SdkHttpClient origin, ContentStreamProvider body)
+            throws IOException {
+        return sendThroughInterceptor(session, origin, body, null);
+    }
+
+    private static HttpExecuteResponse sendThroughInterceptor(
+            ElastiCacheIntegrationsSession session,
+            SdkHttpClient origin,
+            ContentStreamProvider body,
+            Long contentLength)
             throws IOException {
         ElastiCacheIntegrationsInterceptor interceptor =
                 new ElastiCacheIntegrationsInterceptor(session, origin);
-        SdkHttpFullRequest httpRequest =
+        SdkHttpFullRequest.Builder httpRequestBuilder =
                 SdkHttpFullRequest.builder()
                         .method(SdkHttpMethod.POST)
                         .uri(URI.create("https://dynamodb.us-east-1.amazonaws.com/"))
-                        .contentStreamProvider(body)
-                        .build();
+                        .contentStreamProvider(body);
+        if (contentLength != null) {
+            httpRequestBuilder.putHeader("Content-Length", Long.toString(contentLength));
+        }
+        SdkHttpFullRequest httpRequest = httpRequestBuilder.build();
         InterceptorContext context =
                 InterceptorContext.builder()
                         .request(PutItemRequest.builder().build())

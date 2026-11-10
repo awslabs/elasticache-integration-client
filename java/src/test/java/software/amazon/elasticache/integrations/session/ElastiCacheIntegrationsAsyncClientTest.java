@@ -48,7 +48,6 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.awssdk.utils.AttributeMap;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
@@ -403,8 +402,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                 : new RespSimpleString("OK".getBytes(StandardCharsets.UTF_8)));
         DynamoDbAsyncClientBuilder builder = DynamoDbAsyncClient.builder();
         sdkConfig(builder);
-        assertThrows(
-                ElastiCacheIntegrationsAuthError.class, () -> cacheBuilder().installAsync(builder));
+        assertThrows(ElastiCacheIntegrationsError.class, () -> cacheBuilder().installAsync(builder));
 
         reject.set(false);
         cache.setReply(

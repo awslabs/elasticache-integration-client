@@ -19,6 +19,7 @@ import software.amazon.awssdk.core.SdkServiceClientConfiguration;
 import software.amazon.awssdk.core.client.builder.SdkAsyncClientBuilder;
 import software.amazon.awssdk.core.client.builder.SdkDefaultClientBuilder;
 import software.amazon.awssdk.core.client.builder.SdkSyncClientBuilder;
+import software.amazon.awssdk.core.client.config.ClientOption;
 import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
 import software.amazon.awssdk.core.client.config.SdkClientConfiguration;
 import software.amazon.awssdk.core.client.config.SdkClientOption;
@@ -253,7 +254,8 @@ public final class ElastiCacheIntegrationsClient {
             EndpointParser.ParsedEndpoint cacheEndpoint = validateOptions();
             rejectHttpClientBuilder(
                     sdkClientBuilder,
-                    SdkClientOption.CONFIGURED_SYNC_HTTP_CLIENT_BUILDER,
+                    "CONFIGURED_SYNC_HTTP_CLIENT_BUILDER",
+                    "httpClientBuilder",
                     "originHttpClient");
             SSLContext sslContext = CacheTls.create(verify, caCerts);
 
@@ -341,7 +343,8 @@ public final class ElastiCacheIntegrationsClient {
             }
             rejectHttpClientBuilder(
                     sdkClientBuilder,
-                    SdkClientOption.CONFIGURED_ASYNC_HTTP_CLIENT_BUILDER,
+                    "CONFIGURED_ASYNC_HTTP_CLIENT_BUILDER",
+                    "asyncHttpClientBuilder",
                     "originAsyncHttpClient");
             SSLContext sslContext = CacheTls.create(verify, caCerts);
 
@@ -472,6 +475,9 @@ public final class ElastiCacheIntegrationsClient {
                 throw new ElastiCacheIntegrationsConfigError(NO_REGION);
             }
             IdentityProvider<? extends AwsCredentialsIdentity> credentials = aws.credentialsProvider();
+            if (credentials == null) {
+                credentials = legacyCredentialsProvider(client);
+            }
             if (credentials == null || credentials instanceof AnonymousCredentialsProvider) {
                 throw new ElastiCacheIntegrationsConfigError(NO_CREDENTIALS);
             }
@@ -496,6 +502,55 @@ public final class ElastiCacheIntegrationsClient {
             }
             auth.bind(iam.build());
             open.run();
+        }
+
+        /**
+         * SDK 2.21.0 through 2.21.21 can leave the new service-client credentials view empty even
+         * though the built client configuration contains the resolved provider used for signing.
+         */
+        @SuppressWarnings("unchecked")
+        private static IdentityProvider<? extends AwsCredentialsIdentity> legacyCredentialsProvider(
+                SdkClient client) {
+            try {
+                Field configurationField = declaredField(client.getClass(), "clientConfiguration");
+                configurationField.setAccessible(true);
+                SdkClientConfiguration configuration =
+                        (SdkClientConfiguration) configurationField.get(client);
+                Class<?> awsClientOption =
+                        Class.forName("software.amazon.awssdk.awscore.client.config.AwsClientOption");
+                for (String optionName :
+                        new String[] {"CREDENTIALS_IDENTITY_PROVIDER", "CREDENTIALS_PROVIDER"}) {
+                    Field optionField;
+                    try {
+                        optionField = awsClientOption.getField(optionName);
+                    } catch (NoSuchFieldException absent) {
+                        continue;
+                    }
+                    Object configured = configuration.option((ClientOption<?>) optionField.get(null));
+                    if (configured instanceof IdentityProvider) {
+                        return (IdentityProvider<? extends AwsCredentialsIdentity>) configured;
+                    }
+                }
+                return null;
+            } catch (ReflectiveOperationException | RuntimeException unreadable) {
+                throw new ElastiCacheIntegrationsConfigError(
+                        "ElastiCache Integrations cannot read the AWS SDK client's resolved"
+                                + " credentials provider.",
+                        unreadable);
+            }
+        }
+
+        private static Field declaredField(Class<?> type, String fieldName)
+                throws NoSuchFieldException {
+            Class<?> current = type;
+            while (current != null) {
+                try {
+                    return current.getDeclaredField(fieldName);
+                } catch (NoSuchFieldException absent) {
+                    current = current.getSuperclass();
+                }
+            }
+            throw new NoSuchFieldException(fieldName);
         }
     }
 
@@ -565,28 +620,21 @@ public final class ElastiCacheIntegrationsClient {
     /**
      * Refuse an SDK builder that already has an HTTP client builder. Install replaces it, and the SDK
      * has no getter to read it back, so its proxy, TLS, timeout, and pool settings would be lost
-     * without an error. The SDK keeps it in a protected field, which this check reads by reflection.
-     * A builder this check cannot read, such as a wrapper around an SDK builder or an SDK version
-     * that moved the field, is refused too, because install cannot tell whether it would lose a
-     * transport.
+     * without an error. SDK 2.21.0 through 2.21.21 keep the builder in a private field; newer
+     * versions keep it as a client-configuration option. This check reads either layout by reflection
+     * so the integration does not link against an option constant that old SDKs lack. A builder this
+     * check cannot read, such as a wrapper around an SDK builder or an SDK version that moved both
+     * locations, is refused too, because install cannot tell whether it would lose a transport.
      */
-    private static void rejectHttpClientBuilder(
-            Object sdkClientBuilder, SdkClientOption<?> option, String originOption) {
-        rejectHttpClientBuilder(sdkClientBuilder, option, originOption, "clientConfiguration");
-    }
-
-    /** For testing: names the SDK builder field to read, so a test can make the read fail. */
     static void rejectHttpClientBuilder(
-            Object sdkClientBuilder, SdkClientOption<?> option, String originOption, String fieldName) {
+            Object sdkClientBuilder, String optionName, String legacyFieldName, String originOption) {
         if (!(sdkClientBuilder instanceof SdkDefaultClientBuilder)) {
             throw new ElastiCacheIntegrationsConfigError(
                     uninspectable(sdkClientBuilder.getClass().getName(), originOption));
         }
         Object configured;
         try {
-            Field field = SdkDefaultClientBuilder.class.getDeclaredField(fieldName);
-            field.setAccessible(true);
-            configured = ((SdkClientConfiguration.Builder) field.get(sdkClientBuilder)).option(option);
+            configured = configuredHttpClientBuilder(sdkClientBuilder, optionName, legacyFieldName);
         } catch (ReflectiveOperationException | RuntimeException unreadable) {
             throw new ElastiCacheIntegrationsConfigError(
                     uninspectable(sdkClientBuilder.getClass().getName(), originOption), unreadable);
@@ -597,6 +645,25 @@ public final class ElastiCacheIntegrationsClient {
                             + " Integrations must replace. Build the HTTP client, pass it as "
                             + originOption
                             + ", and remove it from the builder.");
+        }
+    }
+
+    private static Object configuredHttpClientBuilder(
+            Object sdkClientBuilder, String optionName, String legacyFieldName)
+            throws ReflectiveOperationException {
+        try {
+            Field legacyField = SdkDefaultClientBuilder.class.getDeclaredField(legacyFieldName);
+            legacyField.setAccessible(true);
+            return legacyField.get(sdkClientBuilder);
+        } catch (NoSuchFieldException newerSdk) {
+            Field configurationField =
+                    SdkDefaultClientBuilder.class.getDeclaredField("clientConfiguration");
+            configurationField.setAccessible(true);
+            SdkClientConfiguration.Builder configuration =
+                    (SdkClientConfiguration.Builder) configurationField.get(sdkClientBuilder);
+            SdkClientOption<?> option =
+                    (SdkClientOption<?>) SdkClientOption.class.getField(optionName).get(null);
+            return configuration.option(option);
         }
     }
 
