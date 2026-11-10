@@ -235,15 +235,26 @@ jobs:
           PACKAGE_NAME: ${{ needs.package.outputs.package-name }}
           RELEASE_VERSION: ${{ needs.package.outputs.version }}
         run: |
-          for attempt in {1..20}; do
+          for attempt in {1..40}; do
             published_version="$(npm view "$PACKAGE_NAME@$RELEASE_VERSION" version 2>/dev/null || true)"
             if [[ "$published_version" == "$RELEASE_VERSION" ]]; then
               exit 0
             fi
             sleep 15
           done
-          echo "$PACKAGE_NAME@$RELEASE_VERSION did not become available on npm" >&2
+          echo "$PACKAGE_NAME@$RELEASE_VERSION did not become available on npm within 10 minutes" >&2
           exit 1
+
+      - name: Keep prerelease off the latest dist-tag
+        if: needs.package.outputs.dist-tag != 'latest'
+        env:
+          PACKAGE_NAME: ${{ needs.package.outputs.package-name }}
+          RELEASE_VERSION: ${{ needs.package.outputs.version }}
+        run: |
+          latest_version="$(npm view "$PACKAGE_NAME@latest" version 2>/dev/null || true)"
+          if [[ "$latest_version" == "$RELEASE_VERSION" ]]; then
+            npm dist-tag rm "$PACKAGE_NAME" latest
+          fi
 
       - name: Smoke test published package
         env:

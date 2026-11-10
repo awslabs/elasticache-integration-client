@@ -234,8 +234,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_type=()
+          if [[ "$GITHUB_REF_NAME" == *-rc.* ]]; then
+            release_type=(--prerelease)
+          fi
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes "${release_type[@]}" \
               || gh release view "$GITHUB_REF_NAME" >/dev/null
           fi
           gh release upload "$GITHUB_REF_NAME" release-artifacts/* --clobber
