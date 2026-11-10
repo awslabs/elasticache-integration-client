@@ -222,8 +222,9 @@ jobs:
       - name: Publish validated tarball
         env:
           DIST_TAG: ${{ needs.package.outputs.dist-tag }}
-          # TODO: After the first publication, configure npm trusted publishing,
-          # revoke NPM_BOOTSTRAP_TOKEN, and remove this NODE_AUTH_TOKEN binding.
+          # TODO: After the package is bootstrapped and the repository is public,
+          # configure npm trusted publishing, revoke NPM_BOOTSTRAP_TOKEN, and
+          # remove this NODE_AUTH_TOKEN binding.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           TARBALL: ${{ needs.package.outputs.tarball }}
         # npm trusted publishing adds provenance automatically.
