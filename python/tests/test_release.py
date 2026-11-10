@@ -23,8 +23,28 @@ def test_derive_version_rejects_invalid_version():
         release.derive_version("not-a-version")
 
 
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.0.0a1",
+        "1.0.0.dev1",
+        "1.0.0.post1",
+        "1.0.0+local",
+    ],
+)
+def test_derive_version_rejects_non_shared_release_forms(version):
+    with pytest.raises(InvalidVersion, match="unsupported release version"):
+        release.derive_version(f"v{version}")
+
+
 def test_normalize_version_accepts_semver_release_candidate():
     assert release.normalize_version("1.2.3-rc.4") == "1.2.3rc4"
+
+
+@pytest.mark.parametrize("version", ["1.0.0a1", "1.0.0.dev1", "1.0.0.post1"])
+def test_normalize_version_rejects_non_shared_release_forms(version):
+    with pytest.raises(InvalidVersion, match="unsupported release version"):
+        release.normalize_version(version)
 
 
 def test_stamp_project_version(tmp_path):

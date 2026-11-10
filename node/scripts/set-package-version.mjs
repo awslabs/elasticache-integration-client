@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import process from "node:process";
@@ -41,8 +41,8 @@ export function setPackageVersion(version, root = process.cwd()) {
   );
 }
 
-const invokedPath = process.argv[1] ? resolve(process.argv[1]) : "";
-if (invokedPath === fileURLToPath(import.meta.url)) {
+const invokedPath = process.argv[1] ? realpathSync(resolve(process.argv[1])) : "";
+if (invokedPath === realpathSync(fileURLToPath(import.meta.url))) {
   const version = process.argv[2];
   if (!version) {
     throw new Error("Usage: node scripts/set-package-version.mjs <version>");

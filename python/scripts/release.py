@@ -2,12 +2,14 @@
 """Resolve and validate Python release metadata."""
 
 import argparse
+import re
 from pathlib import Path
 
-from packaging.version import Version
+from packaging.version import InvalidVersion, Version
 
 
 PYTHON_ROOT = Path(__file__).resolve().parents[1]
+RELEASE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?$")
 
 
 def project_metadata(pyproject: Path = PYTHON_ROOT / "pyproject.toml") -> tuple[str, str]:
@@ -19,10 +21,14 @@ def project_metadata(pyproject: Path = PYTHON_ROOT / "pyproject.toml") -> tuple[
 
 
 def derive_version(tag: str) -> str:
-    return str(Version(tag.removeprefix("v")))
+    if not tag.startswith("v"):
+        raise InvalidVersion(f"release tag must start with 'v': {tag!r}")
+    return normalize_version(tag.removeprefix("v"))
 
 
 def normalize_version(value: str) -> str:
+    if not RELEASE_VERSION.fullmatch(value):
+        raise InvalidVersion(f"unsupported release version: {value!r}")
     return str(Version(value))
 
 
@@ -32,6 +38,8 @@ def stamp_project_version(value: str, pyproject: Path = PYTHON_ROOT / "pyproject
     in_project = False
     replacements = 0
 
+    # Change only project.version so release jobs can stamp their temporary
+    # checkout without disturbing other TOML metadata or the development baseline.
     for index, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("[") and stripped.endswith("]"):

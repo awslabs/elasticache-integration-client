@@ -122,7 +122,15 @@ jobs:
         run: npm ci
 
       - name: Build and smoke test tarball
-        run: npm run pack:smoke
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          npm run pack:smoke
+          actual_version="$(node --input-type=commonjs -p "require('./package.json').version")"
+          if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
+            echo "Built package version $actual_version does not match release version $RELEASE_VERSION" >&2
+            exit 1
+          fi
 
       - name: Inspect package metadata
         run: |
