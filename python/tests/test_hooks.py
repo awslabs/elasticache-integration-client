@@ -19,6 +19,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsOriginError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from tests.mock import MockClient, mock_session
@@ -234,6 +235,18 @@ def test_non_idempotent_transport_failure_is_non_retryable(cache_error):
         request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
         sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
     assert exc_info.value is cache_error
+
+
+def test_non_idempotent_request_not_sent_passes_through_to_origin():
+    sdk = MockClient()
+    session = mock_session()
+    session.request.side_effect = ElastiCacheIntegrationsRequestNotSent("admission timed out")
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+
+    responses = sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+
+    assert first_non_none_response(responses) is None
 
 
 def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
