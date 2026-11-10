@@ -207,7 +207,7 @@ export function cacheRequestHandler<THandler extends object>(
       }
 
       if (error instanceof ElastiCacheIntegrationsRequestNotSent) {
-        return next(args);
+        return next();
       }
 
       const idempotent = isIdempotentOperation(
