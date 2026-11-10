@@ -86,7 +86,7 @@ function toolkitDependencies(
         first = undefined;
         return Promise.resolve(identity);
       }
-      return credentials({ forceRefresh: true });
+      return credentials();
     },
   };
 }
@@ -107,8 +107,8 @@ function toCacheError(error: unknown, toolkit: ToolkitModule): ElastiCacheIntegr
 /**
  * Generate a short-lived IAM auth token for an ElastiCache Serverless cache.
  *
- * The toolkit owns token construction and validation. ElastiCacheIntegrations forces its SDK
- * credential provider to refresh for every token request.
+ * The toolkit owns token construction and validation. Credentials come from the SDK client's
+ * credential provider, which reuses its cached identity until the SDK refreshes it.
  */
 export async function generateIamAuthToken({
   cacheName,

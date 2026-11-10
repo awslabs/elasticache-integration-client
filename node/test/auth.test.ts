@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { CredentialsProviderError } from "@smithy/core/config";
 
 import {
@@ -125,7 +126,7 @@ describe("generateIamAuthToken", () => {
     ).rejects.toThrow("serverlessCacheName");
   });
 
-  it("requests fresh credentials for every token", async () => {
+  it("reads the SDK client's credentials without forcing a refresh", async () => {
     const credentialProvider = vi.fn(async () => credentials);
 
     await generateIamAuthToken({
@@ -141,8 +142,8 @@ describe("generateIamAuthToken", () => {
       credentials: credentialProvider,
     });
 
-    expect(credentialProvider).toHaveBeenNthCalledWith(1, { forceRefresh: true });
-    expect(credentialProvider).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(credentialProvider).toHaveBeenNthCalledWith(1);
+    expect(credentialProvider).toHaveBeenNthCalledWith(2);
   });
 });
 
@@ -230,11 +231,8 @@ describe("buildCacheAuthProvider", () => {
     }
   });
 
-  it("caches and force-refreshes rotated credentials", async () => {
-    const clientCredentials = vi
-      .fn()
-      .mockResolvedValueOnce(credentials)
-      .mockResolvedValueOnce(rotatedCredentials);
+  it("caches the token and re-signs it with the same cached credentials on refresh", async () => {
+    const clientCredentials = vi.fn(async () => credentials);
 
     const provider = await buildCacheAuthProvider({
       cacheName: "my-cache",
@@ -247,19 +245,16 @@ describe("buildCacheAuthProvider", () => {
     const [, refreshedToken] = await provider.refreshAuth();
 
     expect(clientCredentials).toHaveBeenCalledTimes(2);
-    expect(clientCredentials).toHaveBeenNthCalledWith(1, { forceRefresh: true });
-    expect(clientCredentials).toHaveBeenNthCalledWith(2, { forceRefresh: true });
+    expect(clientCredentials).toHaveBeenNthCalledWith(1);
+    expect(clientCredentials).toHaveBeenNthCalledWith(2);
     expect(firstToken).toContain(credentials.accessKeyId);
-    expect(firstToken).not.toContain(rotatedCredentials.accessKeyId);
     expect(cachedToken).toBe(firstToken);
-    expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
-    expect(refreshedToken).not.toContain(credentials.accessKeyId);
-    expect(refreshedToken).not.toBe(firstToken);
+    expect(refreshedToken).toContain(credentials.accessKeyId);
     provider.close();
   });
 
   it("signs the first token with already-resolved credentials, then re-reads them", async () => {
-    const clientCredentials = vi.fn().mockResolvedValue(rotatedCredentials);
+    const clientCredentials = vi.fn(async () => credentials);
 
     const provider = await buildCacheAuthProvider({
       cacheName: "my-cache",
@@ -273,17 +268,14 @@ describe("buildCacheAuthProvider", () => {
     const [, refreshedToken] = await provider.refreshAuth();
 
     expect(firstToken).toContain(credentials.accessKeyId);
-    expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
-    expect(clientCredentials).toHaveBeenCalledExactlyOnceWith({ forceRefresh: true });
+    expect(refreshedToken).toContain(credentials.accessKeyId);
+    expect(clientCredentials).toHaveBeenCalledExactlyOnceWith();
     provider.close();
   });
 
   it("installs a background-refreshed token for later authentication calls", async () => {
     vi.useFakeTimers();
-    const credentialProvider = vi
-      .fn()
-      .mockResolvedValueOnce(credentials)
-      .mockResolvedValue(rotatedCredentials);
+    const credentialProvider = vi.fn(async () => credentials);
     const provider = await buildCacheAuthProvider({
       cacheName: "my-cache",
       region: "us-east-1",
@@ -297,11 +289,80 @@ describe("buildCacheAuthProvider", () => {
       const [, refreshedToken] = await provider();
 
       expect(firstToken).toContain(credentials.accessKeyId);
-      expect(refreshedToken).toContain(rotatedCredentials.accessKeyId);
+      expect(refreshedToken).toContain(credentials.accessKeyId);
       expect(refreshedToken).not.toBe(firstToken);
       expect(credentialProvider).toHaveBeenCalledTimes(2);
     } finally {
       provider.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the SDK client's cached key across token refreshes", async () => {
+    const source = vi.fn(async () => ({
+      ...credentials,
+      expiration: new Date(Date.now() + 60 * 60_000),
+    }));
+    const sdkClient = new DynamoDBClient({ region: "us-east-1", credentials: source });
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+      credentials: sdkClient.config.credentials,
+    });
+
+    try {
+      const [, firstToken] = await provider();
+      const [, refreshedToken] = await provider.refreshAuth();
+      const [, secondRefresh] = await provider.refreshAuth();
+      const appIdentity = await sdkClient.config.credentials();
+
+      expect(firstToken).toContain(credentials.accessKeyId);
+      expect(refreshedToken).toContain(credentials.accessKeyId);
+      expect(secondRefresh).toContain(credentials.accessKeyId);
+      expect(appIdentity.accessKeyId).toBe(credentials.accessKeyId);
+      expect(source).toHaveBeenCalledTimes(1);
+    } finally {
+      provider.close();
+      sdkClient.destroy();
+    }
+  });
+
+  it("signs with the SDK client's new key once its cached credentials near expiry", async () => {
+    vi.useFakeTimers();
+    const source = vi
+      .fn()
+      .mockImplementationOnce(async () => ({
+        ...credentials,
+        expiration: new Date(Date.now() + 15 * 60_000),
+      }))
+      .mockImplementation(async () => ({
+        ...rotatedCredentials,
+        expiration: new Date(Date.now() + 60 * 60_000),
+      }));
+    const sdkClient = new DynamoDBClient({ region: "us-east-1", credentials: source });
+    const provider = await buildCacheAuthProvider({
+      cacheName: "my-cache",
+      region: "us-east-1",
+      credentials: sdkClient.config.credentials,
+    });
+
+    try {
+      const [, firstToken] = await provider();
+      const [, beforeExpiry] = await provider.refreshAuth();
+
+      // The SDK refreshes cached credentials within 5 minutes of expiry.
+      await vi.advanceTimersByTimeAsync(11 * 60_000);
+      const [, nearExpiry] = await provider.refreshAuth();
+      const appIdentity = await sdkClient.config.credentials();
+
+      expect(firstToken).toContain(credentials.accessKeyId);
+      expect(beforeExpiry).toContain(credentials.accessKeyId);
+      expect(nearExpiry).toContain(rotatedCredentials.accessKeyId);
+      expect(appIdentity.accessKeyId).toBe(rotatedCredentials.accessKeyId);
+      expect(source).toHaveBeenCalledTimes(2);
+    } finally {
+      provider.close();
+      sdkClient.destroy();
       vi.useRealTimers();
     }
   });
