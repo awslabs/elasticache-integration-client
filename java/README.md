@@ -17,8 +17,10 @@ when the connection drops and the operation is in the shared replay-safe
 catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
 SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
 stale connection and passes the rejected request through while reconnecting.
-Other RESP errors, failures for non-idempotent operations, malformed responses,
-an expired fallback window, and shutdown are surfaced without starting an
+With `fallbackDurationSeconds(0)`, the rejected request raises
+`ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
+failures for non-idempotent operations, malformed responses, an expired fallback
+window, and shutdown are surfaced without starting an
 origin request. SDK retries, response deserialization, and caller-provided
 override configuration remain in the normal SDK pipeline.
 

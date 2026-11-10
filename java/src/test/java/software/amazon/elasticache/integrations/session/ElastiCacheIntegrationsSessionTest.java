@@ -27,6 +27,8 @@ import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
@@ -612,6 +614,71 @@ class ElastiCacheIntegrationsSessionTest {
             assertNull(response);
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertFalse(session.isConnectionHealthy());
+        } finally {
+            session.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GetItem", "PutItem"})
+    void authErrorWithFallbackClosedRaisesAtOnce(String operation) {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        this::createConnection,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
+        try {
+            session.open();
+
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class,
+                    () ->
+                            session.request(
+                                    new ElastiCacheIntegrationsRequest(
+                                            "POST",
+                                            "https://dynamodb.us-east-1.amazonaws.com/",
+                                            Collections.emptyMap(),
+                                            new byte[0],
+                                            new RequestMetadata("dynamodb", operation))));
+
+            assertEquals(1, cache.getRequests().size());
+            assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void zeroWindowAuthErrorRaisesAndReconnects() throws Exception {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        AtomicInteger connectionCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            connectionCount.incrementAndGet();
+                            return createConnection();
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .fallbackDurationSeconds(0)
+                                .baseDelayMs(1)
+                                .maxDelayMs(2)
+                                .jitterFactor(0)
+                                .build());
+        try {
+            session.open();
+
+            assertThrows(ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(request()));
+
+            assertEquals(1, cache.getRequests().size());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (connectionCount.get() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(connectionCount.get() >= 2, "expected a reconnect");
         } finally {
             session.close();
         }
