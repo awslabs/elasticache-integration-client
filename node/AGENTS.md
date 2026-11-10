@@ -105,8 +105,10 @@ require the corresponding tests, README, and package checks to change with it.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,
   TLS verification that is off by default or off implicitly, or plaintext by
-  default. Safe path: force-refresh credentials for each fresh scheme-free
-  15-minute token, periodically re-AUTH live connections, keep the last valid
+  default. Safe path: read credentials from the SDK client's credential provider
+  with no options for each fresh scheme-free 15-minute token, so its cached
+  identity is reused, and never pass `forceRefresh`. Periodically re-AUTH live
+  connections, keep the last valid
   state after an explicit refresh rejection, invalidate the stream after a
   timeout or malformed reply, confine tokens to AUTH, and keep verified TLS as
   the default; unverified TLS (`verify: false`) is explicit, opt-in

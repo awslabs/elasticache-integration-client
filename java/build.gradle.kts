@@ -28,6 +28,9 @@ repositories {
     mavenCentral()
 }
 
+val awsSdkVersion = providers.gradleProperty("awsSdkVersion")
+val awsSdkRuntimeVersion = providers.gradleProperty("awsSdkRuntimeVersion")
+
 spotless {
     java {
         target("src/**/*.java")
@@ -63,9 +66,9 @@ dependencies {
     // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
     api("software.amazon.elasticache:developer-toolkit-elasticache:1.0.0")
 
-    // AWS SDK v2 for the IAM toolkit and ExecutionInterceptor integration
-    // The compatibility workflow passes -PawsSdkVersion=2.+ to test the latest SDK.
-    api(platform("software.amazon.awssdk:bom:${providers.gradleProperty("awsSdkVersion").getOrElse("2.55.6")}"))
+    // AWS SDK v2 for the IAM toolkit and ExecutionInterceptor integration.
+    // The compatibility workflow overrides this to test both an older and the latest SDK.
+    api(platform("software.amazon.awssdk:bom:${awsSdkVersion.getOrElse("2.55.6")}"))
     api("software.amazon.awssdk:auth")
     api("software.amazon.awssdk:regions")
     api("software.amazon.awssdk:sdk-core")
@@ -85,6 +88,19 @@ dependencies {
     testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
     testImplementation("org.junit.jupiter:junit-jupiter:5.14.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+// The sync compatibility test compiles against the current SDK, then models an application whose
+// dependency management supplies an older SDK at runtime.
+if (awsSdkRuntimeVersion.isPresent) {
+    configurations.named("testRuntimeClasspath") {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "software.amazon.awssdk") {
+                useVersion(awsSdkRuntimeVersion.get())
+                because("the awsSdkRuntimeVersion property tests sync runtime compatibility")
+            }
+        }
+    }
 }
 
 tasks.withType<JavaCompile>().configureEach {

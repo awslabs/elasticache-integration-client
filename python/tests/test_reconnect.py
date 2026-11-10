@@ -39,6 +39,7 @@ from tests.mock import (
     DEFAULT_RESOLVED_CONFIG,
     MockCache,
     MockTcpProxy,
+    Reply,
     mock_connector,
 )
 
@@ -515,6 +516,23 @@ def test_zero_window_escalates_until_reconnected(rig):
     r.proxy.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
+
+
+def test_zero_window_auth_error_raises_and_reconnects(rig):
+    """With ``fallback_duration=0``, an ``AUTH_ERROR`` raises at once; the reconnect still runs."""
+    r = rig(
+        policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0),
+        response=Reply.error("AUTH_ERROR", "no FAS"),
+    )
+
+    with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
+        r.session.request(get_item_request())
+
+    assert len(r.cache.requests) == 1
+    wait_for(
+        lambda: r.connector_count >= 2,
+        describe=lambda: f"expected a reconnect; have {r.connector_count} connection(s)",
+    )
 
 
 def test_reconnect_probes_indefinitely(rig):

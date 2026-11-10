@@ -1,11 +1,15 @@
 package software.amazon.elasticache.integrations.session;
 
+import java.io.InputStream;
+import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.util.Optional;
 import java.util.logging.Logger;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
 import software.amazon.awssdk.http.ContentStreamProvider;
-import software.amazon.awssdk.http.ContentStreamProvider.ProviderType;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullRequest;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
@@ -34,6 +38,18 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
  * transport does not enable Cache and lets that transport contact the origin service.
  */
 class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
+
+    private static final String FILE_PROVIDER =
+            "software.amazon.awssdk.core.internal.sync.FileContentStreamProvider";
+    private static final String BUFFERING_PROVIDER =
+            "software.amazon.awssdk.core.internal.sync.BufferingContentStreamProvider";
+    private static final String INPUT_STREAM_PROVIDER =
+            "software.amazon.awssdk.http.ContentStreamProvider$1";
+    private static final String INPUT_STREAM_SUPPLIER_PROVIDER =
+            "software.amazon.awssdk.http.ContentStreamProvider$2";
+    private static final String REQUEST_BODY_LAMBDA =
+            "software.amazon.awssdk.core.sync.RequestBody$$Lambda";
+    private static final Method PROVIDER_NAME_METHOD = findProviderNameMethod();
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsInterceptor.class.getName());
@@ -131,12 +147,70 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
     private static boolean isCarriableBody(SdkHttpFullRequest sdkRequest) {
         return !sdkRequest
                 .contentStreamProvider()
-                .map(ContentStreamProvider::name)
-                .filter(
-                        name ->
-                                ProviderType.STREAM.getName().equals(name)
-                                        || ProviderType.FILE.getName().equals(name))
-                .isPresent();
+                .map(provider -> isStreamOrFile(provider, sdkRequest))
+                .orElse(false);
+    }
+
+    /**
+     * AWS SDK 2.31.64 added the authoritative {@code ContentStreamProvider.name()}; invoke it
+     * reflectively so the client can still run with earlier SDK releases. On older SDKs this is a
+     * conservative heuristic: match the SDK's known file, buffering, and direct-stream provider class
+     * names, identify {@code RequestBody.fromInputStream} lambdas by their captured {@link
+     * InputStream} field, and decline any provider without {@code Content-Length}. The last check
+     * treats unknown-length custom providers as streams rather than risk consuming them before the
+     * origin request.
+     */
+    private static boolean isStreamOrFile(
+            ContentStreamProvider provider, SdkHttpFullRequest sdkRequest) {
+        Optional<String> providerName = providerName(provider);
+        if (providerName.isPresent()) {
+            return "Stream".equals(providerName.get()) || "File".equals(providerName.get());
+        }
+
+        String className = provider.getClass().getName();
+        if (FILE_PROVIDER.equals(className)
+                || BUFFERING_PROVIDER.equals(className)
+                || INPUT_STREAM_PROVIDER.equals(className)
+                || INPUT_STREAM_SUPPLIER_PROVIDER.equals(className)) {
+            return true;
+        }
+        if (className.startsWith(REQUEST_BODY_LAMBDA)) {
+            for (Field field : provider.getClass().getDeclaredFields()) {
+                if (InputStream.class.isAssignableFrom(field.getType())) {
+                    return true;
+                }
+            }
+        }
+        return !sdkRequest.firstMatchingHeader("Content-Length").isPresent();
+    }
+
+    private static Optional<String> providerName(ContentStreamProvider provider) {
+        if (PROVIDER_NAME_METHOD == null) {
+            return Optional.empty();
+        }
+
+        try {
+            return Optional.of((String) PROVIDER_NAME_METHOD.invoke(provider));
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("Cannot inspect the SDK request body", e);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IllegalStateException("Cannot inspect the SDK request body", cause);
+        }
+    }
+
+    private static Method findProviderNameMethod() {
+        try {
+            return ContentStreamProvider.class.getMethod("name");
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
     }
 
     @Override
