@@ -7,4 +7,4 @@ export {
   ElastiCacheIntegrationsError,
 } from "./errors.js";
 
-export const version = "0.0.2-rc.1";
+export const version = "0.0.1";

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-elasticache-integration-client"
-version = "0.0.2rc1"
+version = "0.0.1"
 description = "ElastiCache Integrations for AWS SDK for Python (Boto3) DynamoDB clients."
 readme = "README.md"
 requires-python = ">=3.10"

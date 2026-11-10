@@ -184,9 +184,11 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   private keys. It also runs publint and `@arethetypeswrong/cli` against the tarball.
 - `.github/workflows/node-release.yml` validates annotated release tags, builds
   one npm tarball, and publishes that exact artifact through the protected
-  `release` environment. Manual dispatches are non-publishing dry runs. Keep npm
-  publication tokenless through trusted publishing after the package has been
-  bootstrapped. Do not force npm provenance; trusted publishing adds it
-  automatically.
+  `release` environment. The tag supplies the published version; keep checked-in
+  package and runtime versions at the local development baseline and let
+  `scripts/set-package-version.mjs` stamp the release checkout. Manual
+  dispatches are non-publishing dry runs. Keep npm publication tokenless through
+  trusted publishing after the package has been bootstrapped. Do not force npm
+  provenance; trusted publishing adds it automatically.
 
 Keep changes small and reviewable.

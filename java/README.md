@@ -375,8 +375,10 @@ the JAR contents.
 ## Releasing
 
 Java releases are built from annotated `vMAJOR.MINOR.PATCH` or
-`vMAJOR.MINOR.PATCH-rc.N` tags. The tag version must match `version` in
-`build.gradle.kts`.
+`vMAJOR.MINOR.PATCH-rc.N` tags. The tag is the release version source of truth;
+the workflow passes it to Gradle as `releaseVersion`, leaving the checked-in
+version at its local development baseline. A manual workflow run can accept a
+version for a non-publishing dry run.
 
 The `Java Release` workflow tests Java 8, 11, 17, and 21, builds the main,
 sources, and Javadocs JARs once, checks their contents, and runs clean Gradle
@@ -394,6 +396,6 @@ After Maven Central propagation, the workflow resolves the published version
 from clean consumers and attaches the published JARs and POM to the GitHub
 release. Publication, propagation verification, and GitHub release creation
 are separate jobs so post-publish failures can be retried without attempting
-to republish an existing version. A manual workflow run performs the same test,
+to republish an existing version. Manual workflow runs perform the same test,
 packaging, and consumer-smoke stages without entering the release environment
 or publishing to Maven Central.

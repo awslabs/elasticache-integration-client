@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
 
 import { STSClient } from "@aws-sdk/nested-clients/sts";
@@ -9,6 +11,12 @@ import {
   version,
 } from "../src/index.js";
 import type { ElastiCacheIntegrationsClientConfiguration } from "../src/index.js";
+
+const packageVersion = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 const sts = new STSClient({ region: "us-east-1" });
 const clientConfiguration: ElastiCacheIntegrationsClientConfiguration = {
@@ -23,7 +31,7 @@ const stsOptions: Parameters<typeof install<typeof sts>>[0] = {
 
 describe("ElastiCacheIntegrations package entry point", () => {
   it("exports the package version", () => {
-    expect(version).toBe("0.0.2-rc.1");
+    expect(version).toBe(packageVersion);
   });
 
   it("exports install and its type surface", () => {

@@ -275,12 +275,13 @@ npm run verify
 
 The package builds ESM and CommonJS outputs and emits TypeScript declarations.
 Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
-release workflow. It validates the tag against `package.json`, tests and
-inspects one tarball, then publishes that exact artifact through the protected
-`release` environment. Release candidates use the `next` npm distribution tag;
-stable releases use `latest`. A manual workflow run performs the same
-validation and uploads the tarball and checksum without entering the release
-environment or publishing to npm.
+release workflow. The tag is the release version source of truth; the workflow
+stamps `package.json`, `package-lock.json`, and the exported runtime version in
+its temporary checkout before it builds and inspects one tarball. It then
+publishes that exact artifact through the protected `release` environment.
+Release candidates use the `next` npm distribution tag; stable releases use
+`latest`. A manual workflow run can accept a version and performs the same
+validation without entering the release environment or publishing to npm.
 
 Normal releases use npm trusted publishing with GitHub OIDC. Configure the npm
 publisher for the `awslabs/aws-elasticache-integration-client` repository,

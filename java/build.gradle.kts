@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "software.amazon.elasticache"
-version = "0.0.2-rc.1"
+version = providers.gradleProperty("releaseVersion").getOrElse("0.0.1")
 
 val releasePublishing = providers.gradleProperty("releasePublishing").isPresent
 

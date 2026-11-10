@@ -1,4 +1,4 @@
-"""Tests for release tag normalization and validation."""
+"""Tests for release version normalization and stamping."""
 
 import pytest
 from packaging.version import InvalidVersion
@@ -23,10 +23,24 @@ def test_derive_version_rejects_invalid_version():
         release.derive_version("not-a-version")
 
 
-def test_validated_version_checks_tag_against_project(monkeypatch):
-    monkeypatch.setattr(
-        release, "project_metadata", lambda: ("aws-elasticache-integration-client", "1.2.3")
+def test_normalize_version_accepts_semver_release_candidate():
+    assert release.normalize_version("1.2.3-rc.4") == "1.2.3rc4"
+
+
+def test_stamp_project_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[build-system]\nrequires = ["setuptools"]\n\n'
+        '[project]\nname = "example"\nversion = "0.0.1"\n'
     )
 
-    with pytest.raises(ValueError, match="package metadata"):
-        release.validated_version("v1.2.4")
+    assert release.stamp_project_version("1.2.3-rc.4", pyproject) == "1.2.3rc4"
+    assert 'version = "1.2.3rc4"' in pyproject.read_text()
+
+
+def test_stamp_project_version_requires_project_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "example"\n')
+
+    with pytest.raises(ValueError, match="exactly one"):
+        release.stamp_project_version("1.2.3", pyproject)
