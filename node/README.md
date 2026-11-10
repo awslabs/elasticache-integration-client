@@ -292,11 +292,3 @@ publishes that exact artifact through the protected `release` environment.
 Release candidates use the `next` npm distribution tag; stable releases use
 `latest`. A manual workflow run can accept a version and performs the same
 validation without entering the release environment or publishing to npm.
-
-While the source repository is private, releases use the short-lived
-`NPM_BOOTSTRAP_TOKEN` secret in the protected `release` environment. After the
-package has been bootstrapped and the repository is public, configure npm
-trusted publishing for the `awslabs/aws-elasticache-integration-client`
-repository, `node-release.yml` workflow, and `release` environment, with direct
-`npm publish` access. Then revoke the bootstrap token and remove its workflow
-binding.
