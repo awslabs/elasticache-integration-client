@@ -19,6 +19,7 @@ import pytest
 from aws_elasticache_integration_client import session as session_module
 from aws_elasticache_integration_client.config_policy import ConfigPolicy
 from aws_elasticache_integration_client.exceptions import (
+    ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConfigError,
     ElastiCacheIntegrationsOverridesRejected,
     ElastiCacheIntegrationsConfigUnevaluable,
@@ -711,6 +712,8 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
     connector.execute.side_effect = None
     connector.execute.return_value = RespError("AUTH_ERROR", "missing FAS")
     session._connection_manager.invalidate_connection = mock.Mock()
+    # The real invalidate_connection opens a fresh fallback window; the mock does not.
+    session._connection_manager.fallback_allowed = mock.Mock(return_value=True)
 
     response = session.request(
         ElastiCacheIntegrationsRequest(
@@ -722,6 +725,35 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
 
     assert response is None
     session._connection_manager.invalidate_connection.assert_called_once_with(connector)
+    session.close()
+
+
+def _auth_error_request(operation: str) -> ElastiCacheIntegrationsRequest:
+    return ElastiCacheIntegrationsRequest(
+        method="POST",
+        url="https://dynamodb.us-east-1.amazonaws.com/",
+        metadata=RequestMetadata(service="dynamodb", operation=operation),
+    )
+
+
+@pytest.mark.parametrize("operation", ["GetItem", "PutItem"])
+def test_auth_error_with_fallback_closed_raises_at_once(operation):
+    connector = mock_connector()
+    session = ElastiCacheIntegrationsSession(lambda: connector)
+    connector.execute.side_effect = None
+    connector.execute.return_value = RespError("AUTH_ERROR", "missing FAS")
+    manager = session._connection_manager
+    manager.invalidate_connection = mock.Mock()
+    manager.fallback_allowed = mock.Mock(return_value=False)
+    manager.wait_for_connector = mock.Mock()
+    connector.execute.reset_mock()  # discard the constructor's config call
+
+    with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
+        session.request(_auth_error_request(operation))
+
+    assert connector.execute.call_count == 1
+    manager.invalidate_connection.assert_called_once_with(connector)
+    manager.wait_for_connector.assert_not_called()
     session.close()
 
 

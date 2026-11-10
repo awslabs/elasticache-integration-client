@@ -24,7 +24,7 @@ import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { RespError } from "../src/resp.js";
 import { ElastiCacheIntegrationsSession, parseEndpoint } from "../src/session.js";
 import type { Refresher } from "../src/refresh.js";
-import { MockCache, MockTcpProxy } from "./mock-cache.js";
+import { MockCache, MockTcpProxy, Reply } from "./mock-cache.js";
 
 function fakeConnector(
   overrides: Partial<ElastiCacheIntegrationsConnector> = {},
@@ -295,6 +295,83 @@ describe("ElastiCacheIntegrationsSession", () => {
     ).resolves.toBeUndefined();
     expect(connector.execute).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it.each(["GetItem", "PutItem"])(
+    "auth error with fallback closed raises at once for %s",
+    async (operation) => {
+      const connector = fakeConnector({
+        execute: vi.fn(async (command: string) =>
+          command === "aws.config"
+            ? Buffer.from(
+                '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+              )
+            : new RespError("AUTH_ERROR", "missing FAS"),
+        ),
+      });
+      const session = new ElastiCacheIntegrationsSession(
+        connector,
+        {},
+        { connectionTimeoutMs: 2_000, fallbackDurationMs: 0 },
+      );
+      await session.open();
+      vi.mocked(connector.execute).mockClear();
+      const waitForConnector = vi.spyOn(
+        session as unknown as { waitForConnector: () => Promise<unknown> },
+        "waitForConnector",
+      );
+
+      await expect(
+        session.request(
+          new ElastiCacheIntegrationsRequest({
+            method: "POST",
+            url: "https://x/",
+            body: "{}",
+            metadata: new RequestMetadata({ service: "svc", operation }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ElastiCacheIntegrationsCacheUnavailable);
+
+      expect(connector.execute).toHaveBeenCalledOnce();
+      expect(connector.close).toHaveBeenCalledOnce();
+      expect(waitForConnector).not.toHaveBeenCalled();
+      await session.close();
+    },
+  );
+
+  it("zero window auth error raises and reconnects", async () => {
+    const cache = new MockCache({
+      config: { predicates: [{ expr: "true", vars: {} }] },
+      response: Reply.error("AUTH_ERROR", "no FAS"),
+    });
+    await cache.start();
+    const factory = vi.fn(
+      () =>
+        new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+          tls: false,
+          connectionTimeout: 500,
+          requestTimeout: 500,
+          authProvider: async () => ["test-user", "test-token"] as [string, string],
+        }),
+    );
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { fallbackDurationMs: 0, baseDelayMs: 1, maxDelayMs: 2, jitter: 0 },
+    );
+    try {
+      await session.open();
+
+      await expect(session.request(testRequest())).rejects.toBeInstanceOf(
+        ElastiCacheIntegrationsCacheUnavailable,
+      );
+
+      expect(cache.requests).toHaveLength(1);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
   });
 
   it("declines unmatched requests without a cache round trip", async () => {
@@ -945,6 +1022,78 @@ describe("ElastiCacheIntegrationsSession", () => {
 
     await waitForState(session, "alive");
     expect(factory).toHaveBeenCalledTimes(6);
+    await session.close();
+  });
+
+  it("ends the reconnect wait with AbortError when the caller aborts, without falling back", async () => {
+    const initial = controlledConnector();
+    const factory = vi.fn<() => ElastiCacheIntegrationsConnector>(() =>
+      factory.mock.calls.length === 1
+        ? initial.connector
+        : controlledConnector({
+            connect: async () => {
+              throw new ElastiCacheIntegrationsConnectionError("unavailable");
+            },
+          }).connector,
+    );
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { connectionTimeoutMs: 60_000, baseDelayMs: 10_000, maxDelayMs: 10_000, jitter: 0 },
+    );
+    await session.open();
+    initial.fail();
+    await waitForState(session, "reconnecting");
+
+    const controller = new AbortController();
+    const started = performance.now();
+    const pending = session.request(testRequest(), { abortSignal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(performance.now() - started).toBeLessThan(5_000);
+    await session.close();
+  });
+
+  it("rejects an already-aborted request before it is sent", async () => {
+    const connector = fakeConnector();
+    const session = new ElastiCacheIntegrationsSession(() => connector);
+    await session.open();
+    const controller = new AbortController();
+    controller.abort(new Error("caller gave up"));
+
+    const failure = session.request(testRequest(), { abortSignal: controller.signal });
+
+    await expect(failure).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Request aborted",
+      cause: new Error("caller gave up"),
+    });
+    expect(vi.mocked(connector.execute).mock.calls.map(([command]) => command)).not.toContain(
+      "aws.request",
+    );
+    await session.close();
+  });
+
+  it("stops waiting for the reply when the caller aborts and keeps the connection", async () => {
+    let reply: (value: unknown) => void = () => {};
+    let requests = 0;
+    const controlled = controlledConnector({
+      request: () =>
+        ++requests === 1 ? new Promise((resolve) => (reply = resolve)) : Promise.resolve(undefined),
+    });
+    const session = new ElastiCacheIntegrationsSession(() => controlled.connector);
+    await session.open();
+    const controller = new AbortController();
+
+    const pending = session.request(testRequest(), { abortSignal: controller.signal });
+    await vi.waitFor(() => expect(controlled.connector.execute).toHaveBeenCalledTimes(2));
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    reply(undefined); // the late reply is read and dropped
+    expect(session.isConnectionHealthy).toBe(true);
+    await expect(session.request(testRequest())).resolves.toMatchObject({ statusCode: 200 });
     await session.close();
   });
 

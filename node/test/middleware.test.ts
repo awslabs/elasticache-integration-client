@@ -26,7 +26,8 @@ import {
   installedHandle,
   ElastiCacheIntegrationsHandle,
   cacheToHttpResponse,
-  cacheMiddleware,
+  cacheMiddleware as routeMiddleware,
+  cacheRequestHandler,
 } from "../src/middleware.js";
 import { ElastiCacheIntegrationsSession } from "../src/session.js";
 import type { ElastiCacheIntegrationsConnector } from "../src/connection.js";
@@ -53,6 +54,30 @@ function fakeSession(
     destroy: vi.fn(),
     ...overrides,
   } as ElastiCacheIntegrationsSession;
+}
+
+function fakeRequestHandler() {
+  return { handle: vi.fn(async () => ({ response: new HttpResponse({ statusCode: 200 }) })) };
+}
+
+/**
+ * The cache step as the SDK runs it: the middleware, then the wrapped request handler, whose
+ * origin is `next`. `options` are the per-call options the SDK passes the request handler.
+ */
+function cacheMiddleware(service: string, session: ElastiCacheIntegrationsSession, options = {}) {
+  return (next: FinalizeHandler<object, object>, context: { commandName?: string }) =>
+    async (args: { input: object; request: unknown }) => {
+      const routed = new WeakMap<object, ElastiCacheIntegrationsRequest>();
+      const origin = {
+        handle: (request: HttpRequest) => next({ ...args, request }) as never,
+      };
+      const handler = cacheRequestHandler(origin, session, routed);
+      const middleware = routeMiddleware<object, object>(service, routed);
+      return middleware(
+        (forwarded) => handler.handle(forwarded.request as HttpRequest, options),
+        context as never,
+      )(args as never);
+    };
 }
 
 /** A minimal ElastiCacheIntegrationsConnector double for real-session recovery tests. */
@@ -214,6 +239,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     });
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: vi.fn(() => order.push("sdk")),
     };
     const handle = new ElastiCacheIntegrationsHandle(sdkClient, session, "svc");
@@ -233,6 +259,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     const originalDestroy = vi.fn();
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: originalDestroy,
     };
     const handle = new ElastiCacheIntegrationsHandle(sdkClient, session, "svc");
@@ -249,6 +276,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     const originalDestroy = vi.fn();
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: originalDestroy,
     };
     const firstSession = fakeSession();
@@ -271,6 +299,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     const originalDestroy = vi.fn();
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: originalDestroy,
     };
     const handle = new ElastiCacheIntegrationsHandle(sdkClient, session, "svc");
@@ -288,6 +317,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
   it("shutdown drops handler chains cached while the middleware was installed", () => {
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: vi.fn(),
       handlers: new Map([["GetItemCommand", () => undefined]]),
     };
@@ -299,6 +329,60 @@ describe("ElastiCacheIntegrationsHandle", () => {
     expect(sdkClient).not.toHaveProperty("handlers");
   });
 
+  it("wraps the client's request handler without changing the shared handler", async () => {
+    const sharedHandler = {
+      handle: vi.fn(async () => ({ response: new HttpResponse({ statusCode: 200 }) })),
+      destroy: vi.fn(),
+      httpHandlerConfigs: vi.fn(() => ({ requestTimeout: 1000 })),
+    };
+    const ownHandle = sharedHandler.handle;
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: sharedHandler as object },
+      destroy: vi.fn(),
+    };
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    const wrapped = sdkClient.config.requestHandler as typeof sharedHandler;
+
+    expect(wrapped).not.toBe(sharedHandler);
+    expect(sharedHandler.handle).toBe(ownHandle);
+    expect(wrapped.httpHandlerConfigs()).toEqual({ requestTimeout: 1000 });
+    wrapped.destroy();
+    expect(sharedHandler.destroy).toHaveBeenCalledOnce();
+    // A request the middleware did not prepare goes straight to the real handler.
+    const unrouted = request();
+    await wrapped.handle(unrouted as never);
+    expect(ownHandle).toHaveBeenCalledWith(unrouted, undefined);
+
+    handle.shutdown();
+    expect(sdkClient.config.requestHandler).toBe(sharedHandler);
+  });
+
+  it("wraps a request handler the application sets after install, and keeps it on shutdown", async () => {
+    const sdkClient = {
+      middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() as object },
+      destroy: vi.fn(),
+    };
+    const handle = new ElastiCacheIntegrationsHandle(sdkClient, fakeSession(), "svc");
+    const replacement = fakeRequestHandler();
+    sdkClient.config.requestHandler = replacement;
+
+    // The replacement is wrapped too; a request the middleware did not prepare reaches it as is.
+    const wrapped = sdkClient.config.requestHandler as typeof replacement;
+    expect(wrapped).not.toBe(replacement);
+    const unrouted = request();
+    await wrapped.handle(unrouted as never);
+    expect(replacement.handle).toHaveBeenCalledWith(unrouted, undefined);
+
+    handle.shutdown();
+    expect(sdkClient.config.requestHandler).toBe(replacement);
+    expect(Object.getOwnPropertyDescriptor(sdkClient.config, "requestHandler")).toMatchObject({
+      writable: true,
+      enumerable: true,
+    });
+  });
+
   it("is visible to a second copy of the package loaded in the same process", async () => {
     // An app that both imports and requires the package loads the ESM and CJS builds side by side.
     vi.resetModules();
@@ -306,6 +390,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     expect(otherCopy.installedHandle).not.toBe(installedHandle);
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
+      config: { requestHandler: fakeRequestHandler() },
       destroy: vi.fn(),
     };
 
@@ -318,6 +403,28 @@ describe("ElastiCacheIntegrationsHandle", () => {
 });
 
 describe("elastiCacheIntegrations middleware", () => {
+  it("passes the call's abort signal to the session and does not fall back after an abort", async () => {
+    const controller = new AbortController();
+    const aborted = Object.assign(new Error("Request aborted"), { name: "AbortError" });
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw aborted;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = cacheMiddleware("dynamodb", session, { abortSignal: controller.signal })(next, {
+      commandName: "GetItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(aborted);
+    expect(session.request).toHaveBeenCalledWith(expect.any(ElastiCacheIntegrationsRequest), {
+      abortSignal: controller.signal,
+    });
+    expect(next).not.toHaveBeenCalled();
+  });
+
   it("passes predicate declines through to the untouched origin request", async () => {
     const signedRequest = request(Buffer.from("{}"));
     signedRequest.headers.authorization = "AWS4-HMAC-SHA256 Credential=example";
@@ -748,7 +855,7 @@ describe("elastiCacheIntegrations middleware", () => {
     });
     const clientStack = constructStack<object, { value: string }>();
     const commandStack = constructStack<object, { value: string }>();
-    const origin = vi.fn<DeserializeHandler<object, { value: string }>>(async () => {
+    const origin = vi.fn(async (): Promise<{ response: HttpResponse }> => {
       throw new Error("origin must not be called");
     });
     const finalize = vi.fn(
@@ -779,10 +886,20 @@ describe("elastiCacheIntegrations middleware", () => {
       name: "deserializerMiddleware",
       step: "deserialize",
     });
-    installCacheMiddleware({ middlewareStack: clientStack }, "svc", session);
+    const routed = new WeakMap<object, ElastiCacheIntegrationsRequest>();
+    installCacheMiddleware({ middlewareStack: clientStack }, "svc", routed);
+    const requestHandler = cacheRequestHandler({ handle: origin }, session, routed);
     const stack = clientStack.concat(commandStack);
 
-    const result = await stack.resolve(origin, { commandName: "GetItemCommand" })({ input: {} });
+    // The SDK's terminal step: hand the request and the call's options to the request handler.
+    const result = await stack.resolve(
+      async (args) =>
+        (await requestHandler.handle(args.request as HttpRequest, {})) as unknown as {
+          output: { value: string };
+          response: unknown;
+        },
+      { commandName: "GetItemCommand" },
+    )({ input: {} });
 
     expect(origin).not.toHaveBeenCalled();
     expect(result.output).toEqual({ value: "cached" });
