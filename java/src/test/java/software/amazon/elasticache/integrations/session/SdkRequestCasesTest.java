@@ -160,7 +160,7 @@ class SdkRequestCasesTest {
                                 .endpoint("localhost:" + server.getPort())
                                 .cacheName("my-cache")
                                 .verify(false)
-                                // The 2 s default startup deadline can expire on a loaded CI runner.
+                                // The default startup deadline can expire on a loaded CI runner.
                                 .clientConfiguration(
                                         ElastiCacheIntegrationsClientConfiguration.builder()
                                                 .connectionTimeoutMs(10_000)

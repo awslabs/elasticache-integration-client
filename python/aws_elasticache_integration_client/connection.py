@@ -31,6 +31,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsTimeoutError,
 )
@@ -588,6 +589,9 @@ class ElastiCacheIntegrationsConnector:
         """Release the connection, stop the I/O loop, and fail pending requests. Idempotent.
 
         Any thread may call this except the I/O thread, which cleans up on its own.
+
+        Phase 1 flips ``_closed`` under the state lock, which is also the barrier :meth:`execute`
+        relies on: once it returns, no further :meth:`_send` can reach the transport.
         """
         # Phase 1: mark closed, under the state lock.
         with self._state_lock:
@@ -651,18 +655,33 @@ class ElastiCacheIntegrationsConnector:
             )
 
     # --- send path -----------------------------------------------------------
-    def _send(self, frame: bytes, reply_future: Future) -> None:
+    def _send(self, frame: bytes, reply_future: Future, reached_socket: threading.Event) -> None:
         """Atomically register a future and send the frame.
 
         The loop runs one callback at a time, so nothing interleaves between registration
         and write: queue order equals wire order, which FIFO reply matching depends on.
         A plain callback, not an async function: no task is created per request.
+
+        ``reached_socket`` is set immediately before the transport is touched, so a caller that
+        finds it clear — once close() has returned — knows the frame never went out.
         """
-        if self._closed or self._writer is None or self._writer.transport.is_closing():
-            reply_future.set_exception(
-                ElastiCacheIntegrationsConnectionLost("connection is closed")
-            )
-            return
+        # The guard and the flag are set together under the state lock, which close() takes to
+        # flip _closed. That serialization is what lets execute() trust the flag: either we
+        # claim the transport before close() gets the lock, or close() wins and we never touch
+        # it. There is no interleaving in which the flag is clear but the frame still goes out.
+        with self._state_lock:
+            if self._closed or self._writer is None or self._writer.transport.is_closing():
+                # The liveness guard runs before the transport is touched, so this command
+                # provably never left the client.
+                reply_future.set_exception(
+                    ElastiCacheIntegrationsNotSentError("connection is closed")
+                )
+                return
+            # Claimed before the write and never after: asyncio's transport attempts a
+            # synchronous partial send inside write(), so from this point on the command is
+            # indeterminate even if the call raises. Biasing towards "may have been sent" is
+            # the safe direction.
+            reached_socket.set()
         try:
             self._pending.register_new_request(reply_future)
         except ElastiCacheIntegrationsError as exc:
@@ -684,20 +703,33 @@ class ElastiCacheIntegrationsConnector:
         ``timeout_ms`` overrides the reply wait (init commands get a larger budget). There is
         no send-side timeout: a send only copies bytes into the transport buffer, so it
         cannot hang. A truly stuck connection is caught by the reply timeout.
+
+        Raises :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsNotSentError`
+        — a narrower ``ElastiCacheIntegrationsConnectionLost`` — when the command provably never
+        reached the transport, and :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsTimeoutError`
+        when it may have been sent and gone unanswered.
         """
         if not self._io_loop_thread.loop:
             if self._closed:
-                raise ElastiCacheIntegrationsConnectionLost("connection is closed")
+                raise ElastiCacheIntegrationsNotSentError("connection is closed")
+            # Not a connection failure but a usage bug: calling execute() before connect().
+            # It stays outside the ConnectionLost tree so hooks.py cannot mistake a
+            # programming error for a retryable transport failure.
             raise ElastiCacheIntegrationsError(
                 "ElastiCacheIntegrationsConnector used before connect()"
             )
         frame = encode_resp(command, *args)
         reply_future: Future = Future()
+        # _send sets this immediately before it touches the transport, under the state lock.
+        # Read only after close() has flipped _closed under that same lock, which is what makes
+        # the value final rather than a snapshot of a race.
+        reached_socket = threading.Event()
         try:
-            self._io_loop_thread.call(self._send, frame, reply_future)
+            self._io_loop_thread.call(self._send, frame, reply_future, reached_socket)
         except RuntimeError as exc:
-            # The loop was closed by a concurrent close() before the send could be scheduled.
-            raise ElastiCacheIntegrationsConnectionLost("connection closed") from exc
+            # The loop was closed by a concurrent close() before the send could be scheduled,
+            # so the frame was never handed to the transport.
+            raise ElastiCacheIntegrationsNotSentError("connection closed") from exc
         # Not `timeout_ms or ...`: an explicit timeout_ms=0 means "do not wait for a reply", and
         # `or` would quietly turn it into the default instead.
         if timeout_ms is None:
@@ -716,6 +748,13 @@ class ElastiCacheIntegrationsConnector:
             # desynchronize every reply behind it, so the connection must die. close() fails
             # every other in-flight request too.
             self.close()
+            # close() has flipped _closed under the state lock, so no queued _send can claim
+            # the transport from here on and the flag's value is final. Clear means a starved
+            # or stopped loop ran out the clock -- a client-side fault, not a slow cache.
+            if not reached_socket.is_set():
+                raise ElastiCacheIntegrationsNotSentError(
+                    f"command never reached the socket (gave up after {timeout_ms}ms)"
+                ) from exc
             raise ElastiCacheIntegrationsTimeoutError(
                 f"request timed out after {timeout_ms}ms"
             ) from exc

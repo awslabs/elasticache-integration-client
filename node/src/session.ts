@@ -20,6 +20,8 @@
  */
 import { performance } from "node:perf_hooks";
 
+import { abortError, onAbort, raceAbort } from "./abort.js";
+import type { SdkAbortSignal } from "./abort.js";
 import { DEFAULT_CONNECTION_TIMEOUT } from "./connection.js";
 import type { ElastiCacheIntegrationsConnector } from "./connection.js";
 import {
@@ -480,13 +482,18 @@ export class ElastiCacheIntegrationsSession {
    * `readyDeadline`, then may fall back while the per-outage window is open. Once execute
    * starts, every failure propagates:
    * the request may have reached ElastiCacheIntegrations and must not be directly replayed.
+   *
+   * `abortSignal` is the caller's per-call signal. An abort ends either wait at once with the
+   * SDK's `AbortError`, and the request does not fall back.
    */
   async request(
     request: ElastiCacheIntegrationsRequest,
+    { abortSignal }: { abortSignal?: SdkAbortSignal } = {},
   ): Promise<ElastiCacheIntegrationsResponse | undefined> {
     if (this.state === "created") {
       throw new ElastiCacheIntegrationsError("request() called on a created session");
     }
+    if (abortSignal?.aborted) throw abortError(abortSignal);
     if (this.state === "open" && !this.predicateEvaluator.shouldRouteToCache(request)) {
       return undefined;
     }
@@ -497,7 +504,8 @@ export class ElastiCacheIntegrationsSession {
       currentConnector = undefined;
     }
     if (this.state === "open" && currentConnector === undefined) {
-      currentConnector = await this.waitForConnector();
+      currentConnector = await this.waitForConnector(abortSignal);
+      if (abortSignal?.aborted) throw abortError(abortSignal);
       // A close during the wait also ends it here, and the request falls back
       if (currentConnector === undefined) {
         if (this.fallbackAllowed()) return undefined;
@@ -512,7 +520,9 @@ export class ElastiCacheIntegrationsSession {
 
     const [command, args] = serializeRequest(request);
     try {
-      return parseRequestResponse(await currentConnector.execute(command, ...args));
+      return parseRequestResponse(
+        await raceAbort(currentConnector.execute(command, ...args), abortSignal),
+      );
     } catch (error) {
       if (error instanceof ElastiCacheIntegrationsRejectedError && error.code === AUTH_ERROR) {
         this.handleDisconnect(currentConnector);
@@ -524,19 +534,23 @@ export class ElastiCacheIntegrationsSession {
 
   /**
    * Wait until a reconnect is published or the outage's `readyDeadline` passes. Returns the
-   * published connector, or undefined if none arrived or the session closed.
+   * published connector, or undefined if none arrived, the session closed or `abortSignal` aborted.
    */
-  private async waitForConnector(): Promise<ElastiCacheIntegrationsConnector | undefined> {
-    while (this.state === "open" && this.connector === undefined) {
+  private async waitForConnector(
+    abortSignal?: SdkAbortSignal,
+  ): Promise<ElastiCacheIntegrationsConnector | undefined> {
+    while (this.state === "open" && this.connector === undefined && !abortSignal?.aborted) {
       const remaining = this.readyDeadline - performance.now();
       if (remaining <= 0) break;
       await new Promise<void>((resolve) => {
         const wake = () => {
           clearTimeout(timer);
+          removeAbort();
           this.connectorWaiters.delete(wake);
           resolve();
         };
         const timer = setTimeout(wake, remaining);
+        const removeAbort = abortSignal === undefined ? () => {} : onAbort(abortSignal, wake);
         this.connectorWaiters.add(wake);
       });
     }

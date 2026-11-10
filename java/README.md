@@ -244,7 +244,7 @@ ElastiCacheIntegrationsClient.builder()
         .cacheName("my-cache")
         .clientConfiguration(ElastiCacheIntegrationsClientConfiguration.builder()
                 .cacheRequestTimeoutMs(2_000)
-                .connectionTimeoutMs(2_000)
+                .connectionTimeoutMs(5_000)
                 .fallbackDurationSeconds(60)
                 .cachePolicyOverrides(Collections.singletonMap(
                         "cached_tables", Arrays.asList("Users", "Sessions")))
@@ -255,8 +255,8 @@ ElastiCacheIntegrationsClient.builder()
 
 | Option | Default | Meaning |
 |---|---|---|
-| `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for each cache request's reply, in milliseconds. Must be positive and at most 2147483647. |
-| `connectionTimeoutMs(long)` | 2000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Must be positive. |
+| `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for every command after the connection is ready, including cache requests, re-AUTH, and config refresh, in milliseconds. Must be positive and at most 2147483647. |
+| `connectionTimeoutMs(long)` | 5000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Within one attempt it bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`, and the first `aws.config`. Must be positive and at most 2147483647. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
@@ -331,7 +331,10 @@ for the new connection and uses it if it arrives. If the connection is not back
 by then, the request uses the signed origin fallback. The same timeout bounds
 startup: Cache keeps retrying the first connection until `connectionTimeoutMs`
 has passed, caps each attempt by the time left, and then fails client creation
-with `ElastiCacheIntegrationsConnectionError`.
+with `ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
+bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`,
+and the first `aws.config`. On a live connection, the periodic `AUTH` and
+`aws.config` refresh use `cacheRequestTimeoutMs`.
 Reconnect delays use capped exponential backoff from 100 ms to 3.2 s with 20
 percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
 These values are not configurable.

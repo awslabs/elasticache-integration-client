@@ -26,7 +26,7 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                 ElastiCacheIntegrationsClientConfiguration.defaults();
 
         assertEquals(5_000, defaults.getCacheRequestTimeoutMs());
-        assertEquals(2_000, defaults.getConnectionTimeoutMs());
+        assertEquals(5_000, defaults.getConnectionTimeoutMs());
         assertEquals(-1, defaults.getFallbackDurationSeconds());
         assertNull(defaults.getCachePolicyOverrides());
         assertEquals(3_600, defaults.getCachePolicyTimeoutSeconds());
@@ -99,9 +99,9 @@ class ElastiCacheIntegrationsClientConfigurationTest {
 
     @Test
     void clientConfigurationRejectsUnusableConnectionTimeout() {
-        for (long bad : new long[] {0, -1, Long.MIN_VALUE}) {
+        for (long bad : new long[] {0, -1, Long.MIN_VALUE, Integer.MAX_VALUE + 1L, Long.MAX_VALUE}) {
             assertConfigError(
-                    "connectionTimeoutMs must be a positive number of milliseconds",
+                    "connectionTimeoutMs must be a positive number of milliseconds, at most 2147483647",
                     ElastiCacheIntegrationsClientConfiguration.builder().connectionTimeoutMs(bad));
         }
 
@@ -109,6 +109,12 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                 1,
                 ElastiCacheIntegrationsClientConfiguration.builder()
                         .connectionTimeoutMs(1)
+                        .build()
+                        .getConnectionTimeoutMs());
+        assertEquals(
+                Integer.MAX_VALUE,
+                ElastiCacheIntegrationsClientConfiguration.builder()
+                        .connectionTimeoutMs(Integer.MAX_VALUE)
                         .build()
                         .getConnectionTimeoutMs());
     }

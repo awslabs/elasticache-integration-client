@@ -273,7 +273,7 @@ class IamAuthClientIntegrationTest {
                 .cacheName("My-Cache")
                 .userId("IAM-User")
                 .caCerts(caBundle)
-                // The 2 s default startup deadline can expire on a loaded CI runner.
+                // The default startup deadline can expire on a loaded CI runner.
                 .clientConfiguration(
                         ElastiCacheIntegrationsClientConfiguration.builder()
                                 .connectionTimeoutMs(10_000)

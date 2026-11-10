@@ -1,6 +1,7 @@
 package software.amazon.elasticache.integrations.session;
 
 import java.util.concurrent.ThreadLocalRandom;
+import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 
 /**
  * Reconnect and origin-fallback settings for a Cache session.
@@ -21,7 +22,8 @@ final class ReconnectPolicy {
      * Default limit, in milliseconds, on how long startup keeps trying to open the first connection
      * and how long a request waits for a reconnect.
      */
-    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 2_000;
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS =
+            ElastiCacheIntegrationsConnector.DEFAULT_CONNECTION_TIMEOUT_MS;
 
     /** Cap on one background reconnect attempt, in milliseconds. */
     public static final long RECONNECT_ATTEMPT_TIMEOUT_MS = 5_000;

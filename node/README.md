@@ -161,6 +161,11 @@ usable, or for an install option or `clientConfiguration` field it does not
 recognise, before it connects. `cachePolicyTimeout` is described under
 [Cache policy timeout](#cache-policy-timeout).
 
+A per-call `abortSignal` still applies to cached requests. Aborting
+`client.send(command, { abortSignal })` ends the wait for the cache or for a
+reconnection at once with the SDK's `AbortError`, and the request does not fall
+back to the origin service.
+
 ## Reconnection and fallback
 
 A lost connection is rebuilt in the background and retried until it succeeds or
