@@ -1298,7 +1298,8 @@ class ElastiCacheIntegrationsSessionTest {
         long elapsed = elapsedMs(started);
 
         assertEquals("opening a connection timed out after 300ms", thrown.getMessage());
-        assertEquals("injected connection failure", thrown.getCause().getMessage());
+        // The final attempt may fail immediately or be capped by the remaining deadline.
+        assertInstanceOf(ElastiCacheIntegrationsConnectionError.class, thrown.getCause());
         assertTrue(elapsed >= 290, "gave up before the timeout: " + elapsed + "ms");
         assertTrue(built.size() >= 2, "connection failure was not retried: " + built.size());
         for (TestConnector connector : built) {
