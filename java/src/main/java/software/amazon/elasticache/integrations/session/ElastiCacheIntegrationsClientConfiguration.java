@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 
 /**
@@ -29,7 +30,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     public static final long DEFAULT_CACHE_REQUEST_TIMEOUT_MS = 5_000;
 
     /** Default for {@link Builder#connectionTimeoutMs(long)}: 5 seconds. */
-    public static final long DEFAULT_CONNECTION_TIMEOUT_MS = 5_000;
+    public static final long DEFAULT_CONNECTION_TIMEOUT_MS =
+            ElastiCacheIntegrationsConnector.DEFAULT_CONNECTION_TIMEOUT_MS;
 
     /** Value of {@link Builder#fallbackDurationSeconds(long)} that allows fallback indefinitely. */
     public static final long INDEFINITE_FALLBACK = -1;
@@ -129,7 +131,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         /**
          * Set how long, in milliseconds, ElastiCache Integrations tries to connect at startup across
          * all attempts, and how long a request waits for reconnection after a connection is lost
-         * (default: 5000). Each individual connection attempt is bounded by the same timeout. Must be
+         * (default: 5000). The same value bounds each step of one connection attempt: the TCP connect
+         * and TLS handshake together, {@code HELLO 3 AUTH}, and the first {@code aws.config}. Must be
          * positive and at most {@link Integer#MAX_VALUE}.
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {

@@ -332,9 +332,12 @@ class ElastiCacheIntegrationsSession:
         replay-safe operation the hook returns them through botocore as retryable, so
         the SDK or application decides whether to retry them.
 
+        An ``AUTH_ERROR`` reply drops the connection so the reconnect re-authenticates. The
+        rejected request passes through while the fallback window is open.
+
         Raises:
-            ElastiCacheIntegrationsCacheUnavailable: If the cache is disconnected and the fallback
-                window has closed.
+            ElastiCacheIntegrationsCacheUnavailable: If the cache is disconnected, or replied
+                ``AUTH_ERROR``, and the fallback window has closed.
         """
         if not self.is_open:
             raise ElastiCacheIntegrationsError("request() called on a closed session")
@@ -358,6 +361,8 @@ class ElastiCacheIntegrationsSession:
             if exc.code != _AUTH_ERROR:
                 raise
             self._connection_manager.invalidate_connection(connector)
+            if not self._connection_manager.fallback_allowed():
+                raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url) from exc
             return None
 
     def close(self) -> None:

@@ -1025,6 +1025,78 @@ describe("ElastiCacheIntegrationsSession", () => {
     await session.close();
   });
 
+  it("ends the reconnect wait with AbortError when the caller aborts, without falling back", async () => {
+    const initial = controlledConnector();
+    const factory = vi.fn<() => ElastiCacheIntegrationsConnector>(() =>
+      factory.mock.calls.length === 1
+        ? initial.connector
+        : controlledConnector({
+            connect: async () => {
+              throw new ElastiCacheIntegrationsConnectionError("unavailable");
+            },
+          }).connector,
+    );
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { connectionTimeoutMs: 60_000, baseDelayMs: 10_000, maxDelayMs: 10_000, jitter: 0 },
+    );
+    await session.open();
+    initial.fail();
+    await waitForState(session, "reconnecting");
+
+    const controller = new AbortController();
+    const started = performance.now();
+    const pending = session.request(testRequest(), { abortSignal: controller.signal });
+    setTimeout(() => controller.abort(), 20);
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(performance.now() - started).toBeLessThan(5_000);
+    await session.close();
+  });
+
+  it("rejects an already-aborted request before it is sent", async () => {
+    const connector = fakeConnector();
+    const session = new ElastiCacheIntegrationsSession(() => connector);
+    await session.open();
+    const controller = new AbortController();
+    controller.abort(new Error("caller gave up"));
+
+    const failure = session.request(testRequest(), { abortSignal: controller.signal });
+
+    await expect(failure).rejects.toMatchObject({
+      name: "AbortError",
+      message: "Request aborted",
+      cause: new Error("caller gave up"),
+    });
+    expect(vi.mocked(connector.execute).mock.calls.map(([command]) => command)).not.toContain(
+      "aws.request",
+    );
+    await session.close();
+  });
+
+  it("stops waiting for the reply when the caller aborts and keeps the connection", async () => {
+    let reply: (value: unknown) => void = () => {};
+    let requests = 0;
+    const controlled = controlledConnector({
+      request: () =>
+        ++requests === 1 ? new Promise((resolve) => (reply = resolve)) : Promise.resolve(undefined),
+    });
+    const session = new ElastiCacheIntegrationsSession(() => controlled.connector);
+    await session.open();
+    const controller = new AbortController();
+
+    const pending = session.request(testRequest(), { abortSignal: controller.signal });
+    await vi.waitFor(() => expect(controlled.connector.execute).toHaveBeenCalledTimes(2));
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    reply(undefined); // the late reply is read and dropped
+    expect(session.isConnectionHealthy).toBe(true);
+    await expect(session.request(testRequest())).resolves.toMatchObject({ statusCode: 200 });
+    await session.close();
+  });
+
   it("allows origin fallback indefinitely by default while reconnecting", async () => {
     const initial = controlledConnector();
     const factory = vi.fn<() => ElastiCacheIntegrationsConnector>(() =>
