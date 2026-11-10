@@ -40,6 +40,7 @@ import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.http.ExecutableHttpRequest;
 import software.amazon.awssdk.http.HttpExecuteRequest;
@@ -439,7 +440,8 @@ class ElastiCacheIntegrationsClientTest {
                                 ElastiCacheIntegrationsClientConfiguration.builder()
                                         .fallbackDurationSeconds(0)
                                         .build())
-                        .install(appBuilder())) {
+                        // One attempt: every SDK retry would reconnect and get AUTH_ERROR again.
+                        .install(appBuilder().overrideConfiguration(o -> o.retryPolicy(RetryPolicy.none())))) {
             RuntimeException failure = assertThrows(RuntimeException.class, client::listTables);
 
             assertTrue(

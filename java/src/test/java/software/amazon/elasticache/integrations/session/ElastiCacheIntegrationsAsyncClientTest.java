@@ -39,6 +39,7 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpRequest;
 import software.amazon.awssdk.http.async.AsyncExecuteRequest;
@@ -295,7 +296,11 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                         ElastiCacheIntegrationsClientConfiguration.builder()
                                                 .fallbackDurationSeconds(0)
                                                 .build()),
-                        ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
+                        builder -> {
+                            sdkConfig(builder);
+                            // One attempt: every SDK retry would reconnect and get AUTH_ERROR again.
+                            builder.overrideConfiguration(o -> o.retryPolicy(RetryPolicy.none()));
+                        })) {
             ExecutionException failure =
                     assertThrows(
                             ExecutionException.class, () -> client.listTables().get(5, TimeUnit.SECONDS));
