@@ -11,9 +11,9 @@ contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
 The language-neutral replay-safety catalog is
-`shared/idempotent-operations.json`. Java packages it as a resource, Python
-copies it into built packages, and Node generates its compiled lookup from the
-same source with a CI freshness check. Indeterminate cache failures fall back
+`shared/idempotent-operations.json`. Java packages it as a resource, .NET
+embeds it in the assembly, Python copies it into built packages, and Node
+generates its compiled lookup from the same source with a CI freshness check. Indeterminate cache failures fall back
 to the origin only for cataloged operations after the cache connection drops;
 mixed or unknown operations are treated as non-idempotent. On a healthy
 connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
@@ -45,6 +45,14 @@ Local test runs include both sets of tests. CI runs them in a separate
 so `CI / alignment / <client>` reports drift from the shared fixtures on its
 own.
 
+## .NET client (preview)
+
+`dotnet/` holds a C# client for the AWS SDK for .NET v4 (`net8.0`, also tested
+on the .NET 10 runtime), published as the `Amazon.ElastiCache.Integrations`
+NuGet package. Its tests run the `shared/` fixtures, and it embeds
+`shared/idempotent-operations.json` as a resource. Like the other clients, it
+runs in the `ci` check through `.github/workflows/dotnet-ci.yml`.
+
 ## Repository layout
 
 ```text
@@ -52,5 +60,6 @@ own.
 ├── node/    # Node.js client
 ├── java/    # Java client
 ├── python/  # Python client
+├── dotnet/  # .NET (C#) client (preview)
 └── shared/  # Language-neutral client contracts
 ```

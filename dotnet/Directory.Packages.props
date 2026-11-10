@@ -1,0 +1,16 @@
+<Project>
+  <!-- Library dependencies are minimum versions: they are written into the package. -->
+  <ItemGroup>
+    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.11" />
+    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.107.3" />
+    <PackageVersion Include="Cel" Version="0.3.3" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+  </ItemGroup>
+  <!-- Test-only packages are exact. -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.Extensions.TimeProvider.Testing" Version="[8.10.0]" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="[18.11.0]" />
+    <PackageVersion Include="xunit.v3" Version="[4.0.2]" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="[4.0.1]" />
+  </ItemGroup>
+</Project>

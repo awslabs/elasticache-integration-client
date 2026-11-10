@@ -1,0 +1,54 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{2FED7810-4160-4F96-9B7C-68FC14BD84B2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Amazon.ElastiCache.Integrations", "src\Amazon.ElastiCache.Integrations\Amazon.ElastiCache.Integrations.csproj", "{A1545AD1-5CA1-40FB-914F-33AD1A47F232}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "test", "test", "{B6A5A0D7-D8BE-45D2-945A-CE5A680D3898}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Amazon.ElastiCache.Integrations.Tests", "test\Amazon.ElastiCache.Integrations.Tests\Amazon.ElastiCache.Integrations.Tests.csproj", "{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "bench", "bench", "{D04354C0-19C0-47BC-B1CB-C53C56B67B6A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Amazon.ElastiCache.Integrations.Benchmarks", "bench\Amazon.ElastiCache.Integrations.Benchmarks\Amazon.ElastiCache.Integrations.Benchmarks.csproj", "{41129BCE-BA00-4B26-9F96-A2D8D7989B59}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "samples", "samples", "{5BE3E460-FF4C-4048-A72A-030448E488B5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Amazon.ElastiCache.Integrations.LiveValidation", "samples\Amazon.ElastiCache.Integrations.LiveValidation\Amazon.ElastiCache.Integrations.LiveValidation.csproj", "{FE67437E-A107-458C-B684-F7594348BB75}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1545AD1-5CA1-40FB-914F-33AD1A47F232}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1545AD1-5CA1-40FB-914F-33AD1A47F232}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1545AD1-5CA1-40FB-914F-33AD1A47F232}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1545AD1-5CA1-40FB-914F-33AD1A47F232}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19}.Release|Any CPU.Build.0 = Release|Any CPU
+		{41129BCE-BA00-4B26-9F96-A2D8D7989B59}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{41129BCE-BA00-4B26-9F96-A2D8D7989B59}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{41129BCE-BA00-4B26-9F96-A2D8D7989B59}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{41129BCE-BA00-4B26-9F96-A2D8D7989B59}.Release|Any CPU.Build.0 = Release|Any CPU
+		{FE67437E-A107-458C-B684-F7594348BB75}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FE67437E-A107-458C-B684-F7594348BB75}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FE67437E-A107-458C-B684-F7594348BB75}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FE67437E-A107-458C-B684-F7594348BB75}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{A1545AD1-5CA1-40FB-914F-33AD1A47F232} = {2FED7810-4160-4F96-9B7C-68FC14BD84B2}
+		{E5B4C4A1-C82F-47A2-8963-CFCCFDC5CE19} = {B6A5A0D7-D8BE-45D2-945A-CE5A680D3898}
+		{41129BCE-BA00-4B26-9F96-A2D8D7989B59} = {D04354C0-19C0-47BC-B1CB-C53C56B67B6A}
+		{FE67437E-A107-458C-B684-F7594348BB75} = {5BE3E460-FF4C-4048-A72A-030448E488B5}
+	EndGlobalSection
+EndGlobal
