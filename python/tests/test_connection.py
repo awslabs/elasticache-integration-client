@@ -33,6 +33,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE
@@ -454,6 +455,91 @@ class TestElastiCacheIntegrationsConnector:
         for i in range(n):
             assert results[i] == f"token-{i}".encode()
 
+    def test_requests_wait_for_pending_capacity_instead_of_failing(self):
+        """A request above max_pending stays off the wire until a prior reply frees capacity."""
+        first_received = threading.Event()
+        release_first = threading.Event()
+        sequence = 0
+
+        def reply(request):
+            nonlocal sequence
+            sequence += 1
+            if sequence == 1:
+                first_received.set()
+                assert release_first.wait(2)
+            return Reply.ok(body=request.body)
+
+        self.start_cache(response_fn=reply)
+        self.connect_and_handshake(max_pending=1, request_timeout_ms=2000)
+        results: dict[str, bytes] = {}
+
+        first = threading.Thread(
+            target=lambda: results.setdefault("first", self.send_request(b"first")[2])
+        )
+        second = threading.Thread(
+            target=lambda: results.setdefault("second", self.send_request(b"second")[2])
+        )
+        first.start()
+        assert first_received.wait(1)
+        second.start()
+        time.sleep(0.05)
+
+        assert len(self.cache.requests) == 1
+        release_first.set()
+        first.join(2)
+        second.join(2)
+
+        assert results == {"first": b"first", "second": b"second"}
+
+    def test_exhausted_budget_after_admission_does_not_send_or_close(self):
+        """A caller admitted at its deadline stays off the wire and leaves the connection usable."""
+        first_received = threading.Event()
+        release_first = threading.Event()
+        sequence = 0
+
+        def reply(request):
+            nonlocal sequence
+            sequence += 1
+            if sequence == 1:
+                first_received.set()
+                assert release_first.wait(2)
+            return Reply.ok(body=request.body)
+
+        self.start_cache(response_fn=reply)
+        self.connect_and_handshake(max_pending=1, request_timeout_ms=2000)
+        results: dict[str, bytes] = {}
+        errors: dict[str, Exception] = {}
+
+        def send(name: str) -> None:
+            try:
+                results[name] = self.send_request(name.encode())[2]
+            except Exception as exc:  # noqa: BLE001
+                errors[name] = exc
+
+        first = threading.Thread(target=send, args=("first",))
+        first.start()
+        assert first_received.wait(1)
+
+        now = [100.0]
+        fake_time = mock.Mock(wraps=time)
+        fake_time.monotonic.side_effect = lambda: now[0]
+        with mock.patch("aws_elasticache_integration_client.connection.time", fake_time):
+            second = threading.Thread(target=send, args=("second",))
+            second.start()
+            time.sleep(0.05)
+            now[0] = 101.5
+            release_first.set()
+            first.join(5)
+            second.join(5)
+            assert not first.is_alive()
+            assert not second.is_alive()
+
+        assert results == {"first": b"first"}
+        assert isinstance(errors.get("second"), ElastiCacheIntegrationsRequestNotSent)
+        assert len(self.cache.requests) == 1
+        assert self.conn._closed is False
+        assert self.send_request(b"third")[2] == b"third"
+
     def test_error_reply_returned_as_value(self):
         """A -ERR reply surfaces from execute() as a RespError VALUE, not an exception —
         raising on it is the caller-facing parse_* functions' job (protocol.py)."""
@@ -593,12 +679,8 @@ class TestElastiCacheIntegrationsConnector:
             self.send_request()
         assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
 
-    def test_backpressure_rejection_is_not_reported_as_not_sent(self):
-        """max_pending is backpressure, not a connection failure, so it keeps its own error.
-
-        The command was not written, but reporting it as not-sent would invite a re-issue of a
-        request the client is already too busy to carry.
-        """
+    def test_admission_timeout_is_not_reported_as_transport_not_sent(self):
+        """Admission exhaustion keeps its dedicated error rather than a transport failure."""
         self.start_cache(failure="hang")  # the first request is sent but never answered
         self.connect_and_handshake(max_pending=1)
         blocked = threading.Thread(
@@ -608,10 +690,10 @@ class TestElastiCacheIntegrationsConnector:
         try:
             # The slot is only taken once _send has registered the hanging request.
             assert self.wait_until(lambda: len(self.conn._pending._queue) >= 1, timeout=3.0)
-            with pytest.raises(ElastiCacheIntegrationsError) as caught:
-                self.send_request(timeout_ms=2000)
+            with pytest.raises(ElastiCacheIntegrationsRequestNotSent) as caught:
+                self.send_request(timeout_ms=200)
             assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
-            assert "too many in-flight requests" in str(caught.value)
+            assert "waiting for connection capacity" in str(caught.value)
         finally:
             self.conn.close()  # releases the blocked caller instead of waiting out its timeout
             blocked.join(timeout=10)

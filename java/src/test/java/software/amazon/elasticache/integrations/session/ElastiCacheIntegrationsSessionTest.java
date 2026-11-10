@@ -27,6 +27,8 @@ import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
@@ -39,6 +41,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -593,25 +596,81 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void authErrorPassesThroughAndStartsReconnect() {
+    void authErrorOnReplaySafeRequestPassesThroughAndStartsReconnect() {
         cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
 
-            ElastiCacheIntegrationsResponse response =
-                    session.request(
-                            new ElastiCacheIntegrationsRequest(
-                                    "POST",
-                                    "https://dynamodb.us-east-1.amazonaws.com/",
-                                    Collections.emptyMap(),
-                                    new byte[0],
-                                    new RequestMetadata("dynamodb", "UpdateItem")));
-
-            assertNull(response);
+            assertNull(session.request(request()));
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertFalse(session.isConnectionHealthy());
+        } finally {
+            session.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GetItem", "PutItem"})
+    void authErrorWithFallbackClosedRaisesAtOnce(String operation) {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        this::createConnection,
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
+        try {
+            session.open();
+
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class,
+                    () ->
+                            session.request(
+                                    new ElastiCacheIntegrationsRequest(
+                                            "POST",
+                                            "https://dynamodb.us-east-1.amazonaws.com/",
+                                            Collections.emptyMap(),
+                                            new byte[0],
+                                            new RequestMetadata("dynamodb", operation))));
+
+            assertEquals(1, cache.getRequests().size());
+            assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void zeroWindowAuthErrorRaisesAndReconnects() throws Exception {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        AtomicInteger connectionCount = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            connectionCount.incrementAndGet();
+                            return createConnection();
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        ReconnectPolicy.builder()
+                                .fallbackDurationSeconds(0)
+                                .baseDelayMs(1)
+                                .maxDelayMs(2)
+                                .jitterFactor(0)
+                                .build());
+        try {
+            session.open();
+
+            assertThrows(ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(request()));
+
+            assertEquals(1, cache.getRequests().size());
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+            while (connectionCount.get() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            assertTrue(connectionCount.get() >= 2, "expected a reconnect");
         } finally {
             session.close();
         }
@@ -1000,13 +1059,12 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
             initialConnector.fail();
 
-            // Routed before the loss, so it waits for the reconnect and is served on the replacement.
-            assertEquals(200, session.request(request()).getStatusCode());
+            // The request waits for reconnect, then the replacement's fresh predicates decline it.
+            assertNull(session.request(request()));
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
-            // Routed after the reconnect, the fresh predicates decline it.
             assertNull(session.request(request()));
             assertEquals(2, connectionCreationCount.get());
-            assertEquals(1, replacementConnector.getRequestCount());
+            assertEquals(0, replacementConnector.getRequestCount());
         } finally {
             session.close();
         }
@@ -1087,7 +1145,9 @@ class ElastiCacheIntegrationsSessionTest {
             assertTrue(failingReplacement.isDead());
 
             allowStable.countDown();
-            assertEquals(200, waitingRequest.get(1, TimeUnit.SECONDS).getStatusCode());
+            assertNull(
+                    waitingRequest.get(1, TimeUnit.SECONDS),
+                    "the replacement's fresh predicates decline the waiting request");
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             assertNull(session.request(request()));
             assertEquals(3, connectionCreationCount.get());
@@ -1380,7 +1440,7 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void requestServedWhenReconnectLandsWithinTheWait() throws Exception {
+    void routedWriteIsServedWhenReconnectLandsWithinTheWait() throws Exception {
         CountDownLatch reconnecting = new CountDownLatch(1);
         CountDownLatch land = new CountDownLatch(1);
         TestConnector replacement = new BlockingConnectConnector(reconnecting, land);
@@ -1392,9 +1452,9 @@ class ElastiCacheIntegrationsSessionTest {
             loseConnection(session);
 
             CompletableFuture<ElastiCacheIntegrationsResponse> response =
-                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
+                    CompletableFuture.supplyAsync(() -> session.request(writeRequest()), requestExecutor);
             assertTrue(reconnecting.await(2, TimeUnit.SECONDS));
-            assertFalse(response.isDone(), "the request should wait for the reconnect");
+            assertFalse(response.isDone(), "the routed write should wait for the reconnect");
 
             land.countDown();
             assertEquals(200, response.get(2, TimeUnit.SECONDS).getStatusCode());
@@ -1403,6 +1463,59 @@ class ElastiCacheIntegrationsSessionTest {
             land.countDown();
             session.close();
             requestExecutor.shutdownNow();
+        }
+    }
+
+    @Test
+    void routedWriteFailsAfterReconnectDeadlineWithoutUsingFallback() {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(150, -1), neverReconnects());
+        try {
+            session.open();
+            loseConnection(session);
+
+            long started = System.nanoTime();
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+            long elapsed = elapsedMs(started);
+
+            assertTrue(elapsed >= 100, "raised without waiting: " + elapsed + "ms");
+            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
+            assertNull(session.request(request()), "replay-safe requests may still use fallback");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void authErrorOnReplacementWriteFailsRetryably() throws Exception {
+        AuthRejectingConnector initial = new AuthRejectingConnector();
+        AuthRejectingConnector replacement = new AuthRejectingConnector();
+        CountDownLatch thirdReconnectStarted = new CountDownLatch(1);
+        CountDownLatch allowThirdReconnect = new CountDownLatch(1);
+        TestConnector third = new BlockingConnectConnector(thirdReconnectStarted, allowThirdReconnect);
+        AtomicInteger created = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () -> {
+                            int connectionNumber = created.getAndIncrement();
+                            if (connectionNumber == 0) {
+                                return initial;
+                            }
+                            return connectionNumber == 1 ? replacement : third;
+                        },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(5_000, -1));
+        try {
+            session.open();
+
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+            assertTrue(thirdReconnectStarted.await(2, TimeUnit.SECONDS));
+        } finally {
+            allowThirdReconnect.countDown();
+            session.close();
         }
     }
 
@@ -1558,32 +1671,6 @@ class ElastiCacheIntegrationsSessionTest {
         }
     }
 
-    @Test
-    void closingTheSessionWakesAWaitingRequest() throws Exception {
-        ElastiCacheIntegrationsSession session =
-                sessionAfterLoss(timeoutPolicy(10_000, -1), neverReconnects());
-        ExecutorService requestExecutor = Executors.newSingleThreadExecutor();
-        try {
-            session.open();
-            loseConnection(session);
-
-            CompletableFuture<ElastiCacheIntegrationsResponse> waiting =
-                    CompletableFuture.supplyAsync(() -> session.request(request()), requestExecutor);
-            Thread.sleep(100);
-            assertFalse(waiting.isDone(), "the request should be waiting for the reconnect");
-
-            long closed = System.nanoTime();
-            session.close();
-
-            // The woken request falls back to the origin, as Python's does.
-            assertNull(waiting.get(2, TimeUnit.SECONDS));
-            assertTrue(elapsedMs(closed) < 1_000);
-        } finally {
-            session.close();
-            requestExecutor.shutdownNow();
-        }
-    }
-
     private static ReconnectPolicy fastPolicy() {
         return ReconnectPolicy.builder().baseDelayMs(1).maxDelayMs(2).jitterFactor(0).build();
     }
@@ -1595,6 +1682,15 @@ class ElastiCacheIntegrationsSessionTest {
                 Collections.emptyMap(),
                 new byte[0],
                 new RequestMetadata("dynamodb", "GetItem"));
+    }
+
+    private static ElastiCacheIntegrationsRequest writeRequest() {
+        return new ElastiCacheIntegrationsRequest(
+                "POST",
+                "https://example.com/",
+                Collections.emptyMap(),
+                new byte[0],
+                new RequestMetadata("dynamodb", "UpdateItem"));
     }
 
     private static void awaitState(
@@ -1705,6 +1801,15 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             fail();
             throw new ElastiCacheIntegrationsConnectionError("injected request failure");
+        }
+    }
+
+    private static final class AuthRejectingConnector extends TestConnector {
+        @Override
+        public ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsRejectedError("AUTH_ERROR", "missing FAS");
         }
     }
 
@@ -2048,7 +2153,7 @@ class ElastiCacheIntegrationsSessionTest {
             assertTrue(refreshStarted.await(5, TimeUnit.SECONDS), "refresh did not start");
 
             initialConnector.fail();
-            assertEquals(200, session.request(request()).getStatusCode());
+            assertNull(session.request(request()));
             awaitState(session, ElastiCacheIntegrationsSession.State.OPEN);
             ResolvedConfig replacementConfig = session.getConfig();
             assertEquals("replacement", replacementConfig.getVersion());

@@ -240,3 +240,37 @@ jobs:
           -PtestJavaVersion=${{ matrix.java-version }}
           -Porg.gradle.java.installations.fromEnv=JAVA_HOME_${{ matrix.java-version }}_X64
           -Porg.gradle.java.installations.auto-download=false
+
+  java-minimum-sdk:
+    name: java (${{ matrix.coverage }} AWS SDK ${{ matrix.aws-sdk-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - aws-sdk-version: 2.21.0
+            coverage: minimum
+          # This version has the direct stream-provider factories but predates name(), so their
+          # compatibility cases execute against the anonymous provider implementations.
+          - aws-sdk-version: 2.25.70
+            coverage: legacy provider
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: 21
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Test AWS SDK compatibility
+        working-directory: java
+        run: >-
+          ./gradlew test --console=colored
+          -PawsSdkRuntimeVersion=${{ matrix.aws-sdk-version }}
+          -Porg.gradle.java.installations.auto-download=false

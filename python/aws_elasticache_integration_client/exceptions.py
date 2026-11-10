@@ -71,6 +71,10 @@ class ElastiCacheIntegrationsTimeoutError(ElastiCacheIntegrationsError):
     """A request exceeded its per-request timeout (named to avoid shadowing the builtin)."""
 
 
+class ElastiCacheIntegrationsRequestNotSent(ElastiCacheIntegrationsError):
+    """A request exhausted its admission budget before any bytes were sent to the cache."""
+
+
 class ElastiCacheIntegrationsAuthError(ElastiCacheIntegrationsError):
     """The cache rejected credentials during handshake or background re-AUTH."""
 

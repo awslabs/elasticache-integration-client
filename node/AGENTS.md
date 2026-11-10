@@ -105,8 +105,10 @@ require the corresponding tests, README, and package checks to change with it.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,
   TLS verification that is off by default or off implicitly, or plaintext by
-  default. Safe path: force-refresh credentials for each fresh scheme-free
-  15-minute token, periodically re-AUTH live connections, keep the last valid
+  default. Safe path: read credentials from the SDK client's credential provider
+  with no options for each fresh scheme-free 15-minute token, so its cached
+  identity is reused, and never pass `forceRefresh`. Periodically re-AUTH live
+  connections, keep the last valid
   state after an explicit refresh rejection, invalidate the stream after a
   timeout or malformed reply, confine tokens to AUTH, and keep verified TLS as
   the default; unverified TLS (`verify: false`) is explicit, opt-in
@@ -184,7 +186,11 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   private keys. It also runs publint and `@arethetypeswrong/cli` against the tarball.
 - `.github/workflows/node-release.yml` validates annotated release tags, builds
   one npm tarball, and publishes that exact artifact through the protected
-  `release` environment. Manual dispatches are non-publishing dry runs. Keep npm
-  publication tokenless and provenance-enabled.
+  `release` environment. The tag supplies the published version; keep checked-in
+  package and runtime versions at the local development baseline and let
+  `scripts/set-package-version.mjs` stamp the release checkout. Manual
+  dispatches are non-publishing dry runs. Keep npm publication tokenless through
+  trusted publishing after the package has been bootstrapped. Do not force npm
+  provenance; trusted publishing adds it automatically.
 
 Keep changes small and reviewable.

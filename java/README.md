@@ -5,21 +5,27 @@ ElastiCache Integrations for AWS SDK for Java v2 DynamoDB clients.
 Published releases use the Maven coordinates
 `software.amazon.elasticache:aws-elasticache-integration-client:<version>`.
 The Java package is `software.amazon.elasticache.integrations`.
+AWS SDK for Java v2 version 2.21.0 or later is supported.
 
 Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the
-configured DynamoDB origin transport. While reconnecting, requests that have
-not been sent to Cache first wait up to `connectionTimeoutMs` for the new
-connection, then use origin fallback until the configured fallback window
-expires. After a request is sent, indeterminate failures fall back only
-when the connection drops and the operation is in the shared replay-safe
-catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
-stale connection and passes the rejected request through while reconnecting.
-Other RESP errors, failures for non-idempotent operations, malformed responses,
-an expired fallback window, and shutdown are surfaced without starting an
-origin request. SDK retries, response deserialization, and caller-provided
-override configuration remain in the normal SDK pipeline.
+configured DynamoDB origin transport. While reconnecting, cache-eligible
+requests first wait up to `connectionTimeoutMs` for the new connection.
+Replay-safe requests may then use origin fallback until the configured fallback
+window expires. Routed writes instead fail retryably without contacting origin,
+so Cache cannot retain a stale value. After a request is sent, indeterminate
+failures fall back only when the connection drops and the operation is in the
+shared replay-safe catalog. While the connection remains healthy, an
+`ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
+ `AUTH_ERROR` closes the stale connection; replay-safe requests pass through
+ while fallback is enabled, while routed writes wait for one replacement
+ connection and fail retryably if that connection also rejects the request.
+ With `fallbackDurationSeconds(0)`, the rejected request raises
+ `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
+ failures for non-idempotent operations, malformed responses, an expired
+ fallback window, and shutdown are surfaced without starting an origin request.
+ SDK retries, response deserialization, and caller-provided override
+ configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh come from the Amazon ElastiCache developer
 toolkit, the
@@ -223,14 +229,19 @@ same signed request can be replayed safely during origin fallback. Only bodies
 with a known content length are admitted. Buffering is limited to 16 MiB per
 request and eight concurrent collectors by default. Configure these limits with
 `asyncMaxBufferedRequestBytes(int)` and `asyncMaxConcurrentBodyCollectors(int)`.
-A request with an unknown length, or one that exceeds either limit, bypasses
-Cache and uses the origin transport.
+A request with an unknown length, a reported length over the per-request byte
+limit, or an actual body that exceeds that limit bypasses Cache and uses the
+origin transport. These body-shape and body-size pass-throughs apply to writes
+as well as reads because Cache cannot safely materialize the body to evaluate
+its predicates.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
-a bounded daemon executor. If the executor rejects a request because it is at
-capacity, Cache sends the buffered request through the origin fallback. When
-`fallbackDurationSeconds` is 0, a request the predicates route to Cache fails
-with `ElastiCacheIntegrationsCacheUnavailable` instead.
+a bounded daemon executor. If the bounded body collectors are at capacity,
+replay-safe requests use origin fallback and writes fail retryably without
+contacting origin. If the executor rejects a request because it is at capacity,
+replay-safe requests use origin fallback when `fallbackDurationSeconds` is
+nonzero. Otherwise a request routed to Cache fails retryably without contacting
+origin.
 
 ## Configuration
 
@@ -328,10 +339,11 @@ Reconnect attempts continue until one succeeds or the session closes.
 
 Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
 for the new connection and uses it if it arrives. If the connection is not back
-by then, the request uses the signed origin fallback. The same timeout bounds
-startup: Cache keeps retrying the first connection until `connectionTimeoutMs`
-has passed, caps each attempt by the time left, and then fails client creation
-with `ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
+by then, replay-safe requests use the signed origin fallback. Routed writes fail
+retryably without contacting origin. The same timeout bounds startup: Cache
+keeps retrying the first connection until `connectionTimeoutMs` has passed,
+caps each attempt by the time left, and then fails client creation with
+`ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
 bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`,
 and the first `aws.config`. On a live connection, the periodic `AUTH` and
 `aws.config` refresh use `cacheRequestTimeoutMs`.
@@ -340,19 +352,18 @@ percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
 These values are not configurable.
 
 `fallbackDurationSeconds` on `ElastiCacheIntegrationsClientConfiguration`
-controls how long requests may fall back, counted from the end of the
-`connectionTimeoutMs` wait. A negative value (the default) allows fallback
+controls how long replay-safe requests may fall back, counted from the end of
+the `connectionTimeoutMs` wait. A negative value (the default) allows fallback
 indefinitely. A positive value allows fallback for that many seconds. Zero
-never allows fallback, so a request waits up to `connectionTimeoutMs` for a
-connection and then raises `ElastiCacheIntegrationsCacheUnavailable`. Once the
+never allows fallback. Routed writes never use this fallback window. Once the
 window ends, Cache raises a retryable transport failure for the AWS SDK to
-handle. With `fallbackDurationSeconds` set to `0`, a routed request waits only
-for the part of `connectionTimeoutMs` left in the current outage. Later retries
-in the same outage do not restart that wait. If a request already admitted to Cache fails
-as the connection drops, it falls back directly only when its operation is in
-the shared replay-safe catalog. On a healthy connection, an `ORIGIN_ERROR` is
-SDK-retryable only for a cataloged operation; other RESP errors and
-non-idempotent failures are terminal for that attempt.
+handle. A routed request waits only for the part of `connectionTimeoutMs` left
+in the current outage; later retries in the same outage do not restart that
+wait. If a request already admitted to Cache fails as the connection drops, it
+falls back directly only when its operation is in the shared replay-safe
+catalog. On a healthy connection, an `ORIGIN_ERROR` is SDK-retryable only for a
+cataloged operation; other RESP errors and non-idempotent failures are terminal
+for that attempt.
 
 Cache requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `aws.response` RESP3 push. Deferred
@@ -361,7 +372,12 @@ that request is abandoned; a late push for its ID is dropped. A timeout while a
 request is still FIFO-correlated closes the connection to prevent reply
 misrouting. A RESP3 push with an unrecognized kind is treated as protocol
 corruption: it invalidates the stream and closes the connection, rather than
-being ignored.
+being ignored. One connection sends at most 100 requests awaiting replies at
+once. Additional callers wait for a slot within `cacheRequestTimeoutMs` instead
+of failing at the concurrency boundary. Queue admission uses at most 75% of
+that timeout, reserving 25% to send and receive a reply. If that budget is
+exhausted, the request is not sent to the cache and continues to origin
+regardless of operation idempotency.
 
 ## Development
 
@@ -379,8 +395,10 @@ the JAR contents.
 ## Releasing
 
 Java releases are built from annotated `vMAJOR.MINOR.PATCH` or
-`vMAJOR.MINOR.PATCH-rc.N` tags. The tag version must match `version` in
-`build.gradle.kts`.
+`vMAJOR.MINOR.PATCH-rc.N` tags. The tag is the release version source of truth;
+the workflow passes it to Gradle as `releaseVersion`, leaving the checked-in
+version at its local development baseline. A manual workflow run can accept a
+version for a non-publishing dry run.
 
 The `Java Release` workflow tests Java 8, 11, 17, and 21, builds the main,
 sources, and Javadocs JARs once, checks their contents, and runs clean Gradle
@@ -398,6 +416,6 @@ After Maven Central propagation, the workflow resolves the published version
 from clean consumers and attaches the published JARs and POM to the GitHub
 release. Publication, propagation verification, and GitHub release creation
 are separate jobs so post-publish failures can be retried without attempting
-to republish an existing version. A manual workflow run performs the same test,
+to republish an existing version. Manual workflow runs perform the same test,
 packaging, and consumer-smoke stages without entering the release environment
 or publishing to Maven Central.
