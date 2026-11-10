@@ -53,6 +53,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
 import software.amazon.awssdk.utils.AttributeMap;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -427,6 +428,28 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    void authErrorWithZeroFallbackRaisesThroughInstalledClientAndSkipsOrigin() {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        RecordingOriginClient origin = new RecordingOriginClient();
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .originHttpClient(origin)
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .fallbackDurationSeconds(0)
+                                        .build())
+                        .install(appBuilder())) {
+            RuntimeException failure = assertThrows(RuntimeException.class, client::listTables);
+
+            assertTrue(
+                    causedBy(failure, ElastiCacheIntegrationsCacheUnavailable.class),
+                    "expected CacheUnavailable in the cause chain: " + failure);
+            assertNull(origin.request.get(), "the origin must not receive the request");
+        }
+    }
+
+    @Test
     void clientPassesTheCachePolicyTimeoutToTheSession() {
         try (DynamoDbClient client = cacheBuilder().install(appBuilder())) {
             assertEquals(3600, handle.get().getSession().stalenessDurationSeconds());
@@ -797,6 +820,15 @@ class ElastiCacheIntegrationsClientTest {
             assertEquals(2, cache.getAuthAttempts().size());
             assertEquals(2, proxy.getAcceptedConnections());
         }
+    }
+
+    private static boolean causedBy(Throwable failure, Class<?> type) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final class RecordingOriginClientBuilder

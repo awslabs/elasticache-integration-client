@@ -20,6 +20,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -48,6 +49,7 @@ import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.awssdk.utils.AttributeMap;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
@@ -73,6 +75,15 @@ class ElastiCacheIntegrationsAsyncClientTest {
     private Path caBundle;
     private final AtomicReference<ElastiCacheIntegrationsAsyncHandle> handle =
             new AtomicReference<>();
+
+    private static boolean causedBy(Throwable failure, Class<?> type) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (type.isInstance(cause)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static void sdkConfig(DynamoDbAsyncClientBuilder builder) {
         builder
@@ -268,6 +279,31 @@ class ElastiCacheIntegrationsAsyncClientTest {
                     client.listTables().get(5, TimeUnit.SECONDS).tableNames());
             assertEquals(2, cache.getAuthAttempts().size());
             assertEquals(2, proxy.getAcceptedConnections());
+        }
+    }
+
+    @Test
+    void asyncAuthErrorWithZeroFallbackFailsThroughInstalledClientAndSkipsOrigin() throws Exception {
+        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
+
+        try (DynamoDbAsyncClient client =
+                installAsync(
+                        cacheBuilder()
+                                .originAsyncHttpClient(origin)
+                                .clientConfiguration(
+                                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                                .fallbackDurationSeconds(0)
+                                                .build()),
+                        ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class, () -> client.listTables().get(5, TimeUnit.SECONDS));
+
+            assertTrue(
+                    causedBy(failure, ElastiCacheIntegrationsCacheUnavailable.class),
+                    "expected CacheUnavailable in the cause chain: " + failure);
+            assertNull(origin.request.get(), "the origin must not receive the request");
         }
     }
 
