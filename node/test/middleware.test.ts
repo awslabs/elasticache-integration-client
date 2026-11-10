@@ -357,7 +357,7 @@ describe("ElastiCacheIntegrationsHandle", () => {
     expect(sdkClient.config.requestHandler).toBe(sharedHandler);
   });
 
-  it("shutdown keeps a request handler the application set after install", () => {
+  it("wraps a request handler the application sets after install, and keeps it on shutdown", async () => {
     const sdkClient = {
       middlewareStack: constructStack<object, object>(),
       config: { requestHandler: fakeRequestHandler() as object },
@@ -367,9 +367,19 @@ describe("ElastiCacheIntegrationsHandle", () => {
     const replacement = fakeRequestHandler();
     sdkClient.config.requestHandler = replacement;
 
-    handle.shutdown();
+    // The replacement is wrapped too; a request the middleware did not prepare reaches it as is.
+    const wrapped = sdkClient.config.requestHandler as typeof replacement;
+    expect(wrapped).not.toBe(replacement);
+    const unrouted = request();
+    await wrapped.handle(unrouted as never);
+    expect(replacement.handle).toHaveBeenCalledWith(unrouted, undefined);
 
+    handle.shutdown();
     expect(sdkClient.config.requestHandler).toBe(replacement);
+    expect(Object.getOwnPropertyDescriptor(sdkClient.config, "requestHandler")).toMatchObject({
+      writable: true,
+      enumerable: true,
+    });
   });
 
   it("is visible to a second copy of the package loaded in the same process", async () => {

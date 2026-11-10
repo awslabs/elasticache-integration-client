@@ -366,6 +366,52 @@ describe("public DynamoDB client", () => {
     }
   });
 
+  it("keeps caching after the application replaces the request handler", async () => {
+    const cachingCache = new MockCache({
+      tls: true,
+      config: { predicates: [{ expr: "operation == 'GetItem'", vars: {} }] },
+      responseFn: () =>
+        Reply.ok(
+          200,
+          "content-type:application/x-amz-json-1.0",
+          Buffer.from('{"Item":{"id":{"S":"value"}}}'),
+        ),
+    });
+    await cachingCache.start();
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: {
+        accessKeyId: "AKIAEXAMPLE",
+        secretAccessKey: "secret-example",
+        sessionToken: "token-example",
+      },
+      maxAttempts: 1,
+    });
+    await install({
+      client: dynamodb,
+      endpoint: cachingCache.endpoint,
+      cacheName: "test-cache",
+      caCerts: CA_CERTS,
+    });
+    const origin = vi.fn(async () => {
+      throw new Error("origin must not be called");
+    });
+    dynamodb.config.requestHandler = { handle: origin } as never;
+
+    try {
+      const result = await dynamodb.send(
+        new GetItemCommand({ TableName: "ElastiCacheIntegrationsTest", Key: { id: { S: "key" } } }),
+      );
+
+      expect(result.Item).toEqual({ id: { S: "value" } });
+      expect(origin).not.toHaveBeenCalled();
+    } finally {
+      dynamodb.destroy();
+      await cachingCache.stop();
+    }
+  });
+
   it("stops waiting for the cache when the caller's abortSignal fires", async () => {
     const hangingCache = new MockCache({
       tls: true,

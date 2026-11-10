@@ -279,8 +279,7 @@ export class ElastiCacheIntegrationsHandle {
   installed = false;
   private destroyed = false;
   private sdkDestroy: (() => void) | undefined;
-  private sdkRequestHandler: object | undefined;
-  private cacheRequestHandler: object | undefined;
+  private restoreRequestHandler: (() => void) | undefined;
 
   constructor(
     readonly sdkClient: ElastiCacheIntegrationsCompatibleClient,
@@ -295,9 +294,7 @@ export class ElastiCacheIntegrationsHandle {
     if (this.installed || this.destroyed) return;
     const routed = new WeakMap<object, ElastiCacheIntegrationsRequest>();
     installCacheMiddleware(this.sdkClient, this.service, routed);
-    this.sdkRequestHandler = this.sdkClient.config.requestHandler;
-    this.cacheRequestHandler = cacheRequestHandler(this.sdkRequestHandler, this.session, routed);
-    this.sdkClient.config.requestHandler = this.cacheRequestHandler;
+    this.restoreRequestHandler = this.wrapRequestHandler(routed);
     clearCachedHandlers(this.sdkClient);
     this.sdkDestroy = this.sdkClient.destroy;
     this.sdkClient.destroy = this.destroy;
@@ -305,14 +302,40 @@ export class ElastiCacheIntegrationsHandle {
     this.installed = true;
   }
 
+  /**
+   * Serve prepared requests through the client's request handler, including one the application
+   * assigns to `config.requestHandler` after install: the property becomes an accessor that wraps
+   * whatever is set. Returns a function that puts back a plain property holding the latest handler.
+   */
+  private wrapRequestHandler(routed: WeakMap<object, ElastiCacheIntegrationsRequest>): () => void {
+    const config = this.sdkClient.config;
+    const original = Object.getOwnPropertyDescriptor(config, "requestHandler");
+    let sdkHandler = config.requestHandler;
+    let wrapped = cacheRequestHandler(sdkHandler, this.session, routed);
+    Object.defineProperty(config, "requestHandler", {
+      configurable: true,
+      enumerable: original?.enumerable ?? true,
+      get: () => wrapped,
+      set: (handler: object) => {
+        sdkHandler = handler;
+        wrapped = cacheRequestHandler(handler, this.session, routed);
+      },
+    });
+    return () => {
+      Object.defineProperty(config, "requestHandler", {
+        configurable: true,
+        enumerable: original?.enumerable ?? true,
+        writable: true,
+        value: sdkHandler,
+      });
+    };
+  }
+
   /** Remove middleware, restore destroy(), and close ElastiCacheIntegrations without destroying the SDK client. */
   shutdown(): void {
     if (!this.installed) return;
     this.sdkClient.middlewareStack.remove(CACHE_MIDDLEWARE);
-    // Put the SDK's handler back unless the application has replaced ours since.
-    if (this.sdkClient.config.requestHandler === this.cacheRequestHandler) {
-      this.sdkClient.config.requestHandler = this.sdkRequestHandler!;
-    }
+    this.restoreRequestHandler!();
     clearCachedHandlers(this.sdkClient);
     this.sdkClient.destroy = this.sdkDestroy!;
     Reflect.deleteProperty(this.sdkClient, HANDLE);
