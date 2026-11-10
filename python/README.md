@@ -204,8 +204,10 @@ for any operation while the fallback window remains open. After a request is sen
 is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
 While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
 cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
-request through while reconnection obtains fresh authentication. Other RESP errors, malformed
-replies, and failures for non-idempotent operations propagate without origin fallback.
+request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the
+rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP
+errors, malformed replies, and failures for non-idempotent operations propagate without origin
+fallback.
 
 ## Cache policy timeout
 
