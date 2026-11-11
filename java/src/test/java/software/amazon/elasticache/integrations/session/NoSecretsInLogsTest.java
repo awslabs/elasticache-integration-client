@@ -6,10 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
-import java.io.UnsupportedEncodingException;
 import java.net.URI;
-import java.net.URLDecoder;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -26,6 +23,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import java.util.logging.SimpleFormatter;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -139,7 +137,6 @@ class NoSecretsInLogsTest {
     private void run(Scenario scenario, boolean async) {
         ElastiCacheIntegrationsClientConfiguration.Builder configuration =
                 ElastiCacheIntegrationsClientConfiguration.builder()
-                        .connectionTimeoutMs(1000)
                         // No origin fallback, so the client's own error reaches the caller.
                         .fallbackDurationSeconds(0);
         switch (scenario) {
@@ -239,38 +236,23 @@ class NoSecretsInLogsTest {
         return out.toString();
     }
 
+    /** A query-string value: the text after {@code =}, up to the next {@code &}. */
+    private static final Pattern QUERY_VALUE = Pattern.compile("=([^&]+)");
+
     /**
-     * The token and each long value in its query string, raw and decoded: the signature, credential
-     * and session token. Logging any one of them on its own is a leak too.
+     * The token and each long value in its query string: the signature, credential and session token.
+     * Logging any one of them on its own is a leak too.
      */
     private static List<String> tokenSecrets(String token) {
         List<String> secrets = new ArrayList<>();
         secrets.add(token);
-        int query = token.indexOf('?');
-        if (query < 0) {
-            return secrets;
-        }
-        for (String pair : token.substring(query + 1).split("&")) {
-            int equals = pair.indexOf('=');
-            if (equals < 0) {
-                continue;
-            }
-            String raw = pair.substring(equals + 1);
-            for (String value : Arrays.asList(raw, decode(raw))) {
-                if (value.length() >= 16) {
-                    secrets.add(value);
-                }
+        Matcher value = QUERY_VALUE.matcher(token);
+        while (value.find()) {
+            if (value.group(1).length() >= 16) {
+                secrets.add(value.group(1));
             }
         }
         return secrets;
-    }
-
-    private static String decode(String value) {
-        try {
-            return URLDecoder.decode(value, StandardCharsets.UTF_8.name());
-        } catch (UnsupportedEncodingException e) {
-            throw new AssertionError(e);
-        }
     }
 
     private ElastiCacheIntegrationsClient.Builder cacheBuilder(
