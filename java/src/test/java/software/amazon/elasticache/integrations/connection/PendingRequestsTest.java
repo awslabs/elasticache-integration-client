@@ -11,6 +11,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -161,7 +162,9 @@ class PendingRequestsTest {
     @Test
     void timeoutDisposition_whenPromotionWins_removesAsyncWithoutClosing() {
         PendingRequests pending = new PendingRequests(1);
-        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        AtomicInteger removals = new AtomicInteger();
+        CompletableFuture<RespValue> future =
+                pending.registerNewRequest(true, removals::incrementAndGet);
         pending.moveNextToAsyncResponses("42");
 
         ElastiCacheIntegrationsTimeoutError timeout =
@@ -173,6 +176,7 @@ class PendingRequestsTest {
         assertFalse(future.isDone());
         assertFalse(
                 pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
+        assertEquals(1, removals.get());
         assertNotNull(pending.registerNewRequest());
     }
 
@@ -208,16 +212,20 @@ class PendingRequestsTest {
     @Test
     void cancel_beforePromotionRetainsFifoPositionWithoutAsyncLeak() {
         PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        AtomicInteger removals = new AtomicInteger();
+        CompletableFuture<RespValue> future =
+                pending.registerNewRequest(true, removals::incrementAndGet);
         ElastiCacheIntegrationsRequestCancellation.CancelledException cancellation =
                 new ElastiCacheIntegrationsRequestCancellation.CancelledException();
 
         pending.cancel(future, cancellation);
 
         assertEquals(1, pending.size());
+        assertEquals(0, removals.get());
         assertEquals(cancellation, assertThrows(ExecutionException.class, future::get).getCause());
         pending.moveNextToAsyncResponses("42");
         assertEquals(0, pending.size());
+        assertEquals(1, removals.get());
         assertFalse(
                 pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertFalse(pending.isClosed());
@@ -226,7 +234,9 @@ class PendingRequestsTest {
     @Test
     void cancel_afterPromotionRemovesAsyncResponse() {
         PendingRequests pending = new PendingRequests(1);
-        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        AtomicInteger removals = new AtomicInteger();
+        CompletableFuture<RespValue> future =
+                pending.registerNewRequest(true, removals::incrementAndGet);
         pending.moveNextToAsyncResponses("42");
         ElastiCacheIntegrationsRequestCancellation.CancelledException cancellation =
                 new ElastiCacheIntegrationsRequestCancellation.CancelledException();
@@ -234,6 +244,7 @@ class PendingRequestsTest {
         pending.cancel(future, cancellation);
 
         assertEquals(cancellation, assertThrows(ExecutionException.class, future::get).getCause());
+        assertEquals(1, removals.get());
         assertFalse(
                 pending.resolveAsync("42", new RespSimpleString("late".getBytes(StandardCharsets.UTF_8))));
         assertFalse(pending.isClosed());

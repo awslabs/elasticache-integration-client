@@ -36,6 +36,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -665,12 +666,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                 });
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost",
-                        server.getPort(),
-                        clientSslContext,
-                        5000,
-                        150,
-                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+                        "localhost", server.getPort(), clientSslContext, 5000, 150, 1);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -895,12 +891,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
 
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
-                        "localhost",
-                        server.getPort(),
-                        clientSslContext,
-                        5000,
-                        2000,
-                        ElastiCacheIntegrationsConnector.DEFAULT_MAX_PENDING);
+                        "localhost", server.getPort(), clientSslContext, 5000, 2000, 1);
         ExecutorService executor = Executors.newSingleThreadExecutor();
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
@@ -918,9 +909,15 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
                             instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException);
             assertFalse(conn.isDead());
 
+            Future<ElastiCacheIntegrationsResponse> next =
+                    executor.submit(() -> conn.request(testRequest()));
+            Thread.sleep(50);
+            assertFalse(next.isDone());
+            assertEquals(1, cache.getRequests().size());
+
             releaseFirst.countDown();
-            ElastiCacheIntegrationsResponse next = conn.request(testRequest());
-            assertEquals("next", new String(next.getBody(), StandardCharsets.UTF_8));
+            assertEquals(
+                    "next", new String(next.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
             assertFalse(conn.isDead());
         } finally {
             releaseFirst.countDown();
@@ -994,7 +991,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
-    void request_sendLockContention_timesOutAndKillsConnection() throws Exception {
+    void request_sendLockContention_timesOutWithoutKillingConnection() throws Exception {
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector(
                         "localhost",
@@ -1008,13 +1005,18 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
             sendLock.lock();
-            Future<ElastiCacheIntegrationsResponse> request =
-                    executor.submit(() -> conn.request(testRequest()));
+            try {
+                Future<ElastiCacheIntegrationsResponse> request =
+                        executor.submit(() -> conn.request(testRequest()));
 
-            ExecutionException failure =
-                    assertThrows(ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
-            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
-            assertTrue(conn.isDead());
+                ExecutionException failure =
+                        assertThrows(ExecutionException.class, () -> request.get(2, TimeUnit.SECONDS));
+                assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestNotSent);
+                assertFalse(conn.isDead());
+            } finally {
+                sendLock.unlock();
+            }
+            assertEquals(200, conn.request(testRequest()).getStatusCode());
         } finally {
             if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
                 sendLock.unlock();
@@ -1244,6 +1246,101 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     // === PendingRequests bounds ===
+
+    @Test
+    void requestsWaitForPendingCapacityInsteadOfFailing() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstRequestReceived = new CountDownLatch(1);
+        cache.setReplyFunction(
+                request -> {
+                    if (sequence.getAndIncrement() == 0) {
+                        firstRequestReceived.countDown();
+                        return Reply.requestId(42);
+                    }
+                    return Reply.ok(200, Collections.emptyMap(), request.getBody());
+                });
+
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost", server.getPort(), clientSslContext, 5000, 2000, 1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<ElastiCacheIntegrationsResponse> first =
+                    executor.submit(() -> conn.request(testRequest("first")));
+            assertTrue(firstRequestReceived.await(1, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            Future<ElastiCacheIntegrationsResponse> second =
+                    executor.submit(() -> conn.request(testRequest("second")));
+            Thread.sleep(50);
+            assertEquals(1, cache.getRequests().size());
+
+            server.sendPush(responsePush(42, responseValue("first")));
+            assertEquals(
+                    "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            assertEquals(
+                    "second", new String(second.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            assertEquals(2, cache.getRequests().size());
+        } finally {
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
+
+    @Test
+    void reservedResponseBudgetAfterAdmissionDoesNotSendOrKillConnection() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstRequestReceived = new CountDownLatch(1);
+        cache.setReplyFunction(
+                request -> {
+                    if (sequence.getAndIncrement() == 0) {
+                        firstRequestReceived.countDown();
+                        return Reply.requestId(42);
+                    }
+                    return Reply.ok(200, Collections.emptyMap(), request.getBody());
+                });
+
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector(
+                        "localhost", server.getPort(), clientSslContext, 5000, 2000, 1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Lock sendLock = getField(conn, "sendLock", Lock.class);
+        try {
+            conn.connectAndAuthenticate(TEST_USER, TEST_TOKEN);
+            Future<ElastiCacheIntegrationsResponse> first =
+                    executor.submit(() -> conn.request(testRequest("first")));
+            assertTrue(firstRequestReceived.await(1, TimeUnit.SECONDS));
+            awaitFifoSize(conn, 0);
+
+            Future<ElastiCacheIntegrationsResponse> second =
+                    executor.submit(() -> conn.request(testRequest("second")));
+            Thread.sleep(25);
+            assertTrue(sendLock.tryLock(1, TimeUnit.SECONDS));
+            assertEquals(1, cache.getRequests().size());
+
+            server.sendPush(responsePush(42, responseValue("first")));
+            assertEquals(
+                    "first", new String(first.get(1, TimeUnit.SECONDS).getBody(), StandardCharsets.UTF_8));
+            Thread.sleep(1600);
+            ExecutionException failure =
+                    assertThrows(ExecutionException.class, () -> second.get(100, TimeUnit.MILLISECONDS));
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestNotSent);
+            assertEquals(1, cache.getRequests().size());
+            assertFalse(conn.isDead());
+
+            sendLock.unlock();
+            assertEquals(
+                    "third",
+                    new String(conn.request(testRequest("third")).getBody(), StandardCharsets.UTF_8));
+        } finally {
+            if (((java.util.concurrent.locks.ReentrantLock) sendLock).isHeldByCurrentThread()) {
+                sendLock.unlock();
+            }
+            executor.shutdownNow();
+            conn.close();
+        }
+    }
 
     @Test
     void constructor_acceptsCustomMaxPending() throws Exception {

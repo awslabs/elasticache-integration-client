@@ -39,14 +39,19 @@ pushes, while callers still receive ordinary promises. The per-request timeout
 defaults to 5000 ms and can be changed with the
 `cacheRequestTimeout` field (see [Configuration](#configuration)). A timeout for a deferred request removes only
 that request and preserves the connection; a FIFO or write timeout remains
-connection-fatal. The middleware sends requests with no matching predicate
+connection-fatal. One connection sends at most 100 requests awaiting replies at once; additional
+callers wait for a slot within `cacheRequestTimeout` instead of failing at the concurrency
+boundary. Queue admission uses at most 75% of that timeout, reserving 25% to send and receive a
+reply. If that budget is exhausted, the request is not sent to the cache and continues to origin
+regardless of operation idempotency. The middleware sends requests with no matching predicate
 directly to origin and has a narrow origin fallback for cataloged idempotent
 requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
 returned to the SDK as retryable for a cataloged operation.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
-passes the explicitly rejected request through. Other RESP errors, malformed
-responses, and failures for non-idempotent operations propagate without origin
-fallback.
+passes the explicitly rejected request through. With `fallbackDuration` set to
+0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
+instead. Other RESP errors, malformed responses, and failures for
+non-idempotent operations propagate without origin fallback.
 
 ## Request routing
 
@@ -280,9 +285,10 @@ npm run verify
 
 The package builds ESM and CommonJS outputs and emits TypeScript declarations.
 Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node
-release workflow. It validates the tag against `package.json`, tests and
-inspects one tarball, then publishes that exact artifact through the protected
-`release` environment using npm trusted publishing. Release candidates use the
-`next` npm distribution tag; stable releases use `latest`. A manual workflow
-run performs the same validation and uploads the tarball and checksum without
-entering the release environment or publishing to npm.
+release workflow. The tag is the release version source of truth; the workflow
+stamps `package.json`, `package-lock.json`, and the exported runtime version in
+its temporary checkout before it builds and inspects one tarball. It then
+publishes that exact artifact through the protected `release` environment.
+Release candidates use the `next` npm distribution tag; stable releases use
+`latest`. A manual workflow run can accept a version and performs the same
+validation without entering the release environment or publishing to npm.

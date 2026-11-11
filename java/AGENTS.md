@@ -178,8 +178,9 @@ lost, one clock reading sets `readyDeadline = now + connectionTimeout` and
 A routed request with no ready connector starts the reconnect and waits until
 `readyDeadline` for a connector, on the caller's thread for the sync transport and
 on the executor thread for the async transport. It is served on the connector if one
-arrives. Otherwise it falls back to the origin if `fallbackAllowed()`, and raises
-`ElastiCacheIntegrationsCacheUnavailable` if not. `fallbackDurationSeconds == 0`
+arrives. Otherwise a replay-safe request falls back to the origin while the
+fallback window is open, and a routed write raises
+`ElastiCacheIntegrationsCacheUnavailable`. `fallbackDurationSeconds == 0`
 never allows fallback. `close()` wakes every waiting request. The background
 reconnect has its own 5000 ms cap per attempt, not `connectionTimeoutMs`.
 
@@ -223,9 +224,11 @@ at `SEVERE` on every occurrence.
 - Release publishing is configured by `release.gradle.kts` and enabled only
   with `-PreleasePublishing`, so normal Java 8 builds do not load the
   JDK-11+ publishing plugin. The tag-triggered workflow builds and smoke-tests
-  artifacts before publish-step-scoped credentials sign and publish them from
-  the protected `release` environment. Publication, propagation verification,
-  and GitHub release creation are separate jobs. Manual workflow dispatches
-  perform the full validation as a non-publishing dry run.
+  artifacts with the tag-derived `releaseVersion` before publish-step-scoped
+  credentials sign and publish them from the protected `release` environment.
+  Keep the checked-in Gradle version at the local development baseline.
+  Publication, propagation verification, and GitHub release creation are
+  separate jobs. Manual workflow dispatches perform the full validation as a
+  non-publishing dry run.
 
 Keep changes small and reviewable.

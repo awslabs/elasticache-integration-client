@@ -5,6 +5,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 
@@ -20,11 +21,12 @@ final class ElastiCacheIntegrationsFallbackPolicy {
             ElastiCacheIntegrationsRequest request,
             ElastiCacheIntegrationsError failure) {
         return session.isOpen()
-                && !session.isConnectionHealthy()
-                && !(failure instanceof ElastiCacheIntegrationsCacheUnavailable)
-                && !(failure instanceof ElastiCacheIntegrationsRejectedError)
-                && isTransportFailure(failure)
-                && Idempotency.isIdempotent(request.getMetadata());
+                && (failure instanceof ElastiCacheIntegrationsRequestNotSent
+                        || (!session.isConnectionHealthy()
+                                && !(failure instanceof ElastiCacheIntegrationsCacheUnavailable)
+                                && !(failure instanceof ElastiCacheIntegrationsRejectedError)
+                                && isTransportFailure(failure)
+                                && Idempotency.isIdempotent(request.getMetadata())));
     }
 
     static boolean shouldRetry(
