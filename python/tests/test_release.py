@@ -1,4 +1,4 @@
-"""Tests for release tag normalization and validation."""
+"""Tests for release version normalization and stamping."""
 
 import pytest
 from packaging.version import InvalidVersion
@@ -23,10 +23,64 @@ def test_derive_version_rejects_invalid_version():
         release.derive_version("not-a-version")
 
 
-def test_validated_version_checks_tag_against_project(monkeypatch):
-    monkeypatch.setattr(
-        release, "project_metadata", lambda: ("aws-elasticache-integration-client", "1.2.3")
+@pytest.mark.parametrize(
+    "version",
+    [
+        "1.0.0a1",
+        "1.0.0.dev1",
+        "1.0.0.post1",
+        "1.0.0+local",
+    ],
+)
+def test_derive_version_rejects_non_shared_release_forms(version):
+    with pytest.raises(InvalidVersion, match="unsupported release version"):
+        release.derive_version(f"v{version}")
+
+
+def test_normalize_version_accepts_semver_release_candidate():
+    assert release.normalize_version("1.2.3-rc.4") == "1.2.3rc4"
+
+
+@pytest.mark.parametrize("version", ["1.0.0a1", "1.0.0.dev1", "1.0.0.post1"])
+def test_normalize_version_rejects_non_shared_release_forms(version):
+    with pytest.raises(InvalidVersion, match="unsupported release version"):
+        release.normalize_version(version)
+
+
+def test_stamp_project_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[build-system]\nrequires = ["setuptools"]\n\n'
+        '[project]\nname = "example"\nversion = "0.0.1"\n'
     )
 
-    with pytest.raises(ValueError, match="package metadata"):
-        release.validated_version("v1.2.4")
+    assert release.stamp_project_version("1.2.3-rc.4", pyproject) == "1.2.3rc4"
+    assert 'version = "1.2.3rc4"' in pyproject.read_text()
+
+
+def test_stamp_project_version_accepts_resolved_pep_440_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[build-system]\nrequires = ["setuptools"]\n\n'
+        '[project]\nname = "example"\nversion = "0.0.1"\n'
+    )
+
+    assert release.stamp_project_version("1.2.3rc4", pyproject) == "1.2.3rc4"
+    assert 'version = "1.2.3rc4"' in pyproject.read_text()
+
+
+@pytest.mark.parametrize("version", ["1.0.0a1", "1.0.0.dev1", "1.0.0.post1"])
+def test_stamp_project_version_rejects_other_pep_440_versions(tmp_path, version):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "example"\nversion = "0.0.1"\n')
+
+    with pytest.raises(InvalidVersion, match="unsupported PyPI release version"):
+        release.stamp_project_version(version, pyproject)
+
+
+def test_stamp_project_version_requires_project_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "example"\n')
+
+    with pytest.raises(ValueError, match="exactly one"):
+        release.stamp_project_version("1.2.3", pyproject)

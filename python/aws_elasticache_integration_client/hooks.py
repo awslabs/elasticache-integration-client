@@ -37,6 +37,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsOriginError,
     ElastiCacheIntegrationsRejectedError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.models import (
@@ -222,6 +223,10 @@ class ElastiCacheIntegrationsHandle:
                 return None
             return _cache_to_aws_response(request.url, response)
         except ElastiCacheIntegrationsError as exc:
+            if isinstance(exc, ElastiCacheIntegrationsRequestNotSent):
+                if self._session.is_open:
+                    return None
+                raise
             idempotent = is_idempotent_operation(
                 http_request.metadata.service, http_request.metadata.operation
             )

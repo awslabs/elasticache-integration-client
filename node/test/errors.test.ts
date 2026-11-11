@@ -11,6 +11,7 @@ import {
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
   ElastiCacheIntegrationsRejectedError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "../src/errors.js";
 import * as elastiCacheIntegrations from "../src/index.js";
@@ -25,6 +26,7 @@ const ERROR_TYPES = [
   ElastiCacheIntegrationsProtocolError,
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsTimeoutError,
+  ElastiCacheIntegrationsRequestNotSent,
 ] as const;
 
 describe("ElastiCacheIntegrations errors", () => {

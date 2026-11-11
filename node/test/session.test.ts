@@ -24,7 +24,7 @@ import { PROTOCOL_VERSION } from "../src/protocol.js";
 import { RespError } from "../src/resp.js";
 import { ElastiCacheIntegrationsSession, parseEndpoint } from "../src/session.js";
 import type { Refresher } from "../src/refresh.js";
-import { MockCache, MockTcpProxy } from "./mock-cache.js";
+import { MockCache, MockTcpProxy, Reply } from "./mock-cache.js";
 
 function fakeConnector(
   overrides: Partial<ElastiCacheIntegrationsConnector> = {},
@@ -295,6 +295,83 @@ describe("ElastiCacheIntegrationsSession", () => {
     ).resolves.toBeUndefined();
     expect(connector.execute).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it.each(["GetItem", "PutItem"])(
+    "auth error with fallback closed raises at once for %s",
+    async (operation) => {
+      const connector = fakeConnector({
+        execute: vi.fn(async (command: string) =>
+          command === "aws.config"
+            ? Buffer.from(
+                '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+              )
+            : new RespError("AUTH_ERROR", "missing FAS"),
+        ),
+      });
+      const session = new ElastiCacheIntegrationsSession(
+        connector,
+        {},
+        { connectionTimeoutMs: 2_000, fallbackDurationMs: 0 },
+      );
+      await session.open();
+      vi.mocked(connector.execute).mockClear();
+      const waitForConnector = vi.spyOn(
+        session as unknown as { waitForConnector: () => Promise<unknown> },
+        "waitForConnector",
+      );
+
+      await expect(
+        session.request(
+          new ElastiCacheIntegrationsRequest({
+            method: "POST",
+            url: "https://x/",
+            body: "{}",
+            metadata: new RequestMetadata({ service: "svc", operation }),
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ElastiCacheIntegrationsCacheUnavailable);
+
+      expect(connector.execute).toHaveBeenCalledOnce();
+      expect(connector.close).toHaveBeenCalledOnce();
+      expect(waitForConnector).not.toHaveBeenCalled();
+      await session.close();
+    },
+  );
+
+  it("zero window auth error raises and reconnects", async () => {
+    const cache = new MockCache({
+      config: { predicates: [{ expr: "true", vars: {} }] },
+      response: Reply.error("AUTH_ERROR", "no FAS"),
+    });
+    await cache.start();
+    const factory = vi.fn(
+      () =>
+        new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+          tls: false,
+          connectionTimeout: 500,
+          requestTimeout: 500,
+          authProvider: async () => ["test-user", "test-token"] as [string, string],
+        }),
+    );
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      { fallbackDurationMs: 0, baseDelayMs: 1, maxDelayMs: 2, jitter: 0 },
+    );
+    try {
+      await session.open();
+
+      await expect(session.request(testRequest())).rejects.toBeInstanceOf(
+        ElastiCacheIntegrationsCacheUnavailable,
+      );
+
+      expect(cache.requests).toHaveLength(1);
+      await vi.waitFor(() => expect(factory).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
   });
 
   it("declines unmatched requests without a cache round trip", async () => {

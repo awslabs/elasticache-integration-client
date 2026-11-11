@@ -21,6 +21,7 @@ import asyncio
 import logging
 import ssl
 import threading
+import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future
@@ -33,6 +34,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
 )
 from aws_elasticache_integration_client.protocol import PUSH_KIND_RESPONSE, parse_response_push
@@ -56,6 +58,42 @@ OK = "OK"  # the RESP simple string "+OK", decoded
 _RESP3_PROTO = 3  # the `proto` a HELLO reply must report for pushes to be legal
 _DEFAULT_MAX_PENDING = 100
 _AUTH_REJECTION_CODES = frozenset({"WRONGPASS", "invalid-iam-credentials"})
+
+
+class _AdmissionLimiter:
+    """Bound the requests sent to one connection while allowing callers to wait for capacity."""
+
+    def __init__(self, capacity: int) -> None:
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._condition = threading.Condition()
+        self._available = capacity
+        self._closed = False
+
+    def acquire(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        with self._condition:
+            while self._available == 0 and not self._closed:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            if self._closed:
+                raise ElastiCacheIntegrationsConnectionLost("connection is closed")
+            self._available -= 1
+            return True
+
+    def release(self) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._available += 1
+            self._condition.notify()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
 
 
 class _SocketReader:
@@ -314,6 +352,7 @@ class ElastiCacheIntegrationsConnector:
         self._writer: asyncio.StreamWriter | None = None
         self._io_loop_thread = _LoopThread()
         self._pending = _PendingRequests(max_pending)
+        self._admission = _AdmissionLimiter(max_pending)
         self._state_lock = threading.Lock()
         self._closed = False
 
@@ -600,6 +639,7 @@ class ElastiCacheIntegrationsConnector:
             self._closed = True
 
         # Phase 2: teardown outside the state lock (the join may block).
+        self._admission.close()
         self._io_loop_thread.cancel()
         if not self._io_loop_thread.join(_CLOSE_TIMEOUT):
             logger.warning(
@@ -623,6 +663,7 @@ class ElastiCacheIntegrationsConnector:
             self._io_loop_thread.refuse_calls()
             self._reader = None
             writer, self._writer = self._writer, None
+        self._admission.close()
         if writer:
             try:
                 writer.transport.abort()
@@ -718,6 +759,21 @@ class ElastiCacheIntegrationsConnector:
             raise ElastiCacheIntegrationsError(
                 "ElastiCacheIntegrationsConnector used before connect()"
             )
+        if timeout_ms is None:
+            timeout_ms = self.request_timeout_ms
+        timeout_seconds = timeout_ms / 1000
+        minimum_response_budget = timeout_seconds / 4
+        deadline = time.monotonic() + timeout_seconds
+        if not self._admission.acquire(max(0.0, timeout_seconds - minimum_response_budget)):
+            raise ElastiCacheIntegrationsRequestNotSent(
+                f"request timed out waiting for connection capacity after {timeout_ms}ms"
+            )
+        if deadline - time.monotonic() <= minimum_response_budget:
+            self._admission.release()
+            raise ElastiCacheIntegrationsRequestNotSent(
+                f"request timed out waiting for connection capacity after {timeout_ms}ms"
+            )
+
         frame = encode_resp(command, *args)
         reply_future: Future = Future()
         # _send sets this immediately before it touches the transport, under the state lock.
@@ -729,13 +785,12 @@ class ElastiCacheIntegrationsConnector:
         except RuntimeError as exc:
             # The loop was closed by a concurrent close() before the send could be scheduled,
             # so the frame was never handed to the transport.
+            self._admission.release()
             raise ElastiCacheIntegrationsNotSentError("connection closed") from exc
-        # Not `timeout_ms or ...`: an explicit timeout_ms=0 means "do not wait for a reply", and
-        # `or` would quietly turn it into the default instead.
-        if timeout_ms is None:
-            timeout_ms = self.request_timeout_ms
+        reply_future.add_done_callback(lambda _future: self._admission.release())
+        remaining = max(minimum_response_budget, deadline - time.monotonic())
         try:
-            return reply_future.result(timeout=timeout_ms / 1000)
+            return reply_future.result(timeout=remaining)
         except FuturesTimeout as exc:
             error = ElastiCacheIntegrationsTimeoutError(
                 f"async request timed out after {timeout_ms}ms"

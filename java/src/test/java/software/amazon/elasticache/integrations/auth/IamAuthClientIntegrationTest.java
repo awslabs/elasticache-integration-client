@@ -72,7 +72,7 @@ class IamAuthClientIntegrationTest {
                                 DynamoDbClient.builder()
                                         .region(Region.US_EAST_1)
                                         .credentialsProvider(sdkCredentials))) {
-            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
+            assertEquals(Region.US_EAST_1, client.serviceClientConfiguration().region());
         }
 
         try (DynamoDbAsyncClient client =
@@ -81,7 +81,7 @@ class IamAuthClientIntegrationTest {
                                 DynamoDbAsyncClient.builder()
                                         .region(Region.US_EAST_1)
                                         .credentialsProvider(sdkCredentials))) {
-            assertTrue(client.serviceClientConfiguration().credentialsProvider() != null);
+            assertEquals(Region.US_EAST_1, client.serviceClientConfiguration().region());
         }
 
         assertEquals(4, credentialCalls.get());

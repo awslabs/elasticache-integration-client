@@ -11,6 +11,7 @@ import {
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "./errors.js";
 import { PUSH_KIND_RESPONSE, REQUEST_COMMAND } from "./protocol.js";
@@ -30,6 +31,7 @@ export const DEFAULT_CONNECTION_TIMEOUT = 5_000;
 export const DEFAULT_REQUEST_TIMEOUT = 5_000;
 const DEFAULT_MAX_RESPONSE_SIZE = 16 * 1024 * 1024;
 const DEFAULT_MAX_PENDING = 100;
+const RESPONSE_BUDGET_FRACTION = 0.25;
 const RESP3_PROTOCOL = 3;
 const HELLO_PROTO_KEY = Buffer.from("proto", "ascii");
 
@@ -160,6 +162,84 @@ interface PendingRequest {
   settled: boolean;
   writeCompleted: boolean;
   deferredResponseAllowed: boolean;
+}
+
+interface CapacityWaiter {
+  active: boolean;
+  timer: NodeJS.Timeout;
+  resolve: (release: () => void) => void;
+  reject: (reason: unknown) => void;
+}
+
+/** Keep the on-wire pending set bounded while queueing callers outside FIFO correlation. */
+class AdmissionLimiter {
+  private available: number;
+  private readonly waiters: CapacityWaiter[] = [];
+  private closed = false;
+
+  constructor(capacity: number) {
+    this.available = validatePositiveInteger(capacity, "maxPending");
+  }
+
+  tryAcquire(): (() => void) | undefined {
+    if (this.closed) {
+      throw new ElastiCacheIntegrationsConnectionLost("connection is closed");
+    }
+    if (this.available === 0) return undefined;
+    this.available -= 1;
+    return this.releaseHandle();
+  }
+
+  acquire(timeoutMs: number): Promise<() => void> {
+    const immediate = this.tryAcquire();
+    if (immediate !== undefined) return Promise.resolve(immediate);
+
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: CapacityWaiter = {
+        active: true,
+        timer: setTimeout(() => {
+          waiter.active = false;
+          reject(
+            new ElastiCacheIntegrationsRequestNotSent(
+              `request timed out waiting for connection capacity after ${timeoutMs}ms`,
+            ),
+          );
+        }, timeoutMs),
+        resolve,
+        reject,
+      };
+      this.waiters.push(waiter);
+    });
+  }
+
+  close(error: unknown): void {
+    if (this.closed) return;
+    this.closed = true;
+    for (const waiter of this.waiters.splice(0)) {
+      if (!waiter.active) continue;
+      waiter.active = false;
+      clearTimeout(waiter.timer);
+      waiter.reject(error);
+    }
+  }
+
+  private releaseHandle(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (this.closed) return;
+      while (this.waiters.length > 0) {
+        const waiter = this.waiters.shift()!;
+        if (!waiter.active) continue;
+        waiter.active = false;
+        clearTimeout(waiter.timer);
+        waiter.resolve(this.releaseHandle());
+        return;
+      }
+      this.available += 1;
+    };
+  }
 }
 
 /** Thread-safe-in-spirit FIFO for promises registered by concurrent callers. */
@@ -360,6 +440,7 @@ export class ElastiCacheIntegrationsConnector {
   // Kept while the reader is active so close() can still await it after destroy().
   private readerTask: Promise<void> | undefined;
   private readonly pending: PendingRequests;
+  private readonly admission: AdmissionLimiter;
   private connecting = false;
   private ready = false;
   private dead = false;
@@ -382,7 +463,9 @@ export class ElastiCacheIntegrationsConnector {
       options.maxResponseSize ?? DEFAULT_MAX_RESPONSE_SIZE,
       "maxResponseSize",
     );
-    this.pending = new PendingRequests(options.maxPending ?? DEFAULT_MAX_PENDING);
+    const maxPending = options.maxPending ?? DEFAULT_MAX_PENDING;
+    this.pending = new PendingRequests(maxPending);
+    this.admission = new AdmissionLimiter(maxPending);
     this.authProvider = options.authProvider;
   }
 
@@ -528,7 +611,9 @@ export class ElastiCacheIntegrationsConnector {
     if (this.closed) return;
     this.closed = true;
     this.dead = true;
-    this.pending.failAll(new ElastiCacheIntegrationsConnectionLost("connection closed"));
+    const failure = new ElastiCacheIntegrationsConnectionLost("connection closed");
+    this.admission.close(failure);
+    this.pending.failAll(failure);
     const socket = this.socket;
     try {
       this.openingSocket?.destroy();
@@ -565,11 +650,53 @@ export class ElastiCacheIntegrationsConnector {
       throw new ElastiCacheIntegrationsConnectionLost("connection is closed");
     }
 
+    const timeout = this.timeoutFor(command);
+    const deadline = Date.now() + timeout;
+    const minimumResponseBudget = timeout * RESPONSE_BUDGET_FRACTION;
+    const release = this.admission.tryAcquire();
+    if (release !== undefined) {
+      return this.executeAdmitted(command, args, deadline, timeout, minimumResponseBudget, release);
+    }
+    const queuedRelease = await this.admission.acquire(
+      Math.max(0, timeout - minimumResponseBudget),
+    );
+    return this.executeAdmitted(
+      command,
+      args,
+      deadline,
+      timeout,
+      minimumResponseBudget,
+      queuedRelease,
+    );
+  }
+
+  private async executeAdmitted(
+    command: string,
+    args: Buffer[],
+    deadline: number,
+    timeout: number,
+    minimumResponseBudget: number,
+    release: () => void,
+  ): Promise<RespValue> {
     let sent: SentRequest | undefined;
     try {
+      if (deadline - Date.now() <= minimumResponseBudget) {
+        throw new ElastiCacheIntegrationsRequestNotSent(
+          `request timed out waiting for connection capacity after ${timeout}ms`,
+        );
+      }
       sent = this.send(command, ...args);
-      return await this.waitForResponse(sent.response, this.timeoutFor(command));
+      void sent.pending.promise.then(release, release);
+      return await this.waitForResponse(
+        sent.response,
+        Math.max(minimumResponseBudget, deadline - Date.now()),
+        timeout,
+      );
     } catch (error) {
+      if (sent === undefined) {
+        release();
+        throw error;
+      }
       if (error instanceof ElastiCacheIntegrationsTimeoutError) {
         // Once the request has moved out of the FIFO, a late response cannot be matched to
         // another caller. Remove that map entry and preserve the connection.
@@ -579,7 +706,7 @@ export class ElastiCacheIntegrationsConnector {
           this.pending.removeFromAsync(sent.pending)
         ) {
           const asyncTimeout = new ElastiCacheIntegrationsTimeoutError(
-            `async request timed out after ${this.timeoutFor(command)}ms`,
+            `async request timed out after ${timeout}ms`,
           );
           sent.pending.settled = true;
           sent.pending.reject(asyncTimeout);
@@ -991,11 +1118,17 @@ export class ElastiCacheIntegrationsConnector {
     }
   }
 
-  private async waitForResponse(response: Promise<RespValue>, timeout: number): Promise<RespValue> {
+  private async waitForResponse(
+    response: Promise<RespValue>,
+    waitMs: number,
+    reportedTimeoutMs: number,
+  ): Promise<RespValue> {
     return new Promise<RespValue>((resolve, reject) => {
       const timer = setTimeout(() => {
-        reject(new ElastiCacheIntegrationsTimeoutError(`request timed out after ${timeout}ms`));
-      }, timeout);
+        reject(
+          new ElastiCacheIntegrationsTimeoutError(`request timed out after ${reportedTimeoutMs}ms`),
+        );
+      }, waitMs);
 
       response.then(
         (value) => {
