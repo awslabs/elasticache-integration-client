@@ -1,10 +1,11 @@
 package software.amazon.elasticache.integrations.session;
 
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.logging.Logger;
 import software.amazon.awssdk.core.async.AsyncRequestBody;
-import software.amazon.awssdk.core.async.AsyncRequestBody.BodyType;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
@@ -19,6 +20,10 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
  * attributes. Each HTTP attempt is handed to the async transport immediately before transmission.
  */
 final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionInterceptor {
+
+    private static final String BYTE_BUFFERS_ASYNC_REQUEST_BODY =
+            "software.amazon.awssdk.core.internal.async.ByteBuffersAsyncRequestBody";
+    private static final Method BODY_METHOD = findBodyMethod();
 
     private static final Logger LOGGER =
             Logger.getLogger(ElastiCacheIntegrationsAsyncInterceptor.class.getName());
@@ -82,10 +87,36 @@ final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionIntercep
     /**
      * Whether an async body is bytes, which Cache buffers. Streams, files, publishers, and a caller's
      * own body types pass through. A request with no async body, such as DynamoDB's, publishes its
-     * marshalled bytes and is carriable.
+     * marshalled bytes and is carriable. Later AWS SDK releases added {@code
+     * AsyncRequestBody.body()}, so older releases are identified by the stable byte-buffer
+     * implementation class.
      */
     private static boolean isCarriableBody(AsyncRequestBody body) {
-        return BodyType.BYTES.getName().equals(body.body());
+        if (BODY_METHOD == null) {
+            return BYTE_BUFFERS_ASYNC_REQUEST_BODY.equals(body.getClass().getName());
+        }
+        try {
+            return "Bytes".equals(BODY_METHOD.invoke(body));
+        } catch (IllegalAccessException e) {
+            throw new IllegalStateException("Cannot inspect the SDK async request body", e);
+        } catch (InvocationTargetException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            if (cause instanceof Error) {
+                throw (Error) cause;
+            }
+            throw new IllegalStateException("Cannot inspect the SDK async request body", cause);
+        }
+    }
+
+    private static Method findBodyMethod() {
+        try {
+            return AsyncRequestBody.class.getMethod("body");
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
     }
 
     @Override

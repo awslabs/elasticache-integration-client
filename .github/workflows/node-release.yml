@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to validate without publishing (for example, 0.0.2-rc.1)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -74,6 +79,7 @@ jobs:
         id: release
         env:
           EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           package_version="$(node --input-type=commonjs -p "require('./package.json').version")"
@@ -88,14 +94,10 @@ jobs:
                 exit 1
               fi
               version="${RELEASE_TAG#v}"
-              if [[ "$version" != "$package_version" ]]; then
-                echo "Tag version $version does not match package.json version $package_version" >&2
-                exit 1
-              fi
               should_publish="true"
               ;;
             workflow_dispatch)
-              version="$package_version"
+              version="${INPUT_VERSION:-$package_version}"
               should_publish="false"
               echo "Manual dry run: validating $version without publishing"
               ;;
@@ -104,14 +106,31 @@ jobs:
               exit 1
               ;;
           esac
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "Unsupported release version: $version" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp release version
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: node scripts/set-package-version.mjs "$RELEASE_VERSION"
 
       - name: Install dependencies
         run: npm ci
 
       - name: Build and smoke test tarball
-        run: npm run pack:smoke
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          npm run pack:smoke
+          actual_version="$(node --input-type=commonjs -p "require('./package.json').version")"
+          if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
+            echo "Built package version $actual_version does not match release version $RELEASE_VERSION" >&2
+            exit 1
+          fi
 
       - name: Inspect package metadata
         run: |
@@ -175,6 +194,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
+          registry-url: https://registry.npmjs.org
 
       - name: Download validated tarball
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -189,7 +209,7 @@ jobs:
           cd .artifacts
           shasum -a 256 -c "$TARBALL.sha256"
 
-      - name: Verify trusted publishing prerequisites
+      - name: Verify npm publishing prerequisites
         env:
           MINIMUM_NODE_VERSION: "22.14.0"
           MINIMUM_NPM_VERSION: "11.5.1"
@@ -202,8 +222,13 @@ jobs:
       - name: Publish validated tarball
         env:
           DIST_TAG: ${{ needs.package.outputs.dist-tag }}
+          # TODO: After the package is bootstrapped and the repository is public,
+          # configure npm trusted publishing, revoke NPM_BOOTSTRAP_TOKEN, and
+          # remove this NODE_AUTH_TOKEN binding.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           TARBALL: ${{ needs.package.outputs.tarball }}
-        run: npm publish ".artifacts/$TARBALL" --ignore-scripts --provenance --access public --tag "$DIST_TAG"
+        # npm trusted publishing adds provenance automatically.
+        run: npm publish ".artifacts/$TARBALL" --ignore-scripts --access public --tag "$DIST_TAG"
 
       - name: Wait for npm propagation
         env:

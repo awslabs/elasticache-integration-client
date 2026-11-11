@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Release version to validate without publishing (for example, 0.0.2-rc.1)
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +45,7 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -55,14 +61,10 @@ jobs:
                 exit 1
               fi
               version="${RELEASE_TAG#v}"
-              if [[ "$version" != "$project_version" ]]; then
-                echo "Tag version $version does not match Gradle version $project_version" >&2
-                exit 1
-              fi
               should_publish="true"
               ;;
             workflow_dispatch)
-              version="$project_version"
+              version="${INPUT_VERSION:-$project_version}"
               should_publish="false"
               echo "Manual dry run: validating $version without publishing"
               ;;
@@ -71,6 +73,10 @@ jobs:
               exit 1
               ;;
           esac
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then
+            echo "Unsupported release version: $version" >&2
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "should-publish=$should_publish" >> "$GITHUB_OUTPUT"
 
@@ -99,7 +105,11 @@ jobs:
 
       - name: Build unsigned release artifacts once
         working-directory: java
-        run: ./gradlew --no-daemon -PreleasePublishing clean build publishToMavenLocal
+        run: |
+          ./gradlew --no-daemon \
+            -PreleaseVersion="$RELEASE_VERSION" \
+            -PreleasePublishing \
+            clean build publishToMavenLocal
 
       - name: Test clean Gradle and Maven consumers
         working-directory: java
@@ -130,7 +140,11 @@ jobs:
 
       - name: Build release artifacts once
         working-directory: java
-        run: ./gradlew --no-daemon -PreleasePublishing clean build publishToMavenLocal
+        run: |
+          ./gradlew --no-daemon \
+            -PreleaseVersion="$RELEASE_VERSION" \
+            -PreleasePublishing \
+            clean build publishToMavenLocal
 
       - name: Test clean Gradle and Maven consumers
         working-directory: java
@@ -150,6 +164,7 @@ jobs:
           ./gradlew \
             --no-daemon \
             --no-configuration-cache \
+            -PreleaseVersion="$RELEASE_VERSION" \
             -PreleasePublishing \
             -PreleaseSigning \
             publishAndReleaseToMavenCentral

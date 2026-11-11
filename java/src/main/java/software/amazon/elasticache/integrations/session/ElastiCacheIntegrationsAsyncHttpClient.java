@@ -155,10 +155,27 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
             SdkHttpContentPublisher publisher = request.requestContentPublisher();
             boolean tooLargeToBuffer =
                     publisher.contentLength().map(length -> length > maxBufferedRequestBytes).orElse(true);
-            if (tooLargeToBuffer || !bodyCollectorPermits.tryAcquire()) {
+            if (tooLargeToBuffer) {
                 // Do not subscribe when the request cannot fit within the configured
                 // buffering budget. The origin transport consumes the original body.
                 fallbackToOrigin(request);
+                return result;
+            }
+            if (!bodyCollectorPermits.tryAcquire()) {
+                // The body is unavailable for predicate evaluation, so only cataloged replay-safe
+                // operations may bypass Cache when collectors are saturated.
+                if (Idempotency.isIdempotent(capturedRequest.getMetadata())) {
+                    fallbackToOrigin(request);
+                } else {
+                    fail(
+                            result,
+                            request.responseHandler(),
+                            RetryableException.create(
+                                    "Cache body collector rejected routed write",
+                                    new ElastiCacheIntegrationsCacheUnavailable(
+                                            "Routed write was not sent because Cache body collectors are at"
+                                                    + " capacity")));
+                }
                 return result;
             }
 
@@ -206,14 +223,16 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
                 // Executor saturation means Cache cannot accept this attempt.
-                if (session.mayBypassCache(cacheRequest)) {
+                if (session.canFallbackWithoutCache(cacheRequest)) {
                     fallbackToOrigin(copyWithBody(request, body));
                 } else {
-                    handleCacheCompletion(
-                            body,
-                            null,
-                            new ElastiCacheIntegrationsCacheUnavailable(
-                                    "Cache executor is at capacity and origin fallback is disabled"));
+                    fail(
+                            result,
+                            request.responseHandler(),
+                            RetryableException.create(
+                                    "Cache executor rejected routed write",
+                                    new ElastiCacheIntegrationsCacheUnavailable(
+                                            "Routed write was not sent because the Cache executor is at capacity")));
                 }
                 return;
             } catch (Throwable submissionFailure) {
