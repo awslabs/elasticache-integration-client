@@ -2,6 +2,7 @@ package software.amazon.elasticache.integrations.session;
 
 import java.lang.reflect.Field;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Locale;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
@@ -497,8 +498,9 @@ public final class ElastiCacheIntegrationsClient {
                             .userId(userId)
                             .region(region)
                             .credentialsProvider(credentialsProvider);
-            if (clientConfiguration.getIamTokenRefreshDelay() != null) {
-                iam.refreshAfter(clientConfiguration.getIamTokenRefreshDelay());
+            Long refreshDelaySeconds = clientConfiguration.getIamTokenRefreshDelaySeconds();
+            if (refreshDelaySeconds != null) {
+                iam.refreshAfter(Duration.ofSeconds(refreshDelaySeconds));
             }
             auth.bind(iam.build());
             open.run();
