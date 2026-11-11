@@ -1,40 +1,72 @@
-# Cache Java
+# ElastiCacheIntegrations Java
 
 ElastiCache Integrations for AWS SDK for Java v2 DynamoDB clients.
 
 Published releases use the Maven coordinates
-`software.amazon.elasticache:aws-elasticache-integration-client:<version>`.
-The Java package is `software.amazon.elasticache.integrations`.
+`software.amazon.elasticache:aws-elasticache-integration-client:<version>`. The
+public types live in `software.amazon.elasticache.integrations.session`, under
+the `software.amazon.elasticache.integrations` module.
 AWS SDK for Java v2 version 2.21.0 or later is supported.
 
-Cache connects and authenticates before returning the SDK client. Requests are
-sent to Cache when the configured predicates match and otherwise use the
+Maven:
+
+```xml
+<dependency>
+  <groupId>software.amazon.elasticache</groupId>
+  <artifactId>aws-elasticache-integration-client</artifactId>
+  <version>VERSION</version>
+</dependency>
+```
+
+Gradle:
+
+```kotlin
+implementation("software.amazon.elasticache:aws-elasticache-integration-client:VERSION")
+```
+
+## Scope
+
+Supported: CEL predicate routing, indefinite background reconnection with a
+bounded origin-fallback window, periodic cache-policy refresh, and deferred
+responses delivered as `aws.response` RESP3 pushes. Failover to a second cache
+endpoint is out of scope.
+
+The client is pre-1.0 and its public API may still change. Only
+`ElastiCacheIntegrationsClient`, `ElastiCacheIntegrationsClientConfiguration`
+and the `ElastiCacheIntegrations*` exception types are public; everything else
+is an implementation detail.
+
+## Behavior at a glance
+
+The client connects and authenticates before returning the SDK client. Requests
+are sent to the cache when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, cache-eligible
 requests first wait up to `connectionTimeoutMs` for the new connection.
 Replay-safe requests may then use origin fallback until the configured fallback
 window expires. Routed writes instead fail retryably without contacting origin,
-so Cache cannot retain a stale value. After a request is sent, indeterminate
+so the cache cannot retain a stale value. After a request is sent, indeterminate
 failures fall back only when the connection drops and the operation is in the
 shared replay-safe catalog. While the connection remains healthy, an
 `ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
- `AUTH_ERROR` closes the stale connection; replay-safe requests pass through
- while fallback is enabled, while routed writes wait for one replacement
- connection and fail retryably if that connection also rejects the request.
- With `fallbackDurationSeconds(0)`, the rejected request raises
- `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
- failures for non-idempotent operations, malformed responses, an expired
- fallback window, and shutdown are surfaced without starting an origin request.
- SDK retries, response deserialization, and caller-provided override
- configuration remain in the normal SDK pipeline.
+
+`AUTH_ERROR` closes the stale connection; replay-safe requests pass through
+while fallback is enabled, while routed writes wait for one replacement
+connection and fail retryably if that connection also rejects the request.
+With `fallbackDurationSeconds(0)`, the rejected request raises
+`ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
+failures for non-idempotent operations, malformed responses, an expired
+fallback window, and shutdown are surfaced without starting an origin request.
+SDK retries, response deserialization, and caller-provided override
+configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh come from the Amazon ElastiCache developer
 toolkit, the
 [`software.amazon.elasticache:developer-toolkit-elasticache`](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache)
 artifact on Maven Central. The toolkit validates and lowercases cache names and user
 IDs, resolves fresh AWS credentials for every newly signed token, and owns the
-SigV4 signing contract. Cache sends the resulting bearer token only in the
+SigV4 signing contract. The client sends the resulting bearer token only in the
 TLS-protected `HELLO 3 AUTH <user> <token>` handshake, which also confirms RESP3
-before the connection becomes usable. Cache then periodically repeats plain
+before the connection becomes usable. It then periodically repeats plain
 `AUTH` on each live connection using the manager's latest token. A rejected
 refresh is retried with reconnect backoff while the connection keeps serving
 with its last valid authentication state. A timed-out or malformed AUTH reply
@@ -43,12 +75,12 @@ signing remains owned by the AWS SDK.
 
 ## Request routing
 
-Opening a Cache session compiles the CEL predicates returned by
+Opening a cache session compiles the CEL predicates returned by
 `aws.config`. Each expression can use the request's `service`, `operation`,
 `method`, `url`, `headers`, and parsed JSON `body`, plus arbitrary variables
 bound by the predicate's `vars` object.
 
-A request is sent to Cache when any predicate evaluates to `true`. Otherwise,
+A request is sent to the cache when any predicate evaluates to `true`. Otherwise,
 the original signed SDK request is passed to the configured origin HTTP
 transport without a cache round trip. This supports the proxy's read-through
 and write-through routing, including table allowlists for batch and transaction
@@ -87,7 +119,7 @@ count as confirmation.
 
 `cachePolicyTimeoutSeconds` bounds that tolerance. It is a positive whole number
 of seconds and defaults to one hour. A refresh that fails past it means the
-config can no longer be trusted, so Cache drops the connection, and bringing
+config can no longer be trusted, so the client drops the connection, and bringing
 up the replacement resolves a fresh config. A refresh that succeeds restarts
 the window, so a healthy connection is never dropped. Requests fall back
 meanwhile under the configured origin-fallback window. A request already in
@@ -156,8 +188,8 @@ resolve credentials. In the last case, the SDK's exception is the cause.
 | `clientConfiguration(ElastiCacheIntegrationsClientConfiguration)` | all defaults | See [Configuration](#configuration). |
 | `originHttpClient(SdkHttpClient)` | SDK Apache HTTP client | Transport for requests that go to the origin service. |
 | `originAsyncHttpClient(SdkAsyncHttpClient)` | SDK Netty HTTP client | Transport for origin requests from `installAsync`. |
-| `asyncExecutor(Executor)` | bounded daemon pool | Executor for the blocking cache socket requests of `installAsync`. |
-| `asyncMaxBufferedRequestBytes(int)` | 16 MiB | Largest asynchronous request body Cache buffers. |
+| `asyncExecutor(Executor)` | daemon pool, 100 threads | Executor for the blocking cache socket requests of `installAsync`. |
+| `asyncMaxBufferedRequestBytes(int)` | 16 MiB | Largest asynchronous request body the client buffers. |
 | `asyncMaxConcurrentBodyCollectors(int)` | 8 | Most asynchronous request bodies collected at once. |
 
 These options describe the connection to the cache, which the SDK client knows
@@ -197,9 +229,9 @@ cache, so those settings are never lost without an error. `install` also throws
 `ElastiCacheIntegrationsConfigError` for a builder it cannot inspect, such as a
 wrapper around the builder that the SDK client's `builder()` method returns.
 The SDK closes the
-transport that Cache creates when the application closes the client. Cache
-closes the origin transport only when it created it. A transport or executor
-that you supply stays open.
+transport that the client creates when the application closes the client. The
+client closes the origin transport only when it created it. A transport or
+executor that you supply stays open.
 
 `install` puts the builder's override configuration back the way it was and
 clears its `httpClientBuilder`, whether it succeeds or fails. Each `install` on
@@ -210,38 +242,38 @@ failed bring-up.
 ### Synchronous request bodies
 
 A request whose body comes from an `InputStream` or a file passes through to
-the origin transport without Cache. This covers `RequestBody.fromInputStream`,
+the origin transport without the cache. This covers `RequestBody.fromInputStream`,
 `RequestBody.fromFile`, and `RequestBody.fromContentProvider` without a content
-length. Reading a stream for Cache would consume it before the origin send, and
-a file would be buffered whole. Other bodies, including DynamoDB requests, are
-read for Cache.
+length. Reading a stream for the cache would consume it before the origin send,
+and a file would be buffered whole. Other bodies, including DynamoDB requests,
+are read for the cache.
 
 ### Asynchronous clients
 
-DynamoDB operations are asynchronous and do not block SDK event-loop threads
-while waiting for Cache.
-
 A request whose `AsyncRequestBody` is not bytes passes through to the origin
-transport without Cache. This covers `AsyncRequestBody.fromInputStream`,
+transport without the cache. This covers `AsyncRequestBody.fromInputStream`,
 `fromFile`, `fromPublisher`, and custom `AsyncRequestBody` implementations.
-Cache buffers the remaining request bodies, including DynamoDB requests, so the
-same signed request can be replayed safely during origin fallback. Only bodies
-with a known content length are admitted. Buffering is limited to 16 MiB per
-request and eight concurrent collectors by default. Configure these limits with
-`asyncMaxBufferedRequestBytes(int)` and `asyncMaxConcurrentBodyCollectors(int)`.
+The client buffers the remaining request bodies, including DynamoDB requests, so
+the same signed request can be replayed safely during origin fallback. Only
+bodies with a known content length are admitted. Buffering is limited to 16 MiB
+per request and eight concurrent collectors by default. Configure these limits
+with `asyncMaxBufferedRequestBytes(int)` and
+`asyncMaxConcurrentBodyCollectors(int)`.
 A request with an unknown length, a reported length over the per-request byte
-limit, or an actual body that exceeds that limit bypasses Cache and uses the
+limit, or an actual body that exceeds that limit bypasses the cache and uses the
 origin transport. These body-shape and body-size pass-throughs apply to writes
-as well as reads because Cache cannot safely materialize the body to evaluate
-its predicates.
+as well as reads because the client cannot safely materialize the body to
+evaluate its predicates.
 
-Cache's socket request API is blocking, so the asynchronous adapter runs it on
-a bounded daemon executor. If the bounded body collectors are at capacity,
-replay-safe requests use origin fallback and writes fail retryably without
-contacting origin. If the executor rejects a request because it is at capacity,
-replay-safe requests use origin fallback when `fallbackDurationSeconds` is
-nonzero. Otherwise a request routed to Cache fails retryably without contacting
-origin.
+The cache request API is blocking, so the asynchronous adapter runs it on a
+daemon executor rather than an SDK event-loop thread. If the bounded body
+collectors are at capacity, replay-safe requests use origin fallback and writes
+fail retryably without contacting origin. If the executor rejects a request
+because it is at capacity, replay-safe requests use origin fallback when
+`fallbackDurationSeconds` is nonzero; otherwise a request routed to the cache
+fails retryably without contacting origin. The default executor queues work
+without bound, so it never rejects; rejection applies to a bounded executor
+supplied through `asyncExecutor`.
 
 ## Configuration
 
@@ -269,7 +301,7 @@ ElastiCacheIntegrationsClient.builder()
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for every command after the connection is ready, including cache requests, re-AUTH, and config refresh, in milliseconds. Must be positive and at most 2147483647. |
 | `connectionTimeoutMs(long)` | 5000 | How long to try at startup, and how long a request waits for reconnection after a connection is lost, in milliseconds. Within one attempt it bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`, and the first `aws.config`. Must be positive and at most 2147483647. |
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
-| `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
+| `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what the cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
 | `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
 
@@ -284,8 +316,8 @@ everything, so the example above caches `Users` and `Sessions` and nothing else.
 There is no exclude form. To keep one table out of the cache, name the tables
 that should be in it.
 
-Lifetimes are set per category (`item_ttl`, `item_negative_ttl`, `query_ttl`,
-`scan_ttl`), connection-wide at the top level or per table under
+The lifetimes (`item_ttl`, `item_negative_ttl`, `query_ttl`, `scan_ttl`) and
+`item_write_behavior` apply connection-wide at the top level, or per table under
 `table_overrides`. A `table_overrides` entry holds settings only and never puts
 a table in scope.
 
@@ -301,8 +333,13 @@ overrides.put("table_overrides",
 
 The cache refuses a value it does not allow at connect time with
 `ElastiCacheIntegrationsOverridesRejected`, rather than adjusting it. The cache
-ignores a field name it does not recognise, so a typo fails silently. The names
-above are the whole set.
+ignores a field name it does not recognise, so a typo fails silently rather than
+raising an error.
+
+One further key is reserved: the client sends its own `version` in the
+`aws.config` payload, and an entry of that name in `cachePolicyOverrides`
+replaces it. It does not version your cache policy, so leave it unset unless you
+intend to change the protocol version the client negotiates.
 
 ## IAM token refresh
 
@@ -319,9 +356,9 @@ change the background signing point. It must be greater than 0 and less than 880
 seconds, which keeps the toolkit's 20-second safety margin on the 15-minute
 token.
 
-Cache asks its manager for credentials on every connection and reconnect, so a
-reconnect uses the latest valid token without synchronously signing a new one.
-If Cache rejects cached IAM credentials during `HELLO 3 AUTH`, the failed
+The client asks its manager for credentials on every connection and reconnect,
+so a reconnect uses the latest valid token without synchronously signing a new
+one. If the cache rejects cached IAM credentials during `HELLO 3 AUTH`, the failed
 connection is discarded, the manager force-refreshes the token with newly resolved AWS
 credentials, and the existing connect or reconnect policy opens the
 next connection with the replacement token. Persistent IAM configuration
@@ -340,7 +377,7 @@ Reconnect attempts continue until one succeeds or the session closes.
 Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
 for the new connection and uses it if it arrives. If the connection is not back
 by then, replay-safe requests use the signed origin fallback. Routed writes fail
-retryably without contacting origin. The same timeout bounds startup: Cache
+retryably without contacting origin. The same timeout bounds startup: the client
 keeps retrying the first connection until `connectionTimeoutMs` has passed,
 caps each attempt by the time left, and then fails client creation with
 `ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
@@ -348,24 +385,26 @@ bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`,
 and the first `aws.config`. On a live connection, the periodic `AUTH` and
 `aws.config` refresh use `cacheRequestTimeoutMs`.
 Reconnect delays use capped exponential backoff from 100 ms to 3.2 s with 20
-percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
-These values are not configurable.
+percent jitter, and the client repeats `AUTH` on a live connection every 15
+minutes. The same 20 percent jitter applies to the config-refresh and re-AUTH
+intervals, as in the other clients, so re-AUTH lands between roughly 12 and 18
+minutes. These values are not configurable.
 
 `fallbackDurationSeconds` on `ElastiCacheIntegrationsClientConfiguration`
 controls how long replay-safe requests may fall back, counted from the end of
 the `connectionTimeoutMs` wait. A negative value (the default) allows fallback
 indefinitely. A positive value allows fallback for that many seconds. Zero
 never allows fallback. Routed writes never use this fallback window. Once the
-window ends, Cache raises a retryable transport failure for the AWS SDK to
+window ends, the client raises a retryable transport failure for the AWS SDK to
 handle. A routed request waits only for the part of `connectionTimeoutMs` left
 in the current outage; later retries in the same outage do not restart that
-wait. If a request already admitted to Cache fails as the connection drops, it
+wait. If a request already admitted to the cache fails as the connection drops, it
 falls back directly only when its operation is in the shared replay-safe
 catalog. On a healthy connection, an `ORIGIN_ERROR` is SDK-retryable only for a
 cataloged operation; other RESP errors and non-idempotent failures are terminal
 for that attempt.
 
-Cache requests may complete out of order when the cache returns a request ID
+Requests to the cache may complete out of order when the cache returns a request ID
 and later delivers the result in a `aws.response` RESP3 push. Deferred
 requests do not block later FIFO replies. If a deferred request times out, only
 that request is abandoned; a late push for its ID is dropped. A timeout while a
@@ -381,16 +420,24 @@ regardless of operation idempotency.
 
 ## Development
 
-Gradle runs on JDK 21 because Error Prone 2.50 requires JDK 21 and
-Gradle 8.14 cannot run on JDK 25. The compiler emits Java 8 bytecode
-(`options.release = 8`). Tests run on Java 8, 11, 17, and 21. To run them on
-another installed JDK, pass `-PtestJavaVersion=<n>`, for example
+Gradle itself must run on JDK 21. The compiler emits Java 8 bytecode
+(`options.release.set(8)`), so do not use language or library APIs introduced
+after Java 8. Tests run on Java 8, 11, 17, and 21. To run them on another
+installed JDK, pass `-PtestJavaVersion=<n>`, for example
 `./gradlew test -PtestJavaVersion=8`.
 
 `./gradlew build` also runs Spotless with google-java-format
 (`./gradlew spotlessApply` fixes formatting), writes JaCoCo reports to
-`build/reports/jacoco/test/`, builds the sources and Javadoc JARs, and checks
-the JAR contents.
+`build/reports/jacoco/test/`, verifies coverage, builds the sources and Javadoc
+JARs, and checks the JAR contents.
+
+Two further suites run in CI and can be reproduced locally:
+
+- The AWS SDK compatibility matrix, which builds and tests against a range of
+  SDK versions down to the supported floor. Select one with
+  `-PawsSdkVersion=<version>` and `-PawsSdkRuntimeVersion=<version>`.
+- The cross-client alignment tests, which run the fixtures in `shared/` that
+  every client must agree on. Run them with `-PtestIncludeTags=alignment`.
 
 ## Releasing
 
@@ -402,8 +449,9 @@ version for a non-publishing dry run.
 
 The `Java Release` workflow tests Java 8, 11, 17, and 21, builds the main,
 sources, and Javadocs JARs once, checks their contents, and runs clean Gradle
-and Maven consumer smoke tests before the approval-protected `release`
-environment signs and publishes them to Maven Central.
+and Maven consumer smoke tests. Those stages run before anything is signed or
+published, as earlier steps of the publishing job, which is itself gated on the
+approval-protected `release` environment.
 
 Configure these secrets on the `release` GitHub environment:
 
