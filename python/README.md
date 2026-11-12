@@ -123,7 +123,7 @@ aws_elasticache_integration_client.install(
 | `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
 | `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
 | `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |
-| `iam_token_refresh_delay` | 300 s | When the IAM toolkit signs a replacement token in the background. |
+| `iam_token_refresh_delay` | 300 s | When the IAM toolkit signs a replacement token in the background. A whole number of seconds. |
 
 Building `ElastiCacheIntegrationsClientConfiguration` raises `ElastiCacheIntegrationsConfigError` for a value that is not usable.
 
@@ -169,8 +169,8 @@ working because the credentials object refreshes itself. A client built with
 `install()` creates a toolkit token manager. It caches the current token, signs a
 replacement in the background after 300 seconds by default, and force-refreshes when a live
 connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to customize that
-background signing point through `ElastiCacheIntegrationsClientConfiguration`; it must be greater than 0 and less
-than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
+background signing point through `ElastiCacheIntegrationsClientConfiguration`; it must be a whole number greater than
+0 and less than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
 
 Independently, ElastiCacheIntegrations sends `AUTH` on the live connection every 15 minutes to refresh the proxy's
 forward-access session. A rejected background `AUTH` leaves the existing connection alive on its

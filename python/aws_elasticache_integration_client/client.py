@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from copy import deepcopy
 from dataclasses import dataclass
 
@@ -62,8 +61,8 @@ class ElastiCacheIntegrationsClientConfiguration:
             Defaults to 3600 seconds and must be a positive whole number.
         iam_token_refresh_delay: How long, in seconds, after a token is issued before the IAM
             toolkit signs a replacement in the background, while callers keep using the current
-            token. Must be greater than 0 and less than 880. When omitted, the toolkit default of
-            300 seconds is used.
+            token. Must be a whole number greater than 0 and less than 880. When omitted, the
+            toolkit default of 300 seconds is used.
 
     Building the configuration raises :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsConfigError` for a value
     that is not usable.
@@ -74,7 +73,7 @@ class ElastiCacheIntegrationsClientConfiguration:
     fallback_duration: int | None = None
     cache_policy_overrides: dict | None = None
     cache_policy_timeout: int = DEFAULT_STALENESS_DURATION
-    iam_token_refresh_delay: float | None = None
+    iam_token_refresh_delay: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.cache_request_timeout) is not int or self.cache_request_timeout <= 0:
@@ -102,13 +101,11 @@ class ElastiCacheIntegrationsClientConfiguration:
                 "cache_policy_timeout must be a positive whole number of seconds"
             )
         if self.iam_token_refresh_delay is not None and (
-            isinstance(self.iam_token_refresh_delay, bool)
-            or not isinstance(self.iam_token_refresh_delay, (int, float))
-            or not math.isfinite(self.iam_token_refresh_delay)
+            type(self.iam_token_refresh_delay) is not int
             or not 0 < self.iam_token_refresh_delay < MAX_IAM_TOKEN_REFRESH_DELAY
         ):
             raise ElastiCacheIntegrationsConfigError(
-                "iam_token_refresh_delay must be a number of seconds greater than 0 and less "
+                "iam_token_refresh_delay must be a whole number of seconds greater than 0 and less "
                 f"than {MAX_IAM_TOKEN_REFRESH_DELAY}, or None to use the toolkit default"
             )
 

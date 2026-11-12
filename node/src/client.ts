@@ -71,8 +71,8 @@ export interface ElastiCacheIntegrationsClientConfiguration {
   cachePolicyTimeout?: number;
   /**
    * How long, in seconds, after a token is issued before the IAM toolkit signs a replacement in
-   * the background, while callers keep using the current token. Must be greater than 0 and less
-   * than 880. When omitted, the toolkit default of 300 seconds is used.
+   * the background, while callers keep using the current token. Must be a whole number greater
+   * than 0 and less than 880. When omitted, the toolkit default of 300 seconds is used.
    *
    * @see https://github.com/aws/developer-toolkit-elasticache/tree/main/node#caching-and-background-refresh
    */
@@ -198,12 +198,11 @@ function resolveClientConfiguration(
   }
   if (
     iamTokenRefreshDelay !== undefined &&
-    (typeof iamTokenRefreshDelay !== "number" ||
-      !Number.isFinite(iamTokenRefreshDelay) ||
+    (!Number.isInteger(iamTokenRefreshDelay) ||
       !(iamTokenRefreshDelay > 0 && iamTokenRefreshDelay < MAX_IAM_TOKEN_REFRESH_DELAY))
   ) {
     throw new ElastiCacheIntegrationsConfigError(
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less " +
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less " +
         `than ${MAX_IAM_TOKEN_REFRESH_DELAY}, or undefined to use the toolkit default`,
     );
   }
