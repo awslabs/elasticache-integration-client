@@ -434,32 +434,42 @@ describe("install", () => {
     [
       "iamTokenRefreshDelay",
       0,
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
     [
       "iamTokenRefreshDelay",
       true,
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
     [
       "iamTokenRefreshDelay",
       NaN,
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
     [
       "iamTokenRefreshDelay",
       Infinity,
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
     [
       "iamTokenRefreshDelay",
       880,
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
+    ],
+    [
+      "iamTokenRefreshDelay",
+      0.001,
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
+    ],
+    [
+      "iamTokenRefreshDelay",
+      0.5,
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
     [
       "iamTokenRefreshDelay",
       "300",
-      "iamTokenRefreshDelay must be a number of seconds greater than 0 and less than 880",
+      "iamTokenRefreshDelay must be a whole number of seconds greater than 0 and less than 880",
     ],
   ])("clientConfiguration rejects unusable values: %s = %s", async (field, bad, message) => {
     setup();

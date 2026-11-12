@@ -159,7 +159,7 @@ await install({
 | `fallbackDuration`     | `undefined` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below).                                               |
 | `cachePolicyOverrides` | `undefined`              | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. |
 | `cachePolicyTimeout`   | 3600 s                   | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache.                                                 |
-| `iamTokenRefreshDelay` | 300 s (toolkit default)  | When the IAM toolkit signs a replacement token in the background. Greater than 0 and less than 880 s.                                        |
+| `iamTokenRefreshDelay` | 300 s (toolkit default)  | When the IAM toolkit signs a replacement token in the background. A whole number greater than 0 and less than 880 s.                         |
 
 `install()` raises `ElastiCacheIntegrationsConfigError` for a value that is not
 usable, or for an install option or `clientConfiguration` field it does not
@@ -246,9 +246,9 @@ token refresh.
 The first token is minted lazily. The toolkit signs a replacement in the
 background after 300 seconds by default. Set
 `clientConfiguration.iamTokenRefreshDelay` to customize that background signing
-point; it must be greater than 0 and less than 880 seconds, preserving the
-toolkit's 20-second safety margin on the 15-minute token. Refresh and retry
-behavior is described in the
+point; it must be a whole number greater than 0 and less than 880 seconds,
+preserving the toolkit's 20-second safety margin on the 15-minute token. Refresh
+and retry behavior is described in the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/node#caching-and-background-refresh).
 
 `install()` creates the token manager, so destroying the SDK client also
@@ -292,8 +292,3 @@ publishes that exact artifact through the protected `release` environment.
 Release candidates use the `next` npm distribution tag; stable releases use
 `latest`. A manual workflow run can accept a version and performs the same
 validation without entering the release environment or publishing to npm.
-
-Normal releases use npm trusted publishing with GitHub OIDC. Configure the npm
-publisher for the `awslabs/aws-elasticache-integration-client` repository,
-`node-release.yml` workflow, and `release` environment, with direct
-`npm publish` access.

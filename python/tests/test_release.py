@@ -58,6 +58,26 @@ def test_stamp_project_version(tmp_path):
     assert 'version = "1.2.3rc4"' in pyproject.read_text()
 
 
+def test_stamp_project_version_accepts_resolved_pep_440_version(tmp_path):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text(
+        '[build-system]\nrequires = ["setuptools"]\n\n'
+        '[project]\nname = "example"\nversion = "0.0.1"\n'
+    )
+
+    assert release.stamp_project_version("1.2.3rc4", pyproject) == "1.2.3rc4"
+    assert 'version = "1.2.3rc4"' in pyproject.read_text()
+
+
+@pytest.mark.parametrize("version", ["1.0.0a1", "1.0.0.dev1", "1.0.0.post1"])
+def test_stamp_project_version_rejects_other_pep_440_versions(tmp_path, version):
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "example"\nversion = "0.0.1"\n')
+
+    with pytest.raises(InvalidVersion, match="unsupported PyPI release version"):
+        release.stamp_project_version(version, pyproject)
+
+
 def test_stamp_project_version_requires_project_version(tmp_path):
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text('[project]\nname = "example"\n')

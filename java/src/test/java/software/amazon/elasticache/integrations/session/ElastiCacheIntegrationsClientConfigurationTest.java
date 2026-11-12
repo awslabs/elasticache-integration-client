@@ -5,7 +5,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.math.BigDecimal;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -30,7 +29,7 @@ class ElastiCacheIntegrationsClientConfigurationTest {
         assertEquals(-1, defaults.getFallbackDurationSeconds());
         assertNull(defaults.getCachePolicyOverrides());
         assertEquals(3_600, defaults.getCachePolicyTimeoutSeconds());
-        assertNull(defaults.getIamTokenRefreshDelay());
+        assertNull(defaults.getIamTokenRefreshDelaySeconds());
     }
 
     @Test
@@ -56,27 +55,27 @@ class ElastiCacheIntegrationsClientConfigurationTest {
                 ElastiCacheIntegrationsClientConfiguration.builder()
                         .cachePolicyTimeoutSeconds(Long.MAX_VALUE));
         String refreshMessage =
-                "iamTokenRefreshDelay must be a Duration greater than 0 and less than 880 seconds, "
-                        + "or null to use the toolkit default";
-        for (Duration bad :
-                Arrays.asList(
-                        Duration.ZERO,
-                        Duration.ofSeconds(-1),
-                        Duration.ofSeconds(880),
-                        Duration.ofSeconds(881),
-                        Duration.ofDays(1))) {
+                "iamTokenRefreshDelaySeconds must be a whole number of seconds greater than 0 and less "
+                        + "than 880, or null to use the toolkit default";
+        for (long bad : new long[] {0, -1, 880, 881, 86_400, Long.MIN_VALUE, Long.MAX_VALUE}) {
             assertConfigError(
                     refreshMessage,
-                    ElastiCacheIntegrationsClientConfiguration.builder().iamTokenRefreshDelay(bad));
+                    ElastiCacheIntegrationsClientConfiguration.builder().iamTokenRefreshDelaySeconds(bad));
         }
 
         // Values at the edge of the allowed range are accepted, and fallback takes any value.
         assertEquals(
-                Duration.ofSeconds(879),
+                879,
                 ElastiCacheIntegrationsClientConfiguration.builder()
-                        .iamTokenRefreshDelay(Duration.ofSeconds(879))
+                        .iamTokenRefreshDelaySeconds(879)
                         .build()
-                        .getIamTokenRefreshDelay());
+                        .getIamTokenRefreshDelaySeconds());
+        assertEquals(
+                1,
+                ElastiCacheIntegrationsClientConfiguration.builder()
+                        .iamTokenRefreshDelaySeconds(1)
+                        .build()
+                        .getIamTokenRefreshDelaySeconds());
         assertEquals(
                 0,
                 ElastiCacheIntegrationsClientConfiguration.builder()

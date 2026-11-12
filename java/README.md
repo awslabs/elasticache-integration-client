@@ -9,18 +9,23 @@ AWS SDK for Java v2 version 2.21.0 or later is supported.
 
 Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the
-configured DynamoDB origin transport. While reconnecting, requests that have
-not been sent to Cache first wait up to `connectionTimeoutMs` for the new
-connection, then use origin fallback until the configured fallback window
-expires. After a request is sent, indeterminate failures fall back only
-when the connection drops and the operation is in the shared replay-safe
-catalog. While the connection remains healthy, an `ORIGIN_ERROR` is returned as
-SDK-retryable only for a cataloged operation. `AUTH_ERROR` closes the
-stale connection and passes the rejected request through while reconnecting.
-Other RESP errors, failures for non-idempotent operations, malformed responses,
-an expired fallback window, and shutdown are surfaced without starting an
-origin request. SDK retries, response deserialization, and caller-provided
-override configuration remain in the normal SDK pipeline.
+configured DynamoDB origin transport. While reconnecting, cache-eligible
+requests first wait up to `connectionTimeoutMs` for the new connection.
+Replay-safe requests may then use origin fallback until the configured fallback
+window expires. Routed writes instead fail retryably without contacting origin,
+so Cache cannot retain a stale value. After a request is sent, indeterminate
+failures fall back only when the connection drops and the operation is in the
+shared replay-safe catalog. While the connection remains healthy, an
+`ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
+ `AUTH_ERROR` closes the stale connection; replay-safe requests pass through
+ while fallback is enabled, while routed writes wait for one replacement
+ connection and fail retryably if that connection also rejects the request.
+ With `fallbackDurationSeconds(0)`, the rejected request raises
+ `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
+ failures for non-idempotent operations, malformed responses, an expired
+ fallback window, and shutdown are surfaced without starting an origin request.
+ SDK retries, response deserialization, and caller-provided override
+ configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh come from the Amazon ElastiCache developer
 toolkit, the
@@ -224,14 +229,19 @@ same signed request can be replayed safely during origin fallback. Only bodies
 with a known content length are admitted. Buffering is limited to 16 MiB per
 request and eight concurrent collectors by default. Configure these limits with
 `asyncMaxBufferedRequestBytes(int)` and `asyncMaxConcurrentBodyCollectors(int)`.
-A request with an unknown length, or one that exceeds either limit, bypasses
-Cache and uses the origin transport.
+A request with an unknown length, a reported length over the per-request byte
+limit, or an actual body that exceeds that limit bypasses Cache and uses the
+origin transport. These body-shape and body-size pass-throughs apply to writes
+as well as reads because Cache cannot safely materialize the body to evaluate
+its predicates.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
-a bounded daemon executor. If the executor rejects a request because it is at
-capacity, Cache sends the buffered request through the origin fallback. When
-`fallbackDurationSeconds` is 0, a request the predicates route to Cache fails
-with `ElastiCacheIntegrationsCacheUnavailable` instead.
+a bounded daemon executor. If the bounded body collectors are at capacity,
+replay-safe requests use origin fallback and writes fail retryably without
+contacting origin. If the executor rejects a request because it is at capacity,
+replay-safe requests use origin fallback when `fallbackDurationSeconds` is
+nonzero. Otherwise a request routed to Cache fails retryably without contacting
+origin.
 
 ## Configuration
 
@@ -249,7 +259,7 @@ ElastiCacheIntegrationsClient.builder()
                 .fallbackDurationSeconds(60)
                 .cachePolicyOverrides(Collections.singletonMap(
                         "cached_tables", Arrays.asList("Users", "Sessions")))
-                .iamTokenRefreshDelay(Duration.ofSeconds(300))
+                .iamTokenRefreshDelaySeconds(300)
                 .build())
         .install(DynamoDbClient.builder().region(Region.US_EAST_1));
 ```
@@ -261,7 +271,7 @@ ElastiCacheIntegrationsClient.builder()
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
-| `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
+| `iamTokenRefreshDelaySeconds(long)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background, in seconds. Must be greater than 0 and less than 880. |
 
 `build()` throws `ElastiCacheIntegrationsConfigError` for a value that is not
 usable, for example `cacheRequestTimeoutMs must be a positive number of milliseconds, at most 2147483647`.
@@ -304,9 +314,9 @@ manager caches the current IAM token and refreshes it in the background. The
 refresh defaults, accepted range, retry behavior, and safety margin are defined
 by the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh).
-Set `iamTokenRefreshDelay` on `ElastiCacheIntegrationsClientConfiguration` to
-change the background signing point. It must be greater than 0 and less than 880
-seconds, which keeps the toolkit's 20-second safety margin on the 15-minute
+Set `iamTokenRefreshDelaySeconds` on `ElastiCacheIntegrationsClientConfiguration`
+to change the background signing point. It must be a whole number of seconds
+greater than 0 and less than 880, which keeps the toolkit's 20-second safety margin on the 15-minute
 token.
 
 Cache asks its manager for credentials on every connection and reconnect, so a
@@ -329,10 +339,11 @@ Reconnect attempts continue until one succeeds or the session closes.
 
 Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
 for the new connection and uses it if it arrives. If the connection is not back
-by then, the request uses the signed origin fallback. The same timeout bounds
-startup: Cache keeps retrying the first connection until `connectionTimeoutMs`
-has passed, caps each attempt by the time left, and then fails client creation
-with `ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
+by then, replay-safe requests use the signed origin fallback. Routed writes fail
+retryably without contacting origin. The same timeout bounds startup: Cache
+keeps retrying the first connection until `connectionTimeoutMs` has passed,
+caps each attempt by the time left, and then fails client creation with
+`ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
 bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`,
 and the first `aws.config`. On a live connection, the periodic `AUTH` and
 `aws.config` refresh use `cacheRequestTimeoutMs`.
@@ -341,19 +352,18 @@ percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
 These values are not configurable.
 
 `fallbackDurationSeconds` on `ElastiCacheIntegrationsClientConfiguration`
-controls how long requests may fall back, counted from the end of the
-`connectionTimeoutMs` wait. A negative value (the default) allows fallback
+controls how long replay-safe requests may fall back, counted from the end of
+the `connectionTimeoutMs` wait. A negative value (the default) allows fallback
 indefinitely. A positive value allows fallback for that many seconds. Zero
-never allows fallback, so a request waits up to `connectionTimeoutMs` for a
-connection and then raises `ElastiCacheIntegrationsCacheUnavailable`. Once the
+never allows fallback. Routed writes never use this fallback window. Once the
 window ends, Cache raises a retryable transport failure for the AWS SDK to
-handle. With `fallbackDurationSeconds` set to `0`, a routed request waits only
-for the part of `connectionTimeoutMs` left in the current outage. Later retries
-in the same outage do not restart that wait. If a request already admitted to Cache fails
-as the connection drops, it falls back directly only when its operation is in
-the shared replay-safe catalog. On a healthy connection, an `ORIGIN_ERROR` is
-SDK-retryable only for a cataloged operation; other RESP errors and
-non-idempotent failures are terminal for that attempt.
+handle. A routed request waits only for the part of `connectionTimeoutMs` left
+in the current outage; later retries in the same outage do not restart that
+wait. If a request already admitted to Cache fails as the connection drops, it
+falls back directly only when its operation is in the shared replay-safe
+catalog. On a healthy connection, an `ORIGIN_ERROR` is SDK-retryable only for a
+cataloged operation; other RESP errors and non-idempotent failures are terminal
+for that attempt.
 
 Cache requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `aws.response` RESP3 push. Deferred
