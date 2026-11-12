@@ -54,9 +54,9 @@ A timeout while a request is still FIFO-correlated closes the connection to prev
 misrouting. A RESP3 push with an unrecognized kind is treated as protocol corruption and closes
 the connection. One connection sends at most 100 requests awaiting replies at once. Additional
 callers wait for a slot within their `cache_request_timeout` instead of failing at the concurrency
-boundary. Queue admission uses at most 75% of that timeout, reserving 25% to send and receive a
-reply. If that budget is exhausted, the request is not sent to the cache and continues to origin
-regardless of operation idempotency.
+boundary, and waiting callers are admitted in arrival order. Queue admission uses at most 75% of
+that timeout, reserving 25% to send and receive a reply. If that budget is exhausted, the request
+is not sent to the cache and continues to origin regardless of operation idempotency.
 
 ## Installing into a client
 

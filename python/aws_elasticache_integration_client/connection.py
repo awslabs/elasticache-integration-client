@@ -61,39 +61,64 @@ _AUTH_REJECTION_CODES = frozenset({"WRONGPASS", "invalid-iam-credentials"})
 
 
 class _AdmissionLimiter:
-    """Bound the requests sent to one connection while allowing callers to wait for capacity."""
+    """Bound requests sent to one connection and admit waiting callers in arrival order."""
 
     def __init__(self, capacity: int) -> None:
         if capacity <= 0:
             raise ValueError("capacity must be positive")
-        self._condition = threading.Condition()
+        self._lock = threading.Lock()
         self._available = capacity
+        self._waiters: deque[_AdmissionWaiter] = deque()
         self._closed = False
 
     def acquire(self, timeout: float) -> bool:
         deadline = time.monotonic() + timeout
-        with self._condition:
-            while self._available == 0 and not self._closed:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    return False
-                self._condition.wait(remaining)
+        with self._lock:
             if self._closed:
                 raise ElastiCacheIntegrationsConnectionLost("connection is closed")
-            self._available -= 1
-            return True
+            if self._available > 0 and not self._waiters:
+                self._available -= 1
+                return True
+            waiter = _AdmissionWaiter()
+            self._waiters.append(waiter)
+
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                waiter.ready.wait(remaining)
+            with self._lock:
+                if self._closed:
+                    raise ElastiCacheIntegrationsConnectionLost("connection is closed")
+                if waiter.admitted:
+                    return True
+                if deadline - time.monotonic() <= 0:
+                    self._waiters.remove(waiter)
+                    return False
 
     def release(self) -> None:
-        with self._condition:
+        with self._lock:
             if self._closed:
                 return
+            if self._waiters:
+                # Transfer the slot instead of making it globally available, so a caller
+                # arriving after this release cannot overtake the oldest waiter.
+                waiter = self._waiters.popleft()
+                waiter.admitted = True
+                waiter.ready.set()
+                return
             self._available += 1
-            self._condition.notify()
 
     def close(self) -> None:
-        with self._condition:
+        with self._lock:
             self._closed = True
-            self._condition.notify_all()
+            while self._waiters:
+                self._waiters.popleft().ready.set()
+
+
+class _AdmissionWaiter:
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.admitted = False
 
 
 class _SocketReader:

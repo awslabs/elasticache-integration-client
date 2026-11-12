@@ -23,6 +23,7 @@ import pytest
 
 from aws_elasticache_integration_client.connection import (
     ElastiCacheIntegrationsConnector,
+    _AdmissionLimiter,
     _PendingRequests,
     _SocketReader,
 )
@@ -490,6 +491,72 @@ class TestElastiCacheIntegrationsConnector:
         second.join(2)
 
         assert results == {"first": b"first", "second": b"second"}
+
+    def test_requests_waiting_for_capacity_are_admitted_in_arrival_order(self):
+        """Released capacity goes to the oldest waiter before a later caller can take it."""
+        first_received = threading.Event()
+        release_first = threading.Event()
+        sequence = 0
+
+        def reply(request):
+            nonlocal sequence
+            sequence += 1
+            if sequence == 1:
+                first_received.set()
+                assert release_first.wait(2)
+            return Reply.ok(body=request.body)
+
+        self.start_cache(response_fn=reply)
+        self.connect_and_handshake(max_pending=1, request_timeout_ms=2000)
+        results: dict[str, bytes] = {}
+
+        def send(name: str) -> None:
+            results[name] = self.send_request(name.encode())[2]
+
+        first = threading.Thread(target=send, args=("first",))
+        second = threading.Thread(target=send, args=("second",))
+        third = threading.Thread(target=send, args=("third",))
+        first.start()
+        assert first_received.wait(1)
+        second.start()
+        assert self.wait_until(lambda: len(self.conn._admission._waiters) == 1)
+        third.start()
+        assert self.wait_until(lambda: len(self.conn._admission._waiters) == 2)
+
+        release_first.set()
+        first.join(2)
+        second.join(2)
+        third.join(2)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert not third.is_alive()
+        assert [request.body for request in self.cache.requests] == [b"first", b"second", b"third"]
+        assert results == {"first": b"first", "second": b"second", "third": b"third"}
+
+    def test_closing_admission_limiter_wakes_all_waiters(self):
+        limiter = _AdmissionLimiter(1)
+        assert limiter.acquire(0)
+        errors: list[Exception] = []
+
+        def wait_for_capacity() -> None:
+            try:
+                limiter.acquire(10)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(exc)
+
+        waiters = [threading.Thread(target=wait_for_capacity) for _ in range(2)]
+        for waiter in waiters:
+            waiter.start()
+        assert self.wait_until(lambda: len(limiter._waiters) == 2)
+
+        limiter.close()
+        for waiter in waiters:
+            waiter.join(1)
+
+        assert all(not waiter.is_alive() for waiter in waiters)
+        assert len(errors) == 2
+        assert all(isinstance(error, ElastiCacheIntegrationsConnectionLost) for error in errors)
 
     def test_exhausted_budget_after_admission_does_not_send_or_close(self):
         """A caller admitted at its deadline stays off the wire and leaves the connection usable."""
