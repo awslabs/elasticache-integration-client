@@ -333,6 +333,9 @@ def test_client_configuration_rejects_unusable_connection_timeout(bad):
         ("iam_token_refresh_delay", float("nan")),
         ("iam_token_refresh_delay", float("inf")),
         ("iam_token_refresh_delay", 880),
+        ("iam_token_refresh_delay", 0.001),
+        ("iam_token_refresh_delay", 0.5),
+        ("iam_token_refresh_delay", 300.0),
         ("iam_token_refresh_delay", "300"),
     ],
 )

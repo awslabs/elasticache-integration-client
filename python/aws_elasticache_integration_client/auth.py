@@ -67,7 +67,7 @@ def build_cache_auth_provider(
     credentials: Credentials,
     user_id: str | None = None,
     region: str | None = None,
-    token_refresh_delay: float | None = None,
+    token_refresh_delay: int | None = None,
 ) -> ManagedIamAuthTokenProvider:
     """Build the managed cache auth provider.
 

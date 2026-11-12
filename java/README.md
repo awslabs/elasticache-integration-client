@@ -259,7 +259,7 @@ ElastiCacheIntegrationsClient.builder()
                 .fallbackDurationSeconds(60)
                 .cachePolicyOverrides(Collections.singletonMap(
                         "cached_tables", Arrays.asList("Users", "Sessions")))
-                .iamTokenRefreshDelay(Duration.ofSeconds(300))
+                .iamTokenRefreshDelaySeconds(300)
                 .build())
         .install(DynamoDbClient.builder().region(Region.US_EAST_1));
 ```
@@ -271,7 +271,7 @@ ElastiCacheIntegrationsClient.builder()
 | `fallbackDurationSeconds(long)` | negative (indefinite) | How long requests may go to the origin service after the `connectionTimeoutMs` wait ends without a connection. Zero means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map<String, Object>)` | none | Settings that change what Cache caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. Values must be JSON values (null, string, boolean, finite number, list, or map with string keys). The map is checked and deep-copied when the configuration is built. |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long a cache policy may be used without confirmation from the cache. Must be positive. See [Cache policy timeout](#cache-policy-timeout). |
-| `iamTokenRefreshDelay(Duration)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background. Must be greater than 0 and less than 880 seconds. |
+| `iamTokenRefreshDelaySeconds(long)` | toolkit default (300 s) | When the IAM toolkit signs a replacement token in the background, in seconds. Must be greater than 0 and less than 880. |
 
 `build()` throws `ElastiCacheIntegrationsConfigError` for a value that is not
 usable, for example `cacheRequestTimeoutMs must be a positive number of milliseconds, at most 2147483647`.
@@ -314,9 +314,9 @@ manager caches the current IAM token and refreshes it in the background. The
 refresh defaults, accepted range, retry behavior, and safety margin are defined
 by the
 [toolkit token manager documentation](https://github.com/aws/developer-toolkit-elasticache/tree/main/java#caching-and-background-refresh).
-Set `iamTokenRefreshDelay` on `ElastiCacheIntegrationsClientConfiguration` to
-change the background signing point. It must be greater than 0 and less than 880
-seconds, which keeps the toolkit's 20-second safety margin on the 15-minute
+Set `iamTokenRefreshDelaySeconds` on `ElastiCacheIntegrationsClientConfiguration`
+to change the background signing point. It must be a whole number of seconds
+greater than 0 and less than 880, which keeps the toolkit's 20-second safety margin on the 15-minute
 token.
 
 Cache asks its manager for credentials on every connection and reconnect, so a

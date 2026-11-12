@@ -6,7 +6,7 @@ import org.gradle.api.tasks.bundling.AbstractArchiveTask
 plugins {
     `java-library`
     jacoco
-    id("com.diffplug.spotless") version "8.10.4"
+    id("com.diffplug.spotless") version "8.11.0"
     id("net.ltgt.errorprone") version "5.2.0"
 }
 
@@ -80,7 +80,7 @@ dependencies {
     implementation("software.amazon.awssdk:apache-client")
     implementation("software.amazon.awssdk:netty-nio-client")
 
-    errorprone("com.google.errorprone:error_prone_core:2.51.0")
+    errorprone("com.google.errorprone:error_prone_core:2.52.0")
 
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
