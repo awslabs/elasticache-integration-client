@@ -41,7 +41,6 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -595,15 +594,23 @@ class ElastiCacheIntegrationsSessionTest {
         }
     }
 
-    @Test
-    void authErrorOnReplaySafeRequestPassesThroughAndStartsReconnect() {
+    @ParameterizedTest
+    @ValueSource(strings = {"GetItem", "PutItem"})
+    void authErrorPassesThroughAndStartsReconnect(String operation) {
         cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
 
-            assertNull(session.request(request()));
+            assertNull(
+                    session.request(
+                            new ElastiCacheIntegrationsRequest(
+                                    "POST",
+                                    "https://dynamodb.us-east-1.amazonaws.com/",
+                                    Collections.emptyMap(),
+                                    new byte[0],
+                                    new RequestMetadata("dynamodb", operation))));
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertFalse(session.isConnectionHealthy());
         } finally {
@@ -1468,9 +1475,28 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void routedWriteFailsAfterReconnectDeadlineWithoutUsingFallback() {
+    void routedWriteUsesFallbackAfterReconnectDeadline() {
         ElastiCacheIntegrationsSession session =
                 sessionAfterLoss(timeoutPolicy(150, -1), neverReconnects());
+        try {
+            session.open();
+            loseConnection(session);
+
+            long started = System.nanoTime();
+            assertNull(session.request(writeRequest()));
+            long elapsed = elapsedMs(started);
+
+            assertTrue(elapsed >= 100, "fell back without waiting: " + elapsed + "ms");
+            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
+    void routedWriteEscalatesWhenFallbackIsDisabled() {
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(150, 0), neverReconnects());
         try {
             session.open();
             loseConnection(session);
@@ -1482,40 +1508,7 @@ class ElastiCacheIntegrationsSessionTest {
 
             assertTrue(elapsed >= 100, "raised without waiting: " + elapsed + "ms");
             assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
-            assertNull(session.request(request()), "replay-safe requests may still use fallback");
         } finally {
-            session.close();
-        }
-    }
-
-    @Test
-    void authErrorOnReplacementWriteFailsRetryably() throws Exception {
-        AuthRejectingConnector initial = new AuthRejectingConnector();
-        AuthRejectingConnector replacement = new AuthRejectingConnector();
-        CountDownLatch thirdReconnectStarted = new CountDownLatch(1);
-        CountDownLatch allowThirdReconnect = new CountDownLatch(1);
-        TestConnector third = new BlockingConnectConnector(thirdReconnectStarted, allowThirdReconnect);
-        AtomicInteger created = new AtomicInteger();
-        ElastiCacheIntegrationsSession session =
-                new ElastiCacheIntegrationsSession(
-                        () -> {
-                            int connectionNumber = created.getAndIncrement();
-                            if (connectionNumber == 0) {
-                                return initial;
-                            }
-                            return connectionNumber == 1 ? replacement : third;
-                        },
-                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
-                        null,
-                        timeoutPolicy(5_000, -1));
-        try {
-            session.open();
-
-            assertThrows(
-                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
-            assertTrue(thirdReconnectStarted.await(2, TimeUnit.SECONDS));
-        } finally {
-            allowThirdReconnect.countDown();
             session.close();
         }
     }
@@ -1802,15 +1795,6 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             fail();
             throw new ElastiCacheIntegrationsConnectionError("injected request failure");
-        }
-    }
-
-    private static final class AuthRejectingConnector extends TestConnector {
-        @Override
-        public ElastiCacheIntegrationsResponse request(
-                ElastiCacheIntegrationsRequest request,
-                ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsRejectedError("AUTH_ERROR", "missing FAS");
         }
     }
 

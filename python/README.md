@@ -206,8 +206,9 @@ request waits only for the part of `connection_timeout` left in the current outa
 the same outage do not restart that wait.
 
 When there is no live cache connection, the request has not been sent and can safely pass through
-for any operation while the fallback window remains open. After a request is sent, origin fallback
-is allowed only when the connection drops and the operation is in the shared replay-safe catalog.
+for any operation, including routed writes, while the fallback window remains open. After a request
+is sent, origin fallback is allowed only when the connection drops and the operation is in the
+shared replay-safe catalog.
 While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error only for a
 cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
 request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the

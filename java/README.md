@@ -11,21 +11,18 @@ Cache connects and authenticates before returning the SDK client. Requests are
 sent to Cache when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, cache-eligible
 requests first wait up to `connectionTimeoutMs` for the new connection.
-Replay-safe requests may then use origin fallback until the configured fallback
-window expires. Routed writes instead fail retryably without contacting origin,
-so Cache cannot retain a stale value. After a request is sent, indeterminate
-failures fall back only when the connection drops and the operation is in the
-shared replay-safe catalog. While the connection remains healthy, an
+Any request may then use origin fallback until the configured fallback window
+expires, including routed writes. After a request is sent, indeterminate failures
+fall back only when the connection drops and the operation is in the shared
+replay-safe catalog. While the connection remains healthy, an
 `ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
- `AUTH_ERROR` closes the stale connection; replay-safe requests pass through
- while fallback is enabled, while routed writes wait for one replacement
- connection and fail retryably if that connection also rejects the request.
- With `fallbackDurationSeconds(0)`, the rejected request raises
- `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP errors,
- failures for non-idempotent operations, malformed responses, an expired
- fallback window, and shutdown are surfaced without starting an origin request.
- SDK retries, response deserialization, and caller-provided override
- configuration remain in the normal SDK pipeline.
+`AUTH_ERROR` closes the stale connection and passes the rejected request through
+while fallback is enabled. With `fallbackDurationSeconds(0)`, the rejected
+request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
+RESP errors, failures for non-idempotent operations, malformed responses, an
+expired fallback window, and shutdown are surfaced without starting an origin
+request. SDK retries, response deserialization, and caller-provided override
+configuration remain in the normal SDK pipeline.
 
 IAM token generation and refresh come from the Amazon ElastiCache developer
 toolkit, the
@@ -339,10 +336,10 @@ Reconnect attempts continue until one succeeds or the session closes.
 
 Right after the loss, a cache-eligible request waits up to `connectionTimeoutMs`
 for the new connection and uses it if it arrives. If the connection is not back
-by then, replay-safe requests use the signed origin fallback. Routed writes fail
-retryably without contacting origin. The same timeout bounds startup: Cache
-keeps retrying the first connection until `connectionTimeoutMs` has passed,
-caps each attempt by the time left, and then fails client creation with
+by then, it uses the signed origin fallback while the fallback window is open,
+including for routed writes. The same timeout bounds startup: Cache keeps
+retrying the first connection until `connectionTimeoutMs` has passed, caps each
+attempt by the time left, and then fails client creation with
 `ElastiCacheIntegrationsConnectionError`. Within an attempt, the same value
 bounds each step: the TCP connect and TLS handshake together, `HELLO 3 AUTH`,
 and the first `aws.config`. On a live connection, the periodic `AUTH` and
@@ -352,18 +349,17 @@ percent jitter, and Cache repeats `AUTH` on a live connection every 15 minutes.
 These values are not configurable.
 
 `fallbackDurationSeconds` on `ElastiCacheIntegrationsClientConfiguration`
-controls how long replay-safe requests may fall back, counted from the end of
-the `connectionTimeoutMs` wait. A negative value (the default) allows fallback
+controls how long requests may fall back, counted from the end of the
+`connectionTimeoutMs` wait. A negative value (the default) allows fallback
 indefinitely. A positive value allows fallback for that many seconds. Zero
-never allows fallback. Routed writes never use this fallback window. Once the
-window ends, Cache raises a retryable transport failure for the AWS SDK to
-handle. A routed request waits only for the part of `connectionTimeoutMs` left
-in the current outage; later retries in the same outage do not restart that
-wait. If a request already admitted to Cache fails as the connection drops, it
-falls back directly only when its operation is in the shared replay-safe
-catalog. On a healthy connection, an `ORIGIN_ERROR` is SDK-retryable only for a
-cataloged operation; other RESP errors and non-idempotent failures are terminal
-for that attempt.
+never allows fallback. Once the window ends, Cache raises a retryable transport
+failure for the AWS SDK to handle. A routed request waits only for the part of
+`connectionTimeoutMs` left in the current outage; later retries in the same
+outage do not restart that wait. If a request already admitted to Cache fails
+as the connection drops, it falls back directly only when its operation is in
+the shared replay-safe catalog. On a healthy connection, an `ORIGIN_ERROR` is
+SDK-retryable only for a cataloged operation; other RESP errors and
+non-idempotent failures are terminal for that attempt.
 
 Cache requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `aws.response` RESP3 push. Deferred
