@@ -19,9 +19,9 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRes
  * Synchronous SDK HTTP transport that attempts Cache before the origin service.
  *
  * <p>The unsigned request captured by {@link ElastiCacheIntegrationsInterceptor} is sent to Cache.
- * Predicate declines delegate to the origin before Cache sees the request. After sending, direct
- * fallback is limited to replay-safe operations whose Cache connection has dropped; retryable
- * healthy-connection failures are returned to the SDK.
+ * Predicate declines delegate to the origin before Cache sees the request. After sending, transport
+ * failures for replay-safe operations are returned to the SDK as retryable so the next attempt
+ * applies the session's reconnect wait and fallback window.
  */
 final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
 
