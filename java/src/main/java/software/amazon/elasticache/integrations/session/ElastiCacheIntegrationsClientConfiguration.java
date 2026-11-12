@@ -2,7 +2,6 @@ package software.amazon.elasticache.integrations.session;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -41,7 +40,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
             ElastiCacheIntegrationsSession.DEFAULT_STALENESS_DURATION_SECONDS;
 
     /**
-     * Upper bound (exclusive) of {@link Builder#iamTokenRefreshDelay(Duration)}, which keeps the
+     * Upper bound (exclusive) of {@link Builder#iamTokenRefreshDelaySeconds(long)}, which keeps the
      * toolkit's 20-second safety margin on the 15-minute token.
      */
     static final long MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS = 880;
@@ -51,7 +50,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     private final long fallbackDurationSeconds;
     private final Map<String, Object> cachePolicyOverrides;
     private final long cachePolicyTimeoutSeconds;
-    private final Duration iamTokenRefreshDelay;
+    private final Long iamTokenRefreshDelaySeconds;
 
     private ElastiCacheIntegrationsClientConfiguration(Builder builder) {
         this.cacheRequestTimeoutMs = builder.cacheRequestTimeoutMs;
@@ -59,7 +58,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         this.fallbackDurationSeconds = builder.fallbackDurationSeconds;
         this.cachePolicyOverrides = builder.cachePolicyOverrides;
         this.cachePolicyTimeoutSeconds = builder.cachePolicyTimeoutSeconds;
-        this.iamTokenRefreshDelay = builder.iamTokenRefreshDelay;
+        this.iamTokenRefreshDelaySeconds = builder.iamTokenRefreshDelaySeconds;
     }
 
     /** Return a configuration with every option at its default. */
@@ -103,9 +102,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         return cachePolicyTimeoutSeconds;
     }
 
-    /** Return the IAM token refresh delay, or null for the toolkit default. */
-    public Duration getIamTokenRefreshDelay() {
-        return iamTokenRefreshDelay;
+    /** Return the IAM token refresh delay in seconds, or null for the toolkit default. */
+    public Long getIamTokenRefreshDelaySeconds() {
+        return iamTokenRefreshDelaySeconds;
     }
 
     /** Builder for {@link ElastiCacheIntegrationsClientConfiguration}. */
@@ -115,7 +114,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         private long fallbackDurationSeconds = INDEFINITE_FALLBACK;
         private Map<String, Object> cachePolicyOverrides;
         private long cachePolicyTimeoutSeconds = DEFAULT_CACHE_POLICY_TIMEOUT_SECONDS;
-        private Duration iamTokenRefreshDelay;
+        private Long iamTokenRefreshDelaySeconds;
 
         private Builder() {}
 
@@ -189,12 +188,12 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         }
 
         /**
-         * Set how long after a token is issued before the IAM toolkit signs a replacement in the
-         * background, while callers keep using the current token. Must be greater than 0 and less than
-         * 880 seconds. When null (the default), the toolkit default of 300 seconds is used.
+         * Set how long, in seconds, after a token is issued before the IAM toolkit signs a replacement
+         * in the background, while callers keep using the current token. Must be greater than 0 and
+         * less than 880. When null (the default), the toolkit default of 300 seconds is used.
          */
-        public Builder iamTokenRefreshDelay(Duration iamTokenRefreshDelay) {
-            this.iamTokenRefreshDelay = iamTokenRefreshDelay;
+        public Builder iamTokenRefreshDelaySeconds(long iamTokenRefreshDelaySeconds) {
+            this.iamTokenRefreshDelaySeconds = iamTokenRefreshDelaySeconds;
             return this;
         }
 
@@ -219,16 +218,14 @@ public final class ElastiCacheIntegrationsClientConfiguration {
                 throw new ElastiCacheIntegrationsConfigError(
                         "cachePolicyTimeoutSeconds must be a positive whole number of seconds");
             }
-            if (iamTokenRefreshDelay != null
-                    && (iamTokenRefreshDelay.isNegative()
-                            || iamTokenRefreshDelay.isZero()
-                            || iamTokenRefreshDelay.compareTo(
-                                            Duration.ofSeconds(MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS))
-                                    >= 0)) {
+            if (iamTokenRefreshDelaySeconds != null
+                    && (iamTokenRefreshDelaySeconds <= 0
+                            || iamTokenRefreshDelaySeconds >= MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS)) {
                 throw new ElastiCacheIntegrationsConfigError(
-                        "iamTokenRefreshDelay must be a Duration greater than 0 and less than "
+                        "iamTokenRefreshDelaySeconds must be a whole number of seconds greater than 0"
+                                + " and less than "
                                 + MAX_IAM_TOKEN_REFRESH_DELAY_SECONDS
-                                + " seconds, or null to use the toolkit default");
+                                + ", or null to use the toolkit default");
             }
             // Copied and checked here so a value the aws.config handshake cannot send fails before
             // connecting, and a later change to the caller's map has no effect.
