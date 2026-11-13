@@ -558,6 +558,59 @@ class TestElastiCacheIntegrationsConnector:
         assert len(errors) == 2
         assert all(isinstance(error, ElastiCacheIntegrationsConnectionLost) for error in errors)
 
+    def test_newcomer_cannot_take_capacity_reserved_for_paused_oldest_waiter(self):
+        limiter = _AdmissionLimiter(1)
+        assert limiter.acquire(0)
+        notified = threading.Event()
+        resume_oldest = threading.Event()
+        waiter_ready = mock.Mock()
+        waiter_ready.set.side_effect = notified.set
+        admission_waiter = mock.Mock(ready=waiter_ready, admitted=False)
+
+        def wait_until_resumed(timeout: float) -> bool:
+            assert notified.wait(timeout)
+            return resume_oldest.wait(timeout)
+
+        waiter_ready.wait.side_effect = wait_until_resumed
+        oldest_result: list[bool] = []
+        with mock.patch(
+            "aws_elasticache_integration_client.connection._AdmissionWaiter",
+            return_value=admission_waiter,
+        ):
+            oldest = threading.Thread(target=lambda: oldest_result.append(limiter.acquire(2)))
+            oldest.start()
+            assert self.wait_until(lambda: len(limiter._waiters) == 1)
+
+        limiter.release()
+        assert notified.wait(1)
+        assert not limiter.acquire(0), "newcomer took the oldest waiter's reserved slot"
+
+        resume_oldest.set()
+        oldest.join(1)
+
+        assert not oldest.is_alive()
+        assert oldest_result == [True]
+
+    def test_interrupted_admission_waiter_is_removed(self):
+        limiter = _AdmissionLimiter(1)
+        assert limiter.acquire(0)
+        waiter_ready = mock.Mock()
+        waiter_ready.wait.side_effect = KeyboardInterrupt
+        admission_waiter = mock.Mock(ready=waiter_ready, admitted=False)
+
+        with (
+            mock.patch(
+                "aws_elasticache_integration_client.connection._AdmissionWaiter",
+                return_value=admission_waiter,
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            limiter.acquire(1)
+
+        assert not limiter._waiters
+        limiter.release()
+        assert limiter.acquire(0)
+
     def test_exhausted_budget_after_admission_does_not_send_or_close(self):
         """A caller admitted at its deadline stays off the wire and leaves the connection usable."""
         first_received = threading.Event()

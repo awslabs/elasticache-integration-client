@@ -85,7 +85,19 @@ class _AdmissionLimiter:
         while True:
             remaining = deadline - time.monotonic()
             if remaining > 0:
-                waiter.ready.wait(remaining)
+                try:
+                    waiter.ready.wait(remaining)
+                except BaseException:
+                    with self._lock:
+                        if waiter.admitted:
+                            if not self._closed:
+                                self._release_locked()
+                        else:
+                            try:
+                                self._waiters.remove(waiter)
+                            except ValueError:
+                                pass  # close() already removed it
+                    raise
             with self._lock:
                 if self._closed:
                     raise ElastiCacheIntegrationsConnectionLost("connection is closed")
@@ -99,20 +111,23 @@ class _AdmissionLimiter:
         with self._lock:
             if self._closed:
                 return
-            if self._waiters:
-                # Transfer the slot instead of making it globally available, so a caller
-                # arriving after this release cannot overtake the oldest waiter.
-                waiter = self._waiters.popleft()
-                waiter.admitted = True
-                waiter.ready.set()
-                return
-            self._available += 1
+            self._release_locked()
 
     def close(self) -> None:
         with self._lock:
             self._closed = True
             while self._waiters:
                 self._waiters.popleft().ready.set()
+
+    def _release_locked(self) -> None:
+        if self._waiters:
+            # Transfer the slot instead of making it globally available, so a caller
+            # arriving after this release cannot overtake the oldest waiter.
+            waiter = self._waiters.popleft()
+            waiter.admitted = True
+            waiter.ready.set()
+            return
+        self._available += 1
 
 
 class _AdmissionWaiter:
