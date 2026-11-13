@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
@@ -41,7 +42,6 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -595,15 +595,23 @@ class ElastiCacheIntegrationsSessionTest {
         }
     }
 
-    @Test
-    void authErrorOnReplaySafeRequestPassesThroughAndStartsReconnect() {
+    @ParameterizedTest
+    @ValueSource(strings = {"GetItem", "PutItem"})
+    void authErrorPassesThroughAndStartsReconnect(String operation) {
         cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
             session.open();
 
-            assertNull(session.request(request()));
+            assertNull(
+                    session.request(
+                            new ElastiCacheIntegrationsRequest(
+                                    "POST",
+                                    "https://dynamodb.us-east-1.amazonaws.com/",
+                                    Collections.emptyMap(),
+                                    new byte[0],
+                                    new RequestMetadata("dynamodb", operation))));
             assertEquals(ElastiCacheIntegrationsSession.State.RECONNECTING, session.getState());
             assertFalse(session.isConnectionHealthy());
         } finally {
@@ -1385,13 +1393,22 @@ class ElastiCacheIntegrationsSessionTest {
     /** A session whose first connector fails its first request, which loses the connection. */
     private static ElastiCacheIntegrationsSession sessionAfterLoss(
             ReconnectPolicy policy, Supplier<ElastiCacheIntegrationsConnector> replacements) {
+        return sessionAfterLoss(policy, replacements, System::nanoTime);
+    }
+
+    private static ElastiCacheIntegrationsSession sessionAfterLoss(
+            ReconnectPolicy policy,
+            Supplier<ElastiCacheIntegrationsConnector> replacements,
+            LongSupplier nanoClock) {
         AtomicInteger created = new AtomicInteger();
         RequestFailingConnector initial = new RequestFailingConnector();
         return new ElastiCacheIntegrationsSession(
                 () -> created.getAndIncrement() == 0 ? initial : replacements.get(),
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
-                policy);
+                policy,
+                3_600,
+                nanoClock);
     }
 
     private static void loseConnection(ElastiCacheIntegrationsSession session) {
@@ -1468,54 +1485,59 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void routedWriteFailsAfterReconnectDeadlineWithoutUsingFallback() {
+    void routedWriteUsesIndefiniteFallback() {
+        AtomicLong clock = new AtomicLong();
         ElastiCacheIntegrationsSession session =
-                sessionAfterLoss(timeoutPolicy(150, -1), neverReconnects());
+                sessionAfterLoss(timeoutPolicy(30_000, -1), neverReconnects(), clock::get);
         try {
             session.open();
             loseConnection(session);
 
-            long started = System.nanoTime();
-            assertThrows(
-                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
-            long elapsed = elapsedMs(started);
+            clock.set(session.readyDeadlineNanos());
+            assertNull(session.request(writeRequest()));
+            assertEquals(Long.MAX_VALUE, session.fallbackDeadlineNanos());
 
-            assertTrue(elapsed >= 100, "raised without waiting: " + elapsed + "ms");
-            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
-            assertNull(session.request(request()), "replay-safe requests may still use fallback");
+            clock.addAndGet(TimeUnit.DAYS.toNanos(365));
+            assertNull(session.request(writeRequest()));
         } finally {
             session.close();
         }
     }
 
     @Test
-    void authErrorOnReplacementWriteFailsRetryably() throws Exception {
-        AuthRejectingConnector initial = new AuthRejectingConnector();
-        AuthRejectingConnector replacement = new AuthRejectingConnector();
-        CountDownLatch thirdReconnectStarted = new CountDownLatch(1);
-        CountDownLatch allowThirdReconnect = new CountDownLatch(1);
-        TestConnector third = new BlockingConnectConnector(thirdReconnectStarted, allowThirdReconnect);
-        AtomicInteger created = new AtomicInteger();
+    void routedWriteUsesPositiveFallbackUntilExpiry() {
+        AtomicLong clock = new AtomicLong();
         ElastiCacheIntegrationsSession session =
-                new ElastiCacheIntegrationsSession(
-                        () -> {
-                            int connectionNumber = created.getAndIncrement();
-                            if (connectionNumber == 0) {
-                                return initial;
-                            }
-                            return connectionNumber == 1 ? replacement : third;
-                        },
-                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
-                        null,
-                        timeoutPolicy(5_000, -1));
+                sessionAfterLoss(timeoutPolicy(30_000, 1), neverReconnects(), clock::get);
         try {
             session.open();
+            loseConnection(session);
 
+            clock.set(session.readyDeadlineNanos());
+            assertNull(session.request(writeRequest()));
+            assertEquals(TimeUnit.SECONDS.toNanos(1), session.fallbackDeadlineNanos() - clock.get());
+
+            clock.set(session.fallbackDeadlineNanos());
             assertThrows(
                     ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
-            assertTrue(thirdReconnectStarted.await(2, TimeUnit.SECONDS));
         } finally {
-            allowThirdReconnect.countDown();
+            session.close();
+        }
+    }
+
+    @Test
+    void routedWriteEscalatesWhenFallbackIsDisabled() {
+        AtomicLong clock = new AtomicLong();
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(30_000, 0), neverReconnects(), clock::get);
+        try {
+            session.open();
+            loseConnection(session);
+
+            clock.set(session.readyDeadlineNanos());
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+        } finally {
             session.close();
         }
     }
@@ -1802,15 +1824,6 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             fail();
             throw new ElastiCacheIntegrationsConnectionError("injected request failure");
-        }
-    }
-
-    private static final class AuthRejectingConnector extends TestConnector {
-        @Override
-        public ElastiCacheIntegrationsResponse request(
-                ElastiCacheIntegrationsRequest request,
-                ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsRejectedError("AUTH_ERROR", "missing FAS");
         }
     }
 

@@ -44,10 +44,9 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  * succeeds or the session closes.
  *
  * <p>While no connector is available, a matching request waits up to the connection timeout for the
- * reconnect. A replay-safe request may then use origin fallback until the configured fallback
- * duration expires; a routed write fails without contacting origin. After a request is admitted to
- * Cache, the HTTP adapters allow direct origin fallback only when the connection drops and the
- * operation is in the shared replay-safe catalog.
+ * reconnect, then may use origin fallback until the configured fallback duration expires. After a
+ * request is admitted to Cache, the HTTP adapters allow direct origin fallback only when the
+ * connection drops and the operation is in the shared replay-safe catalog.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Cache. Requests with no matching
  * predicate are declined for origin pass-through. The background runners started by {@link #open()}
@@ -668,9 +667,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
      * Route a request to Cache, or return {@code null} to let the caller handle it.
      *
      * <p>A request that finds no ready connector waits until the current outage's ready deadline for
-     * a reconnect, and is served on the new connector if one arrives. After the wait, replay-safe
-     * requests fall back to origin while the fallback window is open. Routed writes fail without
-     * contacting origin.
+     * a reconnect, and is served on the new connector if one arrives. After the wait, requests fall
+     * back to origin while the fallback window is open.
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
@@ -688,8 +686,6 @@ class ElastiCacheIntegrationsSession implements Closeable {
         if (cancellation.isCancelled()) {
             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
         }
-        boolean replaySafe = Idempotency.isIdempotent(request.getMetadata());
-        boolean retriedAfterAuthError = false;
         while (true) {
             ConnectionSnapshot currentSnapshot = snapshot;
             PredicateEvaluator evaluator =
@@ -701,7 +697,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
             ElastiCacheIntegrationsConnector active = connector;
             if (active == null || !active.isReady()) {
                 beginReconnect(active);
-                if (awaitReconnectOrFallback(cancellation, replaySafe)) {
+                if (awaitReconnectOrFallback(cancellation)) {
                     continue;
                 }
                 return null;
@@ -716,16 +712,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         throw new ElastiCacheIntegrationsCacheUnavailable(
                                 "Cache rejected the request with AUTH_ERROR and origin fallback is disabled");
                     }
-                    if (replaySafe) {
-                        return null;
-                    }
-                    if (retriedAfterAuthError) {
-                        throw new ElastiCacheIntegrationsCacheUnavailable(
-                                "Routed write was rejected with AUTH_ERROR after reconnect");
-                    }
-                    retriedAfterAuthError = true;
-                    awaitReconnectOrFallback(cancellation, false);
-                    continue;
+                    return null;
                 }
                 throw failure;
             } catch (ElastiCacheIntegrationsError failure) {
@@ -735,20 +722,6 @@ class ElastiCacheIntegrationsSession implements Closeable {
                 throw failure;
             }
         }
-    }
-
-    /**
-     * Return whether a request may go to origin without first reaching Cache.
-     *
-     * <p>Package-private for async capacity-rejection paths.
-     */
-    boolean canFallbackWithoutCache(ElastiCacheIntegrationsRequest request) {
-        ConnectionSnapshot currentSnapshot = snapshot;
-        PredicateEvaluator evaluator =
-                currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
-        return (evaluator != null && !evaluator.shouldRouteToCache(request))
-                || (Idempotency.isIdempotent(request.getMetadata())
-                        && reconnectPolicy.getFallbackDurationSeconds() != 0);
     }
 
     /**
@@ -1034,7 +1007,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
      * @return true when Cache reconnected, or false when the request may fall back to origin
      */
     private boolean awaitReconnectOrFallback(
-            ElastiCacheIntegrationsRequestCancellation cancellation, boolean fallbackSafe) {
+            ElastiCacheIntegrationsRequestCancellation cancellation) {
         Runnable wakeOnCancel = this::wakeStateWaiters;
         cancellation.register(wakeOnCancel);
         try {
@@ -1047,13 +1020,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     long remainingNanos = readyDeadlineNanos - now;
                     if (remainingNanos <= 0) {
                         long fallbackDeadline = fallbackDeadlineNanos;
-                        if (fallbackSafe && (fallbackDeadline == Long.MAX_VALUE || now < fallbackDeadline)) {
+                        if (fallbackDeadline == Long.MAX_VALUE || now < fallbackDeadline) {
                             return false;
-                        }
-                        if (!fallbackSafe) {
-                            throw new ElastiCacheIntegrationsCacheUnavailable(
-                                    "Routed write was not sent because Cache did not reconnect before the"
-                                            + " connection timeout");
                         }
                         throw new ElastiCacheIntegrationsCacheUnavailable(
                                 "Cache has no cache connection and origin fallback is no longer allowed");
