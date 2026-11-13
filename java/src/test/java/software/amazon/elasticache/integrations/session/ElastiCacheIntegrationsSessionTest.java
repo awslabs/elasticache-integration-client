@@ -22,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.AfterEach;
@@ -1392,13 +1393,22 @@ class ElastiCacheIntegrationsSessionTest {
     /** A session whose first connector fails its first request, which loses the connection. */
     private static ElastiCacheIntegrationsSession sessionAfterLoss(
             ReconnectPolicy policy, Supplier<ElastiCacheIntegrationsConnector> replacements) {
+        return sessionAfterLoss(policy, replacements, System::nanoTime);
+    }
+
+    private static ElastiCacheIntegrationsSession sessionAfterLoss(
+            ReconnectPolicy policy,
+            Supplier<ElastiCacheIntegrationsConnector> replacements,
+            LongSupplier nanoClock) {
         AtomicInteger created = new AtomicInteger();
         RequestFailingConnector initial = new RequestFailingConnector();
         return new ElastiCacheIntegrationsSession(
                 () -> created.getAndIncrement() == 0 ? initial : replacements.get(),
                 () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                 null,
-                policy);
+                policy,
+                3_600,
+                nanoClock);
     }
 
     private static void loseConnection(ElastiCacheIntegrationsSession session) {
@@ -1475,19 +1485,21 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
-    void routedWriteUsesFallbackAfterReconnectDeadline() {
+    void routedWriteUsesPositiveFallbackUntilExpiry() {
+        AtomicLong clock = new AtomicLong();
         ElastiCacheIntegrationsSession session =
-                sessionAfterLoss(timeoutPolicy(150, -1), neverReconnects());
+                sessionAfterLoss(timeoutPolicy(30_000, 1), neverReconnects(), clock::get);
         try {
             session.open();
             loseConnection(session);
 
-            long started = System.nanoTime();
+            clock.set(session.readyDeadlineNanos());
             assertNull(session.request(writeRequest()));
-            long elapsed = elapsedMs(started);
+            assertEquals(TimeUnit.SECONDS.toNanos(1), session.fallbackDeadlineNanos() - clock.get());
 
-            assertTrue(elapsed >= 100, "fell back without waiting: " + elapsed + "ms");
-            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
+            clock.set(session.fallbackDeadlineNanos());
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
         } finally {
             session.close();
         }
@@ -1495,19 +1507,16 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void routedWriteEscalatesWhenFallbackIsDisabled() {
+        AtomicLong clock = new AtomicLong();
         ElastiCacheIntegrationsSession session =
-                sessionAfterLoss(timeoutPolicy(150, 0), neverReconnects());
+                sessionAfterLoss(timeoutPolicy(30_000, 0), neverReconnects(), clock::get);
         try {
             session.open();
             loseConnection(session);
 
-            long started = System.nanoTime();
+            clock.set(session.readyDeadlineNanos());
             assertThrows(
                     ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
-            long elapsed = elapsedMs(started);
-
-            assertTrue(elapsed >= 100, "raised without waiting: " + elapsed + "ms");
-            assertTrue(elapsed < 1_000, "waited past the timeout: " + elapsed + "ms");
         } finally {
             session.close();
         }

@@ -181,9 +181,10 @@ and `aws.config`, and recompiles the resolved predicates.
 Right after the loss, a routed request waits up to `connectionTimeout` for the
 new connection and is served from the cache if it arrives. If the connection is
 not back by then, the request has not been sent to ElastiCacheIntegrations and
-can safely use the origin, including routed writes. The same timeout bounds
-startup: `install()` keeps retrying until `connectionTimeout` passes, then
-rejects if no connection is ready.
+can safely use the origin, including routed writes. A write sent to origin during
+an outage can leave a stale cache entry until its TTL expires. The same timeout
+bounds startup: `install()` keeps retrying until `connectionTimeout` passes,
+then rejects if no connection is ready.
 
 `clientConfiguration.fallbackDuration` controls how long requests may fall
 back, counted from the end of `connectionTimeout`:

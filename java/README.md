@@ -12,9 +12,10 @@ sent to Cache when the configured predicates match and otherwise use the
 configured DynamoDB origin transport. While reconnecting, cache-eligible
 requests first wait up to `connectionTimeoutMs` for the new connection.
 Any request may then use origin fallback until the configured fallback window
-expires, including routed writes. After a request is sent, indeterminate failures
-fall back only when the connection drops and the operation is in the shared
-replay-safe catalog. While the connection remains healthy, an
+expires, including routed writes. A write sent to origin during an outage can
+leave a stale cache entry until its TTL expires. After a request is sent,
+indeterminate failures fall back only when the connection drops and the
+operation is in the shared replay-safe catalog. While the connection remains healthy, an
 `ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
 `AUTH_ERROR` closes the stale connection and passes the rejected request through
 while fallback is enabled. With `fallbackDurationSeconds(0)`, the rejected
@@ -234,11 +235,10 @@ its predicates.
 
 Cache's socket request API is blocking, so the asynchronous adapter runs it on
 a bounded daemon executor. If the bounded body collectors are at capacity,
-replay-safe requests use origin fallback and writes fail retryably without
-contacting origin. If the executor rejects a request because it is at capacity,
-replay-safe requests use origin fallback when `fallbackDurationSeconds` is
-nonzero. Otherwise a request routed to Cache fails retryably without contacting
-origin.
+requests use the origin transport without Cache while the session remains open.
+The same rule applies if the executor rejects a request because it is at
+capacity. These local-capacity pass-throughs are independent of
+`fallbackDurationSeconds`, which controls fallback during cache outages.
 
 ## Configuration
 

@@ -725,17 +725,13 @@ class ElastiCacheIntegrationsSession implements Closeable {
     }
 
     /**
-     * Return whether a request may go to origin without first reaching Cache.
+     * Return whether an async capacity-rejected request may go to origin.
      *
-     * <p>Package-private for async capacity-rejection paths.
+     * <p>Capacity rejection is local backpressure rather than an outage, so it is independent of the
+     * configured outage fallback window.
      */
-    boolean canFallbackWithoutCache(ElastiCacheIntegrationsRequest request) {
-        ConnectionSnapshot currentSnapshot = snapshot;
-        PredicateEvaluator evaluator =
-                currentSnapshot != null ? currentSnapshot.predicateEvaluator : null;
-        return (evaluator != null && !evaluator.shouldRouteToCache(request))
-                || (Idempotency.isIdempotent(request.getMetadata())
-                        && reconnectPolicy.getFallbackDurationSeconds() != 0);
+    boolean canFallbackWithoutCache() {
+        return isOpen();
     }
 
     /**
