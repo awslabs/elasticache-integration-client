@@ -20,13 +20,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
             ElastiCacheIntegrationsSession session,
             ElastiCacheIntegrationsRequest request,
             ElastiCacheIntegrationsError failure) {
-        return session.isOpen()
-                && (failure instanceof ElastiCacheIntegrationsRequestNotSent
-                        || (!session.isConnectionHealthy()
-                                && !(failure instanceof ElastiCacheIntegrationsCacheUnavailable)
-                                && !(failure instanceof ElastiCacheIntegrationsRejectedError)
-                                && isTransportFailure(failure)
-                                && Idempotency.isIdempotent(request.getMetadata())));
+        return session.isOpen() && failure instanceof ElastiCacheIntegrationsRequestNotSent;
     }
 
     static boolean shouldRetry(
@@ -36,8 +30,11 @@ final class ElastiCacheIntegrationsFallbackPolicy {
         if (failure instanceof ElastiCacheIntegrationsCacheUnavailable) {
             return session.isOpen();
         }
-        if (!session.isConnectionHealthy() || !Idempotency.isIdempotent(request.getMetadata())) {
+        if (!session.isOpen() || !Idempotency.isIdempotent(request.getMetadata())) {
             return false;
+        }
+        if (!session.isConnectionHealthy()) {
+            return isTransportFailure(failure);
         }
         if (failure instanceof ElastiCacheIntegrationsRejectedError) {
             return ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode());

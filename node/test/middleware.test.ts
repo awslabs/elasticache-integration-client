@@ -492,7 +492,7 @@ describe("elastiCacheIntegrations middleware", () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it("passes a dropped idempotent ElastiCacheIntegrations request through to the origin", async () => {
+  it("retries a dropped idempotent ElastiCacheIntegrations request without calling origin", async () => {
     const signedRequest = new HttpRequest({
       protocol: "https:",
       hostname: "dynamodb.us-east-1.amazonaws.com",
@@ -511,20 +511,17 @@ describe("elastiCacheIntegrations middleware", () => {
         throw new ElastiCacheIntegrationsTimeoutError("cache unavailable");
       }),
     });
-    const next = vi.fn<FinalizeHandler<object, object>>(async (args) => {
-      expect(args.request).toBe(signedRequest);
-      expect((args.request as HttpRequest).headers.authorization).toBe(
-        "AWS4-HMAC-SHA256 Credential=example",
-      );
-      expect((args.request as HttpRequest).headers["x-amz-date"]).toBe("20260812T000000Z");
-      return { response: new HttpResponse({ statusCode: 503 }) };
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
     });
     const handler = cacheMiddleware("dynamodb", session)(next, { commandName: "GetItemCommand" });
 
-    await expect(handler({ input: {}, request: signedRequest })).resolves.toEqual({
-      response: expect.any(HttpResponse),
-    });
-    expect(next).toHaveBeenCalledOnce();
+    const failure = await handler({ input: {}, request: signedRequest }).catch(
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(ElastiCacheIntegrationsTimeoutError);
+    expect((failure as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
   });
 
   it("does not pass shutdown ElastiCacheIntegrations failures through to the origin", async () => {
@@ -618,6 +615,7 @@ describe("elastiCacheIntegrations middleware", () => {
       {},
       {
         stalenessDurationMs: 1000,
+        fallbackDurationMs: 0,
         clock: () => clock,
       },
     );
@@ -645,8 +643,8 @@ describe("elastiCacheIntegrations middleware", () => {
     };
   }
 
-  it("falls back to the origin for an idempotent request racing staleness recovery", async () => {
-    const { session, goStale } = await staleRaceSession();
+  it("does not send a zero-fallback in-flight read to origin during recovery", async () => {
+    const { session, connectionLost, goStale } = await staleRaceSession();
     const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
       response: new HttpResponse({ statusCode: 200 }),
     }));
@@ -657,8 +655,9 @@ describe("elastiCacheIntegrations middleware", () => {
     const handling = handler({ input: {}, request: request() });
     await goStale();
 
-    await expect(handling).resolves.toEqual({ response: expect.any(HttpResponse) });
-    expect(next).toHaveBeenCalledOnce();
+    await expect(handling).rejects.toBe(connectionLost);
+    expect((connectionLost as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
     await session.close();
   });
 
