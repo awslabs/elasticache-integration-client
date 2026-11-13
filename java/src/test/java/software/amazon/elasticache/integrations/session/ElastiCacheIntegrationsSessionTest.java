@@ -1485,6 +1485,26 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void routedWriteUsesIndefiniteFallback() {
+        AtomicLong clock = new AtomicLong();
+        ElastiCacheIntegrationsSession session =
+                sessionAfterLoss(timeoutPolicy(30_000, -1), neverReconnects(), clock::get);
+        try {
+            session.open();
+            loseConnection(session);
+
+            clock.set(session.readyDeadlineNanos());
+            assertNull(session.request(writeRequest()));
+            assertEquals(Long.MAX_VALUE, session.fallbackDeadlineNanos());
+
+            clock.addAndGet(TimeUnit.DAYS.toNanos(365));
+            assertNull(session.request(writeRequest()));
+        } finally {
+            session.close();
+        }
+    }
+
+    @Test
     void routedWriteUsesPositiveFallbackUntilExpiry() {
         AtomicLong clock = new AtomicLong();
         ElastiCacheIntegrationsSession session =

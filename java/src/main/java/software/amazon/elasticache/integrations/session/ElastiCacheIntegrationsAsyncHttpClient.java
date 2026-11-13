@@ -222,7 +222,7 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
                                 () -> session.request(cacheRequest, cancellation), executor);
             } catch (RejectedExecutionException capacityFailure) {
                 // Executor saturation means Cache cannot accept this attempt.
-                if (session.canFallbackWithoutCache()) {
+                if (session.isOpen()) {
                     fallbackToOrigin(copyWithBody(request, body));
                 } else {
                     fail(

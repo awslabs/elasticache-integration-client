@@ -725,16 +725,6 @@ class ElastiCacheIntegrationsSession implements Closeable {
     }
 
     /**
-     * Return whether an async capacity-rejected request may go to origin.
-     *
-     * <p>Capacity rejection is local backpressure rather than an outage, so it is independent of the
-     * configured outage fallback window.
-     */
-    boolean canFallbackWithoutCache() {
-        return isOpen();
-    }
-
-    /**
      * Stop both refreshers, then close the connector. Idempotent.
      *
      * <p>The refreshers are stopped strictly before the connector closes, so background work can
