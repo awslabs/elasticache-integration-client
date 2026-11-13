@@ -48,6 +48,9 @@ FAST = ReconnectPolicy(base_delay=0.001, max_delay=0.01, jitter=0.0)
 
 _STATE_TIMEOUT = 5.0  # generous: these waits only run long when something is actually broken
 _POLL_INTERVAL = 0.002  # how often a wait re-checks
+# These tests open a real initial connection before exercising fallback. Leave enough time for
+# that handshake on slower CI runners while keeping the disconnected-request wait brief.
+_FALLBACK_CONNECTION_TIMEOUT_MS = 500
 
 
 def test_invalidate_connection_enters_reconnecting_before_close():
@@ -453,7 +456,7 @@ def test_unbounded_window_passes_through_indefinitely(rig):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            connection_timeout_ms=10,
+            connection_timeout_ms=_FALLBACK_CONNECTION_TIMEOUT_MS,
         )
     )
     set_as_reconnecting(r)
@@ -477,7 +480,7 @@ def test_finite_window_passes_through_then_escalates(rig, monkeypatch):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            connection_timeout_ms=10,
+            connection_timeout_ms=_FALLBACK_CONNECTION_TIMEOUT_MS,
         )
     )
     set_as_reconnecting(r)
@@ -486,7 +489,7 @@ def test_finite_window_passes_through_then_escalates(rig, monkeypatch):
 
     # Exactly onto the deadline, which is already outside the window. The window starts when the
     # wait for a reconnect ends, so both are added the way the manager adds them.
-    clock.advance(0.01)
+    clock.advance(_FALLBACK_CONNECTION_TIMEOUT_MS / 1000)
     clock.advance(1)
     with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
         r.session.request(get_item_request())
@@ -505,7 +508,7 @@ def test_zero_window_escalates_until_reconnected(rig):
             base_delay=0.001,
             max_delay=0.01,
             jitter=0.0,
-            connection_timeout_ms=10,
+            connection_timeout_ms=_FALLBACK_CONNECTION_TIMEOUT_MS,
         )
     )
     set_as_reconnecting(r)
