@@ -284,6 +284,48 @@ class ElastiCacheIntegrationsAsyncClientTest {
     }
 
     @Test
+    void zeroFallbackInFlightReadRetriesThroughCacheWithoutContactingOrigin() throws Exception {
+        AtomicInteger sequence = new AtomicInteger();
+        CountDownLatch firstReceived = new CountDownLatch(1);
+        cache.setReplyFunction(
+                request -> {
+                    if (sequence.getAndIncrement() == 0) {
+                        firstReceived.countDown();
+                        return Reply.requestId(42);
+                    }
+                    return Reply.ok(
+                            200,
+                            Collections.singletonMap("content-type", "application/x-amz-json-1.0"),
+                            "{\"TableNames\":[\"retried-through-cache\"]}");
+                });
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
+
+        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+                DynamoDbAsyncClient client =
+                        installAsync(
+                                cacheBuilder()
+                                        .endpoint("localhost:" + proxy.getPort())
+                                        .originAsyncHttpClient(origin)
+                                        .clientConfiguration(
+                                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                                        .connectionTimeoutMs(30_000)
+                                                        .fallbackDurationSeconds(0)
+                                                        .build()),
+                                ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
+            CompletableFuture<ListTablesResponse> inFlight = client.listTables();
+            assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+
+            proxy.disconnectClients();
+
+            assertEquals(
+                    Collections.singletonList("retried-through-cache"),
+                    inFlight.get(10, TimeUnit.SECONDS).tableNames());
+            assertEquals(2, cache.getRequests().size());
+            assertNull(origin.request.get(), "the origin must not receive either attempt");
+        }
+    }
+
+    @Test
     void asyncAuthErrorWithZeroFallbackFailsThroughInstalledClientAndSkipsOrigin() throws Exception {
         cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
