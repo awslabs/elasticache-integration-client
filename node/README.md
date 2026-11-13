@@ -27,8 +27,8 @@ This package currently ports the Python implementation's:
   with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers and the `host`, `x-amz-content-sha256`, and
-  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, routes dropped-connection failures to the
-  origin only for operations in the shared replay-safe catalog, and marks a
+  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, marks dropped-connection failures
+  retryable only for operations in the shared replay-safe catalog, and marks a
   healthy-connection `ORIGIN_ERROR` retryable only for those operations;
 - an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
   the application already built.
@@ -44,9 +44,10 @@ callers wait for a slot within `cacheRequestTimeout` instead of failing at the c
 boundary. Queue admission uses at most 75% of that timeout, reserving 25% to send and receive a
 reply. If that budget is exhausted, the request is not sent to the cache and continues to origin
 regardless of operation idempotency. The middleware sends requests with no matching predicate
-directly to origin and has a narrow origin fallback for cataloged idempotent
-requests when the connection drops. On a healthy connection, `ORIGIN_ERROR` is
-returned to the SDK as retryable for a cataloged operation.
+directly to origin. If the connection drops after a cataloged idempotent request
+was sent, the middleware returns a retryable failure so the SDK retry re-enters
+the session's reconnect wait and fallback gate. On a healthy connection,
+`ORIGIN_ERROR` is returned to the SDK as retryable for a cataloged operation.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
@@ -116,9 +117,11 @@ SigV4 headers, plus the `host`, `x-amz-content-sha256`, and `x-amz-user-agent`
 headers that the JS SDK adds, only from its copied request model;
 the original signed request remains untouched for origin pass-through. When the
 ElastiCacheIntegrations connection drops, failures for operations in the shared replay-safe
-catalog return to the SDK's normal origin pipeline. While the connection
-remains healthy, only an `ORIGIN_ERROR` for a cataloged operation is marked
-SDK-retryable. Other RESP errors, non-idempotent failures, and request
+catalog return to the SDK's retry pipeline. The retry re-enters the session,
+which waits for reconnection and applies the configured fallback window before
+using origin. While the connection remains healthy, only an `ORIGIN_ERROR` for
+a cataloged operation is marked SDK-retryable. Other RESP errors,
+non-idempotent failures, and request
 validation errors and fallback-window exhaustion propagate. Calling `destroy()`
 detaches ElastiCacheIntegrations before SDK teardown, rejects in-flight ElastiCacheIntegrations requests without
 passing shutdown failures to the origin, stops reconnect activity, and is safe
@@ -215,9 +218,9 @@ policy. That tolerance is bounded by `cachePolicyTimeout`, one hour by default,
 which must be a positive whole number of seconds. After the timeout, the next
 failed confirmation drops the connection so a replacement can fetch a current
 policy, and a healthy connection is never dropped. Requests follow the
-`fallbackDuration` rules while the connection is being replaced. A request
-already in flight when the connection drops falls back only when it is
-idempotent.
+`fallbackDuration` rules while the connection is being replaced. A replay-safe
+request already in flight when the connection drops is returned to the SDK for
+retry, so the retry applies the same reconnection wait and fallback window.
 
 A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a policy with a
 predicate this client cannot compile never fix themselves, so they log at error

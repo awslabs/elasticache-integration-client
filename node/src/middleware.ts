@@ -222,7 +222,7 @@ export function cacheRequestHandler<THandler extends object>(
       }
 
       if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
-        return next();
+        throw markRetryable(error);
       }
       if (
         session.isConnectionHealthy &&

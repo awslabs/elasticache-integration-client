@@ -281,7 +281,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         BlockingOrigin origin = new BlockingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new DroppedConnectionSession(), preparedContext(), origin, false, Runnable::run, null);
+                        new RequestNotSentSession(), preparedContext(), origin, false, Runnable::run, null);
 
         CompletableFuture<Void> request = client.execute(executeRequest());
         assertTrue(origin.started.await(2, TimeUnit.SECONDS));
@@ -294,15 +294,20 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void droppedIdempotentTransportFailureDelegatesToOrigin() throws Exception {
+    void zeroFallbackDroppedIdempotentTransportFailureIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
                         new DroppedTimeoutSession(), preparedContext(), origin, false, Runnable::run, null);
 
-        client.execute(executeRequest()).get(2, TimeUnit.SECONDS);
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
-        assertEquals(1, origin.executeCount.get());
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+        assertEquals(0, origin.executeCount.get());
         client.close();
     }
 
@@ -682,7 +687,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     /** An open session configured with {@code fallbackDurationSeconds(0)}. */
-    private static final class NoFallbackSession extends ElastiCacheIntegrationsSession {
+    private static class NoFallbackSession extends ElastiCacheIntegrationsSession {
         private NoFallbackSession() {
             super(
                     () -> new ElastiCacheIntegrationsConnector("unused", 1, null),
@@ -797,7 +802,14 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         }
     }
 
-    private static final class DroppedTimeoutSession extends TimeoutSession {
+    private static final class DroppedTimeoutSession extends NoFallbackSession {
+        @Override
+        ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsTimeoutError("cache timed out");
+        }
+
         @Override
         boolean isConnectionHealthy() {
             return false;
@@ -865,20 +877,6 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             throw new ElastiCacheIntegrationsCacheUnavailable("fallback window expired");
-        }
-    }
-
-    private static final class DroppedConnectionSession extends OpenSession {
-        @Override
-        boolean isConnectionHealthy() {
-            return false;
-        }
-
-        @Override
-        ElastiCacheIntegrationsResponse request(
-                ElastiCacheIntegrationsRequest request,
-                ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsConnectionLost("cache connection dropped");
         }
     }
 

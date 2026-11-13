@@ -58,6 +58,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -421,11 +422,12 @@ class ElastiCacheIntegrationsClientTest {
                                 ElastiCacheIntegrationsClientConfiguration.builder()
                                         .cacheRequestTimeoutMs(100)
                                         .build())
-                        .install(appBuilder())) {
-            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+                        .install(appBuilder().overrideConfiguration(o -> o.retryPolicy(RetryPolicy.none())))) {
+            SdkClientException failure = assertThrows(SdkClientException.class, client::listTables);
+            assertTrue(causedBy(failure, ElastiCacheIntegrationsTimeoutError.class));
         }
 
-        assertNotNull(origin.request.get(), "the timed-out request fell back to the origin");
+        assertNull(origin.request.get(), "the timed-out request must not bypass the fallback gate");
     }
 
     @Test
@@ -784,7 +786,7 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void clientOperationCacheTimeoutFallsBackToOrigin() {
+    void clientOperationCacheTimeoutIsRetryableWithoutOriginFallback() {
         cache.setFailureMode(MockCache.FailureMode.HANG);
         cache.setFailureCommand("aws.request");
         RecordingOriginClient origin = new RecordingOriginClient();
@@ -796,12 +798,12 @@ class ElastiCacheIntegrationsClientTest {
                                 ElastiCacheIntegrationsClientConfiguration.builder()
                                         .cacheRequestTimeoutMs(100)
                                         .build())
-                        .install(appBuilder())) {
-            assertEquals(Collections.emptyList(), client.listTables().tableNames());
+                        .install(appBuilder().overrideConfiguration(o -> o.retryPolicy(RetryPolicy.none())))) {
+            SdkClientException failure = assertThrows(SdkClientException.class, client::listTables);
+            assertTrue(causedBy(failure, ElastiCacheIntegrationsTimeoutError.class));
         }
 
-        assertNotNull(origin.request.get());
-        assertTrue(origin.request.get().httpRequest().firstMatchingHeader("Authorization").isPresent());
+        assertNull(origin.request.get());
     }
 
     @Test

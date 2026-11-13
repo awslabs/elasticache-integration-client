@@ -191,6 +191,7 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
   `scripts/set-package-version.mjs` stamp the release checkout. Manual
   dispatches are non-publishing dry runs. Keep npm publication tokenless through
   trusted publishing after the package has been bootstrapped. Do not force npm
-  provenance; trusted publishing adds it automatically.
+  provenance while the source repository is private; trusted publishing adds it
+  automatically once the repository is public.
 
 Keep changes small and reviewable.

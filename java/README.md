@@ -14,9 +14,11 @@ requests first wait up to `connectionTimeoutMs` for the new connection.
 Any request may then use origin fallback until the configured fallback window
 expires, including routed writes. A write sent to origin during an outage can
 leave a stale cache entry until its TTL expires. After a request is sent,
-indeterminate failures fall back only when the connection drops and the
-operation is in the shared replay-safe catalog. While the connection remains healthy, an
-`ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged operation.
+a failure caused by a dropped connection is returned as SDK-retryable only when
+the operation is in the shared replay-safe catalog. The retry re-enters the
+session's reconnect wait and fallback gate. While the connection remains
+healthy, an `ORIGIN_ERROR` is returned as SDK-retryable only for a cataloged
+operation.
 `AUTH_ERROR` closes the stale connection and passes the rejected request through
 while fallback is enabled. With `fallbackDurationSeconds(0)`, the rejected
 request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
@@ -356,10 +358,12 @@ never allows fallback. Once the window ends, Cache raises a retryable transport
 failure for the AWS SDK to handle. A routed request waits only for the part of
 `connectionTimeoutMs` left in the current outage; later retries in the same
 outage do not restart that wait. If a request already admitted to Cache fails
-as the connection drops, it falls back directly only when its operation is in
-the shared replay-safe catalog. On a healthy connection, an `ORIGIN_ERROR` is
-SDK-retryable only for a cataloged operation; other RESP errors and
-non-idempotent failures are terminal for that attempt.
+as the connection drops, it is SDK-retryable only when its operation is in the
+shared replay-safe catalog.
+The retry therefore applies the same reconnect wait and fallback window,
+including zero. On a healthy connection, an `ORIGIN_ERROR` is SDK-retryable
+only for a cataloged operation; other RESP errors and non-idempotent failures
+are terminal for that attempt.
 
 Cache requests may complete out of order when the cache returns a request ID
 and later delivers the result in a `aws.response` RESP3 push. Deferred

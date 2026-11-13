@@ -43,6 +43,7 @@ import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpMethod;
 import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.awssdk.utils.IoUtils;
+import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
@@ -73,17 +74,18 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
-    void droppedIdempotentTransportFailureDelegatesToOrigin() throws Exception {
+    void zeroFallbackDroppedIdempotentTransportFailureIsRetryableWithoutContactingOrigin() {
         StubSession session = new StubSession();
         session.healthy = false;
         session.failure = new ElastiCacheIntegrationsTimeoutError("cache timed out");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false);
 
-        HttpExecuteResponse response = client.prepareRequest(signedRequest()).call();
+        IOException failure =
+                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
 
-        assertEquals(201, response.httpResponse().statusCode());
-        assertEquals(1, origin.prepareCount.get());
+        assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
@@ -417,8 +419,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     @Test
     void abortReachesActiveOriginRequest() throws Exception {
         StubSession session = new StubSession();
-        session.healthy = false;
-        session.failure = new ElastiCacheIntegrationsConnectionLost("cache connection dropped");
+        session.failure = new ElastiCacheIntegrationsRequestNotSent("request was not sent");
         RecordingHttpClient origin = new RecordingHttpClient();
         origin.blockCall = true;
         ElastiCacheIntegrationsRequestContext context = new ElastiCacheIntegrationsRequestContext();
@@ -586,7 +587,11 @@ class ElastiCacheIntegrationsHttpClientTest {
         private volatile boolean blockUntilCancelled;
 
         private StubSession() {
-            super(new ElastiCacheIntegrationsConnector("unused", 1, null), "user", "token");
+            super(
+                    () -> new ElastiCacheIntegrationsConnector("unused", 1, null),
+                    () -> new AuthCredentials("user", "token"),
+                    null,
+                    ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
         }
 
         @Override
