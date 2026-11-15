@@ -204,7 +204,7 @@ def test_no_secret_or_customer_data_in_logs_or_errors(caplog, scenario):
         assert "aws.request" in cache.cache_command_log, "the request never reached the cache"
     secrets = [secret for token in tokens for secret in _token_secrets(token)]
     for marker in [*MARKERS, *secrets]:
-        assert marker not in output, f"{marker[:24]}... leaked:\n{output}"
+        assert marker not in output, f"{marker} leaked:\n{output}"
     assert not SECRET_SHAPES.search(output), f"secret-shaped text leaked:\n{output}"
 
 

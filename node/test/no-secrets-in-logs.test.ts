@@ -171,7 +171,7 @@ describe("no credentials, IAM token or customer data in logs or errors", () => {
       expect(cache.cacheCommandLog, "the request never reached the cache").toContain("aws.request");
     }
     for (const marker of [...MARKERS, ...tokens.flatMap(tokenSecrets)].flatMap(forms)) {
-      expect(output.includes(marker), `${marker.slice(0, 24)}... leaked:\n${output}`).toBe(false);
+      expect(output.includes(marker), `${marker} leaked:\n${output}`).toBe(false);
     }
     expect(output).not.toMatch(SECRET_SHAPES);
   });

@@ -200,9 +200,7 @@ class NoSecretsInLogsTest {
             secrets.addAll(tokenSecrets(token));
         }
         for (String secret : secrets) {
-            assertFalse(
-                    output.contains(secret),
-                    () -> secret.substring(0, Math.min(24, secret.length())) + "... leaked:\n" + output);
+            assertFalse(output.contains(secret), () -> secret + " leaked:\n" + output);
         }
         assertFalse(
                 SECRET_SHAPES.matcher(output).find(), () -> "secret-shaped text leaked:\n" + output);
