@@ -221,6 +221,9 @@ export function cacheRequestHandler<THandler extends object>(
         throw error;
       }
 
+      if (!session.isConnectionHealthy && error instanceof ElastiCacheIntegrationsConnectionLost) {
+        throw markRetryable(error); // retryable error so the SDK decides whether to retry or not
+      }
       if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
         throw markRetryable(error);
       }

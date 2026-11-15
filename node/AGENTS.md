@@ -98,8 +98,9 @@ require the corresponding tests, README, and package checks to change with it.
   bytes-like, or destroy the SDK before ElastiCacheIntegrations. Safe path: preserve final
   serialized unsigned request ordering, synthetic responses, bodies that are
   not bytes-like, such as streams, passed through to the origin without
-  calling ElastiCacheIntegrations, dropped-connection fallback
-  only for cataloged operations, healthy-connection `ORIGIN_ERROR` retries
+  calling ElastiCacheIntegrations, a lost connection SDK-retryable for every
+  operation, other dropped-connection fallback only for cataloged operations,
+  healthy-connection `ORIGIN_ERROR` retries
   only for cataloged operations, other RESP/non-idempotent/validation/shutdown
   failures propagating, and ElastiCacheIntegrations-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
