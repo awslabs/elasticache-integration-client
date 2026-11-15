@@ -4,7 +4,7 @@ ElastiCache Integrations provides a caching layer for AWS SDK for Java v2 Dynamo
 
 ## Requirements
 
-- JDK 8 or later. However, **JDK 11 or later is strongly recommended** as Java 8 no longer receives free security updates.
+- JDK 8 or later. **JDK 11 or later is recommended.**
 - AWS SDK for Java v2 version 2.21.0 or later.
 
 ## Installation
@@ -154,7 +154,7 @@ Options on `ElastiCacheIntegrationsClientConfiguration.builder()`:
 | `fallbackDurationSeconds(long)` | no limit | How long requests may go to DynamoDB while the cache is unreachable. `0` means never. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map)` | none | What to cache and for how long. See [Cache policy overrides](#cache-policy-overrides). |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long the client keeps using a cache policy the cache has not confirmed. See [Cache policy timeout](#cache-policy-timeout). |
-| `iamTokenRefreshDelay(Duration)` | 300 s | When a replacement IAM token is signed in the background. See [Authentication](#authentication). |
+| `iamTokenRefreshDelaySeconds(long)` | 300 | How long after a token is issued a replacement is signed in the background. 1 to 879. See [Authentication](#authentication). |
 
 ### Cache policy overrides
 
@@ -239,15 +239,15 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 **Requests during an outage.** A request the cache would serve first waits for the connection to come back, up to [`connectionTimeoutMs`](#configuration). This wait is per outage, not per request: a request that arrives later in the same outage waits only for what is left of it. If the connection comes back in time, the request is served from the cache.
 
-**After the wait.** If the connection is still down, the request goes to DynamoDB for as long as [`fallbackDurationSeconds`](#configuration) allows, counted from the end of the wait. The default has no limit, a positive value allows that many seconds, and `0` never allows it. Once the window ends, the request fails with a [retryable error](#errors) for the SDK to handle.
+**After the wait.** If the connection is still down, the request goes to DynamoDB for as long as [`fallbackDurationSeconds`](#configuration) allows, counted from the end of the wait. The default has no limit, a positive value allows that many seconds, and `0` never allows it. Once the window ends, the request fails with a [retryable error](#errors) for the SDK to handle. A write sent to DynamoDB this way can leave a stale entry in the cache until its [TTL](#cache-policy-overrides) expires.
 
-**A request already sent when the connection drops.** It goes to DynamoDB only if its operation is safe to send twice, as listed for all clients in [`shared/idempotent-operations.json`](../shared/idempotent-operations.json). Otherwise it fails, because the cache may already have applied it.
+**A request already sent when the connection drops.** If its operation is safe to send twice, as listed for all clients in [`shared/idempotent-operations.json`](../shared/idempotent-operations.json), it fails with a [retryable error](#errors), and the SDK's retry goes through the same wait and fallback window as any other request. Otherwise it fails for good, because the cache may already have applied it.
 
-**At startup.** `install` keeps trying to connect until [`connectionTimeoutMs`](#configuration) has passed, then throws `ElastiCacheIntegrationsConnectionError`. It never returns a client that is not connected to the cache.
+**At startup.** `install` keeps trying to connect until [`connectionTimeoutMs`](#configuration) has passed, then throws the last attempt's failure: `ElastiCacheIntegrationsConnectionError` if it could not connect, `ElastiCacheIntegrationsAuthError` if the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never returns a client that is not connected to the cache.
 
 ## Errors
 
-The client's exceptions all extend `ElastiCacheIntegrationsError`. A failure during a request can reach you in two ways. One the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException` with the client's exception as its cause. Any other failure, such as an error returned by the cache, is thrown as the client's exception itself.
+The client's exceptions all extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
 
 ## Authentication
 
@@ -255,7 +255,7 @@ The client signs in to the cache with an IAM authentication token, using the reg
 
 That identity needs the `elasticache:Connect` permission on the cache and on the ElastiCache user ([`userId`](#configuration), `default.iam-user` by default).
 
-Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and authenticates each live connection again with it. If the cache rejects a token, the client signs a new one and reconnects. Set [`iamTokenRefreshDelay`](#configuration) to change when the replacement is signed.
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and authenticates each live connection again with it. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH`, or its reply cannot be read, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelaySeconds`](#configuration) to change when the replacement is signed.
 
 Token signing and refresh come from the [ElastiCache developer toolkit](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache).
 
