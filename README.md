@@ -13,8 +13,10 @@ supported features and fallback behavior for each language.
 The language-neutral replay-safety catalog is
 `shared/idempotent-operations.json`. Java packages it as a resource, Python
 copies it into built packages, and Node generates its compiled lookup from the
-same source with a CI freshness check. Indeterminate cache failures fall back
-to the origin only for cataloged operations after the cache connection drops;
+same source with a CI freshness check. After a request is sent, a lost cache
+connection is SDK-retryable for every operation, as a dropped connection to the
+service is without the cache. Other indeterminate cache failures fall back to
+the origin only for cataloged operations after the cache connection drops;
 mixed or unknown operations are treated as non-idempotent. On a healthy
 connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
 When a routed request has not reached the cache because the connection is down,
