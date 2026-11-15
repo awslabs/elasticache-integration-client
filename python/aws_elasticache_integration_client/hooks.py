@@ -194,11 +194,12 @@ class ElastiCacheIntegrationsHandle:
         request down the pipeline. A request with a streaming body is declined here, before it
         reaches the session, because serializing it would consume the stream. The session declines
         before sending when no predicate matched or no cache connection is available within the
-        fallback window, which is safe for every operation. After sending, a timeout or lost
-        connection becomes SDK-retryable only for a replay-safe operation, so the retry goes
-        through the cache again. A healthy-connection ORIGIN_ERROR becomes SDK-retryable only for
-        a replay-safe operation; other RESP errors remain terminal. Non-ElastiCacheIntegrations exceptions
-        propagate.
+        fallback window, which is safe for every operation. After sending, a lost connection
+        becomes SDK-retryable for every operation, as a dropped connection to the service is, so
+        the SDK's retry configuration decides and the retry goes through the cache again. A
+        timeout or connection error becomes SDK-retryable only for a replay-safe operation. A
+        healthy-connection ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation;
+        other RESP errors remain terminal. Non-ElastiCacheIntegrations exceptions propagate.
         """
         try:
             http_request = _aws_to_cache_request(request, kwargs.get("event_name", ""))
@@ -234,21 +235,18 @@ class ElastiCacheIntegrationsHandle:
                 if exc.code == _ORIGIN_ERROR and self._session.is_connection_healthy and idempotent:
                     raise ElastiCacheIntegrationsOriginError(endpoint_url=request.url) from exc
                 raise
-            if (
-                isinstance(
-                    exc,
-                    (
-                        ElastiCacheIntegrationsTimeoutError,
-                        ElastiCacheIntegrationsConnectionLost,
-                        ElastiCacheIntegrationsConnectionError,
-                    ),
-                )
-                and self._session.is_open
-                and idempotent
-            ):
-                # Let the SDK retry. The retry goes through the cache again, waits briefly for a
-                # reconnect, and goes to the service only if the cache is still down.
-                if isinstance(exc, ElastiCacheIntegrationsTimeoutError):
-                    raise ReadTimeoutError(endpoint_url=request.url) from exc
+            if not self._session.is_open:
+                raise  # session closed: never retry
+            # Let the SDK retry. The retry goes through the cache again, waits briefly for a
+            # reconnect, and goes to the service only if the cache is still down.
+            if isinstance(exc, ElastiCacheIntegrationsConnectionLost):
+                raise ConnectionClosedError(
+                    endpoint_url=request.url
+                ) from exc  # retryable error so the SDK decides whether to retry or not
+            if not idempotent:
+                raise  # non-idempotent operations stop here for other failures
+            if isinstance(exc, ElastiCacheIntegrationsTimeoutError):
+                raise ReadTimeoutError(endpoint_url=request.url) from exc
+            if isinstance(exc, ElastiCacheIntegrationsConnectionError):
                 raise ConnectionClosedError(endpoint_url=request.url) from exc
             raise

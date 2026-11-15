@@ -221,18 +221,44 @@ def test_dropped_idempotent_timeout_is_sdk_retryable():
     "cache_error",
     [
         ElastiCacheIntegrationsTimeoutError("timed out"),
-        ElastiCacheIntegrationsConnectionLost("socket died"),
         ElastiCacheIntegrationsConnectionError("connect failed"),
     ],
 )
 def test_non_idempotent_transport_failure_is_non_retryable(cache_error):
-    """A non-idempotent transport failure is not marked retryable."""
+    """A non-idempotent timeout or connection error is not marked retryable."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = cache_error
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
     with pytest.raises(type(cache_error)) as exc_info:
         request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+    assert exc_info.value is cache_error
+
+
+def test_connection_lost_is_retryable_for_any_operation():
+    sdk = MockClient()
+    session = mock_session()
+    session.is_connection_healthy = False
+    cache_error = ElastiCacheIntegrationsConnectionLost("socket died")
+    session.request.side_effect = cache_error
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ConnectionClosedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+    assert exc_info.value.__cause__ is cache_error
+
+
+def test_connection_lost_after_close_is_not_retryable():
+    sdk = MockClient()
+    session = mock_session()
+    session.is_open = False
+    session.is_connection_healthy = False
+    cache_error = ElastiCacheIntegrationsConnectionLost("connection closed")
+    session.request.side_effect = cache_error
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ElastiCacheIntegrationsConnectionLost) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
     assert exc_info.value is cache_error
 
