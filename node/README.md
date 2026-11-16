@@ -50,15 +50,14 @@ the middleware returns a retryable failure for every operation, the same as that
 failure on a connection to the service, so the SDK's retry settings decide and the
 retry re-enters the session's reconnect wait and fallback gate. As without the
 cache, a retried write may be applied twice if the first attempt reached the
-service. A RESP error is returned to the SDK as retryable only for `ORIGIN_ERROR`
-and `INTERNAL_ERROR_RETRY`, the codes the cache sends when the service applied
-nothing or the outcome is unknown.
+service. If the cache returns an error, the cache decides whether it can be
+retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no
+other error.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
-instead. Other RESP errors, including `INTERNAL_ERROR_FAIL` for a write the
-service applied whose response was lost, and malformed responses propagate
-without retry or origin fallback.
+instead. Other errors from the cache, and malformed responses, reach the
+application without a retry or origin fallback.
 
 ## Request routing
 

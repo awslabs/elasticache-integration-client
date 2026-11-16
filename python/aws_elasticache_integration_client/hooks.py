@@ -61,8 +61,7 @@ _HANDLE_ATTRIBUTE = "_elasticache_integrations_handle"
 
 logger = logging.getLogger(__name__)
 
-#: RESP error codes the SDK may retry: the service applied nothing, or the outcome is unknown.
-#: Every other code is terminal.
+#: RESP error codes the cache sends when a request can be retried. Every other code is terminal.
 _RETRYABLE_CODES = frozenset({"ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"})
 
 
@@ -199,8 +198,8 @@ class ElastiCacheIntegrationsHandle:
         timeout or a connection error becomes SDK-retryable for every operation, as the same
         failure on a connection to the service is, so the SDK's retry configuration decides and
         the retry goes through the cache again. A RESP error is SDK-retryable only when its code
-        is in ``_RETRYABLE_CODES``; the cache chooses that code, because only it knows whether
-        the service applied the request. Non-ElastiCacheIntegrations exceptions propagate.
+        is in ``_RETRYABLE_CODES``: the cache decides which code to send.
+        Non-ElastiCacheIntegrations exceptions propagate.
         """
         try:
             http_request = _aws_to_cache_request(request, kwargs.get("event_name", ""))

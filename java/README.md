@@ -247,7 +247,7 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 ## Errors
 
-A request sent to the cache that times out or loses its connection fails with an error the SDK retries, whatever its operation, the same as that failure on a connection to DynamoDB. An error returned by the cache is retried only for `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, the codes the cache sends when DynamoDB applied nothing or the outcome is unknown. Every other code is not retried, including `INTERNAL_ERROR_FAIL` for a write DynamoDB applied whose response was lost. Your SDK retry settings decide how many times a retryable failure is sent again.
+If a request times out or loses its connection to the cache, the SDK can retry it, for any operation. This is the same as without the cache. If the cache returns an error, the cache decides whether it can be retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no other error. Your SDK retry settings decide how many times a request is retried.
 
 The client's exceptions all extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a request the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
 

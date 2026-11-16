@@ -212,13 +212,13 @@ After a request is sent, a lost connection, a timeout or a connection error beco
 botocore-retryable error for every operation, the same as that failure on a connection to the
 service, so the client's retry configuration decides whether to retry. Like a retry without the
 cache, a retried write may be applied twice if the first attempt reached the service. The retry
-goes through the cache again and may fall back to origin. A RESP error is botocore-retryable only
-for the codes the cache uses when the service applied nothing or the outcome is unknown:
-`ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`. `AUTH_ERROR` closes the stale connection and passes the
+goes through the cache again and may fall back to origin. If the cache returns an error, the cache
+decides whether it can be retried: botocore can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and
+no other error. `AUTH_ERROR` closes the stale connection and passes the
 rejected request through while reconnection obtains fresh authentication. With
 `fallback_duration=0`, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at
-once instead. Other RESP errors, including `INTERNAL_ERROR_FAIL` for a write the service applied
-whose response was lost, propagate without retry or origin fallback.
+once instead. Other errors from the cache reach the application without a retry or origin
+fallback.
 
 ## Cache policy timeout
 

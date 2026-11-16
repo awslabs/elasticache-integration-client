@@ -7,9 +7,8 @@
  * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate
  * declines and requests that were never sent go to the SDK's origin pipeline. A timeout or a
  * dropped-connection failure is SDK-retryable for every operation, as it is without the cache. A
- * RESP error is SDK-retryable only for the codes in `RETRYABLE_CODES`, which the cache chooses
- * because only it knows whether the service applied the request. The SDK keeps its normal retry
- * and deserialization behavior.
+ * RESP error is SDK-retryable only for the codes in `RETRYABLE_CODES`: the cache decides which code
+ * to send. The SDK keeps its normal retry and deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the ElastiCacheIntegrations path drops the auth
@@ -38,8 +37,7 @@ import type { ElastiCacheIntegrationsSession } from "./session.js";
 
 const CACHE_MIDDLEWARE = "elastiCacheIntegrations";
 /**
- * RESP error codes the SDK may retry: the service applied nothing, or the outcome is unknown.
- * Every other code is terminal.
+ * RESP error codes the cache sends when a request can be retried. Every other code is terminal.
  */
 const RETRYABLE_CODES: ReadonlySet<string> = new Set(["ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"]);
 

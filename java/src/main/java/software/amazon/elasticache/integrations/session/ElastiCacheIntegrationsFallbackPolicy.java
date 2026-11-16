@@ -17,8 +17,7 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
 final class ElastiCacheIntegrationsFallbackPolicy {
 
     /**
-     * RESP error codes the SDK may retry: the service applied nothing, or the outcome is unknown.
-     * Every other code is terminal.
+     * RESP error codes the cache sends when a request can be retried. Every other code is terminal.
      */
     private static final Set<String> RETRYABLE_CODES =
             Collections.unmodifiableSet(

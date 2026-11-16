@@ -10,14 +10,14 @@ through the cache protocol, and allow cacheable responses to be served without
 contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
-The clients decide whether a failure is retryable by its type, never by its
-operation. After a request is sent, a timeout or a lost cache connection is
-SDK-retryable for every operation, as that failure on a connection to the
-service is without the cache, so the SDK's retry settings decide. A RESP error
-is SDK-retryable only for `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, the codes
-the cache sends when the service applied nothing or the outcome is unknown.
-`INTERNAL_ERROR_FAIL` marks a write the service applied whose response was
-lost, and is never retried. When a routed request has not reached the cache because the connection is down,
+The clients never check the operation to decide whether a failure can be
+retried. If a request times out or loses its connection to the cache, the SDK
+can retry it, for any operation. This is the same as without the cache. If the
+cache returns an error, the cache decides whether it can be retried: the SDK can
+retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no other error. The SDK's
+retry settings decide how many times a request is retried.
+
+When a routed request has not reached the cache because the connection is down,
 it may use the configured origin fallback window, including for writes.
 `AUTH_ERROR` closes the stale connection and safely passes the rejected
 request through while reconnecting. With the fallback set to 0, the rejected
