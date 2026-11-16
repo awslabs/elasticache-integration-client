@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand } from "@aws-sdk/client-dynamodb";
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/nested-clients/sts";
 import { HttpRequest } from "@smithy/core/protocols";
 import { createServer, type Server } from "node:http";
@@ -502,6 +502,69 @@ describe("public DynamoDB client", () => {
     } finally {
       dynamodb.destroy();
       await hangingCache.stop();
+    }
+  });
+});
+
+/** The ORIGIN_ERROR rejection in the cause chain, as the README tells applications to find it. */
+function originErrorCause(error: unknown): Error | undefined {
+  for (let cause = error; cause instanceof Error; cause = cause.cause) {
+    if (
+      cause.name === "ElastiCacheIntegrationsRejectedError" &&
+      (cause as Error & { code?: unknown }).code === "ORIGIN_ERROR"
+    ) {
+      return cause;
+    }
+  }
+  return undefined;
+}
+
+describe("ORIGIN_ERROR through the public DynamoDB client", () => {
+  const key = { id: { S: "key" } };
+
+  it.each([
+    {
+      name: "a retried read",
+      send: (client: DynamoDBClient) =>
+        client.send(new GetItemCommand({ TableName: "t", Key: key })),
+      attempts: 2,
+    },
+    {
+      name: "a write",
+      send: (client: DynamoDBClient) =>
+        client.send(new PutItemCommand({ TableName: "t", Item: key })),
+      attempts: 1,
+    },
+  ])("puts the rejection in the cause chain of $name", async ({ send, attempts }) => {
+    const cache = new MockCache({
+      tls: true,
+      config: { predicates: [{ expr: "service == 'dynamodb'", vars: {} }] },
+      response: Reply.error("ORIGIN_ERROR", "origin unavailable"),
+    });
+    await cache.start();
+    const dynamodb = new DynamoDBClient({
+      region: "us-east-1",
+      endpoint: "http://127.0.0.1:1",
+      credentials: { accessKeyId: "AKIAEXAMPLE", secretAccessKey: "secret-example" },
+      maxAttempts: 2,
+    });
+    try {
+      await install({
+        client: dynamodb,
+        endpoint: cache.endpoint,
+        cacheName: "test-cache",
+        caCerts: CA_CERTS,
+      });
+
+      const failure = await send(dynamodb).catch((error: unknown) => error);
+
+      const rejection = originErrorCause(failure);
+      expect(rejection, String(failure)).toBeDefined();
+      expect(rejection?.message).toBe("aws.request failed: ORIGIN_ERROR origin unavailable");
+      expect(cache.requests).toHaveLength(attempts);
+    } finally {
+      dynamodb.destroy();
+      await cache.stop();
     }
   });
 });

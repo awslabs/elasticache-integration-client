@@ -209,6 +209,23 @@ therefore does not restart the wait. Requests that do not match
 the resolved predicates continue to origin even after a finite window expires.
 `ElastiCacheIntegrationsCacheUnavailable` is exported and marked retryable for the AWS SDK.
 
+## Errors
+
+The client's errors extend `ElastiCacheIntegrationsError` and set `name` to
+their class name. A failure may carry the error that caused it in `cause`, so
+to find out why a request failed, check the error and its `cause` chain.
+
+When the cache's request to the service fails, the cache replies
+`ORIGIN_ERROR`. To detect that, look for an error whose `name` is
+`"ElastiCacheIntegrationsRejectedError"` and whose `code` is `"ORIGIN_ERROR"`
+in the error or its `cause` chain. The client does not export
+`ElastiCacheIntegrationsRejectedError`, so compare `name` rather than use
+`instanceof`. The SDK receives the rejection itself and, for a cataloged
+operation on a healthy connection, may retry the request first.
+
+A rejection's message is `aws.request failed: <CODE> <message>`, the same in
+every client.
+
 ## Cache policy timeout
 
 ElastiCacheIntegrations automatically confirms the resolved cache policy in the

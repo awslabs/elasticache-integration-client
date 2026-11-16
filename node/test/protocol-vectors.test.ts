@@ -40,6 +40,7 @@ interface DecodeVector {
   config?: { version: unknown; refresh_interval: number; raw: Record<string, unknown> };
   error?: keyof typeof ERRORS;
   code?: string;
+  message?: string;
 }
 
 const VECTORS = JSON.parse(
@@ -113,6 +114,9 @@ function assertDecodes(vector: DecodeVector): void {
     if (vector.code) {
       expect((thrown as ElastiCacheIntegrationsRejectedError).code).toBe(vector.code);
     }
+    if (vector.message !== undefined) {
+      expect((thrown as Error).message).toBe(vector.message);
+    }
   } else if (vector.response) {
     const response = parseRequestResponse(reply);
     expect(response.statusCode).toBe(vector.response.status);
@@ -153,10 +157,11 @@ describe("shared protocol vectors", () => {
     }
     for (const vector of VECTORS.decode) {
       const outcome = Object.keys(vector)
-        .filter((key) => !["name", "command", "reply"].includes(key))
+        .filter((key) => !["name", "command", "reply", "message"].includes(key))
         .sort()
         .join(",");
       expect(["response", "config", "error", "code,error"]).toContain(outcome);
+      if (vector.message !== undefined) expect(vector.error).toBeDefined();
       if (vector.response) expect(keys(vector.response)).toBe("body,headers,status");
       if (vector.config) expect(keys(vector.config)).toBe("raw,refresh_interval,version");
     }
