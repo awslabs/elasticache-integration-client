@@ -374,6 +374,104 @@ describe("ElastiCacheIntegrationsSession", () => {
     }
   });
 
+  it("does not renew the fallback window on repeated auth errors", async () => {
+    // Every handshake succeeds but every request gets AUTH_ERROR. Each rejection drops the
+    // connection and the reconnect succeeds; the window must still run out.
+    const cache = new MockCache({
+      config: { predicates: [{ expr: "true", vars: {} }] },
+      response: Reply.error("AUTH_ERROR", "access denied"),
+    });
+    await cache.start();
+    const factory = () =>
+      new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+        tls: false,
+        connectionTimeout: 500,
+        requestTimeout: 500,
+        authProvider: async () => ["test-user", "test-token"] as [string, string],
+      });
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      {
+        connectionTimeoutMs: 100,
+        fallbackDurationMs: 1_000,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        jitter: 0,
+      },
+    );
+    try {
+      await session.open();
+      const deadline = performance.now() + 3_000;
+      let passedThrough = 0;
+      let unavailable = false;
+      while (performance.now() < deadline) {
+        try {
+          expect(await session.request(testRequest())).toBeUndefined();
+          passedThrough++;
+        } catch (error) {
+          expect(error).toBeInstanceOf(ElastiCacheIntegrationsCacheUnavailable);
+          unavailable = true;
+          break;
+        }
+      }
+      expect(passedThrough).toBeGreaterThan(0);
+      expect(unavailable, "AUTH_ERROR kept renewing the fallback window").toBe(true);
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
+  });
+
+  it("opens a new fallback window after a served request ends the auth outage", async () => {
+    let reject = true;
+    const cache = new MockCache({
+      config: { predicates: [{ expr: "true", vars: {} }] },
+      responseFn: () =>
+        reject ? Reply.error("AUTH_ERROR", "access denied") : Reply.ok(200, "", Buffer.alloc(0)),
+    });
+    await cache.start();
+    const factory = () =>
+      new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+        tls: false,
+        connectionTimeout: 500,
+        requestTimeout: 500,
+        authProvider: async () => ["test-user", "test-token"] as [string, string],
+      });
+    const session = new ElastiCacheIntegrationsSession(
+      factory,
+      {},
+      {
+        connectionTimeoutMs: 100,
+        fallbackDurationMs: 1_000,
+        baseDelayMs: 1,
+        maxDelayMs: 2,
+        jitter: 0,
+      },
+    );
+    const internals = session as unknown as { fallbackDeadline: number };
+    try {
+      await session.open();
+      await expect(session.request(testRequest())).resolves.toBeUndefined();
+      const first = internals.fallbackDeadline;
+      await vi.waitFor(() => expect(session.isConnectionHealthy).toBe(true));
+      await expect(session.request(testRequest())).resolves.toBeUndefined();
+      // A repeated AUTH_ERROR keeps the first window.
+      expect(internals.fallbackDeadline).toBe(first);
+
+      await vi.waitFor(() => expect(session.isConnectionHealthy).toBe(true));
+      reject = false;
+      await expect(session.request(testRequest())).resolves.toBeDefined();
+      reject = true;
+      await expect(session.request(testRequest())).resolves.toBeUndefined();
+      // A served request ended the outage, so this AUTH_ERROR opened a new window.
+      expect(internals.fallbackDeadline).toBeGreaterThan(first);
+    } finally {
+      await session.close();
+      await cache.stop();
+    }
+  });
+
   it("declines unmatched requests without a cache round trip", async () => {
     const connector = fakeConnector({
       execute: vi.fn(async (command: string) =>

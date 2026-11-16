@@ -249,6 +249,10 @@ export class ElastiCacheIntegrationsSession {
   private readyDeadline = 0;
   /** When origin fallback ends during the current outage. */
   private fallbackDeadline = 0;
+  // True while the cache keeps answering requests with AUTH_ERROR. Reconnecting doesn't restart
+  // the outage's deadlines then, because the handshake succeeds but requests keep failing, so the
+  // fallback window has to run out. A request that gets any other reply sets it back to false.
+  private authOutage = false;
   /** Resolvers of requests waiting for a reconnect, woken on reconnect and on close. */
   private readonly connectorWaiters = new Set<() => void>();
   private readonly disconnected = new WeakSet<ElastiCacheIntegrationsConnector>();
@@ -520,17 +524,21 @@ export class ElastiCacheIntegrationsSession {
 
     const [command, args] = serializeRequest(request);
     try {
-      return parseRequestResponse(
+      const response = parseRequestResponse(
         await raceAbort(currentConnector.execute(command, ...args), abortSignal),
       );
+      this.authOutage = false;
+      return response;
     } catch (error) {
       if (error instanceof ElastiCacheIntegrationsRejectedError && error.code === AUTH_ERROR) {
-        this.handleDisconnect(currentConnector);
+        this.handleDisconnect(currentConnector, true);
         if (!this.fallbackAllowed()) {
           throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
         }
         return undefined;
       }
+      // Any other reply means the connection is authenticated.
+      if (error instanceof ElastiCacheIntegrationsRejectedError) this.authOutage = false;
       throw error;
     }
   }
@@ -714,14 +722,25 @@ export class ElastiCacheIntegrationsSession {
     await connector.reauthenticate();
   }
 
-  private handleDisconnect(connector: ElastiCacheIntegrationsConnector): void {
+  /**
+   * Drop a serving connector and start reconnecting. `authRejected` marks a drop for an
+   * AUTH_ERROR reply: a second such drop before any request is served keeps the first drop's
+   * deadlines, so one AUTH_ERROR outage has one reconnect wait and one fallback window.
+   */
+  private handleDisconnect(
+    connector: ElastiCacheIntegrationsConnector,
+    authRejected = false,
+  ): void {
     this.disconnected.add(connector);
     if (this.state !== "open" || this.connector !== connector) return;
 
-    // Set both deadlines from one clock reading before clearing the connector, so a request
-    // that observes no connector always sees the current outage's deadlines.
-    this.readyDeadline = performance.now() + this.reconnectPolicy.connectionTimeoutMs;
-    this.fallbackDeadline = this.readyDeadline + this.reconnectPolicy.fallbackWindowMs;
+    if (!(authRejected && this.authOutage)) {
+      // Set both deadlines from one clock reading before clearing the connector, so a request
+      // that observes no connector always sees the current outage's deadlines.
+      this.readyDeadline = performance.now() + this.reconnectPolicy.connectionTimeoutMs;
+      this.fallbackDeadline = this.readyDeadline + this.reconnectPolicy.fallbackWindowMs;
+    }
+    this.authOutage = authRejected;
     const configRefresher = this.configRefresher;
     const reauthRefresher = this.reauthRefresher;
     this.configRefresher = undefined;
@@ -763,8 +782,11 @@ export class ElastiCacheIntegrationsSession {
         this.publishConnection(candidate, initialized);
         this.candidate = undefined;
         this.connection = "alive";
-        this.readyDeadline = 0;
-        this.fallbackDeadline = 0;
+        // An AUTH_ERROR outage keeps its deadlines across the reconnect.
+        if (!this.authOutage) {
+          this.readyDeadline = 0;
+          this.fallbackDeadline = 0;
+        }
         this.wakeWaiters();
         return;
       } catch {
