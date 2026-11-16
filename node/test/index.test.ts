@@ -43,20 +43,34 @@ describe("ElastiCacheIntegrations package entry point", () => {
     expect(stsOptions.clientConfiguration?.iamTokenRefreshDelay).toBe(120);
   });
 
+  it("exports every error class from errors.ts", async () => {
+    const entry = await import("../src/index.js");
+    const errors = await import("../src/errors.js");
+    for (const name of Object.keys(errors)) {
+      expect(entry).toHaveProperty(name, errors[name as keyof typeof errors]);
+    }
+  });
+
   it("does not export internal implementation APIs", async () => {
     const entry = await import("../src/index.js");
     expect(Object.keys(entry).sort()).toEqual([
+      "ElastiCacheIntegrationsAuthError",
       "ElastiCacheIntegrationsCacheUnavailable",
       "ElastiCacheIntegrationsConfigError",
+      "ElastiCacheIntegrationsConfigUnevaluable",
+      "ElastiCacheIntegrationsConnectionError",
+      "ElastiCacheIntegrationsConnectionLost",
       "ElastiCacheIntegrationsError",
+      "ElastiCacheIntegrationsOriginError",
+      "ElastiCacheIntegrationsOverridesRejected",
+      "ElastiCacheIntegrationsProtocolError",
+      "ElastiCacheIntegrationsRejectedError",
+      "ElastiCacheIntegrationsRequestNotSent",
+      "ElastiCacheIntegrationsTimeoutError",
       "install",
       "version",
     ]);
     for (const name of [
-      "ElastiCacheIntegrationsConnectionLost",
-      "ElastiCacheIntegrationsConnectionError",
-      "ElastiCacheIntegrationsProtocolError",
-      "ElastiCacheIntegrationsTimeoutError",
       "ElastiCacheIntegrationsConnector",
       "DEFAULT_USER_ID",
       "IamAuthTokenProvider",

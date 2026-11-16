@@ -209,7 +209,8 @@ successful reconnect. A request that arrives after the wait has ended does not
 wait again. With `fallbackDuration: 0`, an SDK retry in the same outage
 therefore does not restart the wait. Requests that do not match
 the resolved predicates continue to origin even after a finite window expires.
-`ElastiCacheIntegrationsCacheUnavailable` is exported and marked retryable for the AWS SDK.
+`ElastiCacheIntegrationsCacheUnavailable` is marked retryable for the AWS SDK. Every error class
+the client raises is exported from the package.
 
 ## Cache policy timeout
 
