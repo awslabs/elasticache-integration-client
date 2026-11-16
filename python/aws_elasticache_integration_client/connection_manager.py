@@ -148,17 +148,14 @@ class ConnectionManager:
         can pass through immediately and later requests cannot race back onto the stale connector.
 
         ``auth_rejected`` marks a drop for an ``AUTH_ERROR`` reply. A second such drop before any
-        request is served keeps the first drop's fallback deadline.
+        request is served keeps the first drop's deadlines, so one AUTH_ERROR outage has one
+        reconnect wait and one fallback window.
         """
         with self._state_lock:
             if self._state is ConnectionState.CLOSED:
                 return
             if self._connector is connector:
-                if auth_rejected and self._auth_outage:
-                    self._ready_deadline = (
-                        time.monotonic() + self._policy.connection_timeout_ms / 1000
-                    )
-                else:
+                if not (auth_rejected and self._auth_outage):
                     self._start_outage_deadlines()
                 self._auth_outage = auth_rejected
                 self._connected.clear()
