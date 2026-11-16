@@ -64,7 +64,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
         if (failure instanceof ElastiCacheIntegrationsRejectedError
                 && ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode())) {
             return new ElastiCacheIntegrationsOriginError(
-                    "Cache could not complete the origin request", failure);
+                    "ElastiCacheIntegrations could not complete the origin request", failure);
         }
         return null;
     }
