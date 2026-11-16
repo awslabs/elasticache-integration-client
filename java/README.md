@@ -235,7 +235,7 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 ## Reconnection and fallback
 
-**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with a fresh [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off and continue until one succeeds or the client is closed.
+**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off and continue until one succeeds or the client is closed.
 
 **Requests during an outage.** A request the cache would serve first waits for the connection to come back, up to [`connectionTimeoutMs`](#configuration). This wait is per outage, not per request: a request that arrives later in the same outage waits only for what is left of it. If the connection comes back in time, the request is served from the cache.
 
@@ -255,7 +255,7 @@ The client signs in to the cache with an IAM authentication token, using the reg
 
 That identity needs the `elasticache:Connect` permission on the cache and on the ElastiCache user ([`userId`](#configuration), `default.iam-user` by default).
 
-Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and authenticates each live connection again with it. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH`, or its reply cannot be read, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelaySeconds`](#configuration) to change when the replacement is signed.
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires. About every 15 minutes, it also authenticates each live connection again with the current token. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelaySeconds`](#configuration) to change when the replacement is signed.
 
 Token signing and refresh come from the [ElastiCache developer toolkit](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache).
 
