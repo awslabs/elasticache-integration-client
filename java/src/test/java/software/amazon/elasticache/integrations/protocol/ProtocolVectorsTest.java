@@ -115,6 +115,8 @@ class ProtocolVectorsTest {
         for (JsonNode vector : vectors.get("decode")) {
             Set<String> outcome = keys(vector);
             outcome.removeAll(keys("command", "name", "reply"));
+            assertTrue(!outcome.contains("message") || outcome.contains("error"), vector.toString());
+            outcome.remove("message");
             assertTrue(
                     outcome.equals(keys("response"))
                             || outcome.equals(keys("config"))
@@ -208,6 +210,9 @@ class ProtocolVectorsTest {
             if (vector.has("code")) {
                 assertEquals(
                         vector.get("code").asText(), ((ElastiCacheIntegrationsRejectedError) error).getCode());
+            }
+            if (vector.has("message")) {
+                assertEquals(vector.get("message").asText(), error.getMessage());
             }
         } else if (vector.has("response")) {
             JsonNode expected = vector.get("response");

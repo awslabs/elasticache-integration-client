@@ -260,6 +260,7 @@ class ElastiCacheIntegrationsProtocolTest {
                         () -> ElastiCacheIntegrationsProtocol.parseConfigResponse(error));
         assertFalse(thrown instanceof ElastiCacheIntegrationsProtocolError);
         assertFalse(thrown instanceof ElastiCacheIntegrationsOverridesRejected);
+        assertEquals("aws.config failed: ERR something failed", thrown.getMessage());
     }
 
     @Test
@@ -329,6 +330,27 @@ class ElastiCacheIntegrationsProtocolTest {
                         ElastiCacheIntegrationsRejectedError.class,
                         () -> ElastiCacheIntegrationsProtocol.parseRequestResponse(error));
         assertEquals("CACHE", failure.getCode());
+    }
+
+    @Test
+    void parseRequestResponse_errorFrameMessage() {
+        RespError error = new RespError("UNSUPPORTED", "unsupported operation: Foo");
+        ElastiCacheIntegrationsRejectedError failure =
+                assertThrows(
+                        ElastiCacheIntegrationsRejectedError.class,
+                        () -> ElastiCacheIntegrationsProtocol.parseRequestResponse(error));
+        assertEquals(
+                "aws.request failed: UNSUPPORTED unsupported operation: Foo", failure.getMessage());
+    }
+
+    @Test
+    void parseRequestResponse_codeOnlyErrorFrameMessage() {
+        RespError error = new RespError("UNSUPPORTED", "");
+        ElastiCacheIntegrationsRejectedError failure =
+                assertThrows(
+                        ElastiCacheIntegrationsRejectedError.class,
+                        () -> ElastiCacheIntegrationsProtocol.parseRequestResponse(error));
+        assertEquals("aws.request failed: UNSUPPORTED", failure.getMessage());
     }
 
     // === deserializeResponse tests ===

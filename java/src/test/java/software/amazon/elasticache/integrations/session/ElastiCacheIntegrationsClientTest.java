@@ -40,6 +40,7 @@ import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.core.retry.RetryMode;
 import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.http.AbortableInputStream;
 import software.amazon.awssdk.http.ExecutableHttpRequest;
@@ -53,11 +54,13 @@ import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
@@ -68,6 +71,9 @@ import software.amazon.elasticache.integrations.resp.RespError;
 import software.amazon.elasticache.integrations.resp.RespSimpleString;
 
 class ElastiCacheIntegrationsClientTest {
+
+    private static final Map<String, AttributeValue> ITEM_KEY =
+            Collections.singletonMap("id", AttributeValue.builder().s("1").build());
 
     private static final String OWN_ACCESS_KEY = "AKIDOWNCREDENTIAL01";
     private static final String DEFAULT_CHAIN_ACCESS_KEY = "AKIDDEFAULTCHAIN01";
@@ -428,6 +434,62 @@ class ElastiCacheIntegrationsClientTest {
         }
 
         assertNull(origin.request.get(), "the timed-out request must not bypass the fallback gate");
+    }
+
+    @Test
+    void originErrorIsInTheCauseChainOfARetriedRead() {
+        cache.setReply(Reply.error("ORIGIN_ERROR", "origin unavailable"));
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .install(
+                                appBuilder()
+                                        .overrideConfiguration(
+                                                o ->
+                                                        o.retryPolicy(
+                                                                RetryPolicy.builder(RetryMode.STANDARD).numRetries(1).build())))) {
+            RuntimeException failure =
+                    assertThrows(
+                            RuntimeException.class,
+                            () -> client.getItem(r -> r.tableName("my-table").key(ITEM_KEY)));
+
+            assertOriginError(failure);
+        }
+        assertEquals(2, cache.getRequests().size());
+    }
+
+    @Test
+    void originErrorIsInTheCauseChainOfAWrite() {
+        cache.setReply(Reply.error("ORIGIN_ERROR", "origin unavailable"));
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .install(
+                                appBuilder()
+                                        .overrideConfiguration(
+                                                o ->
+                                                        o.retryPolicy(
+                                                                RetryPolicy.builder(RetryMode.STANDARD).numRetries(1).build())))) {
+            RuntimeException failure =
+                    assertThrows(
+                            RuntimeException.class,
+                            () -> client.putItem(r -> r.tableName("my-table").item(ITEM_KEY)));
+
+            assertOriginError(failure);
+        }
+        assertEquals(1, cache.getRequests().size());
+    }
+
+    /** Finds the ORIGIN_ERROR rejection the way the README tells applications to. */
+    static void assertOriginError(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ElastiCacheIntegrationsRejectedError
+                    && "ORIGIN_ERROR".equals(((ElastiCacheIntegrationsRejectedError) cause).getCode())) {
+                assertEquals("aws.request failed: ORIGIN_ERROR origin unavailable", cause.getMessage());
+                return;
+            }
+        }
+        throw new AssertionError("no ORIGIN_ERROR rejection in the cause chain", failure);
     }
 
     @Test

@@ -249,6 +249,10 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 The client's exceptions all extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
 
+When the cache's request to DynamoDB fails, the cache replies `ORIGIN_ERROR`. To detect that, look for an `ElastiCacheIntegrationsRejectedError` whose `getCode()` is `"ORIGIN_ERROR"` in the exception or its cause chain. For a read that is safe to repeat, such as `GetItem`, on a healthy connection, the SDK may retry the request, so the rejection arrives in an `SdkClientException`. Otherwise it is thrown as the client's exception itself, or in a `CompletionException` on an asynchronous client.
+
+A rejection's message is `aws.request failed: <CODE> <message>`, the same in every client.
+
 ## Authentication
 
 The client signs in to the cache with an IAM authentication token, using the region and credentials of the DynamoDB client you pass to `install`. See the [Configuration example](#example) for a client with its own credentials provider. The cache is accessed as the same identity as your DynamoDB requests, and credential rotation (SSO, assumed roles, container and instance credentials) keeps working.

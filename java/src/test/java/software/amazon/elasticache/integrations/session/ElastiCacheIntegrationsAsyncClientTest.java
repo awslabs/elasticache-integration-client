@@ -39,6 +39,7 @@ import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.core.interceptor.Context;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.awssdk.core.interceptor.ExecutionInterceptor;
+import software.amazon.awssdk.core.retry.RetryMode;
 import software.amazon.awssdk.core.retry.RetryPolicy;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpRequest;
@@ -47,6 +48,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.awssdk.utils.AttributeMap;
@@ -68,6 +70,9 @@ import software.amazon.elasticache.integrations.resp.RespSimpleString;
 import software.amazon.elasticache.integrations.resp.RespValue;
 
 class ElastiCacheIntegrationsAsyncClientTest {
+
+    private static final Map<String, AttributeValue> ITEM_KEY =
+            Collections.singletonMap("id", AttributeValue.builder().s("1").build());
 
     @TempDir Path tempDir;
 
@@ -323,6 +328,48 @@ class ElastiCacheIntegrationsAsyncClientTest {
             assertEquals(2, cache.getRequests().size());
             assertNull(origin.request.get(), "the origin must not receive either attempt");
         }
+    }
+
+    @Test
+    void asyncOriginErrorIsInTheCauseChainOfARetriedRead() throws Exception {
+        cache.setReply(Reply.error("ORIGIN_ERROR", "origin unavailable"));
+
+        try (DynamoDbAsyncClient client = newClient(ElastiCacheIntegrationsAsyncClientTest::oneRetry)) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    client
+                                            .getItem(r -> r.tableName("my-table").key(ITEM_KEY))
+                                            .get(5, TimeUnit.SECONDS));
+
+            ElastiCacheIntegrationsClientTest.assertOriginError(failure);
+        }
+        assertEquals(2, cache.getRequests().size());
+    }
+
+    @Test
+    void asyncOriginErrorIsInTheCauseChainOfAWrite() throws Exception {
+        cache.setReply(Reply.error("ORIGIN_ERROR", "origin unavailable"));
+
+        try (DynamoDbAsyncClient client = newClient(ElastiCacheIntegrationsAsyncClientTest::oneRetry)) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    client
+                                            .putItem(r -> r.tableName("my-table").item(ITEM_KEY))
+                                            .get(5, TimeUnit.SECONDS));
+
+            ElastiCacheIntegrationsClientTest.assertOriginError(failure);
+        }
+        assertEquals(1, cache.getRequests().size());
+    }
+
+    private static void oneRetry(DynamoDbAsyncClientBuilder builder) {
+        sdkConfig(builder);
+        builder.overrideConfiguration(
+                o -> o.retryPolicy(RetryPolicy.builder(RetryMode.STANDARD).numRetries(1).build()));
     }
 
     @Test

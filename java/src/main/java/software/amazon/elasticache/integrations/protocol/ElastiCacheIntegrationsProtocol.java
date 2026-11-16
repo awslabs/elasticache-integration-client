@@ -214,8 +214,7 @@ public final class ElastiCacheIntegrationsProtocol {
                 throw new ElastiCacheIntegrationsOverridesRejected(
                         "aws.config rejected: " + error.getCode() + " " + error.getMessage());
             }
-            throw new ElastiCacheIntegrationsError(
-                    "Server error: " + error.getCode() + " " + error.getMessage());
+            throw new ElastiCacheIntegrationsError("aws.config failed: " + errorText(error));
         }
         if (value instanceof RespArray) {
             throw new ElastiCacheIntegrationsProtocolError("Unexpected array response for config");
@@ -319,7 +318,7 @@ public final class ElastiCacheIntegrationsProtocol {
         if (value instanceof RespError) {
             RespError error = (RespError) value;
             throw new ElastiCacheIntegrationsRejectedError(
-                    error.getCode(), "Server error: " + error.getCode() + " " + error.getMessage());
+                    error.getCode(), "aws.request failed: " + errorText(error));
         }
         if (!(value instanceof RespArray)) {
             throw new ElastiCacheIntegrationsProtocolError(
@@ -376,6 +375,11 @@ public final class ElastiCacheIntegrationsProtocol {
         byte[] body = ((RespBulkString) bodyValue).getValue();
 
         return new ElastiCacheIntegrationsResponse((int) statusCode, headers, body);
+    }
+
+    /** The error line as {@code <CODE> <message>}, trimmed. */
+    private static String errorText(RespError error) {
+        return (error.getCode() + " " + error.getMessage()).trim();
     }
 
     private static Map<String, String> parseResponseHeaders(byte[] headerBytes) {
