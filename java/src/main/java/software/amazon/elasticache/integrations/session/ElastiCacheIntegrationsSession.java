@@ -709,7 +709,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                     beginReconnect(active);
                     if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
                         throw new ElastiCacheIntegrationsCacheUnavailableFailure(
-                                "Cache rejected the request with AUTH_ERROR and origin fallback is disabled");
+                                "ElastiCacheIntegrations could not serve the request from the cache, and origin"
+                                        + " fallback is not allowed: the cache replied AUTH_ERROR");
                     }
                     return null;
                 }
@@ -722,8 +723,9 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         && reconnectPolicy.getFallbackDurationSeconds() == 0) {
                     ElastiCacheIntegrationsCacheUnavailableFailure unavailable =
                             new ElastiCacheIntegrationsCacheUnavailableFailure(
-                                    "Cache had no connection capacity for the request and origin fallback is"
-                                            + " disabled");
+                                    "ElastiCacheIntegrations could not serve the request from the cache, and origin"
+                                            + " fallback is not allowed: the cache connection had no free capacity in"
+                                            + " time");
                     unavailable.initCause(failure);
                     throw unavailable;
                 }
@@ -1032,8 +1034,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                             return false;
                         }
                         throw new ElastiCacheIntegrationsCacheUnavailableFailure(
-                                "ElastiCacheIntegrations has no cache connection and origin fallback is no longer"
-                                        + " allowed");
+                                "ElastiCacheIntegrations could not serve the request from the cache, and origin"
+                                        + " fallback is not allowed: there is no cache connection");
                     }
                     try {
                         stateLock.wait(nanosToMillisCeil(remainingNanos));

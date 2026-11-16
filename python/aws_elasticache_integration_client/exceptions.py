@@ -65,13 +65,13 @@ class ElastiCacheIntegrationsAuthError(ElastiCacheIntegrationsError):
 
 
 class ElastiCacheIntegrationsCacheUnavailable(ConnectionClosedError):
-    """ElastiCacheIntegrations has no connection to the cache and the fallback window has closed."""
+    """ElastiCacheIntegrations could not serve a request from the cache and origin fallback is not allowed."""
 
-    #: ``endpoint_url`` is the request's own destination — the origin service — which is what every
-    #: botocore transport error carries and what identifies the call that was refused.
+    #: ``endpoint_url`` is kept in ``kwargs``, as on every botocore transport error, but is not in
+    #: the message.
     fmt = (
-        'ElastiCacheIntegrations has no connection to the cache, so this request to "{endpoint_url}" could not be '
-        "served from it."
+        "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is "
+        "not allowed."
     )
 
 

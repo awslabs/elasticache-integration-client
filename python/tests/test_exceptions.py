@@ -55,14 +55,15 @@ def test_cache_unavailable_is_a_botocore_error_not_a_elasticache_integrations_er
     assert not issubclass(ElastiCacheIntegrationsCacheUnavailable, ElastiCacheIntegrationsError)
 
 
-def test_cache_unavailable_message_says_the_cache_is_unavailable():
+def test_cache_unavailable_message_says_the_request_was_not_served():
     message = str(
         ElastiCacheIntegrationsCacheUnavailable(
             endpoint_url="https://dynamodb.us-east-1.amazonaws.com/"
         )
     )
-    assert "no connection to the cache" in message
-    assert "dynamodb.us-east-1.amazonaws.com" in message
+    assert message == (
+        "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed."
+    )
 
 
 def test_origin_error_is_retryable_without_claiming_the_sdk_connection_closed():

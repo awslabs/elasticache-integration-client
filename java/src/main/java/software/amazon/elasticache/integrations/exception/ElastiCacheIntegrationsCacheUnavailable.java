@@ -3,11 +3,12 @@ package software.amazon.elasticache.integrations.exception;
 import java.io.IOException;
 
 /**
- * ElastiCacheIntegrations has no connection to the cache and the fallback window has closed.
+ * ElastiCacheIntegrations could not serve a request from the cache and origin fallback is not
+ * allowed.
  *
  * <p>This is an {@link IOException}, not an {@link ElastiCacheIntegrationsError}, so the SDK
- * retries it as your retry settings allow. If the cache is still unreachable after every retry, it
- * reaches you as the cause of the SDK's exception.
+ * retries it as your retry settings allow. If every retry fails, it reaches you as the cause of the
+ * SDK's exception.
  */
 public final class ElastiCacheIntegrationsCacheUnavailable extends IOException {
     /**

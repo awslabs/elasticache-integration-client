@@ -71,7 +71,9 @@ describe("ElastiCacheIntegrations errors", () => {
     expect(error).not.toBeInstanceOf(ElastiCacheIntegrationsError);
     expect(error.endpointUrl).toBe("https://origin.example:8443");
     expect(error.$retryable).toEqual({});
-    expect(error.message).toContain("https://origin.example:8443");
+    expect(error.message).toBe(
+      "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed.",
+    );
   });
 
   it("preserves the RESP error code on a rejection", () => {
