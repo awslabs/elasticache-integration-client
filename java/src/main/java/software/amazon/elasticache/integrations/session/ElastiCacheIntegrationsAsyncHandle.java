@@ -252,7 +252,7 @@ final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
          * apply connection-wide, or per table under {@code table_overrides}. The settings are sent
          * through the internal {@code aws.config} command.
          *
-         * <p>The map is sent as given. A field name the proxy does not recognise is ignored, so a typo
+         * <p>The map is sent as given. A field name the cache does not recognise is ignored, so a typo
          * or a stale key is dropped without an error.
          *
          * @param overrides the cache policy overrides

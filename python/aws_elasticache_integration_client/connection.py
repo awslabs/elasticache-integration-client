@@ -598,7 +598,7 @@ class ElastiCacheIntegrationsConnector:
         """Re-authenticate the live connection with a fresh token, using a plain ``AUTH``.
 
         Raises:
-            ElastiCacheIntegrationsAuthError: AUTH command returned error from proxy (rejected) or unexpected reply
+            ElastiCacheIntegrationsAuthError: AUTH command returned error from the cache (rejected) or unexpected reply
             ElastiCacheIntegrationsConnectionError: If AUTH times out — the connection is closed for FIFO safety.
             ElastiCacheIntegrationsError: If the provider fails to generate a token.
         """

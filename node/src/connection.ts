@@ -575,7 +575,7 @@ export class ElastiCacheIntegrationsConnector {
   /**
    * Re-authenticate the ready connection with fresh credentials.
    *
-   * An explicit rejection leaves the connection open so the proxy can keep
+   * An explicit rejection leaves the connection open so the cache can keep
    * serving with its last valid authentication state. A timeout or unexpected
    * reply closes the connection for FIFO safety.
    */

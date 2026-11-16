@@ -428,7 +428,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     /**
      * Re-authenticate an already-ready connection with a fresh token.
      *
-     * <p>An explicit RESP error rejects the new token but leaves the connection open so the proxy can
+     * <p>An explicit RESP error rejects the new token but leaves the connection open so the cache can
      * continue serving with the last valid authentication state. A timeout or any unexpected
      * non-error reply invalidates the FIFO stream and closes the connection.
      *

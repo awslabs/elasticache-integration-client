@@ -1,7 +1,7 @@
 """Tests for aws_elasticache_integration_client.predicates — CEL evaluation of resolved-config predicates.
 
-Requires ``cel-python`` (a runtime dependency). The expressions used here are the ones the proxy
-actually emits, so these tests double as a cross-check that the client evaluates the proxy's wire
+Requires ``cel-python`` (a runtime dependency). The expressions used here are the ones the cache
+actually emits, so these tests double as a cross-check that the client evaluates the cache's wire
 format correctly.
 """
 
@@ -40,7 +40,7 @@ def _get_item(table="Users"):
 # --- compilation --------------------------------------------------------------
 
 
-def test_compiles_the_all_reads_config_the_proxy_emits():
+def test_compiles_the_all_reads_config_the_cache_emits():
     predicates = compile_predicates(DEFAULT_RESOLVED_CONFIG)
     assert len(predicates) == 1
 

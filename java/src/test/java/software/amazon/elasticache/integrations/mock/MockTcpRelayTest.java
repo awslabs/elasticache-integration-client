@@ -8,20 +8,20 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import org.junit.jupiter.api.Test;
 
-class MockTcpProxyTest {
+class MockTcpRelayTest {
 
     @Test
     void anotherLoopbackListenerCannotShareItsPort() throws Exception {
         // Tests connect to "localhost". If another process could listen on 127.0.0.1 with the
-        // same port, the client would reach that process instead of this proxy (issue #97).
-        MockTcpProxy proxy = new MockTcpProxy("localhost", 1);
+        // same port, the client would reach that process instead of this relay (issue #97).
+        MockTcpRelay relay = new MockTcpRelay("localhost", 1);
         try (ServerSocket other = new ServerSocket()) {
             other.setReuseAddress(true);
             InetSocketAddress samePort =
-                    new InetSocketAddress(InetAddress.getLoopbackAddress(), proxy.getPort());
+                    new InetSocketAddress(InetAddress.getLoopbackAddress(), relay.getPort());
             assertThrows(BindException.class, () -> other.bind(samePort));
         } finally {
-            proxy.close();
+            relay.close();
         }
     }
 }

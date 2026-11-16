@@ -54,7 +54,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
-import software.amazon.elasticache.integrations.mock.MockTcpProxy;
+import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
 import software.amazon.elasticache.integrations.mock.ReceivedRequest;
 import software.amazon.elasticache.integrations.mock.Reply;
@@ -257,7 +257,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
     }
 
     @Test
-    void asyncClientUsesRecoveredConnectionThroughProxy() throws Exception {
+    void asyncClientUsesRecoveredConnectionThroughRelay() throws Exception {
         cache.setReply(
                 Reply.ok(
                         200,
@@ -265,21 +265,21 @@ class ElastiCacheIntegrationsAsyncClientTest {
                         "{\"TableNames\":[\"reconnected\"]}"));
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
 
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort());
                 DynamoDbAsyncClient client =
                         installAsync(
                                 cacheBuilder()
-                                        .endpoint("localhost:" + proxy.getPort())
+                                        .endpoint("localhost:" + relay.getPort())
                                         .originAsyncHttpClient(origin),
                                 ElastiCacheIntegrationsAsyncClientTest::sdkConfig)) {
-            proxy.disconnectClients();
+            relay.disconnectClients();
 
             awaitRecovered(handle.get().getSession());
             assertEquals(
                     Collections.singletonList("reconnected"),
                     client.listTables().get(5, TimeUnit.SECONDS).tableNames());
             assertEquals(2, cache.getAuthAttempts().size());
-            assertEquals(2, proxy.getAcceptedConnections());
+            assertEquals(2, relay.getAcceptedConnections());
         }
     }
 
@@ -300,11 +300,11 @@ class ElastiCacheIntegrationsAsyncClientTest {
                 });
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
 
-        try (MockTcpProxy proxy = new MockTcpProxy("localhost", server.getPort());
+        try (MockTcpRelay relay = new MockTcpRelay("localhost", server.getPort());
                 DynamoDbAsyncClient client =
                         installAsync(
                                 cacheBuilder()
-                                        .endpoint("localhost:" + proxy.getPort())
+                                        .endpoint("localhost:" + relay.getPort())
                                         .originAsyncHttpClient(origin)
                                         .clientConfiguration(
                                                 ElastiCacheIntegrationsClientConfiguration.builder()
@@ -315,7 +315,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
             CompletableFuture<ListTablesResponse> inFlight = client.listTables();
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
 
-            proxy.disconnectClients();
+            relay.disconnectClients();
 
             assertEquals(
                     Collections.singletonList("retried-through-cache"),
@@ -327,7 +327,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
 
     @Test
     void asyncAuthErrorWithZeroFallbackFailsThroughInstalledClientAndSkipsOrigin() throws Exception {
-        cache.setReply(Reply.error("AUTH_ERROR", "access denied"));
+        cache.setReply(Reply.error("AUTH_ERROR", "missing credentials"));
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin();
 
         try (DynamoDbAsyncClient client =

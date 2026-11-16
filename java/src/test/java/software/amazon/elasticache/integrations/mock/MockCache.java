@@ -292,7 +292,7 @@ public class MockCache {
     }
 
     private RespValue handleRequest(List<RespValue> command) {
-        // Expects: aws.request method url headers body metadata [TTL value] [NTTL value]
+        // Expects: aws.request method url headers body metadata
         // Minimum 6 args (command + 5 mandatory)
         if (command.size() < 6) {
             return new RespError(
@@ -310,23 +310,7 @@ public class MockCache {
         byte[] body = extractBytes(command.get(4));
         String metadata = extractString(command.get(5));
 
-        // Parse optional keyword args (TTL, NTTL)
-        String ttl = null;
-        String nttl = null;
-        int i = 6;
-        while (i < command.size() - 1) {
-            String keyword = extractString(command.get(i)).toUpperCase(Locale.ROOT);
-            String value = extractString(command.get(i + 1));
-            if ("TTL".equals(keyword)) {
-                ttl = value;
-            } else if ("NTTL".equals(keyword)) {
-                nttl = value;
-            }
-            i += 2;
-        }
-
-        ReceivedRequest req =
-                new ReceivedRequest(method, url, headers, body, metadata, ttl, nttl, rawArgs);
+        ReceivedRequest req = new ReceivedRequest(method, url, headers, body, metadata, rawArgs);
         requests.add(req);
 
         // Use reply function if set, otherwise use static reply

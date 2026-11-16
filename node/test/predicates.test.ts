@@ -70,7 +70,7 @@ function tableAllowlistEvaluator(...allowed: string[]): PredicateEvaluator {
 }
 
 describe("PredicateEvaluator", () => {
-  it("routes the default proxy operations", () => {
+  it("routes the default cache operations", () => {
     const predicates = defaultEvaluator();
 
     for (const operation of allOperations) {
@@ -142,7 +142,7 @@ describe("PredicateEvaluator", () => {
   });
 
   // One bad entry taints the whole config: caching by the entries that did compile would route a
-  // different set of requests than the proxy resolved.
+  // different set of requests than the cache resolved.
   it.each([
     ["a non-object entry", "not-an-object"],
     ["an entry without a string expr", { vars: {} }],
