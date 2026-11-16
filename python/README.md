@@ -227,13 +227,14 @@ the same outage do not restart that wait.
 When there is no live cache connection, the request has not been sent and can safely pass through
 for any operation, including routed writes, while the fallback window remains open.
 A write sent to origin during an outage can leave a stale cache entry until its TTL expires.
-After a request is sent, a lost connection becomes a botocore-retryable error for every operation,
-the same as a dropped connection to the service, so the client's retry configuration decides
-whether to retry. Like a retry without the cache, a retried write may be applied twice if the
-first attempt reached the service. The retry goes through the cache again and may fall back to
-origin. A timeout or connection error becomes botocore-retryable only for an operation in the
-shared replay-safe catalog. While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error
-only for a cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
+After a request is sent, it can fail the same way a call to the service can: the connection is
+lost, the reply times out, or the cache could not reach the service (`ORIGIN_ERROR` on a healthy
+connection). These become the botocore errors the SDK raises for such failures, so the client's
+retry settings decide whether to retry. A retry goes through the cache again and may fall back to
+origin. Like a retry without the cache, a retried write may be applied twice if the first attempt
+reached the service. A lost connection becomes a botocore error for every operation. A timeout, a
+connection error and an `ORIGIN_ERROR` become botocore errors only for an operation in the shared
+replay-safe catalog. `AUTH_ERROR` closes the stale connection and passes the rejected
 request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the
 rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP
 errors, and timeouts or connection errors for non-idempotent operations, propagate without origin

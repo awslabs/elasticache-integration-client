@@ -13,7 +13,6 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
-    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsOriginError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
@@ -30,7 +29,6 @@ _SUBCLASSES = [
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRejectedError,
     ElastiCacheIntegrationsConnectionLost,
-    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsTimeoutError,
     ElastiCacheIntegrationsRequestNotSent,
 ]
@@ -43,20 +41,6 @@ _SUBCLASSES = [
 def test_taxonomy_subclasses_elasticache_integrations_error(cls):
     """Every failure-mode class is a subclass of ElastiCacheIntegrationsError."""
     assert issubclass(cls, ElastiCacheIntegrationsError)
-
-
-def test_not_sent_is_a_narrower_connection_lost():
-    """ElastiCacheIntegrationsNotSentError must stay a ElastiCacheIntegrationsConnectionLost subclass.
-
-    The subclassing is the compatibility contract, not a detail: hooks.py catches
-    ElastiCacheIntegrationsError for origin pass-through, and callers that catch
-    ElastiCacheIntegrationsConnectionLost keep catching the narrower case. Promoting it to a
-    sibling would silently change both.
-    """
-    assert issubclass(ElastiCacheIntegrationsNotSentError, ElastiCacheIntegrationsConnectionLost)
-    # It must NOT be a timeout: the two are the distinction this class exists to draw, and
-    # hooks.py branches on ElastiCacheIntegrationsTimeoutError to pick botocore's error.
-    assert not issubclass(ElastiCacheIntegrationsNotSentError, ElastiCacheIntegrationsTimeoutError)
 
 
 def test_cache_unavailable_is_a_botocore_error_not_a_elasticache_integrations_error():

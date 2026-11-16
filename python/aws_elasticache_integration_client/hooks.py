@@ -194,12 +194,16 @@ class ElastiCacheIntegrationsHandle:
         request down the pipeline. A request with a streaming body is declined here, before it
         reaches the session, because serializing it would consume the stream. The session declines
         before sending when no predicate matched or no cache connection is available within the
-        fallback window, which is safe for every operation. After sending, a lost connection
-        becomes SDK-retryable for every operation, as a dropped connection to the service is, so
-        the SDK's retry configuration decides and the retry goes through the cache again. A
-        timeout or connection error becomes SDK-retryable only for a replay-safe operation. A
-        healthy-connection ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation;
-        other RESP errors remain terminal. Non-ElastiCacheIntegrations exceptions propagate.
+        fallback window, which is safe for every operation.
+
+        After sending, the request can fail the same way a call to the service can: the connection
+        is lost, the reply times out, or the cache could not reach the service (ORIGIN_ERROR on a
+        healthy connection). These become the botocore errors the SDK raises for such failures, so
+        the SDK's retry settings decide whether to retry. A retry goes through the cache again. A
+        lost connection becomes a botocore error for every operation. A timeout, a connection
+        error and an ORIGIN_ERROR become botocore errors only for an operation in the
+        idempotent-operations list, and are raised as is otherwise. Other RESP errors, and
+        exceptions that are not ElastiCacheIntegrations errors, are raised as is.
         """
         try:
             http_request = _aws_to_cache_request(request, kwargs.get("event_name", ""))

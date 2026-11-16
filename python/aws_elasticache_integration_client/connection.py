@@ -32,7 +32,6 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
-    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
@@ -755,7 +754,7 @@ class ElastiCacheIntegrationsConnector:
                 # The liveness guard runs before the transport is touched, so this command
                 # provably never left the client.
                 reply_future.set_exception(
-                    ElastiCacheIntegrationsNotSentError("connection is closed")
+                    ElastiCacheIntegrationsConnectionLost("connection is closed")
                 )
                 return
             # Claimed before the write and never after: asyncio's transport attempts a
@@ -785,14 +784,14 @@ class ElastiCacheIntegrationsConnector:
         no send-side timeout: a send only copies bytes into the transport buffer, so it
         cannot hang. A truly stuck connection is caught by the reply timeout.
 
-        Raises :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsNotSentError`
-        — a narrower ``ElastiCacheIntegrationsConnectionLost`` — when the command provably never
-        reached the transport, and :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsTimeoutError`
+        Raises :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsConnectionLost`
+        when the command never reached the transport, and
+        :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsTimeoutError`
         when it may have been sent and gone unanswered.
         """
         if not self._io_loop_thread.loop:
             if self._closed:
-                raise ElastiCacheIntegrationsNotSentError("connection is closed")
+                raise ElastiCacheIntegrationsConnectionLost("connection is closed")
             # Not a connection failure but a usage bug: calling execute() before connect().
             # It stays outside the ConnectionLost tree so hooks.py cannot mistake a
             # programming error for a retryable transport failure.
@@ -826,7 +825,7 @@ class ElastiCacheIntegrationsConnector:
             # The loop was closed by a concurrent close() before the send could be scheduled,
             # so the frame was never handed to the transport.
             self._admission.release()
-            raise ElastiCacheIntegrationsNotSentError("connection closed") from exc
+            raise ElastiCacheIntegrationsConnectionLost("connection closed") from exc
         reply_future.add_done_callback(lambda _future: self._admission.release())
         remaining = max(minimum_response_budget, deadline - time.monotonic())
         try:
@@ -847,7 +846,7 @@ class ElastiCacheIntegrationsConnector:
             # the transport from here on and the flag's value is final. Clear means a starved
             # or stopped loop ran out the clock -- a client-side fault, not a slow cache.
             if not reached_socket.is_set():
-                raise ElastiCacheIntegrationsNotSentError(
+                raise ElastiCacheIntegrationsConnectionLost(
                     f"command never reached the socket (gave up after {timeout_ms}ms)"
                 ) from exc
             raise ElastiCacheIntegrationsTimeoutError(

@@ -32,7 +32,6 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
-    ElastiCacheIntegrationsNotSentError,
     ElastiCacheIntegrationsProtocolError,
     ElastiCacheIntegrationsRequestNotSent,
     ElastiCacheIntegrationsTimeoutError,
@@ -697,16 +696,13 @@ class TestElastiCacheIntegrationsConnector:
         the wedge, the caller's reply timeout still fires. (There is no send-side timeout
         by design — a send only copies bytes into the transport buffer.)
 
-        The send never ran, so this reports ElastiCacheIntegrationsNotSentError rather than a
-        timeout: a wedged loop is a client-side fault and must be alarmable apart from a slow
-        cache. It stays a ElastiCacheIntegrationsConnectionLost, so existing callers are
-        unaffected.
+        The send never ran, so this reports ElastiCacheIntegrationsConnectionLost rather than a
+        timeout: the command was not sent, so a retry cannot apply it twice.
         """
         self.connect_and_handshake(request_timeout_ms=200)
         self.conn._io_loop_thread.call(time.sleep, 1)  # wedge the loop
-        with pytest.raises(ElastiCacheIntegrationsNotSentError) as caught:
+        with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.send_request()
-        assert isinstance(caught.value, ElastiCacheIntegrationsConnectionLost)
         # The wedge outlives the caller's timeout, so the parked send is refused by the
         # liveness guard once it finally runs: the frame must never reach the cache.
         time.sleep(1.2)
@@ -720,9 +716,8 @@ class TestElastiCacheIntegrationsConnector:
         """
         self.start_cache(failure="hang")
         self.connect_and_handshake(request_timeout_ms=200)
-        with pytest.raises(ElastiCacheIntegrationsTimeoutError) as caught:
+        with pytest.raises(ElastiCacheIntegrationsTimeoutError):
             self.send_request()
-        assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
         assert self.cache.last_request is not None  # the frame really did go out
 
     def test_send_refused_after_close_reports_not_sent(self):
@@ -761,14 +756,14 @@ class TestElastiCacheIntegrationsConnector:
         self.conn.close()
         thread.join(timeout=10)
         assert len(outcome) == 1, outcome
-        assert isinstance(outcome[0], ElastiCacheIntegrationsNotSentError), outcome[0]
+        assert isinstance(outcome[0], ElastiCacheIntegrationsConnectionLost), outcome[0]
         assert self.cache.last_request is None
 
     def test_execute_after_close_reports_not_sent(self):
         """execute() on a closed connector never touches a transport, so it reports not-sent."""
         self.connect()
         self.conn.close()
-        with pytest.raises(ElastiCacheIntegrationsNotSentError):
+        with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.conn.execute("aws.request", b"x")
 
     def test_execute_reports_not_sent_when_the_loop_is_gone(self):
@@ -781,23 +776,17 @@ class TestElastiCacheIntegrationsConnector:
         with mock.patch.object(
             self.conn._io_loop_thread, "call", side_effect=RuntimeError("loop closed")
         ):
-            with pytest.raises(ElastiCacheIntegrationsNotSentError):
+            with pytest.raises(ElastiCacheIntegrationsConnectionLost):
                 self.send_request()
         assert self.cache.last_request is None
 
-    def test_write_failure_is_not_reported_as_not_sent(self):
-        """write() is the boundary: a failure there is indeterminate, never "not sent".
-
-        asyncio's transport attempts a synchronous partial send inside write(), so bytes may
-        already be in flight when it raises. Claiming the command was not sent would invite a
-        caller to re-issue something the cache may have applied.
-        """
+    def test_write_failure_is_connection_lost(self):
+        """A failed write() closes the connection and the caller gets a lost connection."""
         self.connect_and_handshake(request_timeout_ms=5000)
         writer = self.wrap_writer()
         writer.write = mock.Mock(side_effect=OSError("broken pipe"))
-        with pytest.raises(ElastiCacheIntegrationsConnectionLost) as caught:
+        with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.send_request()
-        assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
 
     def test_admission_timeout_is_not_reported_as_transport_not_sent(self):
         """Admission exhaustion keeps its dedicated error rather than a transport failure."""
@@ -812,7 +801,6 @@ class TestElastiCacheIntegrationsConnector:
             assert self.wait_until(lambda: len(self.conn._pending._queue) >= 1, timeout=3.0)
             with pytest.raises(ElastiCacheIntegrationsRequestNotSent) as caught:
                 self.send_request(timeout_ms=200)
-            assert not isinstance(caught.value, ElastiCacheIntegrationsNotSentError)
             assert "waiting for connection capacity" in str(caught.value)
         finally:
             self.conn.close()  # releases the blocked caller instead of waiting out its timeout
