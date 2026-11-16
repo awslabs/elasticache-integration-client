@@ -26,9 +26,19 @@ from aws_elasticache_integration_client.client import (
     install,
 )
 from aws_elasticache_integration_client.exceptions import (
+    ElastiCacheIntegrationsAuthError,
     ElastiCacheIntegrationsCacheUnavailable,
     ElastiCacheIntegrationsConfigError,
+    ElastiCacheIntegrationsConfigUnevaluable,
+    ElastiCacheIntegrationsConnectionError,
+    ElastiCacheIntegrationsConnectionLost,
     ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsOriginError,
+    ElastiCacheIntegrationsOverridesRejected,
+    ElastiCacheIntegrationsProtocolError,
+    ElastiCacheIntegrationsRejectedError,
+    ElastiCacheIntegrationsRequestNotSent,
+    ElastiCacheIntegrationsTimeoutError,
 )
 
 __version__ = version("aws-elasticache-integration-client")
@@ -41,8 +51,18 @@ logging.getLogger("aws_elasticache_integration_client").addHandler(logging.NullH
 __all__ = [
     "install",
     "ElastiCacheIntegrationsClientConfiguration",
+    "ElastiCacheIntegrationsAuthError",
     "ElastiCacheIntegrationsCacheUnavailable",
     "ElastiCacheIntegrationsConfigError",
+    "ElastiCacheIntegrationsConfigUnevaluable",
+    "ElastiCacheIntegrationsConnectionError",
+    "ElastiCacheIntegrationsConnectionLost",
     "ElastiCacheIntegrationsError",
+    "ElastiCacheIntegrationsOriginError",
+    "ElastiCacheIntegrationsOverridesRejected",
+    "ElastiCacheIntegrationsProtocolError",
+    "ElastiCacheIntegrationsRejectedError",
+    "ElastiCacheIntegrationsRequestNotSent",
+    "ElastiCacheIntegrationsTimeoutError",
     "__version__",
 ]
