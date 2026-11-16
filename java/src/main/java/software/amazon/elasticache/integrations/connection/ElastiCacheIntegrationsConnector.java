@@ -10,8 +10,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ScheduledFuture;
@@ -85,6 +87,11 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
 
     /** Default request timeout in milliseconds. */
     public static final int DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+
+    /** HELLO error codes that mean the cache rejected the credentials. */
+    private static final Set<String> AUTH_REJECTION_CODES =
+            Collections.unmodifiableSet(
+                    new HashSet<>(Arrays.asList("WRONGPASS", "invalid-iam-credentials")));
 
     /** Default maximum pending requests. */
     public static final int DEFAULT_MAX_PENDING = 100;
@@ -371,8 +378,9 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      *
      * @param userId the user ID for inline AUTH (e.g., "default.iam-user")
      * @param authToken the inline AUTH token/password
-     * @throws ElastiCacheIntegrationsConnectionError if HELLO is rejected, lost, times out, or does
-     *     not confirm RESP3
+     * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+     * @throws ElastiCacheIntegrationsConnectionError if HELLO is rejected for another reason, lost,
+     *     times out, or does not confirm RESP3
      */
     public void handshake(String userId, String authToken) {
         ensureConnectedNotDead();
@@ -397,7 +405,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
         } catch (ElastiCacheIntegrationsConnectionLost e) {
             markDead();
             throw new ElastiCacheIntegrationsConnectionError("HELLO 3 failed: connection lost", e);
-        } catch (ElastiCacheIntegrationsConnectionError e) {
+        } catch (ElastiCacheIntegrationsConnectionError | ElastiCacheIntegrationsAuthError e) {
             throw e;
         } catch (Exception e) {
             markDead();
@@ -408,8 +416,12 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
     private void verifyHelloReply(RespValue reply) {
         if (reply instanceof RespError) {
             markDead();
-            throw new ElastiCacheIntegrationsAuthError(
-                    "HELLO 3 rejected: " + ((RespError) reply).getCode());
+            String code = ((RespError) reply).getCode();
+            String message = "HELLO 3 rejected: " + code;
+            if (AUTH_REJECTION_CODES.contains(code)) {
+                throw new ElastiCacheIntegrationsAuthError(message);
+            }
+            throw new ElastiCacheIntegrationsConnectionError(message);
         }
         if (!(reply instanceof RespMap)) {
             markDead();
@@ -532,7 +544,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param authToken the inline AUTH token/password
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
-     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+     * @throws ElastiCacheIntegrationsConnectionError if any other step fails
      * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
      *     (CONFIG_INVALID)
      */
@@ -551,7 +564,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param authProvider supplies the inline AUTH credentials (called after TLS connect)
      * @param overrides optional configuration overrides
      * @return the resolved configuration from the cache
-     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+     * @throws ElastiCacheIntegrationsConnectionError if any other step fails
      * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
      *     (CONFIG_INVALID)
      */
@@ -575,7 +589,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @param userId the user ID for inline AUTH
      * @param authToken the password or IAM token for inline AUTH
      * @return the resolved configuration from the cache
-     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+     * @throws ElastiCacheIntegrationsConnectionError if any other step fails
      */
     public ResolvedConfig connectAndAuthenticate(String userId, String authToken) {
         return connectAndAuthenticate(userId, authToken, Collections.emptyMap());
@@ -586,7 +601,8 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      *
      * @param authProvider supplies the inline AUTH credentials (called after TLS connect)
      * @return the resolved configuration from the cache
-     * @throws ElastiCacheIntegrationsConnectionError if any step fails
+     * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+     * @throws ElastiCacheIntegrationsConnectionError if any other step fails
      */
     public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider) {
         return connectAndAuthenticate(authProvider, Collections.emptyMap());

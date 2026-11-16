@@ -1,6 +1,7 @@
 package software.amazon.elasticache.integrations.session;
 
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
@@ -267,10 +268,11 @@ final class ElastiCacheIntegrationsAsyncHttpClient implements SdkAsyncHttpClient
                     fallbackToOrigin(copyWithBody(request, body));
                 } else if (ElastiCacheIntegrationsFallbackPolicy.shouldRetry(
                         session, capturedRequest, cacheError)) {
+                    IOException named = ElastiCacheIntegrationsFallbackPolicy.namedFailure(cacheError);
                     fail(
                             result,
                             request.responseHandler(),
-                            RetryableException.create("Cache request failed", cause));
+                            RetryableException.create("Cache request failed", named != null ? named : cause));
                 } else {
                     fail(result, request.responseHandler(), cacheError);
                 }

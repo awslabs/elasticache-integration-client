@@ -247,7 +247,7 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 ## Errors
 
-The client's exceptions all extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
+The client's exceptions extend `ElastiCacheIntegrationsError`, except `ElastiCacheIntegrationsCacheUnavailable` and `ElastiCacheIntegrationsOriginError`. Those two are `IOException`s, because a call without the cache can fail the same way, so the SDK retries them. A request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
 
 ## Authentication
 

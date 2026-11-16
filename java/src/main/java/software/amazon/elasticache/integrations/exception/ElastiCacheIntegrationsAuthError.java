@@ -7,7 +7,7 @@ package software.amazon.elasticache.integrations.exception;
  * <p>A bring-up rejection invalidates that connection attempt. A background re-AUTH rejection
  * leaves the established connection open with its last valid authentication state.
  */
-public class ElastiCacheIntegrationsAuthError extends ElastiCacheIntegrationsConnectionError {
+public class ElastiCacheIntegrationsAuthError extends ElastiCacheIntegrationsError {
 
     /**
      * Create an authentication error.

@@ -1,9 +1,11 @@
 package software.amazon.elasticache.integrations.session;
 
+import java.io.IOException;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
@@ -27,8 +29,8 @@ final class ElastiCacheIntegrationsFallbackPolicy {
             ElastiCacheIntegrationsSession session,
             ElastiCacheIntegrationsRequest request,
             ElastiCacheIntegrationsError failure) {
-        if (failure instanceof ElastiCacheIntegrationsCacheUnavailable) {
-            return session.isOpen();
+        if (failure instanceof CacheUnavailableFailure) {
+            return true;
         }
         if (!session.isOpen()) {
             return false; // session closed: never retry
@@ -49,6 +51,22 @@ final class ElastiCacheIntegrationsFallbackPolicy {
             return ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode());
         }
         return failure instanceof ElastiCacheIntegrationsTimeoutError;
+    }
+
+    /**
+     * The named SDK error for a failure {@link #shouldRetry} accepted, or {@code null} if it has
+     * none.
+     */
+    static IOException namedFailure(ElastiCacheIntegrationsError failure) {
+        if (failure instanceof CacheUnavailableFailure) {
+            return new ElastiCacheIntegrationsCacheUnavailable(failure.getMessage(), failure);
+        }
+        if (failure instanceof ElastiCacheIntegrationsRejectedError
+                && ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode())) {
+            return new ElastiCacheIntegrationsOriginError(
+                    "Cache could not complete the origin request", failure);
+        }
+        return null;
     }
 
     private static boolean isTransportFailure(ElastiCacheIntegrationsError failure) {

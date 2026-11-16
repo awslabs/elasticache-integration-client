@@ -48,6 +48,7 @@ import software.amazon.elasticache.integrations.connection.ElastiCacheIntegratio
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
@@ -224,8 +225,10 @@ class ElastiCacheIntegrationsHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "GetItem");
 
-        IOException failure =
-                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
+        ElastiCacheIntegrationsOriginError failure =
+                assertThrows(
+                        ElastiCacheIntegrationsOriginError.class,
+                        () -> client.prepareRequest(signedRequest()).call());
 
         assertSame(session.failure, failure.getCause());
         assertEquals(0, origin.prepareCount.get());
@@ -252,11 +255,13 @@ class ElastiCacheIntegrationsHttpClientTest {
     void expiredFallbackWindowDoesNotContactOrigin() {
         StubSession session = new StubSession();
         session.healthy = false;
-        session.failure = new ElastiCacheIntegrationsCacheUnavailable("fallback window expired");
+        session.failure = new CacheUnavailableFailure("fallback window expired");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false);
 
-        assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
+        assertThrows(
+                ElastiCacheIntegrationsCacheUnavailable.class,
+                () -> client.prepareRequest(signedRequest()).call());
         assertEquals(0, origin.prepareCount.get());
     }
 

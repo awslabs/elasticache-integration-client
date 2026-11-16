@@ -37,7 +37,6 @@ import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -633,7 +632,7 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
 
             assertThrows(
-                    ElastiCacheIntegrationsCacheUnavailable.class,
+                    CacheUnavailableFailure.class,
                     () ->
                             session.request(
                                     new ElastiCacheIntegrationsRequest(
@@ -671,7 +670,7 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             session.open();
 
-            assertThrows(ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(request()));
+            assertThrows(CacheUnavailableFailure.class, () -> session.request(request()));
 
             assertEquals(1, cache.getRequests().size());
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
@@ -940,10 +939,7 @@ class ElastiCacheIntegrationsSessionTest {
                 handle.open();
                 relay.disableForwardingAndDisconnectClients();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.RECONNECTING);
-                assertThrows(
-                        software.amazon.elasticache.integrations.exception
-                                .ElastiCacheIntegrationsCacheUnavailable.class,
-                        () -> handle.getSession().request(request()));
+                assertThrows(CacheUnavailableFailure.class, () -> handle.getSession().request(request()));
 
                 relay.enableForwarding();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.OPEN);
@@ -1448,7 +1444,7 @@ class ElastiCacheIntegrationsSessionTest {
             loseConnection(session);
 
             long started = System.nanoTime();
-            assertThrows(ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(request()));
+            assertThrows(CacheUnavailableFailure.class, () -> session.request(request()));
             long elapsed = elapsedMs(started);
 
             assertTrue(elapsed >= 150, "raised without waiting: " + elapsed + "ms");
@@ -1519,8 +1515,7 @@ class ElastiCacheIntegrationsSessionTest {
             assertEquals(TimeUnit.SECONDS.toNanos(1), session.fallbackDeadlineNanos() - clock.get());
 
             clock.set(session.fallbackDeadlineNanos());
-            assertThrows(
-                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+            assertThrows(CacheUnavailableFailure.class, () -> session.request(writeRequest()));
         } finally {
             session.close();
         }
@@ -1536,8 +1531,7 @@ class ElastiCacheIntegrationsSessionTest {
             loseConnection(session);
 
             clock.set(session.readyDeadlineNanos());
-            assertThrows(
-                    ElastiCacheIntegrationsCacheUnavailable.class, () -> session.request(writeRequest()));
+            assertThrows(CacheUnavailableFailure.class, () -> session.request(writeRequest()));
         } finally {
             session.close();
         }

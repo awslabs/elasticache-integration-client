@@ -20,7 +20,6 @@ import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigUnevaluable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
@@ -401,10 +400,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                 if (lastFailure == null) {
                     throw new ElastiCacheIntegrationsConnectionError("Cache initial connection failed");
                 }
-                // Auth errors are connection errors in Java but not in Python, so check them first.
-                if (timedOut
-                        && lastFailure instanceof ElastiCacheIntegrationsConnectionError
-                        && !(lastFailure instanceof ElastiCacheIntegrationsAuthError)) {
+                if (timedOut && lastFailure instanceof ElastiCacheIntegrationsConnectionError) {
                     throw new ElastiCacheIntegrationsConnectionError(
                             "opening a connection timed out after " + timeoutMs + "ms", lastFailure);
                 }
@@ -642,10 +638,10 @@ class ElastiCacheIntegrationsSession implements Closeable {
         try {
             credentials = authProvider.get();
         } catch (RuntimeException failure) {
-            throw new ElastiCacheIntegrationsConnectionError("Auth provider failed", failure);
+            throw new ElastiCacheIntegrationsError("Auth provider failed", failure);
         }
         if (credentials == null) {
-            throw new ElastiCacheIntegrationsConnectionError("Auth provider returned null credentials");
+            throw new ElastiCacheIntegrationsError("Auth provider returned null credentials");
         }
 
         synchronized (stateLock) {
@@ -672,8 +668,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
      *
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
-     * @throws ElastiCacheIntegrationsCacheUnavailable if the cache is disconnected, or replied {@code
-     *     AUTH_ERROR}, and the fallback window has closed
+     * @throws CacheUnavailableFailure if the cache is disconnected, or replied {@code AUTH_ERROR},
+     *     and the fallback window has closed
      */
     public ElastiCacheIntegrationsResponse request(ElastiCacheIntegrationsRequest request) {
         return request(request, new ElastiCacheIntegrationsRequestCancellation());
@@ -709,7 +705,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                 if (AUTH_ERROR.equals(failure.getCode())) {
                     beginReconnect(active);
                     if (reconnectPolicy.getFallbackDurationSeconds() == 0) {
-                        throw new ElastiCacheIntegrationsCacheUnavailable(
+                        throw new CacheUnavailableFailure(
                                 "Cache rejected the request with AUTH_ERROR and origin fallback is disabled");
                     }
                     return null;
@@ -826,10 +822,10 @@ class ElastiCacheIntegrationsSession implements Closeable {
         try {
             credentials = authProvider.get();
         } catch (RuntimeException failure) {
-            throw new ElastiCacheIntegrationsConnectionError("Auth provider failed", failure);
+            throw new ElastiCacheIntegrationsError("Auth provider failed", failure);
         }
         if (credentials == null) {
-            throw new ElastiCacheIntegrationsConnectionError("Auth provider returned null credentials");
+            throw new ElastiCacheIntegrationsError("Auth provider returned null credentials");
         }
         try {
             next.handshake(credentials.getUserId(), credentials.getToken());
@@ -1023,7 +1019,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         if (fallbackDeadline == Long.MAX_VALUE || now < fallbackDeadline) {
                             return false;
                         }
-                        throw new ElastiCacheIntegrationsCacheUnavailable(
+                        throw new CacheUnavailableFailure(
                                 "ElastiCacheIntegrations has no cache connection and origin fallback is no longer"
                                         + " allowed");
                     }
@@ -1034,8 +1030,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                         if (cancellation.isCancelled()) {
                             throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
                         }
-                        throw new ElastiCacheIntegrationsCacheUnavailable(
-                                "Interrupted while waiting for Cache to reconnect");
+                        throw new CacheUnavailableFailure("Interrupted while waiting for Cache to reconnect");
                     }
                 }
                 ensureUsable();

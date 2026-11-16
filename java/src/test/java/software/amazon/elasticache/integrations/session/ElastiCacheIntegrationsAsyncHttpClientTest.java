@@ -47,8 +47,8 @@ import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
@@ -408,7 +408,9 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                         () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof RetryableException);
-        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsRejectedError);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsOriginError);
+        assertTrue(
+                failure.getCause().getCause().getCause() instanceof ElastiCacheIntegrationsRejectedError);
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -876,7 +878,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         ElastiCacheIntegrationsResponse request(
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsCacheUnavailable("fallback window expired");
+            throw new CacheUnavailableFailure("fallback window expired");
         }
     }
 

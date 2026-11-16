@@ -106,7 +106,8 @@ final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
                             session, capturedRequest, cacheFailure)) {
                         if (ElastiCacheIntegrationsFallbackPolicy.shouldRetry(
                                 session, capturedRequest, cacheFailure)) {
-                            throw new IOException("Cache request failed", cacheFailure);
+                            IOException named = ElastiCacheIntegrationsFallbackPolicy.namedFailure(cacheFailure);
+                            throw named != null ? named : new IOException("Cache request failed", cacheFailure);
                         }
                         throw cacheFailure;
                     }
