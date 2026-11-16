@@ -174,7 +174,8 @@ left. On failure it closes every connector it built. A connection failure is
 thrown as `ElastiCacheIntegrationsConnectionError` ("opening a connection
 timed out after Nms") with the last failure as its cause. Any other last failure
 (`ElastiCacheIntegrationsAuthError`, `ElastiCacheIntegrationsOverridesRejected`,
-`ElastiCacheIntegrationsConfigUnevaluable`) is rethrown unchanged. A session built
+`ElastiCacheIntegrationsConfigUnevaluable`, or the base `ElastiCacheIntegrationsError`
+when the auth provider fails) is rethrown unchanged. A session built
 around one concrete connector makes a single attempt. When a live connection is
 lost, one clock reading sets `readyDeadline = now + connectionTimeout` and
 `fallbackDeadline = readyDeadline + fallbackDuration`, both with a saturating add.
