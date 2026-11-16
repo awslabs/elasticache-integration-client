@@ -229,8 +229,7 @@ class ElastiCacheIntegrationsHandle:
                 if self._session.is_open:
                     return None
                 raise
-            # Before any rule that can make the error retryable: a client being closed fails its
-            # in-flight requests, and none of them may be sent again.
+            # A request failed by close() is not retried: the client is shutting down.
             if not self._session.is_open:
                 raise
             if isinstance(exc, ElastiCacheIntegrationsRejectedError):
