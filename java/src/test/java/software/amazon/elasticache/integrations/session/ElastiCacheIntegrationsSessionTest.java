@@ -1318,8 +1318,17 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void creatingASessionPreservesNonConnectionSetupError() {
-        // Each attempt fails at once, so no attempt is still running when the deadline passes. One
-        // cut off by the deadline would be a timeout instead, as in Python.
+        // The backoff exceeds the connection timeout, so the first completed setup error remains the
+        // last failure when the deadline passes. Starting repeated attempts with only a millisecond
+        // left would legitimately turn the last one into a timeout if its worker is scheduled late.
+        ReconnectPolicy policy =
+                ReconnectPolicy.builder()
+                        .connectionTimeoutMs(300)
+                        .fallbackDurationSeconds(-1)
+                        .baseDelayMs(1_000)
+                        .maxDelayMs(1_000)
+                        .jitterFactor(0)
+                        .build();
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
                         () ->
@@ -1331,7 +1340,7 @@ class ElastiCacheIntegrationsSessionTest {
                                 },
                         () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
                         null,
-                        timeoutPolicy(300, -1));
+                        policy);
 
         long started = System.nanoTime();
         ElastiCacheIntegrationsOverridesRejected thrown =
