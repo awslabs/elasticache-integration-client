@@ -94,9 +94,10 @@ class ConnectionManager:
         self._connected = threading.Event()
         # The current startup or reconnect attempt must produce a live connection by this time.
         self._ready_deadline = 0.0
-        # Set by a drop for AUTH_ERROR and cleared once a request gets any other reply. While set,
-        # a further AUTH_ERROR drop keeps the fallback deadline instead of opening a new window,
-        # so a cache that rejects every request cannot renew the window forever.
+        # True while the cache keeps answering requests with AUTH_ERROR. Reconnecting doesn't
+        # restart the fallback window then, because the handshake succeeds but requests keep
+        # failing, so the window has to run out. A request that gets any other reply sets it
+        # back to False.
         self._auth_outage = False
 
         self._closing = threading.Event()  # set by close(); also interrupts a backoff sleep
