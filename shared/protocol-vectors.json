@@ -240,7 +240,24 @@
       "command": "aws.request",
       "reply": "-ORIGIN_ERROR upstream failed\r\n",
       "error": "rejected",
-      "code": "ORIGIN_ERROR"
+      "code": "ORIGIN_ERROR",
+      "message": "aws.request failed: ORIGIN_ERROR upstream failed"
+    },
+    {
+      "name": "response_resp_error_unsupported",
+      "command": "aws.request",
+      "reply": "-UNSUPPORTED unsupported operation: Foo\r\n",
+      "error": "rejected",
+      "code": "UNSUPPORTED",
+      "message": "aws.request failed: UNSUPPORTED unsupported operation: Foo"
+    },
+    {
+      "name": "response_resp_error_code_only",
+      "command": "aws.request",
+      "reply": "-UNSUPPORTED\r\n",
+      "error": "rejected",
+      "code": "UNSUPPORTED",
+      "message": "aws.request failed: UNSUPPORTED"
     },
     {
       "name": "config_ok",
@@ -291,7 +308,8 @@
       "name": "config_other_resp_error",
       "command": "aws.config",
       "reply": "-ERR boom\r\n",
-      "error": "error"
+      "error": "error",
+      "message": "aws.config failed: ERR boom"
     },
     {
       "name": "config_array_reply",

@@ -19,6 +19,9 @@ service is without the cache. Other indeterminate cache failures fall back to
 the origin only for cataloged operations after the cache connection drops;
 mixed or unknown operations are treated as non-idempotent. On a healthy
 connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
+In every client, an application detects `ORIGIN_ERROR` by finding an
+`ElastiCacheIntegrationsRejectedError` with code `ORIGIN_ERROR` in the error or
+its cause chain. Its message is `aws.request failed: ORIGIN_ERROR <message>`.
 When a routed request has not reached the cache because the connection is down,
 it may use the configured origin fallback window, including for writes.
 `AUTH_ERROR` closes the stale connection and safely passes the rejected
