@@ -2,7 +2,6 @@ package software.amazon.elasticache.integrations.connection;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 
 /**
  * Internal cancellation signal for one in-flight Cache request.
@@ -60,13 +59,5 @@ public final class ElastiCacheIntegrationsRequestCancellation {
      */
     public void clear(Runnable cancellationAction) {
         action.compareAndSet(cancellationAction, null);
-    }
-
-    /** Signals that an individual Cache request was canceled. */
-    public static final class CancelledException extends ElastiCacheIntegrationsError {
-        /** Create the cancellation signal. */
-        public CancelledException() {
-            super("Cache request was cancelled");
-        }
     }
 }

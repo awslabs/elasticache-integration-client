@@ -51,6 +51,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -721,7 +722,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
             }
             cancelled.countDown();
-            throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+            throw new ElastiCacheIntegrationsRequestCancelled();
         }
     }
 
@@ -878,7 +879,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         ElastiCacheIntegrationsResponse request(
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new CacheUnavailableFailure("fallback window expired");
+            throw new ElastiCacheIntegrationsCacheUnavailableFailure("fallback window expired");
         }
     }
 

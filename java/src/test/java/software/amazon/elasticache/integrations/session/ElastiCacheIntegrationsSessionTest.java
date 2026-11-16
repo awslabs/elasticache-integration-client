@@ -41,6 +41,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -632,7 +633,7 @@ class ElastiCacheIntegrationsSessionTest {
             session.open();
 
             assertThrows(
-                    CacheUnavailableFailure.class,
+                    ElastiCacheIntegrationsCacheUnavailableFailure.class,
                     () ->
                             session.request(
                                     new ElastiCacheIntegrationsRequest(
@@ -670,7 +671,8 @@ class ElastiCacheIntegrationsSessionTest {
         try {
             session.open();
 
-            assertThrows(CacheUnavailableFailure.class, () -> session.request(request()));
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailableFailure.class, () -> session.request(request()));
 
             assertEquals(1, cache.getRequests().size());
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
@@ -939,7 +941,9 @@ class ElastiCacheIntegrationsSessionTest {
                 handle.open();
                 relay.disableForwardingAndDisconnectClients();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.RECONNECTING);
-                assertThrows(CacheUnavailableFailure.class, () -> handle.getSession().request(request()));
+                assertThrows(
+                        ElastiCacheIntegrationsCacheUnavailableFailure.class,
+                        () -> handle.getSession().request(request()));
 
                 relay.enableForwarding();
                 awaitState(handle.getSession(), ElastiCacheIntegrationsSession.State.OPEN);
@@ -1444,7 +1448,8 @@ class ElastiCacheIntegrationsSessionTest {
             loseConnection(session);
 
             long started = System.nanoTime();
-            assertThrows(CacheUnavailableFailure.class, () -> session.request(request()));
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailableFailure.class, () -> session.request(request()));
             long elapsed = elapsedMs(started);
 
             assertTrue(elapsed >= 150, "raised without waiting: " + elapsed + "ms");
@@ -1515,7 +1520,9 @@ class ElastiCacheIntegrationsSessionTest {
             assertEquals(TimeUnit.SECONDS.toNanos(1), session.fallbackDeadlineNanos() - clock.get());
 
             clock.set(session.fallbackDeadlineNanos());
-            assertThrows(CacheUnavailableFailure.class, () -> session.request(writeRequest()));
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailableFailure.class,
+                    () -> session.request(writeRequest()));
         } finally {
             session.close();
         }
@@ -1531,7 +1538,9 @@ class ElastiCacheIntegrationsSessionTest {
             loseConnection(session);
 
             clock.set(session.readyDeadlineNanos());
-            assertThrows(CacheUnavailableFailure.class, () -> session.request(writeRequest()));
+            assertThrows(
+                    ElastiCacheIntegrationsCacheUnavailableFailure.class,
+                    () -> session.request(writeRequest()));
         } finally {
             session.close();
         }
@@ -1660,8 +1669,7 @@ class ElastiCacheIntegrationsSessionTest {
             ExecutionException failure =
                     assertThrows(ExecutionException.class, () -> response.get(1, TimeUnit.SECONDS));
             assertTrue(
-                    failure.getCause()
-                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException,
+                    failure.getCause() instanceof ElastiCacheIntegrationsRequestCancelled,
                     failure.getCause().toString());
         } finally {
             session.close();

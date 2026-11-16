@@ -29,7 +29,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
             ElastiCacheIntegrationsSession session,
             ElastiCacheIntegrationsRequest request,
             ElastiCacheIntegrationsError failure) {
-        if (failure instanceof CacheUnavailableFailure) {
+        if (failure instanceof ElastiCacheIntegrationsCacheUnavailableFailure) {
             return true;
         }
         if (!session.isOpen()) {
@@ -58,7 +58,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
      * none.
      */
     static IOException namedFailure(ElastiCacheIntegrationsError failure) {
-        if (failure instanceof CacheUnavailableFailure) {
+        if (failure instanceof ElastiCacheIntegrationsCacheUnavailableFailure) {
             return new ElastiCacheIntegrationsCacheUnavailable(failure.getMessage());
         }
         if (failure instanceof ElastiCacheIntegrationsRejectedError

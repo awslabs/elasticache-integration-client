@@ -36,6 +36,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -840,7 +841,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             boolean deferredResponseAllowed,
             int timeoutMs) {
         if (cancellation.isCancelled()) {
-            throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+            throw new ElastiCacheIntegrationsRequestCancelled();
         }
 
         CompletableFuture<RespValue> future;
@@ -879,7 +880,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             }
             try {
                 if (cancellation.isCancelled()) {
-                    throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+                    throw new ElastiCacheIntegrationsRequestCancelled();
                 }
                 if (remainingNanos(deadlineNanos) <= minimumResponseBudgetNanos) {
                     throw new ElastiCacheIntegrationsRequestNotSent("Timed out before request could be sent");
@@ -922,9 +923,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
         }
 
         Runnable cancellationAction =
-                () ->
-                        pending.cancel(
-                                future, new ElastiCacheIntegrationsRequestCancellation.CancelledException());
+                () -> pending.cancel(future, new ElastiCacheIntegrationsRequestCancelled());
         cancellation.register(cancellationAction);
 
         // Wait for response

@@ -12,6 +12,7 @@ import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
 
@@ -96,7 +97,7 @@ final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
                 ElastiCacheIntegrationsResponse cacheResponse;
                 try {
                     cacheResponse = session.request(capturedRequest, cacheCancellation);
-                } catch (ElastiCacheIntegrationsRequestCancellation.CancelledException cancelled) {
+                } catch (ElastiCacheIntegrationsRequestCancelled cancelled) {
                     throw new IOException("Request was aborted", cancelled);
                 } catch (ElastiCacheIntegrationsError cacheFailure) {
                     if (aborted.get()) {

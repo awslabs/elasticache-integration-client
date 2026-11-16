@@ -51,6 +51,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -255,7 +256,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     void expiredFallbackWindowDoesNotContactOrigin() {
         StubSession session = new StubSession();
         session.healthy = false;
-        session.failure = new CacheUnavailableFailure("fallback window expired");
+        session.failure = new ElastiCacheIntegrationsCacheUnavailableFailure("fallback window expired");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false);
 
@@ -676,7 +677,7 @@ class ElastiCacheIntegrationsHttpClientTest {
                 while (!cancellation.isCancelled()) {
                     LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
                 }
-                throw new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+                throw new ElastiCacheIntegrationsRequestCancelled();
             }
             if (failure != null) {
                 throw failure;

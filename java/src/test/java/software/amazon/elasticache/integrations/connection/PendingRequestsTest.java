@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.resp.RespSimpleString;
 import software.amazon.elasticache.integrations.resp.RespValue;
@@ -129,7 +130,7 @@ class PendingRequestsTest {
         CompletableFuture<RespValue> active = pending.registerNewRequest();
         pending.moveNextToAsyncResponses("42");
         CompletableFuture<RespValue> cancelled = pending.registerNewRequest();
-        pending.cancel(cancelled, new ElastiCacheIntegrationsRequestCancellation.CancelledException());
+        pending.cancel(cancelled, new ElastiCacheIntegrationsRequestCancelled());
 
         assertThrows(
                 ElastiCacheIntegrationsProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
@@ -215,8 +216,8 @@ class PendingRequestsTest {
         AtomicInteger removals = new AtomicInteger();
         CompletableFuture<RespValue> future =
                 pending.registerNewRequest(true, removals::incrementAndGet);
-        ElastiCacheIntegrationsRequestCancellation.CancelledException cancellation =
-                new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+        ElastiCacheIntegrationsRequestCancelled cancellation =
+                new ElastiCacheIntegrationsRequestCancelled();
 
         pending.cancel(future, cancellation);
 
@@ -238,8 +239,8 @@ class PendingRequestsTest {
         CompletableFuture<RespValue> future =
                 pending.registerNewRequest(true, removals::incrementAndGet);
         pending.moveNextToAsyncResponses("42");
-        ElastiCacheIntegrationsRequestCancellation.CancelledException cancellation =
-                new ElastiCacheIntegrationsRequestCancellation.CancelledException();
+        ElastiCacheIntegrationsRequestCancelled cancellation =
+                new ElastiCacheIntegrationsRequestCancelled();
 
         pending.cancel(future, cancellation);
 

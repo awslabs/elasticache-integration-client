@@ -36,6 +36,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsTimeoutError;
 import software.amazon.elasticache.integrations.mock.MockCache;
@@ -904,9 +905,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             cancellation.cancel();
             ExecutionException failure =
                     assertThrows(ExecutionException.class, () -> cancelled.get(1, TimeUnit.SECONDS));
-            assertTrue(
-                    failure.getCause()
-                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException);
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestCancelled);
             assertFalse(conn.isDead());
 
             Future<ElastiCacheIntegrationsResponse> next =
@@ -966,9 +965,7 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             cancellation.cancel();
             ExecutionException cancellationFailure =
                     assertThrows(ExecutionException.class, () -> cancelled.get(1, TimeUnit.SECONDS));
-            assertTrue(
-                    cancellationFailure.getCause()
-                            instanceof ElastiCacheIntegrationsRequestCancellation.CancelledException);
+            assertTrue(cancellationFailure.getCause() instanceof ElastiCacheIntegrationsRequestCancelled);
             assertFalse(conn.isDead());
 
             Future<ElastiCacheIntegrationsResponse> reusedId =

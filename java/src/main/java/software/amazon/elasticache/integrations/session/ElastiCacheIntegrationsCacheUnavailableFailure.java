@@ -7,8 +7,8 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
  * to the SDK as {@link
  * software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable}.
  */
-final class CacheUnavailableFailure extends ElastiCacheIntegrationsError {
-    CacheUnavailableFailure(String message) {
+final class ElastiCacheIntegrationsCacheUnavailableFailure extends ElastiCacheIntegrationsError {
+    ElastiCacheIntegrationsCacheUnavailableFailure(String message) {
         super(message);
     }
 }
