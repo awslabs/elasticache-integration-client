@@ -27,10 +27,10 @@ This package currently ports the Python implementation's:
   with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers and the `host`, `x-amz-content-sha256`, and
-  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, marks a lost
-  connection retryable for every operation, marks other dropped-connection
-  failures retryable only for operations in the shared replay-safe catalog, and
-  marks a healthy-connection `ORIGIN_ERROR` retryable only for those operations;
+  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, marks a
+  timeout or a dropped-connection failure retryable for every operation, and
+  marks a RESP error retryable only for `ORIGIN_ERROR` and
+  `INTERNAL_ERROR_RETRY`;
 - an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
   the application already built.
 
@@ -43,19 +43,22 @@ that request and preserves the connection; a FIFO or write timeout remains
 connection-fatal. One connection sends at most 100 requests awaiting replies at once; additional
 callers wait for a slot within `cacheRequestTimeout` instead of failing at the concurrency
 boundary. Queue admission uses at most 75% of that timeout, reserving 25% to send and receive a
-reply. If that budget is exhausted, the request is not sent to the cache and continues to origin
-regardless of operation idempotency. The middleware sends requests with no matching predicate
-directly to origin. If the connection drops after a request was sent, the
-middleware returns a retryable failure for every operation, the same as a dropped
-connection to the service, so the SDK's retry settings decide and the retry
-re-enters the session's reconnect wait and fallback gate. As without the cache, a
-retried write may be applied twice if the first attempt reached the service. On a
-healthy connection, `ORIGIN_ERROR` is returned to the SDK as retryable for a cataloged operation.
+reply. If that budget is exhausted, the request is not sent to the cache and continues to origin,
+for every operation. The middleware sends requests with no matching predicate
+directly to origin. If the connection drops or the request times out after it was sent,
+the middleware returns a retryable failure for every operation, the same as that
+failure on a connection to the service, so the SDK's retry settings decide and the
+retry re-enters the session's reconnect wait and fallback gate. As without the
+cache, a retried write may be applied twice if the first attempt reached the
+service. A RESP error is returned to the SDK as retryable only for `ORIGIN_ERROR`
+and `INTERNAL_ERROR_RETRY`, the codes the cache sends when the service applied
+nothing or the outcome is unknown.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
-instead. Other RESP errors, malformed responses, and timeouts for
-non-idempotent operations propagate without origin fallback.
+instead. Other RESP errors, including `INTERNAL_ERROR_FAIL` for a write the
+service applied whose response was lost, and malformed responses propagate
+without retry or origin fallback.
 
 ## Request routing
 
@@ -119,13 +122,11 @@ ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
 SigV4 headers, plus the `host`, `x-amz-content-sha256`, and `x-amz-user-agent`
 headers that the JS SDK adds, only from its copied request model;
 the original signed request remains untouched for origin pass-through. When the
-ElastiCacheIntegrations connection drops, a lost connection returns to the SDK's
-retry pipeline for every operation, and other failures only for operations in the
-shared replay-safe catalog. The retry re-enters the session,
-which waits for reconnection and applies the configured fallback window before
-using origin. While the connection remains healthy, only an `ORIGIN_ERROR` for
-a cataloged operation is marked SDK-retryable. Other RESP errors,
-non-idempotent failures, and request
+ElastiCacheIntegrations connection drops or a request times out, the failure
+returns to the SDK's retry pipeline for every operation. The retry re-enters the
+session, which waits for reconnection and applies the configured fallback window
+before using origin. A RESP error is marked SDK-retryable only for `ORIGIN_ERROR`
+and `INTERNAL_ERROR_RETRY`. Other RESP errors, and request
 validation errors and fallback-window exhaustion propagate. Calling `destroy()`
 detaches ElastiCacheIntegrations before SDK teardown, rejects in-flight ElastiCacheIntegrations requests without
 passing shutdown failures to the origin, stops reconnect activity, and is safe

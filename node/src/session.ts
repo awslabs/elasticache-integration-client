@@ -10,7 +10,7 @@
  *
  * The resolved config and its CEL predicates determine which requests are sent
  * to ElastiCacheIntegrations. The middleware passes predicate declines and requests that were
- * never sent through to origin, and makes dropped-connection failures SDK-retryable.
+ * never sent through to origin, and makes dropped-connection and timeout failures SDK-retryable.
  *
  * Each active connection owns background refreshers for resolved config and
  * authentication. Config refresh failures keep the last known-good state.

@@ -55,7 +55,6 @@ python -m pytest tests/test_ddb.py            # just the end-to-end test
 | `test_connection.py` | component + integration | `aws_elasticache_integration_client.connection` `_SocketReader`/`_PendingRequests` (in-memory `MockSocket`) **and** the real `ElastiCacheIntegrationsConnector` vs `MockCache` over a plaintext loopback (config/request, FIFO concurrency, timeout, error/drop) |
 | `test_session.py` | component | `aws_elasticache_integration_client.session.ElastiCacheIntegrationsSession` sync API, driven by the `mock_connector()` autospec double |
 | `test_hooks.py` | component | `aws_elasticache_integration_client.hooks` + boto3 `before-send` hook, driven by the `mock_session()` autospec double |
-| `test_idempotency.py` | component | replay-safe operation lookup loads the shared language-neutral catalog |
 | `test_mock.py` | component | the contract logic in `tests/mock.py` (`MockCache.handle` shape validation + `TTL`/`NTTL` parsing) |
 | `test_ddb.py` | **end-to-end** | the full path `aws_elasticache_integration_client.client → boto3 GetItem → hook → ElastiCacheIntegrationsSession → real ElastiCacheIntegrationsConnector (TLS) → MockCache` |
 

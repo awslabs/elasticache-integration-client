@@ -45,7 +45,6 @@ from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsResponse,
     RequestMetadata,
 )
-from aws_elasticache_integration_client.idempotency import is_idempotent_operation
 from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
@@ -62,7 +61,9 @@ _HANDLE_ATTRIBUTE = "_elasticache_integrations_handle"
 
 logger = logging.getLogger(__name__)
 
-_ORIGIN_ERROR = "ORIGIN_ERROR"
+#: RESP error codes the SDK may retry: the service applied nothing, or the outcome is unknown.
+#: Every other code is terminal.
+_RETRYABLE_CODES = frozenset({"ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"})
 
 
 #: Prepared-body types ElastiCacheIntegrations can put in a single ``aws.request`` frame. Anything else is a
@@ -194,12 +195,12 @@ class ElastiCacheIntegrationsHandle:
         request down the pipeline. A request with a streaming body is declined here, before it
         reaches the session, because serializing it would consume the stream. The session declines
         before sending when no predicate matched or no cache connection is available within the
-        fallback window, which is safe for every operation. After sending, a lost connection
-        becomes SDK-retryable for every operation, as a dropped connection to the service is, so
-        the SDK's retry configuration decides and the retry goes through the cache again. A
-        timeout or connection error becomes SDK-retryable only for a replay-safe operation. A
-        healthy-connection ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation;
-        other RESP errors remain terminal. Non-ElastiCacheIntegrations exceptions propagate.
+        fallback window, which is safe for every operation. After sending, a lost connection, a
+        timeout or a connection error becomes SDK-retryable for every operation, as the same
+        failure on a connection to the service is, so the SDK's retry configuration decides and
+        the retry goes through the cache again. A RESP error is SDK-retryable only when its code
+        is in ``_RETRYABLE_CODES``; the cache chooses that code, because only it knows whether
+        the service applied the request. Non-ElastiCacheIntegrations exceptions propagate.
         """
         try:
             http_request = _aws_to_cache_request(request, kwargs.get("event_name", ""))
@@ -228,23 +229,16 @@ class ElastiCacheIntegrationsHandle:
                 if self._session.is_open:
                     return None
                 raise
-            idempotent = is_idempotent_operation(
-                http_request.metadata.service, http_request.metadata.operation
-            )
-            if isinstance(exc, ElastiCacheIntegrationsRejectedError):
-                if exc.code == _ORIGIN_ERROR and self._session.is_connection_healthy and idempotent:
-                    raise ElastiCacheIntegrationsOriginError(endpoint_url=request.url) from exc
-                raise
             if not self._session.is_open:
                 raise  # session closed: never retry
+            if isinstance(exc, ElastiCacheIntegrationsRejectedError):
+                if exc.code in _RETRYABLE_CODES:
+                    raise ElastiCacheIntegrationsOriginError(endpoint_url=request.url) from exc
+                raise
             # Let the SDK retry. The retry goes through the cache again, waits briefly for a
             # reconnect, and goes to the service only if the cache is still down.
             if isinstance(exc, ElastiCacheIntegrationsConnectionLost):
-                raise ConnectionClosedError(
-                    endpoint_url=request.url
-                ) from exc  # retryable error so the SDK decides whether to retry or not
-            if not idempotent:
-                raise  # non-idempotent operations stop here for other failures
+                raise ConnectionClosedError(endpoint_url=request.url) from exc
             if isinstance(exc, ElastiCacheIntegrationsTimeoutError):
                 raise ReadTimeoutError(endpoint_url=request.url) from exc
             if isinstance(exc, ElastiCacheIntegrationsConnectionError):

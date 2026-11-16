@@ -56,7 +56,7 @@ the connection. One connection sends at most 100 requests awaiting replies at on
 callers wait for a slot within their `cache_request_timeout` instead of failing at the concurrency
 boundary, and waiting callers are admitted in arrival order. Queue admission uses at most 75% of
 that timeout, reserving 25% to send and receive a reply. If that budget is exhausted, the request
-is not sent to the cache and continues to origin regardless of operation idempotency.
+is not sent to the cache and continues to origin, for every operation.
 
 ## Installing into a client
 
@@ -208,17 +208,17 @@ the same outage do not restart that wait.
 When there is no live cache connection, the request has not been sent and can safely pass through
 for any operation, including routed writes, while the fallback window remains open.
 A write sent to origin during an outage can leave a stale cache entry until its TTL expires.
-After a request is sent, a lost connection becomes a botocore-retryable error for every operation,
-the same as a dropped connection to the service, so the client's retry configuration decides
-whether to retry. Like a retry without the cache, a retried write may be applied twice if the
-first attempt reached the service. The retry goes through the cache again and may fall back to
-origin. A timeout or connection error becomes botocore-retryable only for an operation in the
-shared replay-safe catalog. While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error
-only for a cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
-request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the
-rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP
-errors, and timeouts or connection errors for non-idempotent operations, propagate without origin
-fallback.
+After a request is sent, a lost connection, a timeout or a connection error becomes a
+botocore-retryable error for every operation, the same as that failure on a connection to the
+service, so the client's retry configuration decides whether to retry. Like a retry without the
+cache, a retried write may be applied twice if the first attempt reached the service. The retry
+goes through the cache again and may fall back to origin. A RESP error is botocore-retryable only
+for the codes the cache uses when the service applied nothing or the outcome is unknown:
+`ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`. `AUTH_ERROR` closes the stale connection and passes the
+rejected request through while reconnection obtains fresh authentication. With
+`fallback_duration=0`, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at
+once instead. Other RESP errors, including `INTERNAL_ERROR_FAIL` for a write the service applied
+whose response was lost, propagate without retry or origin fallback.
 
 ## Cache policy timeout
 

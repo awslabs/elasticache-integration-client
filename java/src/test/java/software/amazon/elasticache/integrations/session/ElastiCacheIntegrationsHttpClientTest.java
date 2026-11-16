@@ -47,6 +47,7 @@ import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
@@ -74,7 +75,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
-    void zeroFallbackDroppedIdempotentTransportFailureIsRetryableWithoutContactingOrigin() {
+    void zeroFallbackDroppedTransportFailureIsRetryableWithoutContactingOrigin() {
         StubSession session = new StubSession();
         session.healthy = false;
         session.failure = new ElastiCacheIntegrationsTimeoutError("cache timed out");
@@ -89,23 +90,36 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
-    void nonIdempotentTransportFailureDoesNotContactOrigin() {
+    void writeTimeoutIsRetryableWithoutContactingOrigin() {
         StubSession session = new StubSession();
         session.failure = new ElastiCacheIntegrationsTimeoutError("cache timed out");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
 
-        ElastiCacheIntegrationsTimeoutError failure =
-                assertThrows(
-                        ElastiCacheIntegrationsTimeoutError.class,
-                        () -> client.prepareRequest(signedRequest()).call());
+        IOException failure =
+                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
 
-        assertSame(session.failure, failure);
+        assertSame(session.failure, failure.getCause());
         assertEquals(0, origin.prepareCount.get());
     }
 
     @Test
-    void nonIdempotentRequestNotSentDelegatesToOrigin() throws Exception {
+    void droppedWriteConnectionErrorIsRetryableWithoutContactingOrigin() {
+        StubSession session = new StubSession();
+        session.healthy = false;
+        session.failure = new ElastiCacheIntegrationsConnectionError("connect failed");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        IOException failure =
+                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void writeRequestNotSentDelegatesToOrigin() throws Exception {
         StubSession session = new StubSession();
         session.failure = new ElastiCacheIntegrationsRequestNotSent("admission timed out");
         RecordingHttpClient origin = new RecordingHttpClient();
@@ -216,13 +230,21 @@ class ElastiCacheIntegrationsHttpClientTest {
         assertEquals(0, origin.prepareCount.get());
     }
 
-    @Test
-    void idempotentOriginErrorIsRetryableWithoutContactingOrigin() {
+    @ParameterizedTest
+    @CsvSource({
+        "ORIGIN_ERROR, GetItem, true",
+        "ORIGIN_ERROR, UpdateItem, true",
+        "ORIGIN_ERROR, UpdateItem, false",
+        "INTERNAL_ERROR_RETRY, GetItem, true",
+        "INTERNAL_ERROR_RETRY, UpdateItem, false"
+    })
+    void retryableCodeIsRetryableWithoutContactingOrigin(
+            String code, String operation, boolean healthy) {
         StubSession session = new StubSession();
-        session.failure =
-                new ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "origin unavailable");
+        session.healthy = healthy;
+        session.failure = new ElastiCacheIntegrationsRejectedError(code, "not applied");
         RecordingHttpClient origin = new RecordingHttpClient();
-        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "GetItem");
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, operation);
 
         IOException failure =
                 assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
@@ -231,13 +253,38 @@ class ElastiCacheIntegrationsHttpClientTest {
         assertEquals(0, origin.prepareCount.get());
     }
 
-    @Test
-    void nonIdempotentOriginErrorIsNonRetryableWithoutContactingOrigin() {
+    @ParameterizedTest
+    @CsvSource({
+        "INTERNAL_ERROR_FAIL, UpdateItem",
+        "INTERNAL_ERROR_FAIL, GetItem",
+        "INTERNAL_ERROR, GetItem",
+        "PARSE_ERROR, GetItem",
+        "SOME_NEW_CODE, UpdateItem"
+    })
+    void otherCodesAreNonRetryableWithoutContactingOrigin(String code, String operation) {
         StubSession session = new StubSession();
+        session.failure = new ElastiCacheIntegrationsRejectedError(code, "rejected");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, operation);
+
+        ElastiCacheIntegrationsRejectedError failure =
+                assertThrows(
+                        ElastiCacheIntegrationsRejectedError.class,
+                        () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertNull(failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void retryableCodeAfterCloseIsNotRetryable() {
+        StubSession session = new StubSession();
+        session.open = false;
         session.failure =
                 new ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "origin unavailable");
         RecordingHttpClient origin = new RecordingHttpClient();
-        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "GetItem");
 
         ElastiCacheIntegrationsRejectedError failure =
                 assertThrows(
@@ -261,7 +308,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
-    void shutdownFailureDoesNotStartIdempotentFallback() {
+    void shutdownFailureIsNotRetryable() {
         StubSession session = new StubSession();
         session.open = false;
         session.failure = new ElastiCacheIntegrationsConnectionLost("session closed");

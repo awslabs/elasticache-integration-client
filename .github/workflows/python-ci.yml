@@ -138,13 +138,11 @@ jobs:
           import tarfile
           import zipfile
 
-          catalog = "aws_elasticache_integration_client/idempotent-operations.json"
           cache_modules = [
               "aws_elasticache_integration_client/__init__.py",
               "aws_elasticache_integration_client/client.py",
               "aws_elasticache_integration_client/session.py",
               "aws_elasticache_integration_client/connection.py",
-              "aws_elasticache_integration_client/idempotency.py",
           ]
           # The toolkit is a PyPI dependency, so neither archive may carry a copy.
           junk = ("tests/", "build/", "dist/", "__pycache__/", ".pyc", "vendor/", "developer_toolkit_elasticache")
@@ -158,12 +156,8 @@ jobs:
               wheel_names = archive.namelist()
 
           errors = []
-          required_by_archive = {
-              "sdist": [catalog, *cache_modules],
-              "wheel": [catalog, *cache_modules],
-          }
           for label, names in (("sdist", sdist_names), ("wheel", wheel_names)):
-              for required in required_by_archive[label]:
+              for required in cache_modules:
                   if required not in names:
                       errors.append(f"{label} is missing {required}")
               for name in names:

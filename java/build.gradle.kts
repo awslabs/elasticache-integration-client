@@ -45,12 +45,6 @@ spotless {
 }
 
 sourceSets {
-    main {
-        resources {
-            srcDir("../shared")
-            include("idempotent-operations.json")
-        }
-    }
     test {
         resources {
             srcDir("../shared")
@@ -203,7 +197,6 @@ val verifyJars = tasks.register("verifyJars") {
         val jars = mapOf(
             tasks.jar.get().archiveFile.get().asFile to listOf(
                 "software/amazon/elasticache/integrations/session/ElastiCacheIntegrationsClient.class",
-                "idempotent-operations.json",
                 "META-INF/LICENSE",
                 "META-INF/NOTICE"
             ),

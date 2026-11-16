@@ -1,5 +1,9 @@
 package software.amazon.elasticache.integrations.session;
 
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
@@ -12,7 +16,13 @@ import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsReq
 /** Shared sync/async policy for handling a failed Cache request. */
 final class ElastiCacheIntegrationsFallbackPolicy {
 
-    private static final String ORIGIN_ERROR = "ORIGIN_ERROR";
+    /**
+     * RESP error codes the SDK may retry: the service applied nothing, or the outcome is unknown.
+     * Every other code is terminal.
+     */
+    private static final Set<String> RETRYABLE_CODES =
+            Collections.unmodifiableSet(
+                    new HashSet<>(Arrays.asList("ORIGIN_ERROR", "INTERNAL_ERROR_RETRY")));
 
     private ElastiCacheIntegrationsFallbackPolicy() {}
 
@@ -33,20 +43,15 @@ final class ElastiCacheIntegrationsFallbackPolicy {
         if (!session.isOpen()) {
             return false; // session closed: never retry
         }
-        // Checked before idempotency: without the cache, the SDK retries any operation after its
-        // connection drops, so a lost cache connection is retryable for every operation too.
-        if (failure instanceof ElastiCacheIntegrationsConnectionLost
-                && !session.isConnectionHealthy()) {
-            return true; // retryable error so the SDK decides whether to retry or not
-        }
-        if (!Idempotency.isIdempotent(request.getMetadata())) {
-            return false; // non-idempotent operations stop here for other failures
-        }
-        if (!session.isConnectionHealthy()) {
-            return isTransportFailure(failure);
-        }
         if (failure instanceof ElastiCacheIntegrationsRejectedError) {
-            return ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode());
+            String code = ((ElastiCacheIntegrationsRejectedError) failure).getCode();
+            return RETRYABLE_CODES.contains(code);
+        }
+        // As without the cache, a transport failure is retryable for every operation. A lost
+        // connection on a healthy connection is an interrupted request, which is not retried.
+        if (!session.isConnectionHealthy()) {
+            return failure instanceof ElastiCacheIntegrationsConnectionLost
+                    || isTransportFailure(failure);
         }
         return failure instanceof ElastiCacheIntegrationsTimeoutError;
     }
