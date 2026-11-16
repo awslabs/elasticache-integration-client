@@ -396,9 +396,8 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     @CsvSource({
         "ORIGIN_ERROR, GetItem, true",
         "ORIGIN_ERROR, UpdateItem, true",
-        "ORIGIN_ERROR, UpdateItem, false",
         "INTERNAL_ERROR_RETRY, GetItem, true",
-        "INTERNAL_ERROR_RETRY, UpdateItem, false"
+        "INTERNAL_ERROR_RETRY, UpdateItem, true"
     })
     void retryableCodeIsRetryableWithoutContactingOrigin(
             String code, String operation, boolean healthy) {
@@ -419,6 +418,29 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
 
         assertTrue(failure.getCause() instanceof RetryableException);
         assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsRejectedError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"})
+    void retryableCodeOnDroppedConnectionIsNotRetryable(String code) {
+        RecordingOrigin origin = new RecordingOrigin();
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new CodeSession(code, false),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRejectedError);
         assertEquals(0, origin.executeCount.get());
         client.close();
     }

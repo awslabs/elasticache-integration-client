@@ -332,11 +332,9 @@ def test_auth_rejection_is_not_converted_to_a_connection_error():
 
 @pytest.mark.parametrize("code", ["ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"])
 @pytest.mark.parametrize("operation", ["GetItem", "UpdateItem"])
-@pytest.mark.parametrize("healthy", [True, False])
-def test_retryable_code_is_sdk_retryable_without_fallback(code, operation, healthy):
+def test_retryable_code_is_sdk_retryable_without_fallback(code, operation):
     sdk = MockClient()
     session = mock_session()
-    session.is_connection_healthy = healthy
     rejection = ElastiCacheIntegrationsRejectedError(code, "not applied")
     session.request.side_effect = rejection
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
@@ -363,6 +361,20 @@ def test_other_codes_are_non_retryable_without_fallback(code, operation):
     assert responses is None
     assert exc_info.value is rejection
     assert not isinstance(exc_info.value, ConnectionClosedError)
+
+
+@pytest.mark.parametrize("code", ["ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"])
+def test_retryable_code_on_dropped_connection_is_not_retryable(code):
+    sdk = MockClient()
+    session = mock_session()
+    session.is_connection_healthy = False
+    rejection = ElastiCacheIntegrationsRejectedError(code, "not applied")
+    session.request.side_effect = rejection
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ElastiCacheIntegrationsRejectedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is rejection
 
 
 def test_retryable_code_after_close_is_not_retryable():

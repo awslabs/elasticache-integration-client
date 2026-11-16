@@ -42,15 +42,15 @@ final class ElastiCacheIntegrationsFallbackPolicy {
         if (!session.isOpen()) {
             return false; // session closed: never retry
         }
-        if (failure instanceof ElastiCacheIntegrationsRejectedError) {
-            String code = ((ElastiCacheIntegrationsRejectedError) failure).getCode();
-            return RETRYABLE_CODES.contains(code);
-        }
         // As without the cache, a transport failure is retryable for every operation. A lost
         // connection on a healthy connection is an interrupted request, which is not retried.
         if (!session.isConnectionHealthy()) {
             return failure instanceof ElastiCacheIntegrationsConnectionLost
                     || isTransportFailure(failure);
+        }
+        if (failure instanceof ElastiCacheIntegrationsRejectedError) {
+            String code = ((ElastiCacheIntegrationsRejectedError) failure).getCode();
+            return RETRYABLE_CODES.contains(code);
         }
         return failure instanceof ElastiCacheIntegrationsTimeoutError;
     }

@@ -13,8 +13,9 @@ supported features and fallback behavior for each language.
 The clients never check the operation to decide whether a failure can be
 retried. If a request times out or loses its connection to the cache, the SDK
 can retry it, for any operation. This is the same as without the cache. If the
-cache returns an error, the cache decides whether it can be retried: the SDK can
-retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no other error. The SDK's
+cache returns an error on a healthy connection, the cache decides whether it can
+be retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no
+other error. The SDK's
 retry settings decide how many times a request is retried.
 
 When a routed request has not reached the cache because the connection is down,

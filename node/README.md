@@ -50,9 +50,9 @@ the middleware returns a retryable failure for every operation, the same as that
 failure on a connection to the service, so the SDK's retry settings decide and the
 retry re-enters the session's reconnect wait and fallback gate. As without the
 cache, a retried write may be applied twice if the first attempt reached the
-service. If the cache returns an error, the cache decides whether it can be
-retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no
-other error.
+service. If the cache returns an error on a healthy connection, the cache
+decides whether it can be retried: the SDK can retry `ORIGIN_ERROR` and
+`INTERNAL_ERROR_RETRY`, and no other error.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once

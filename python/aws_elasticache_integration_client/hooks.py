@@ -197,8 +197,9 @@ class ElastiCacheIntegrationsHandle:
         fallback window, which is safe for every operation. After sending, a lost connection, a
         timeout or a connection error becomes SDK-retryable for every operation, as the same
         failure on a connection to the service is, so the SDK's retry configuration decides and
-        the retry goes through the cache again. A RESP error is SDK-retryable only when its code
-        is in ``_RETRYABLE_CODES``: the cache decides which code to send.
+        the retry goes through the cache again. On a healthy connection, a RESP error is
+        SDK-retryable only when its code is in ``_RETRYABLE_CODES``: the cache decides which code
+        to send.
         Non-ElastiCacheIntegrations exceptions propagate.
         """
         try:
@@ -228,10 +229,12 @@ class ElastiCacheIntegrationsHandle:
                 if self._session.is_open:
                     return None
                 raise
+            # Before any rule that can make the error retryable: a client being closed fails its
+            # in-flight requests, and none of them may be sent again.
             if not self._session.is_open:
-                raise  # session closed: never retry
+                raise
             if isinstance(exc, ElastiCacheIntegrationsRejectedError):
-                if exc.code in _RETRYABLE_CODES:
+                if exc.code in _RETRYABLE_CODES and self._session.is_connection_healthy:
                     raise ElastiCacheIntegrationsOriginError(endpoint_url=request.url) from exc
                 raise
             # Let the SDK retry. The retry goes through the cache again, waits briefly for a

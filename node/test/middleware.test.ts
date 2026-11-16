@@ -840,29 +840,43 @@ describe("elastiCacheIntegrations middleware", () => {
   });
 
   it.each([
-    ["ORIGIN_ERROR", "GetItemCommand", true],
-    ["ORIGIN_ERROR", "UpdateItemCommand", true],
-    ["ORIGIN_ERROR", "UpdateItemCommand", false],
-    ["INTERNAL_ERROR_RETRY", "GetItemCommand", true],
-    ["INTERNAL_ERROR_RETRY", "UpdateItemCommand", false],
-  ])(
-    "marks %s on %s retryable without contacting origin (healthy: %s)",
-    async (code, commandName, healthy) => {
+    ["ORIGIN_ERROR", "GetItemCommand"],
+    ["ORIGIN_ERROR", "UpdateItemCommand"],
+    ["INTERNAL_ERROR_RETRY", "GetItemCommand"],
+    ["INTERNAL_ERROR_RETRY", "UpdateItemCommand"],
+  ])("marks %s on %s retryable without contacting origin", async (code, commandName) => {
+    const cacheError = new ElastiCacheIntegrationsRejectedError(code, "not applied");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw cacheError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = cacheMiddleware("dynamodb", session)(next, { commandName });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
+    expect((cacheError as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each(["ORIGIN_ERROR", "INTERNAL_ERROR_RETRY"])(
+    "does not mark %s retryable on a dropped connection",
+    async (code) => {
       const cacheError = new ElastiCacheIntegrationsRejectedError(code, "not applied");
       const session = fakeSession({
-        isConnectionHealthy: healthy,
+        isConnectionHealthy: false,
         request: vi.fn(async () => {
           throw cacheError;
         }),
       });
-      const next = vi.fn<FinalizeHandler<object, object>>(async () => {
-        throw new Error("origin must not be called");
+      const handler = cacheMiddleware("dynamodb", session)(vi.fn(), {
+        commandName: "GetItemCommand",
       });
-      const handler = cacheMiddleware("dynamodb", session)(next, { commandName });
 
       await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
-      expect((cacheError as Error & { $retryable?: object }).$retryable).toEqual({});
-      expect(next).not.toHaveBeenCalled();
+      expect((cacheError as Error & { $retryable?: object }).$retryable).toBeUndefined();
     },
   );
 

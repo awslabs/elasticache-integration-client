@@ -6,9 +6,9 @@
  * A wrapper around the client's request handler, which is the only step that gets the call's
  * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate
  * declines and requests that were never sent go to the SDK's origin pipeline. A timeout or a
- * dropped-connection failure is SDK-retryable for every operation, as it is without the cache. A
- * RESP error is SDK-retryable only for the codes in `RETRYABLE_CODES`: the cache decides which code
- * to send. The SDK keeps its normal retry and deserialization behavior.
+ * dropped-connection failure is SDK-retryable for every operation, as it is without the cache. On
+ * a healthy connection, a RESP error is SDK-retryable only for the codes in `RETRYABLE_CODES`: the
+ * cache decides which code to send. The SDK keeps its normal retry and deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the ElastiCacheIntegrations path drops the auth
@@ -214,7 +214,9 @@ export function cacheRequestHandler<THandler extends object>(
       }
 
       if (error instanceof ElastiCacheIntegrationsRejectedError) {
-        if (RETRYABLE_CODES.has(error.code)) throw markRetryable(error);
+        if (RETRYABLE_CODES.has(error.code) && session.isConnectionHealthy) {
+          throw markRetryable(error);
+        }
         throw error;
       }
       // A lost connection on a healthy connection is an aborted request, which is not retried.
