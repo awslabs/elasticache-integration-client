@@ -26,6 +26,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRejectedError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsResponse;
 import software.amazon.elasticache.integrations.model.ResolvedConfig;
@@ -670,7 +671,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
      * @param request the request to route
      * @return a Cache response, or {@code null} for signed origin fallback
      * @throws ElastiCacheIntegrationsCacheUnavailableFailure if the cache is disconnected, or replied
-     *     {@code AUTH_ERROR}, and the fallback window has closed
+     *     {@code AUTH_ERROR}, and the fallback window has closed, or if origin fallback is disabled
+     *     and the request got no connection capacity in time
      */
     public ElastiCacheIntegrationsResponse request(ElastiCacheIntegrationsRequest request) {
         return request(request, new ElastiCacheIntegrationsRequestCancellation());
@@ -715,6 +717,15 @@ class ElastiCacheIntegrationsSession implements Closeable {
             } catch (ElastiCacheIntegrationsError failure) {
                 if (active.isDead()) {
                     beginReconnect(active);
+                }
+                if (failure instanceof ElastiCacheIntegrationsRequestNotSent
+                        && reconnectPolicy.getFallbackDurationSeconds() == 0) {
+                    ElastiCacheIntegrationsCacheUnavailableFailure unavailable =
+                            new ElastiCacheIntegrationsCacheUnavailableFailure(
+                                    "Cache had no connection capacity for the request and origin fallback is"
+                                            + " disabled");
+                    unavailable.initCause(failure);
+                    throw unavailable;
                 }
                 throw failure;
             }

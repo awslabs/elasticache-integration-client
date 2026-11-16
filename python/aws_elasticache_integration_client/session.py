@@ -33,6 +33,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsError,
     ElastiCacheIntegrationsOverridesRejected,
     ElastiCacheIntegrationsRejectedError,
+    ElastiCacheIntegrationsRequestNotSent,
 )
 from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsRequest,
@@ -335,9 +336,16 @@ class ElastiCacheIntegrationsSession:
         An ``AUTH_ERROR`` reply drops the connection so the reconnect re-authenticates. The
         rejected request passes through while the fallback window is open.
 
+        A request that gets no connection capacity in time raises
+        :class:`~aws_elasticache_integration_client.exceptions.ElastiCacheIntegrationsRequestNotSent`,
+        which the hook passes through. With ``fallback_duration == 0`` it raises
+        ``ElastiCacheIntegrationsCacheUnavailable`` instead, because strict mode never uses the
+        origin.
+
         Raises:
             ElastiCacheIntegrationsCacheUnavailable: If the cache is disconnected, or replied
-                ``AUTH_ERROR``, and the fallback window has closed.
+                ``AUTH_ERROR``, and the fallback window has closed. Also raised in strict mode
+                when the request got no connection capacity in time.
         """
         if not self.is_open:
             raise ElastiCacheIntegrationsError("request() called on a closed session")
@@ -357,6 +365,10 @@ class ElastiCacheIntegrationsSession:
         command, args = serialize_request(request)
         try:
             return parse_request_response(connector.execute(command, *args))
+        except ElastiCacheIntegrationsRequestNotSent as exc:
+            if self._connection_manager.policy.fallback_duration == 0:
+                raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url) from exc
+            raise
         except ElastiCacheIntegrationsRejectedError as exc:
             if exc.code != _AUTH_ERROR:
                 raise

@@ -42,6 +42,7 @@ import software.amazon.elasticache.integrations.exception.ElastiCacheIntegration
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestCancelled;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsRequestNotSent;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpRelay;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -648,6 +649,49 @@ class ElastiCacheIntegrationsSessionTest {
         } finally {
             session.close();
         }
+    }
+
+    @Test
+    void requestNotSentWithFallbackDisabledRaisesCacheUnavailable() {
+        ElastiCacheIntegrationsSession session =
+                requestNotSentSession(ReconnectPolicy.builder().fallbackDurationSeconds(0).build());
+        try {
+            session.open();
+
+            ElastiCacheIntegrationsCacheUnavailableFailure failure =
+                    assertThrows(
+                            ElastiCacheIntegrationsCacheUnavailableFailure.class,
+                            () -> session.request(request()));
+
+            assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRequestNotSent);
+            assertTrue(session.isConnectionHealthy());
+        } finally {
+            session.close();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {ReconnectPolicy.UNLIMITED_FALLBACK, 60})
+    void requestNotSentWithFallbackEnabledPropagatesForOriginFallback(long fallbackDurationSeconds) {
+        ElastiCacheIntegrationsSession session =
+                requestNotSentSession(
+                        ReconnectPolicy.builder().fallbackDurationSeconds(fallbackDurationSeconds).build());
+        try {
+            session.open();
+
+            assertThrows(ElastiCacheIntegrationsRequestNotSent.class, () -> session.request(request()));
+            assertTrue(session.isConnectionHealthy());
+        } finally {
+            session.close();
+        }
+    }
+
+    private static ElastiCacheIntegrationsSession requestNotSentSession(ReconnectPolicy policy) {
+        return new ElastiCacheIntegrationsSession(
+                RequestNotSentConnector::new,
+                () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                null,
+                policy);
     }
 
     @Test
@@ -1836,6 +1880,15 @@ class ElastiCacheIntegrationsSessionTest {
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             fail();
             throw new ElastiCacheIntegrationsConnectionError("injected request failure");
+        }
+    }
+
+    private static final class RequestNotSentConnector extends TestConnector {
+        @Override
+        public ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsRequestNotSent("Timed out waiting for connection capacity");
         }
     }
 

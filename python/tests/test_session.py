@@ -25,6 +25,7 @@ from aws_elasticache_integration_client.exceptions import (
     ElastiCacheIntegrationsConfigUnevaluable,
     ElastiCacheIntegrationsConnectionError,
     ElastiCacheIntegrationsError,
+    ElastiCacheIntegrationsRequestNotSent,
 )
 from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsRequest,
@@ -754,6 +755,29 @@ def test_auth_error_with_fallback_closed_raises_at_once(operation):
     assert connector.execute.call_count == 1
     manager.invalidate_connection.assert_called_once_with(connector)
     manager.wait_for_connector.assert_not_called()
+    session.close()
+
+
+@pytest.mark.parametrize(
+    ("fallback_duration", "strict"), [(0, True), (None, False), (-1, False), (60, False)]
+)
+def test_request_not_sent_raises_cache_unavailable_only_in_strict_mode(fallback_duration, strict):
+    connector = mock_connector()
+    session = ElastiCacheIntegrationsSession(
+        lambda: connector, policy=ReconnectPolicy(fallback_duration=fallback_duration)
+    )
+    not_sent = ElastiCacheIntegrationsRequestNotSent("admission timed out")
+    connector.execute.side_effect = not_sent
+
+    expected = (
+        ElastiCacheIntegrationsCacheUnavailable if strict else ElastiCacheIntegrationsRequestNotSent
+    )
+    with pytest.raises(expected) as caught:
+        session.request(_auth_error_request("GetItem"))
+
+    if strict:
+        assert caught.value.__cause__ is not_sent
+    assert session.is_connection_healthy
     session.close()
 
 

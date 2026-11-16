@@ -34,6 +34,7 @@ import {
   ElastiCacheIntegrationsError,
   ElastiCacheIntegrationsProtocolError,
   ElastiCacheIntegrationsRejectedError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "./errors.js";
 import type {
@@ -483,6 +484,11 @@ export class ElastiCacheIntegrationsSession {
    * starts, every failure propagates:
    * the request may have reached ElastiCacheIntegrations and must not be directly replayed.
    *
+   * A request that gets no connection capacity in time rejects with
+   * `ElastiCacheIntegrationsRequestNotSent`, which the middleware sends to origin. With
+   * `fallbackDurationMs === 0` it rejects with `ElastiCacheIntegrationsCacheUnavailable` instead,
+   * because strict mode never uses the origin.
+   *
    * `abortSignal` is the caller's per-call signal. An abort ends either wait at once with the
    * SDK's `AbortError`, and the request does not fall back.
    */
@@ -530,6 +536,16 @@ export class ElastiCacheIntegrationsSession {
           throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
         }
         return undefined;
+      }
+      if (
+        error instanceof ElastiCacheIntegrationsRequestNotSent &&
+        this.reconnectPolicy.fallbackWindowMs === 0
+      ) {
+        const unavailable = new ElastiCacheIntegrationsCacheUnavailable(
+          sanitizeEndpoint(request.url),
+        );
+        unavailable.cause = error;
+        throw unavailable;
       }
       throw error;
     }

@@ -11,6 +11,7 @@ import {
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsError,
+  ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "../src/errors.js";
 import { ElastiCacheIntegrationsConnector } from "../src/connection.js";
@@ -296,6 +297,52 @@ describe("ElastiCacheIntegrationsSession", () => {
     expect(connector.execute).not.toHaveBeenCalled();
     await session.close();
   });
+
+  it.each([
+    [0, ElastiCacheIntegrationsCacheUnavailable],
+    [null, ElastiCacheIntegrationsRequestNotSent],
+    [-1, ElastiCacheIntegrationsRequestNotSent],
+    [60_000, ElastiCacheIntegrationsRequestNotSent],
+  ])(
+    "request not sent with fallbackDurationMs %s rejects with %O",
+    async (fallbackDurationMs, expected) => {
+      const notSent = new ElastiCacheIntegrationsRequestNotSent("admission timed out");
+      const connector = fakeConnector({
+        execute: vi.fn(async (command: string) => {
+          if (command === "aws.config") {
+            return Buffer.from(
+              '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
+            );
+          }
+          throw notSent;
+        }),
+      });
+      const session = new ElastiCacheIntegrationsSession(
+        connector,
+        {},
+        { connectionTimeoutMs: 2_000, fallbackDurationMs },
+      );
+      await session.open();
+
+      const failure: unknown = await session
+        .request(
+          new ElastiCacheIntegrationsRequest({
+            method: "POST",
+            url: "https://x/",
+            body: "{}",
+            metadata: new RequestMetadata({ service: "svc", operation: "GetItem" }),
+          }),
+        )
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(expected);
+      if (expected === ElastiCacheIntegrationsCacheUnavailable) {
+        expect((failure as Error).cause).toBe(notSent);
+      }
+      expect(session.isConnectionHealthy).toBe(true);
+      await session.close();
+    },
+  );
 
   it.each(["GetItem", "PutItem"])(
     "auth error with fallback closed raises at once for %s",
