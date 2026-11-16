@@ -30,8 +30,17 @@ final class ElastiCacheIntegrationsFallbackPolicy {
         if (failure instanceof ElastiCacheIntegrationsCacheUnavailable) {
             return session.isOpen();
         }
-        if (!session.isOpen() || !Idempotency.isIdempotent(request.getMetadata())) {
-            return false;
+        if (!session.isOpen()) {
+            return false; // session closed: never retry
+        }
+        // Checked before idempotency: without the cache, the SDK retries any operation after its
+        // connection drops, so a lost cache connection is retryable for every operation too.
+        if (failure instanceof ElastiCacheIntegrationsConnectionLost
+                && !session.isConnectionHealthy()) {
+            return true; // retryable error so the SDK decides whether to retry or not
+        }
+        if (!Idempotency.isIdempotent(request.getMetadata())) {
+            return false; // non-idempotent operations stop here for other failures
         }
         if (!session.isConnectionHealthy()) {
             return isTransportFailure(failure);
@@ -43,8 +52,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
     }
 
     private static boolean isTransportFailure(ElastiCacheIntegrationsError failure) {
-        return failure instanceof ElastiCacheIntegrationsConnectionLost
-                || failure instanceof ElastiCacheIntegrationsTimeoutError
+        return failure instanceof ElastiCacheIntegrationsTimeoutError
                 || failure instanceof ElastiCacheIntegrationsConnectionError;
     }
 }

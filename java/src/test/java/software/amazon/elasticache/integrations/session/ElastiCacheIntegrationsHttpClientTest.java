@@ -118,6 +118,55 @@ class ElastiCacheIntegrationsHttpClientTest {
     }
 
     @Test
+    void connectionLostIsRetryableForAnyOperation() {
+        StubSession session = new StubSession();
+        session.healthy = false;
+        session.failure = new ElastiCacheIntegrationsConnectionLost("socket died");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        IOException failure =
+                assertThrows(IOException.class, () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure.getCause());
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void connectionLostOnHealthyConnectionIsNotRetryable() {
+        StubSession session = new StubSession();
+        session.failure = new ElastiCacheIntegrationsConnectionLost("interrupted");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        ElastiCacheIntegrationsConnectionLost failure =
+                assertThrows(
+                        ElastiCacheIntegrationsConnectionLost.class,
+                        () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
+    void connectionLostAfterCloseIsNotRetryable() {
+        StubSession session = new StubSession();
+        session.open = false;
+        session.healthy = false;
+        session.failure = new ElastiCacheIntegrationsConnectionLost("connection closed");
+        RecordingHttpClient origin = new RecordingHttpClient();
+        ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "UpdateItem");
+
+        ElastiCacheIntegrationsConnectionLost failure =
+                assertThrows(
+                        ElastiCacheIntegrationsConnectionLost.class,
+                        () -> client.prepareRequest(signedRequest()).call());
+
+        assertSame(session.failure, failure);
+        assertEquals(0, origin.prepareCount.get());
+    }
+
+    @Test
     void healthyConnectionLostIsNotMarkedRetryable() {
         StubSession session = new StubSession();
         session.failure = new ElastiCacheIntegrationsConnectionLost("socket died");

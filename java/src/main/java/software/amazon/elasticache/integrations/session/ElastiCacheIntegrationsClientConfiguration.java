@@ -61,16 +61,29 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         this.iamTokenRefreshDelaySeconds = builder.iamTokenRefreshDelaySeconds;
     }
 
-    /** Return a configuration with every option at its default. */
+    /**
+     * Return a configuration with every option at its default.
+     *
+     * @return the default configuration
+     */
     public static ElastiCacheIntegrationsClientConfiguration defaults() {
         return builder().build();
     }
 
+    /**
+     * Return a new builder with every option at its default.
+     *
+     * @return a new builder
+     */
     public static Builder builder() {
         return new Builder();
     }
 
-    /** Return how long to wait for each cache request's reply, in milliseconds. */
+    /**
+     * Return how long to wait for each cache request's reply, in milliseconds.
+     *
+     * @return the request timeout in milliseconds
+     */
     public long getCacheRequestTimeoutMs() {
         return cacheRequestTimeoutMs;
     }
@@ -79,6 +92,8 @@ public final class ElastiCacheIntegrationsClientConfiguration {
      * Return how long to try to connect at startup across all attempts, and how long a request waits
      * for reconnection after a connection is lost, in milliseconds. Each individual connection
      * attempt is bounded by the same timeout.
+     *
+     * @return the connection timeout in milliseconds
      */
     public long getConnectionTimeoutMs() {
         return connectionTimeoutMs;
@@ -87,22 +102,36 @@ public final class ElastiCacheIntegrationsClientConfiguration {
     /**
      * Return how long requests may go to the origin service after the reconnect wait ends without a
      * connection, in seconds. A negative value means indefinitely and zero means never.
+     *
+     * @return the fallback duration in seconds
      */
     public long getFallbackDurationSeconds() {
         return fallbackDurationSeconds;
     }
 
-    /** Return the cache policy overrides, or null when none were set. The map is unmodifiable. */
+    /**
+     * Return the cache policy overrides, or null when none were set. The map is unmodifiable.
+     *
+     * @return the overrides, or null
+     */
     public Map<String, Object> getCachePolicyOverrides() {
         return cachePolicyOverrides;
     }
 
-    /** Return how long a cache policy may be used without confirmation, in seconds. */
+    /**
+     * Return how long a cache policy may be used without confirmation, in seconds.
+     *
+     * @return the cache policy timeout in seconds
+     */
     public long getCachePolicyTimeoutSeconds() {
         return cachePolicyTimeoutSeconds;
     }
 
-    /** Return the IAM token refresh delay in seconds, or null for the toolkit default. */
+    /**
+     * Return the IAM token refresh delay in seconds, or null for the toolkit default.
+     *
+     * @return the refresh delay in seconds, or null
+     */
     public Long getIamTokenRefreshDelaySeconds() {
         return iamTokenRefreshDelaySeconds;
     }
@@ -121,6 +150,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         /**
          * Set how long to wait for each cache request's reply, in milliseconds (default: 5000). Must be
          * positive and at most {@link Integer#MAX_VALUE}.
+         *
+         * @param cacheRequestTimeoutMs the request timeout in milliseconds
+         * @return this builder
          */
         public Builder cacheRequestTimeoutMs(long cacheRequestTimeoutMs) {
             this.cacheRequestTimeoutMs = cacheRequestTimeoutMs;
@@ -133,6 +165,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * (default: 5000). The same value bounds each step of one connection attempt: the TCP connect
          * and TLS handshake together, {@code HELLO 3 AUTH}, and the first {@code aws.config}. Must be
          * positive and at most {@link Integer#MAX_VALUE}.
+         *
+         * @param connectionTimeoutMs the connection timeout in milliseconds
+         * @return this builder
          */
         public Builder connectionTimeoutMs(long connectionTimeoutMs) {
             this.connectionTimeoutMs = connectionTimeoutMs;
@@ -150,6 +185,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          *       ElastiCacheIntegrationsCacheUnavailable}.
          *   <li>{@code 0}: disable fallback. Requests fail as soon as the reconnect wait ends.
          * </ul>
+         *
+         * @param fallbackDurationSeconds the fallback duration in seconds
+         * @return this builder
          */
         public Builder fallbackDurationSeconds(long fallbackDurationSeconds) {
             this.fallbackDurationSeconds = fallbackDurationSeconds;
@@ -171,6 +209,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * or object array, or a map with string keys. A number must be a boxed primitive, {@link
          * BigInteger}, or {@link BigDecimal}. A collection or array is copied as a list, and a value
          * must not contain itself.
+         *
+         * @param cachePolicyOverrides the overrides, or null for none
+         * @return this builder
          */
         public Builder cachePolicyOverrides(Map<String, Object> cachePolicyOverrides) {
             this.cachePolicyOverrides = cachePolicyOverrides;
@@ -181,6 +222,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * Set how long, in seconds, a cache policy may be used without confirmation from the cache
          * (default: 3600). After this time the next failed confirmation drops the connection so a
          * replacement can fetch a current policy. Must be positive.
+         *
+         * @param cachePolicyTimeoutSeconds the cache policy timeout in seconds
+         * @return this builder
          */
         public Builder cachePolicyTimeoutSeconds(long cachePolicyTimeoutSeconds) {
             this.cachePolicyTimeoutSeconds = cachePolicyTimeoutSeconds;
@@ -191,6 +235,9 @@ public final class ElastiCacheIntegrationsClientConfiguration {
          * Set how long, in seconds, after a token is issued before the IAM toolkit signs a replacement
          * in the background, while callers keep using the current token. Must be greater than 0 and
          * less than 880. When null (the default), the toolkit default of 300 seconds is used.
+         *
+         * @param iamTokenRefreshDelaySeconds the refresh delay in seconds
+         * @return this builder
          */
         public Builder iamTokenRefreshDelaySeconds(long iamTokenRefreshDelaySeconds) {
             this.iamTokenRefreshDelaySeconds = iamTokenRefreshDelaySeconds;
@@ -200,6 +247,7 @@ public final class ElastiCacheIntegrationsClientConfiguration {
         /**
          * Build the configuration.
          *
+         * @return the configuration
          * @throws ElastiCacheIntegrationsConfigError if a value is not usable
          */
         public ElastiCacheIntegrationsClientConfiguration build() {

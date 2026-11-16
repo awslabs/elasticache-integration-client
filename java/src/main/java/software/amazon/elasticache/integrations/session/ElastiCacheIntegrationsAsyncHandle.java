@@ -291,9 +291,9 @@ final class ElastiCacheIntegrationsAsyncHandle implements Closeable {
         }
 
         /**
-         * Set how long, in seconds, Cache may use the resolved config without confirmation from the
-         * cache. After this time, Cache reconnects to get a current config. Defaults to 3600 seconds
-         * and must be a positive whole number.
+         * Set how long, in seconds, the client may use the resolved config without confirmation from
+         * the cache. After this time, the client reconnects to get a current config. Defaults to 3600
+         * seconds and must be a positive whole number.
          *
          * @param stalenessDurationSeconds the staleness window in seconds
          * @return this builder

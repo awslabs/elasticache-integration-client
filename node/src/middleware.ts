@@ -4,10 +4,10 @@
  * The middleware receives the final serialized, signed HttpRequest, strips the
  * AWS SigV4 authentication headers and the JS SDK-only headers, and builds a ElastiCacheIntegrationsRequest.
  * A wrapper around the client's request handler, which is the only step that gets the call's
- * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate declines, explicit ElastiCacheIntegrations
- * rejections, and indeterminate failures for idempotent operations return to
- * the SDK's origin pipeline while preserving its normal retry and
- * deserialization behavior.
+ * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate
+ * declines and requests that were never sent go to the SDK's origin pipeline. A lost connection
+ * is SDK-retryable for every operation, and other dropped-connection or timeout failures only for
+ * idempotent operations, so the SDK keeps its normal retry and deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the ElastiCacheIntegrations path drops the auth
@@ -221,6 +221,9 @@ export function cacheRequestHandler<THandler extends object>(
         throw error;
       }
 
+      if (!session.isConnectionHealthy && error instanceof ElastiCacheIntegrationsConnectionLost) {
+        throw markRetryable(error); // retryable error so the SDK decides whether to retry or not
+      }
       if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
         throw markRetryable(error);
       }

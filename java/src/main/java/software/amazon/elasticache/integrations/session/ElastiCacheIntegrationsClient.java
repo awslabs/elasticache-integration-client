@@ -114,13 +114,23 @@ public final class ElastiCacheIntegrationsClient {
             return this;
         }
 
-        /** Set the ElastiCache Serverless cache name (required). */
+        /**
+         * Set the ElastiCache Serverless cache name (required).
+         *
+         * @param cacheName the cache name
+         * @return this builder
+         */
         public Builder cacheName(String cacheName) {
             this.cacheName = cacheName;
             return this;
         }
 
-        /** Set the ElastiCache IAM user id (default: {@code default.iam-user}). */
+        /**
+         * Set the ElastiCache IAM user id (default: {@code default.iam-user}).
+         *
+         * @param userId the IAM user id
+         * @return this builder
+         */
         public Builder userId(String userId) {
             this.userId = userId;
             return this;
@@ -129,6 +139,9 @@ public final class ElastiCacheIntegrationsClient {
         /**
          * Set whether to verify the cache's TLS certificate and host name (default: true). False is for
          * self-signed test rigs only.
+         *
+         * @param verify whether to verify the certificate and host name
+         * @return this builder
          */
         public Builder verify(boolean verify) {
             this.verify = verify;
@@ -138,13 +151,21 @@ public final class ElastiCacheIntegrationsClient {
         /**
          * Set a PEM CA bundle file to verify the cache's certificate against, instead of the system
          * trust store (default: the system trust store). The host name is still checked.
+         *
+         * @param caCerts the PEM CA bundle file
+         * @return this builder
          */
         public Builder caCerts(Path caCerts) {
             this.caCerts = caCerts;
             return this;
         }
 
-        /** Set the cache behavior options. Null means all defaults, which is also the default. */
+        /**
+         * Set the cache behavior options. Null means all defaults, which is also the default.
+         *
+         * @param clientConfiguration the cache behavior options, or null for the defaults
+         * @return this builder
+         */
         public Builder clientConfiguration(
                 ElastiCacheIntegrationsClientConfiguration clientConfiguration) {
             this.clientConfiguration =
@@ -239,10 +260,12 @@ public final class ElastiCacheIntegrationsClient {
          * session is open: connected, authenticated with {@code HELLO 3 AUTH}, and configured with
          * {@code aws.config}. Closing the returned client disconnects the cache first.
          *
-         * <p>A builder that already has an {@code httpClient} or {@code httpClientBuilder} fails,
-         * because install would replace its transport settings. Build that HTTP client, pass it to
-         * {@link #originHttpClient}, and remove it from the builder.
+         * <p>A builder that already has an {@code httpClient(...)} or {@code httpClientBuilder(...)}
+         * fails, because install would replace its transport settings. Build that HTTP client, pass it
+         * to {@link #originHttpClient}, and remove it from the builder.
          *
+         * @param <B> the SDK client builder type
+         * @param <C> the SDK client type
          * @param sdkClientBuilder the application's client builder, for example {@code
          *     DynamoDbClient.builder().region(Region.US_EAST_1)}
          * @return the built client
@@ -321,9 +344,11 @@ public final class ElastiCacheIntegrationsClient {
          *
          * <p>It does for an asynchronous builder, for example {@code DynamoDbAsyncClient.builder()},
          * what {@link #install} does for a synchronous one. A builder that already has an {@code
-         * httpClient} or {@code httpClientBuilder} fails. Build that HTTP client and pass it to {@link
-         * #originAsyncHttpClient}.
+         * httpClient(...)} or {@code httpClientBuilder(...)} fails. Build that HTTP client and pass it
+         * to {@link #originAsyncHttpClient}.
          *
+         * @param <B> the SDK client builder type
+         * @param <C> the SDK client type
          * @param sdkClientBuilder the application's asynchronous client builder
          * @return the built client
          * @throws ElastiCacheIntegrationsConfigError if an option or the client cannot be used

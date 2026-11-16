@@ -661,7 +661,7 @@ describe("elastiCacheIntegrations middleware", () => {
     await session.close();
   });
 
-  it("does not replay a non-idempotent request racing staleness recovery", async () => {
+  it("marks a PutItem retryable when staleness recovery closes its connection", async () => {
     const { session, connectionLost, goStale } = await staleRaceSession();
     const next = vi.fn<FinalizeHandler<object, object>>(async () => {
       throw new Error("origin must not be called");
@@ -674,8 +674,61 @@ describe("elastiCacheIntegrations middleware", () => {
     await goStale();
 
     await expect(handling).rejects.toBe(connectionLost);
+    expect((connectionLost as Error & { $retryable?: object }).$retryable).toEqual({});
     expect(next).not.toHaveBeenCalled();
     await session.close();
+  });
+
+  it("marks a lost connection retryable for any operation", async () => {
+    const cacheError = new ElastiCacheIntegrationsConnectionLost("connection closed by peer");
+    const session = fakeSession({
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw cacheError;
+      }),
+    });
+    const next = vi.fn<FinalizeHandler<object, object>>(async () => {
+      throw new Error("origin must not be called");
+    });
+    const handler = cacheMiddleware("dynamodb", session)(next, {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
+    expect((cacheError as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it("does not mark a lost connection retryable while the connection is healthy", async () => {
+    const cacheError = new ElastiCacheIntegrationsConnectionLost("connection closed");
+    const session = fakeSession({
+      request: vi.fn(async () => {
+        throw cacheError;
+      }),
+    });
+    const handler = cacheMiddleware("dynamodb", session)(vi.fn(), {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
+    expect((cacheError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+  });
+
+  it("does not mark a lost connection retryable after the session is closed", async () => {
+    const cacheError = new ElastiCacheIntegrationsConnectionLost("connection closed");
+    const session = fakeSession({
+      isOpen: false,
+      isConnectionHealthy: false,
+      request: vi.fn(async () => {
+        throw cacheError;
+      }),
+    });
+    const handler = cacheMiddleware("dynamodb", session)(vi.fn(), {
+      commandName: "UpdateItemCommand",
+    });
+
+    await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
+    expect((cacheError as Error & { $retryable?: object }).$retryable).toBeUndefined();
   });
 
   it("does not replay non-idempotent ElastiCacheIntegrations failures at the origin", async () => {

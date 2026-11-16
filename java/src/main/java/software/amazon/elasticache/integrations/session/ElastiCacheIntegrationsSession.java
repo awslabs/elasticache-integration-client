@@ -1024,7 +1024,8 @@ class ElastiCacheIntegrationsSession implements Closeable {
                             return false;
                         }
                         throw new ElastiCacheIntegrationsCacheUnavailable(
-                                "Cache has no cache connection and origin fallback is no longer allowed");
+                                "ElastiCacheIntegrations has no cache connection and origin fallback is no longer"
+                                        + " allowed");
                     }
                     try {
                         stateLock.wait(nanosToMillisCeil(remainingNanos));

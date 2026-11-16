@@ -3,6 +3,7 @@ package software.amazon.elasticache.integrations.session;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -536,8 +537,8 @@ class ElastiCacheIntegrationsClientTest {
 
             Map<String, Object> sent = handle.get().getSession().overrides();
             assertEquals(Collections.singletonMap("cached_tables", Collections.singletonList("t")), sent);
-            assertTrue(sent != overrides);
-            assertTrue(sent.get("cached_tables") != tables);
+            assertNotSame(overrides, sent);
+            assertNotSame(tables, sent.get("cached_tables"));
         }
     }
 
@@ -604,6 +605,7 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
+    @SuppressWarnings("ReferenceEquality") // The wrapper stands in for the builder it delegates to.
     void clientRejectsABuilderItCannotInspect() {
         RecordingOriginClientBuilder ownTransport = new RecordingOriginClientBuilder();
         DynamoDbClientBuilder real = appBuilder().httpClientBuilder(ownTransport);
