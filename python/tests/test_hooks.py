@@ -295,12 +295,25 @@ def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
 def test_idempotent_connection_errors_are_sdk_retryable(cache_error):
     sdk = MockClient()
     session = mock_session()
+    session.is_connection_healthy = False
     session.request.side_effect = cache_error
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
     with pytest.raises(ConnectionClosedError) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
     assert exc_info.value.__cause__ is cache_error
+
+
+def test_idempotent_connection_error_on_healthy_connection_is_non_retryable():
+    sdk = MockClient()
+    session = mock_session()
+    cache_error = ElastiCacheIntegrationsConnectionError("connect failed")
+    session.request.side_effect = cache_error
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ElastiCacheIntegrationsConnectionError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is cache_error
 
 
 def test_non_origin_rejection_is_non_retryable_and_does_not_fallback():

@@ -197,7 +197,8 @@ class ElastiCacheIntegrationsHandle:
         fallback window, which is safe for every operation. After sending, a lost connection
         becomes SDK-retryable for every operation, as a dropped connection to the service is, so
         the SDK's retry configuration decides and the retry goes through the cache again. A
-        timeout or connection error becomes SDK-retryable only for a replay-safe operation. A
+        timeout becomes SDK-retryable only for a replay-safe operation, and a connection error only
+        for a replay-safe operation on a dropped connection. A
         healthy-connection ORIGIN_ERROR becomes SDK-retryable only for a replay-safe operation;
         other RESP errors remain terminal. Non-ElastiCacheIntegrations exceptions propagate.
         """
@@ -247,6 +248,9 @@ class ElastiCacheIntegrationsHandle:
                 raise  # non-idempotent operations stop here for other failures
             if isinstance(exc, ElastiCacheIntegrationsTimeoutError):
                 raise ReadTimeoutError(endpoint_url=request.url) from exc
-            if isinstance(exc, ElastiCacheIntegrationsConnectionError):
+            if (
+                isinstance(exc, ElastiCacheIntegrationsConnectionError)
+                and not self._session.is_connection_healthy
+            ):
                 raise ConnectionClosedError(endpoint_url=request.url) from exc
             raise

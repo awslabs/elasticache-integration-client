@@ -73,6 +73,8 @@ def test_decode_vector(vector):
             assert type(excinfo.value) is ERRORS[vector["error"]]
         if "code" in vector:
             assert excinfo.value.code == vector["code"]
+        if "message" in vector:
+            assert str(excinfo.value) == vector["message"]
     elif "response" in vector:
         response = parse(reply)
         expected = vector["response"]
@@ -98,7 +100,10 @@ def test_vectors_use_only_known_fields():
             assert set(vector["request"]["metadata"]) == {"service", "operation"}, vector
     for vector in VECTORS["decode"]:
         outcome = set(vector) - {"name", "command", "reply"}
-        assert outcome in ({"response"}, {"config"}, {"error"}, {"error", "code"}), vector
+        assert outcome - {"message"} in ({"response"}, {"config"}, {"error"}, {"error", "code"}), (
+            vector
+        )
+        assert "message" not in outcome or "error" in outcome, vector
         if "response" in vector:
             assert set(vector["response"]) == {"status", "headers", "body"}, vector
         if "config" in vector:

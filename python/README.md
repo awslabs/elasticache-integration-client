@@ -212,13 +212,30 @@ After a request is sent, a lost connection becomes a botocore-retryable error fo
 the same as a dropped connection to the service, so the client's retry configuration decides
 whether to retry. Like a retry without the cache, a retried write may be applied twice if the
 first attempt reached the service. The retry goes through the cache again and may fall back to
-origin. A timeout or connection error becomes botocore-retryable only for an operation in the
-shared replay-safe catalog. While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error
+origin. A timeout becomes botocore-retryable only for an operation in the shared replay-safe
+catalog. A connection error becomes botocore-retryable only for a cataloged operation while the
+connection is down. While the connection remains healthy, `ORIGIN_ERROR` becomes a botocore-retryable error
 only for a cataloged operation. `AUTH_ERROR` closes the stale connection and passes the rejected
 request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the
 rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP
 errors, and timeouts or connection errors for non-idempotent operations, propagate without origin
 fallback.
+
+## Errors
+
+The client's own exceptions extend `ElastiCacheIntegrationsError`, but a request's failure may
+reach the application as a botocore exception instead, such as `ConnectionClosedError`, so that
+botocore can retry it. The client's exception is then its `__cause__`. To find out why a request
+failed, walk the `__cause__` chain.
+
+When the cache's request to the service fails, the cache replies `ORIGIN_ERROR`. To detect
+that, look for an `ElastiCacheIntegrationsRejectedError` (from
+`aws_elasticache_integration_client.exceptions`) whose `code` is `"ORIGIN_ERROR"` in the exception
+or its `__cause__` chain. For a cataloged operation on a healthy connection, the
+exception is `ElastiCacheIntegrationsOriginError`, which botocore retries, and the rejection is its
+`__cause__`. Otherwise the rejection is the exception itself.
+
+A rejection's message is `aws.request failed: <CODE> <message>`, the same in every client.
 
 ## Cache policy timeout
 

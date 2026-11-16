@@ -30,10 +30,12 @@ from unittest import mock
 
 import boto3
 import pytest
+from botocore.config import Config
 from botocore.hooks import first_non_none_response
 
 import aws_elasticache_integration_client
-from tests.mock import MockCache
+from aws_elasticache_integration_client.exceptions import ElastiCacheIntegrationsRejectedError
+from tests.mock import MockCache, Reply
 
 ITEM = {"id": {"S": "42"}, "name": {"S": "widget"}}
 
@@ -128,3 +130,43 @@ def test_close_lifecycle(cache, session):
     assert len(cache.requests) == requests_before  # nothing new reached the cache
 
     ddb.close()  # idempotent: second close is pure boto3, must not raise
+
+
+def _origin_error_cause(error):
+    """The ORIGIN_ERROR rejection in the cause chain, as the README tells applications to find it."""
+    while error is not None:
+        if isinstance(error, ElastiCacheIntegrationsRejectedError) and error.code == "ORIGIN_ERROR":
+            return error
+        error = error.__cause__
+    return None
+
+
+@pytest.mark.parametrize(
+    ("operation", "attempts"),
+    [
+        pytest.param("get_item", 2, id="cataloged-retried"),
+        pytest.param("put_item", 1, id="not-cataloged-not-retried"),
+    ],
+)
+def test_origin_error_is_in_the_cause_chain(monkeypatch, session, operation, attempts):
+    """An ORIGIN_ERROR reply reaches the application with the rejection in its cause chain."""
+    cache = MockCache(tls=True, response=Reply.error("ORIGIN_ERROR", "origin unavailable"))
+    cache.start()
+    monkeypatch.setenv("SSL_CERT_FILE", cache.cert_path)
+    ddb = session.client("dynamodb", config=Config(retries={"total_max_attempts": 2}))
+    try:
+        aws_elasticache_integration_client.install(
+            client=ddb, endpoint=cache.endpoint, cache_name="test-cache"
+        )
+        call = getattr(ddb, operation)
+        kwargs = {"Key": ITEM} if operation == "get_item" else {"Item": ITEM}
+        with pytest.raises(Exception) as caught:
+            call(TableName="my-table", **kwargs)
+
+        rejection = _origin_error_cause(caught.value)
+        assert rejection is not None, repr(caught.value)
+        assert str(rejection) == "aws.request failed: ORIGIN_ERROR origin unavailable"
+        assert cache.cache_command_log.count("aws.request") == attempts
+    finally:
+        ddb.close()
+        cache.stop()
