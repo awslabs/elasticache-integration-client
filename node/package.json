@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/awslabs/aws-elasticache-integration-client.git",
+    "url": "git+https://github.com/awslabs/elasticache-integration-client.git",
     "directory": "node"
   },
   "sideEffects": false,

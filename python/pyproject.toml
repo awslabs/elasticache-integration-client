@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/awslabs/aws-elasticache-integration-client"
+Repository = "https://github.com/awslabs/elasticache-integration-client"
 
 [project.optional-dependencies]
 test = [

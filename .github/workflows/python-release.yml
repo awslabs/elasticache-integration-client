@@ -194,7 +194,7 @@ jobs:
     name: Verify PyPI publication
     needs: [build, publish]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     steps:
       - name: Set up Python
@@ -213,12 +213,12 @@ jobs:
           python -m venv "${smoke_env}"
           "${smoke_env}/bin/python" -m pip install --upgrade pip
 
-          for attempt in {1..20}; do
+          for attempt in {1..40}; do
             if "${smoke_env}/bin/python" -m pip install \
               "${PROJECT_NAME}==${EXPECTED_VERSION}"; then
               break
             fi
-            if [[ "${attempt}" == "20" ]]; then
+            if [[ "${attempt}" == "40" ]]; then
               echo "::error::The published version did not become installable from PyPI."
               exit 1
             fi
