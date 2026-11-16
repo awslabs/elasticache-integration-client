@@ -17,14 +17,4 @@ public final class ElastiCacheIntegrationsCacheUnavailable extends IOException {
     public ElastiCacheIntegrationsCacheUnavailable(String message) {
         super(message);
     }
-
-    /**
-     * Create an error for a cache with no usable connection.
-     *
-     * @param message the detail message
-     * @param cause the underlying failure
-     */
-    public ElastiCacheIntegrationsCacheUnavailable(String message, Throwable cause) {
-        super(message, cause);
-    }
 }

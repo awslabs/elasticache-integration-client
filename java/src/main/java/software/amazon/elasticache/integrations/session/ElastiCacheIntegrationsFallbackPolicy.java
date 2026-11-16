@@ -59,7 +59,7 @@ final class ElastiCacheIntegrationsFallbackPolicy {
      */
     static IOException namedFailure(ElastiCacheIntegrationsError failure) {
         if (failure instanceof CacheUnavailableFailure) {
-            return new ElastiCacheIntegrationsCacheUnavailable(failure.getMessage(), failure);
+            return new ElastiCacheIntegrationsCacheUnavailable(failure.getMessage());
         }
         if (failure instanceof ElastiCacheIntegrationsRejectedError
                 && ORIGIN_ERROR.equals(((ElastiCacheIntegrationsRejectedError) failure).getCode())) {

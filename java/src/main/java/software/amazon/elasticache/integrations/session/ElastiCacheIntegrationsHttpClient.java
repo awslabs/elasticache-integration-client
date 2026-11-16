@@ -100,7 +100,8 @@ final class ElastiCacheIntegrationsHttpClient implements SdkHttpClient {
                     throw new IOException("Request was aborted", cancelled);
                 } catch (ElastiCacheIntegrationsError cacheFailure) {
                     if (aborted.get()) {
-                        throw new IOException("Request was aborted", cacheFailure);
+                        IOException named = ElastiCacheIntegrationsFallbackPolicy.namedFailure(cacheFailure);
+                        throw new IOException("Request was aborted", named != null ? named : cacheFailure);
                     }
                     if (!ElastiCacheIntegrationsFallbackPolicy.shouldFallback(
                             session, capturedRequest, cacheFailure)) {

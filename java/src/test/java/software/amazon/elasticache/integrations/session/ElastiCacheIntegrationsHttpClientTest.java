@@ -259,9 +259,11 @@ class ElastiCacheIntegrationsHttpClientTest {
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false);
 
-        assertThrows(
-                ElastiCacheIntegrationsCacheUnavailable.class,
-                () -> client.prepareRequest(signedRequest()).call());
+        ElastiCacheIntegrationsCacheUnavailable failure =
+                assertThrows(
+                        ElastiCacheIntegrationsCacheUnavailable.class,
+                        () -> client.prepareRequest(signedRequest()).call());
+        assertNull(failure.getCause());
         assertEquals(0, origin.prepareCount.get());
     }
 
