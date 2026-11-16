@@ -1,4 +1,4 @@
-# ElastiCache Integrations
+# Integration Client for ElastiCache
 
 A collection of client libraries for integrating applications with
 ElastiCache Integrations. Each client is organized in its own language-specific
