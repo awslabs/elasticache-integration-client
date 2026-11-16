@@ -1,10 +1,10 @@
 """Client-side evaluation of the CEL routing predicates returned by ``aws.config``.
 
-The proxy is authoritative about what may be cached: it returns an ordered list of predicates, each
+The cache is authoritative about what may be cached: it returns an ordered list of predicates, each
 a `CEL <https://cel.dev>`_ boolean expression plus the variables it binds. This module compiles those
 expressions once and evaluates them against each intercepted request to decide "route to the cache"
 or "pass through to the origin service". It is pure: no I/O, no session state, no service-specific
-knowledge — ``"dynamodb"``, ``"GetItem"`` and ``"TableName"`` appear only inside the proxy-authored
+knowledge — ``"dynamodb"``, ``"GetItem"`` and ``"TableName"`` appear only inside the cache-authored
 expressions, never in this code.
 
 Each predicate is evaluated against a fixed request context — ``service``, ``operation``, ``method``,
@@ -32,7 +32,7 @@ from aws_elasticache_integration_client.models import ElastiCacheIntegrationsReq
 logger = logging.getLogger(__name__)
 
 # Names the request context binds. A predicate's ``vars`` may not use them: the context describes
-# the request being evaluated, so letting a proxy-authored variable shadow it would let an expression
+# the request being evaluated, so letting a cache-authored variable shadow it would let an expression
 # match a request it does not describe (a mis-route, the one failure mode this module must prevent).
 _CONTEXT_NAMES = frozenset({"service", "operation", "method", "url", "headers", "body"})
 
@@ -57,7 +57,7 @@ class CompiledPredicate:
     def matches(self, context: dict) -> bool:
         """Whether this predicate is ``true`` for ``context`` (CEL-typed request fields).
 
-        Any evaluation error counts as no-match: the expression is proxy-authored, but a body shape
+        Any evaluation error counts as no-match: the expression is cache-authored, but a body shape
         it did not anticipate must never route rather than raise into the request path. So does a
         result that is not a CEL boolean — an expression that is not a predicate cannot be one by
         coercion, and every non-empty string, list or map is truthy.
@@ -94,7 +94,7 @@ def compile_predicates(raw_config: dict | None) -> list[CompiledPredicate]:
             entry, a missing or non-string ``expr``, or an expression this client's CEL version
             cannot compile. One such entry taints the whole config, which is rejected rather than
             partly applied: caching by the entries that happened to compile would route a different
-            set of requests than the proxy resolved.
+            set of requests than the cache resolved.
     """
     env = celpy.Environment()
     compiled: list[CompiledPredicate] = []
@@ -171,7 +171,7 @@ def _parse_body(body: object) -> dict:
     ``{}`` on: empty, non-JSON, valid JSON that is not an object, or a non-bytes/str body. An
     expression referencing ``body.<field>`` then simply finds nothing and does not match. Size is not
     a reason: the body is parsed however large it is, and an oversized request is rejected by the
-    proxy, which passes it through to the origin service.
+    cache, which passes it through to the origin service.
     """
     if not body or not isinstance(body, (bytes, str)):
         return {}

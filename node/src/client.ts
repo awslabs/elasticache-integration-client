@@ -59,7 +59,7 @@ export interface ElastiCacheIntegrationsClientConfiguration {
    * `query_ttl`, `scan_ttl`) and `item_write_behavior` apply connection-wide, or per table under
    * `table_overrides`.
    *
-   * The object is sent as given. A field name the proxy does not recognise is ignored, so a typo
+   * The object is sent as given. A field name the cache does not recognise is ignored, so a typo
    * or a stale key is dropped without an error.
    */
   cachePolicyOverrides?: Readonly<Record<string, unknown>>;
@@ -414,7 +414,7 @@ export async function install<TClient extends InstallableClient>(
   }
   const configuration = resolveClientConfiguration(clientConfiguration);
   const caCertsPem = caCerts === undefined ? undefined : readCaCerts(caCerts);
-  // botocore names a service by lowercasing its service id and hyphenating spaces; the proxy's
+  // botocore names a service by lowercasing its service id and hyphenating spaces; the cache's
   // predicates match that name, so Node derives it the same way.
   const service = sdkClient.config.serviceId.toLowerCase().replace(/ /g, "-");
   let region: string | undefined;

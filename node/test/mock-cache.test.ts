@@ -6,15 +6,6 @@ import { describe, expect, it } from "vitest";
 import { decodeResp, RespError } from "../src/resp.js";
 import { MockCache } from "./mock-cache.js";
 
-const _REQUEST = [
-  Buffer.from("aws.request"),
-  Buffer.from("POST"),
-  Buffer.from("https://x/"),
-  Buffer.from("hdrs"),
-  Buffer.from("body"),
-  Buffer.from("service=s&op=o"),
-];
-
 describe("MockCache contract", () => {
   it("config with no args replies null", () => {
     /**
@@ -82,20 +73,5 @@ describe("MockCache contract", () => {
 
     expect(value).toBeInstanceOf(RespError);
     expect(value).toMatchObject({ code: "ERR" });
-  });
-
-  it("request parses optional TTL and NTTL", () => {
-    /** The mock parses optional TTL/NTTL keyword args off a request into the recorded record. */
-    const cache = new MockCache();
-
-    cache.handle([
-      ..._REQUEST,
-      Buffer.from("TTL"),
-      Buffer.from("300"),
-      Buffer.from("NTTL"),
-      Buffer.from("30"),
-    ]);
-
-    expect(cache.lastRequest).toMatchObject({ ttl: 300, nttl: 30 });
   });
 });

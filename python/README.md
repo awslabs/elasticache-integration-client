@@ -1,6 +1,5 @@
 # ElastiCacheIntegrations (Python client)
 
-
 ## Install & test
 
 ```bash
@@ -37,6 +36,26 @@ configure `.github/workflows/python-release.yml` as its trusted publisher for th
 environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
 packaging, artifact validation, and wheel smoke stages for an optional version
 without entering the release environment or publishing to PyPI.
+
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `python/`:
+
+```bash
+python -m pip install -e .
+python examples/local_e2e.py
+```
+
+The example loads the repository-root `.env` and runs the scenarios listed in
+the repository README.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
+`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
+`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
 
 ## Current state
 
@@ -172,8 +191,8 @@ connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to
 background signing point through `ElastiCacheIntegrationsClientConfiguration`; it must be a whole number greater than
 0 and less than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
 
-Independently, ElastiCacheIntegrations sends `AUTH` on the live connection every 15 minutes to refresh the proxy's
-forward-access session. A rejected background `AUTH` leaves the existing connection alive on its
+Independently, ElastiCacheIntegrations sends `AUTH` on the live connection every 15 minutes to refresh the
+connection's authentication with the cache. A rejected background `AUTH` leaves the existing connection alive on its
 previous authentication and is retried with backoff. Only a timeout or unexpected reply closes the
 connection for FIFO safety. Closing the boto3 client stops both ElastiCacheIntegrations re-authentication and the
 toolkit's token refresh.
@@ -230,14 +249,13 @@ If confirmation fails, ElastiCacheIntegrations keeps using the last confirmed po
 the connection so a replacement can fetch a current policy. Requests follow the `fallback_duration`
 rules while the connection is being replaced.
 
-## Next steps:
+## Known limitations
 
-- **Observability.** Reconnection and config staleness are logged but emit no metrics, so under the
-  default `fallback_duration` a cache outage has no symptom other than the origin service's bill.
-- **Detecting a silently dead peer.** A peer that vanishes without closing the socket is noticed only
-  when the next request times out. Closing that gap needs a periodic health check.
-- **IAM authentication validation.** Exercise the toolkit-backed flow against a real IAM-enabled
-  cache in addition to the hermetic mock-cache coverage.
-- **Public TTL / NTTL controls.** TTL/NTTL policy is resolved server-side from the
-  `aws.config` overrides; the public API does not expose per-table or per-request TTL
-  overrides yet.
+- The client emits no metrics. Reconnects and cache policy staleness are logged only, so while
+  `fallback_duration` allows fallback, a cache outage shows up only as extra traffic to the origin
+  service.
+- The client has no dedicated health check. A cache that disappears without closing the socket is
+  detected when a command on the connection times out, which closes the connection and starts a
+  reconnect. That command is whichever comes first: the next request, the next background
+  `aws.config` refresh (every `refresh_interval` seconds, which the cache sets), or the next
+  background `AUTH` (every 15 minutes).

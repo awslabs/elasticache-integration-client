@@ -59,7 +59,7 @@ public final class PredicateEvaluator {
      * @throws ElastiCacheIntegrationsConfigUnevaluable {@code predicates} is present but not a list,
      *     an entry is not an object, has no string {@code expr}, or has an expression this client
      *     cannot compile. Caching by the entries that happened to compile would route a different set
-     *     of requests than the proxy resolved.
+     *     of requests than the cache resolved.
      */
     public static PredicateEvaluator compile(Map<String, Object> rawConfig) {
         if (rawConfig == null || !rawConfig.containsKey("predicates")) {

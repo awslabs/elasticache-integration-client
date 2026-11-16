@@ -1,7 +1,7 @@
 """Tests for reconnect, fallback, and client-initiated connection replacement.
 
 Behavioral tests use a real :class:`ElastiCacheIntegrationsConnector` and :class:`MockCache`
-through a :class:`MockTcpProxy`, which can break connections with no request in
+through a :class:`MockTcpRelay`, which can break connections with no request in
 flight. Tests that only exercise the session state machine use an autospec
 connector double.
 """
@@ -38,7 +38,7 @@ from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSe
 from tests.mock import (
     DEFAULT_RESOLVED_CONFIG,
     MockCache,
-    MockTcpProxy,
+    MockTcpRelay,
     Reply,
     mock_connector,
 )
@@ -190,9 +190,9 @@ def config_routing(*operations: str) -> dict:
 
 
 class _ReconnectRig:
-    """A live session whose cache sits behind a proxy the test can cut.
+    """A live session whose cache sits behind a relay the test can cut.
 
-    Bundles the three things a reconnect test drives — the cache, the proxy in front of it, and the
+    Bundles the three things a reconnect test drives — the cache, the relay in front of it, and the
     session — plus counts of the connectors and auth tokens the session has asked for, which is how
     these tests observe that a reconnect happened at all.
     """
@@ -208,12 +208,12 @@ class _ReconnectRig:
     ) -> None:
         self.cache = MockCache(config=config, **cache_kwargs)
         self.cache.start()
-        self.proxy = MockTcpProxy(self.cache.host, self.cache.port)
+        self.relay = MockTcpRelay(self.cache.host, self.cache.port)
         self.connector_count = 0
         self.auth_count = 0
 
         def auth_provider() -> tuple[str, str]:
-            # Counts as a proxy for "did the reconnect resolve fresh credentials?", which is the
+            # Stands in for "did the reconnect resolve fresh credentials?", which is the
             # property that matters: a stale token is how a new connection fails 12 hours later.
             self.auth_count += 1
             return "test-user", f"token-{self.auth_count}"
@@ -221,8 +221,8 @@ class _ReconnectRig:
         def factory() -> ElastiCacheIntegrationsConnector:
             self.connector_count += 1
             return ElastiCacheIntegrationsConnector(
-                self.proxy.host,
-                self.proxy.port,
+                self.relay.host,
+                self.relay.port,
                 tls=False,
                 auth_provider=auth_provider,
                 request_timeout_ms=500,
@@ -238,7 +238,7 @@ class _ReconnectRig:
 
     def close(self) -> None:
         self.session.close()
-        self.proxy.stop()
+        self.relay.stop()
         self.cache.stop()
 
 
@@ -266,7 +266,7 @@ def test_reconnect_after_drop_serves_next_request(rig):
     r = rig()
     assert r.session.request(get_item_request())
 
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
     wait_for_reconnect(r, connection_id=2)
 
     response = r.session.request(get_item_request())
@@ -280,7 +280,7 @@ def test_reconnect_resolves_fresh_credentials_and_repeats_the_handshake(rig):
     assert (r.connector_count, r.auth_count) == (1, 1)
     assert r.cache.cache_command_log.count("aws.config") == 1
 
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
     wait_for_reconnect(r, connection_id=2)
 
     assert r.auth_count == 2
@@ -296,7 +296,7 @@ def test_reconnect_is_single_flight_under_concurrent_failures(rig):
     """
     r = rig()
     assert r.connector_count == 1, "the session starts on connection 1"
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         # Some of these raise (they found the dead connector) and some return None (they arrived
@@ -309,7 +309,7 @@ def test_reconnect_is_single_flight_under_concurrent_failures(rig):
 
     wait_for_reconnect(r, connection_id=2)
     assert r.connector_count == 2, "concurrent failures must share one reconnect"
-    assert r.proxy.accepted_connections == 2
+    assert r.relay.accepted_connections == 2
 
 
 def _swallow_cache_error(
@@ -331,7 +331,7 @@ def test_non_elasticache_integrations_error_during_reconnect_is_retried(rig):
     # From here the cache answers with a config ElastiCacheIntegrations cannot use: 2**200 overflows what CEL can
     # hold, so compile_predicates raises ValueError — a non-ElastiCacheIntegrations error, mid-connection.
     r.cache.set_config({"version": "1.0", "predicates": [{"expr": "true", "vars": {"n": 2**200}}]})
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
 
     # Attempts keep coming, rather than stopping at the first ValueError.
     wait_for_attempts(r, at_least=4)
@@ -351,9 +351,9 @@ def test_reconnect_recompiles_predicates_from_the_new_config(rig):
     r = rig(config=config_routing("GetItem"))
     assert r.session.request(get_item_request())
 
-    # The proxy now answers with a config that no longer routes GetItem.
+    # The cache now answers with a config that no longer routes GetItem.
     r.cache.set_config(config_routing("PutItem"))
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
     wait_for_reconnect(r, connection_id=2)
 
     assert not r.session.request(get_item_request())
@@ -383,7 +383,7 @@ def test_a_connection_that_dies_as_it_is_published_is_still_replaced(rig):
         return published
 
     manager._finish_reconnect = kill_as_it_is_published
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
 
     # The second connection died on arrival, so a third one has to follow it.
     wait_for_reconnect(r, connection_id=3)
@@ -397,7 +397,7 @@ def test_disconnect_notification_starts_a_reconnect_without_any_request(rig):
     a cache that drops an idle connection is recovered before the next request arrives.
     """
     r = rig()
-    r.proxy.disconnect_clients()
+    r.relay.disconnect_clients()
 
     wait_for_reconnect(r, connection_id=2)
     assert r.cache.requests == [], "nothing was sent, so only the notification could have driven it"
@@ -516,7 +516,7 @@ def test_zero_window_escalates_until_reconnected(rig):
     with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
         r.session.request(get_item_request())
 
-    r.proxy.allow_connections()
+    r.relay.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
 
@@ -525,7 +525,7 @@ def test_zero_window_auth_error_raises_and_reconnects(rig):
     """With ``fallback_duration=0``, an ``AUTH_ERROR`` raises at once; the reconnect still runs."""
     r = rig(
         policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0),
-        response=Reply.error("AUTH_ERROR", "access denied"),
+        response=Reply.error("AUTH_ERROR", "no credentials"),
     )
 
     with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
@@ -547,7 +547,7 @@ def test_reconnect_probes_indefinitely(rig):
     wait_for_attempts(r, at_least=10)
     assert r.session.state is ConnectionState.RECONNECTING
 
-    r.proxy.allow_connections()
+    r.relay.allow_connections()
     wait_for_state(r.session, ConnectionState.ALIVE)
     assert r.session.request(get_item_request())
 
@@ -570,7 +570,7 @@ def test_a_declined_request_does_not_escalate_during_an_outage(rig):
 def wait_for_attempts(r: _ReconnectRig, at_least: int) -> None:
     """Wait until the session has built ``at_least`` connections.
 
-    A floor rather than an exact count: while the proxy refuses connections the reconnect loop keeps
+    A floor rather than an exact count: while the relay refuses connections the reconnect loop keeps
     trying, so by the time a test looks the count has usually moved on again.
     """
     wait_for(
@@ -582,10 +582,10 @@ def wait_for_attempts(r: _ReconnectRig, at_least: int) -> None:
 def set_as_reconnecting(r: _ReconnectRig) -> None:
     """Cut the connection and leave the session reconnecting.
 
-    The proxy refuses new connections as well, so every reconnect attempt fails and the state stays
+    The relay refuses new connections as well, so every reconnect attempt fails and the state stays
     put — which is why waiting for ``RECONNECTING`` here cannot miss it, unlike during a recovery.
     """
-    r.proxy.disconnect_and_block()
+    r.relay.disconnect_and_block()
     wait_for_state(r.session, ConnectionState.RECONNECTING)
 
 
@@ -686,13 +686,13 @@ def test_close_interrupts_a_connection_being_opened():
     """
     cache = MockCache()
     cache.start()
-    proxy = MockTcpProxy(cache.host, cache.port)
+    relay = MockTcpRelay(cache.host, cache.port)
     try:
         session = ElastiCacheIntegrationsSession(
-            _RealConnectors(proxy.host, proxy.port, connection_timeout_ms=30000), policy=_fast()
+            _RealConnectors(relay.host, relay.port, connection_timeout_ms=30000), policy=_fast()
         )
         cache.failure, cache.failure_command = "hang", "hello"
-        proxy.disconnect_clients()
+        relay.disconnect_clients()
         # The reconnect is now inside the handshake the cache will never answer.
         wait_for(lambda: cache.cache_command_log.count("hello") >= 2)
 
@@ -700,7 +700,7 @@ def test_close_interrupts_a_connection_being_opened():
         session.close()
         elapsed = time.monotonic() - started
     finally:
-        proxy.stop()
+        relay.stop()
         cache.stop()
 
     assert not [

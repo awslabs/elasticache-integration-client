@@ -30,13 +30,13 @@ export const PUSH_KIND_RESPONSE = Buffer.from("aws.response", "ascii");
 /**
  * Protocol version this client speaks, sent in every `aws.config` overrides payload.
  *
- * Mandatory server-side: an exchange without it is rejected rather than defaulted. The cache
- * answers in the newest version it supports at or below this one, so a client ahead of its
- * proxy is clamped down rather than refused -- and learns which version it got from the
+ * Mandatory server-side: an exchange without it is rejected rather than defaulted. The server
+ * answers in the newest version it supports at or below this one, so a client ahead of the
+ * server is clamped down rather than refused -- and learns which version it got from the
  * resolved config's `version`, which carries the *negotiated* version, not an echo of this.
  */
 export const PROTOCOL_VERSION = "1.0";
-/** RESP error code the proxy returns when it rejects the `aws.config` overrides. */
+/** RESP error code the cache returns when it rejects the `aws.config` overrides. */
 export const CONFIG_INVALID_CODE = "CONFIG_INVALID";
 
 const MIN_STATUS = 100;

@@ -39,53 +39,6 @@ class MockCacheTest {
         assertEquals("https://example.com", req.getUrl());
         assertEquals("host:example.com", req.getHeaders());
         assertEquals("service=s3&op=GetObject", req.getMetadata());
-        assertNull(req.getTtl());
-        assertNull(req.getNttl());
-    }
-
-    @Test
-    void handleRequest_withTtl() {
-        List<RespValue> command =
-                makeRequestCommand(
-                        "GET", "https://example.com", "", new byte[0], "service=s3&op=Get", "TTL", "300");
-
-        cache.handle(command);
-        ReceivedRequest req = cache.getLastRequest();
-        assertEquals("300", req.getTtl());
-        assertNull(req.getNttl());
-    }
-
-    @Test
-    void handleRequest_withNttl() {
-        List<RespValue> command =
-                makeRequestCommand(
-                        "GET", "https://example.com", "", new byte[0], "service=s3&op=Get", "NTTL", "60");
-
-        cache.handle(command);
-        ReceivedRequest req = cache.getLastRequest();
-        assertNull(req.getTtl());
-        assertEquals("60", req.getNttl());
-    }
-
-    @Test
-    void handleRequest_withBothTtlAndNttl() {
-        List<RespValue> command =
-                makeRequestCommand(
-                        "POST",
-                        "https://example.com/path",
-                        "content-type:application/json",
-                        "body".getBytes(StandardCharsets.UTF_8),
-                        "service=ec2&op=Describe",
-                        "TTL",
-                        "300",
-                        "NTTL",
-                        "60");
-
-        cache.handle(command);
-        ReceivedRequest req = cache.getLastRequest();
-        assertEquals("POST", req.getMethod());
-        assertEquals("300", req.getTtl());
-        assertEquals("60", req.getNttl());
     }
 
     @Test

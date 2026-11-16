@@ -184,8 +184,8 @@ type SendRequest = (
  * The request handler is the only step the SDK passes the call's `abortSignal` to. An abort is the
  * SDK's `AbortError` and never falls back.
  *
- * A Proxy rather than a patched `handle`, because an application may share one handler between
- * clients. Every other member reaches the real handler unchanged.
+ * It wraps the handler instead of patching `handle`, because an application may share one handler
+ * between clients. Every other member reaches the real handler unchanged.
  */
 export function cacheRequestHandler<THandler extends object>(
   handler: THandler,

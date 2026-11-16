@@ -50,8 +50,8 @@ public final class ElastiCacheIntegrationsProtocol {
     /**
      * Protocol version this client speaks, sent in every {@code aws.config} overrides payload.
      *
-     * <p>Mandatory server-side: an exchange without it is rejected rather than defaulted. The proxy
-     * answers in the newest version it supports at or below this one, so a client ahead of its proxy
+     * <p>Mandatory server-side: an exchange without it is rejected rather than defaulted. The server
+     * answers in the newest version it supports at or below this one, so a client ahead of the server
      * is clamped down rather than refused -- and learns which version it got from {@link
      * software.amazon.elasticache.integrations.model.ResolvedConfig#getVersion()}, which carries the
      * <em>negotiated</em> version, not an echo of this.
@@ -61,7 +61,7 @@ public final class ElastiCacheIntegrationsProtocol {
     /** Key the protocol version is sent under inside the overrides object. */
     private static final String VERSION_KEY = "version";
 
-    /** RESP error code the proxy returns when it rejects the {@code aws.config} overrides. */
+    /** RESP error code the cache returns when it rejects the {@code aws.config} overrides. */
     public static final String CONFIG_INVALID_CODE = "CONFIG_INVALID";
 
     private static final Set<String> EXCLUDED_HEADERS;

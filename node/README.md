@@ -71,7 +71,7 @@ the original signed SDK request continues to the configured origin transport
 without a cache round trip. Evaluation errors and malformed or non-object JSON
 bodies count as no match. A predicate that cannot be compiled is different: one
 bad entry rejects the whole config rather than caching by the entries that did
-compile, because those would route a different set of requests than the proxy
+compile, because those would route a different set of requests than the cache
 resolved. `install()` fails on such a config, a reconnect retries, and a refresh
 keeps the last good config.
 
@@ -222,7 +222,7 @@ policy, and a healthy connection is never dropped. Requests follow the
 already in flight when the connection drops is returned to the SDK for retry, so
 the retry applies the same reconnection wait and fallback window.
 
-A `CONFIG_INVALID` reply (the proxy rejected the overrides) and a policy with a
+A `CONFIG_INVALID` reply (the cache rejected the overrides) and a policy with a
 predicate this client cannot compile never fix themselves, so they log at error
 level on every occurrence, including each connection attempt. On refresh they
 still keep the last confirmed policy until the cache policy timeout drops the
@@ -286,6 +286,26 @@ before connecting instead of being silently converted to `null`.
 npm install
 npm run verify
 ```
+
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `node/`:
+
+```bash
+npm ci
+npm run example:local-e2e
+```
+
+The example loads the repository-root `.env` and runs the scenarios listed in
+the repository README.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
+`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
+`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
 
 The package builds ESM and CommonJS outputs and emits TypeScript declarations.
 Annotated `vMAJOR.MINOR.PATCH` and `vMAJOR.MINOR.PATCH-rc.N` tags start the Node

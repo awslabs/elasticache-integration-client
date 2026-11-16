@@ -646,12 +646,13 @@ public final class ElastiCacheIntegrationsClient {
 
     /**
      * Refuse an SDK builder that already has an HTTP client builder. Install replaces it, and the SDK
-     * has no getter to read it back, so its proxy, TLS, timeout, and pool settings would be lost
-     * without an error. SDK 2.21.0 through 2.21.21 keep the builder in a private field; newer
-     * versions keep it as a client-configuration option. This check reads either layout by reflection
-     * so the integration does not link against an option constant that old SDKs lack. A builder this
-     * check cannot read, such as a wrapper around an SDK builder or an SDK version that moved both
-     * locations, is refused too, because install cannot tell whether it would lose a transport.
+     * has no getter to read it back, so its {@code ProxyConfiguration}, TLS, timeout, and pool
+     * settings would be lost without an error. SDK 2.21.0 through 2.21.21 keep the builder in a
+     * private field; newer versions keep it as a client-configuration option. This check reads either
+     * layout by reflection so the integration does not link against an option constant that old SDKs
+     * lack. A builder this check cannot read, such as a wrapper around an SDK builder or an SDK
+     * version that moved both locations, is refused too, because install cannot tell whether it would
+     * lose a transport.
      */
     static void rejectHttpClientBuilder(
             Object sdkClientBuilder, String optionName, String legacyFieldName, String originOption) {

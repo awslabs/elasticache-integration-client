@@ -12,7 +12,7 @@ export class ElastiCacheIntegrationsConnectionError extends ElastiCacheIntegrati
 /** Invalid ElastiCacheIntegrations client or reconnect configuration. */
 export class ElastiCacheIntegrationsConfigError extends ElastiCacheIntegrationsError {}
 
-/** The proxy rejected the `aws.config` overrides (`CONFIG_INVALID`). */
+/** The cache rejected the `aws.config` overrides (`CONFIG_INVALID`). */
 export class ElastiCacheIntegrationsOverridesRejected extends ElastiCacheIntegrationsError {}
 
 /** The resolved config carried a predicate this client cannot evaluate. */

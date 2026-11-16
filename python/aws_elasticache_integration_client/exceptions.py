@@ -25,7 +25,7 @@ class ElastiCacheIntegrationsConfigError(ElastiCacheIntegrationsError, ValueErro
 
 
 class ElastiCacheIntegrationsOverridesRejected(ElastiCacheIntegrationsError):
-    """The proxy rejected the ``aws.config`` overrides (``CONFIG_INVALID``)."""
+    """The cache rejected the ``aws.config`` overrides (``CONFIG_INVALID``)."""
 
 
 class ElastiCacheIntegrationsConfigUnevaluable(ElastiCacheIntegrationsError):

@@ -710,7 +710,7 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
     connector = mock_connector()
     session = ElastiCacheIntegrationsSession(lambda: connector)
     connector.execute.side_effect = None
-    connector.execute.return_value = RespError("AUTH_ERROR", "access denied")
+    connector.execute.return_value = RespError("AUTH_ERROR", "missing credentials")
     session._connection_manager.invalidate_connection = mock.Mock()
     # The real invalidate_connection opens a fresh fallback window; the mock does not.
     session._connection_manager.fallback_allowed = mock.Mock(return_value=True)
@@ -741,7 +741,7 @@ def test_auth_error_with_fallback_closed_raises_at_once(operation):
     connector = mock_connector()
     session = ElastiCacheIntegrationsSession(lambda: connector)
     connector.execute.side_effect = None
-    connector.execute.return_value = RespError("AUTH_ERROR", "access denied")
+    connector.execute.return_value = RespError("AUTH_ERROR", "missing credentials")
     manager = session._connection_manager
     manager.invalidate_connection = mock.Mock()
     manager.fallback_allowed = mock.Mock(return_value=False)

@@ -7,9 +7,9 @@
  * - MockCache models the client-to-cache wire contract: the two commands
  *   `aws.config` and `aws.request`, synchronous success replies, and
  *   error replies. Its pure `handle` method is the contract engine: it
- *   validates command shape, parses `TTL`/`NTTL`, and picks a reply without
- *   doing I/O. The socket server wraps it so a real RESP client can talk to
- *   the mock over plaintext or TLS.
+ *   validates command shape and picks a reply without doing I/O. The socket
+ *   server wraps it so a real RESP client can talk to the mock over plaintext
+ *   or TLS.
  */
 import { readFileSync } from "node:fs";
 import {
@@ -120,8 +120,6 @@ export interface ReceivedRequest {
   headers: Buffer;
   body: Buffer;
   metadata: Buffer;
-  ttl?: number | bigint;
-  nttl?: number | bigint;
   rawArgs: Buffer[];
 }
 
@@ -227,7 +225,7 @@ export class MockCache {
 
   /**
    * Raw arg list (command name excluded) of the most recent `aws.request`.
-   * Returns `[method, url, headers, body, metadata, ...optional TTL/NTTL]`.
+   * Returns `[method, url, headers, body, metadata]`.
    */
   get lastRequestArgs(): Buffer[] | undefined {
     return this.requests.at(-1)?.rawArgs;
@@ -252,8 +250,8 @@ export class MockCache {
    * Turn one decoded RESP command into the RESP reply frame.
    * Pure: no socket, no threads.
    *
-   * Validates command shape, records the command, parses a `aws.request`
-   * including optional `TTL`/`NTTL`, and selects the reply.
+   * Validates command shape, records the command, parses a `aws.request`,
+   * and selects the reply.
    */
   handle(command: Buffer[]): Buffer {
     this.receivedCommands.push(command);
@@ -325,10 +323,10 @@ export class MockCache {
     return _error("ERR", "unknown command");
   }
 
-  /** Decode the 5 mandatory args plus optional `TTL <n>` / `NTTL <n>` keyword args. */
+  /** Decode the 5 mandatory args. */
   private parseRequest(args: Buffer[]): ReceivedRequest {
     const [method, url, headers, body, metadata] = args;
-    const request: ReceivedRequest = {
+    return {
       method: method!,
       url: url!,
       headers: headers!,
@@ -336,16 +334,6 @@ export class MockCache {
       metadata: metadata!,
       rawArgs: [...args],
     };
-    for (let index = 5; index < args.length - 1; index += 1) {
-      const keyword = args[index]!.toString("ascii").toUpperCase();
-      if (keyword === "TTL" || keyword === "NTTL") index += 1;
-      else continue;
-
-      const value = parseCacheInteger(args[index]!);
-      if (keyword === "TTL") request.ttl = value;
-      if (keyword === "NTTL") request.nttl = value;
-    }
-    return request;
   }
 
   /** Pick the reply for a parsed request: callback, fixed override, then default. */
@@ -453,7 +441,7 @@ export class MockCache {
 }
 
 /** Controllable TCP relay used to exercise idle disconnect and reconnect behavior. */
-export class MockTcpProxy {
+export class MockTcpRelay {
   readonly host = "127.0.0.1";
   port?: number;
   acceptedConnections = 0;
@@ -476,7 +464,7 @@ export class MockTcpProxy {
         server.off("error", reject);
         const address = server.address();
         if (!address || typeof address === "string") {
-          reject(new Error("mock proxy did not bind"));
+          reject(new Error("mock relay did not bind"));
           return;
         }
         this.port = address.port;
@@ -533,19 +521,4 @@ export class MockTcpProxy {
     this.sockets.add(socket);
     socket.once("close", () => this.sockets.delete(socket));
   }
-}
-
-/** Parse a cache-protocol decimal integer from command bytes. */
-function parseCacheInteger(value: Buffer): number | bigint {
-  const text = value.toString("latin1");
-  // TTL/NTTL values are sent as canonical decimal bytes. An optional sign and
-  // decimal digits are accepted; for example, "+30" is valid, while "1.5",
-  // "0x10", "1_000", and surrounding whitespace are rejected.
-  if (!/^[+-]?\d+$/.test(text)) {
-    throw new Error(`Invalid integer: ${value.toString("utf8")}`);
-  }
-
-  const integer = BigInt(text);
-  const number = Number(integer);
-  return Number.isSafeInteger(number) ? number : integer;
 }

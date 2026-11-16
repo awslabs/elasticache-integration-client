@@ -325,7 +325,7 @@ class TestElastiCacheIntegrationsConnector:
 
     def test_reauth_rejection_keeps_the_connection_open(self):
         """A background re-AUTH reply arrives in order, so a rejection is not a FIFO desync: the
-        connection stays open and the proxy keeps serving on its last valid token. This is the
+        connection stays open and the cache keeps serving on its last valid token. This is the
         opposite of the HELLO bring-up, where a rejection closes. Internals: _verify_auth_reply
         tested directly."""
         conn = ElastiCacheIntegrationsConnector("host", 6379, tls=False)
@@ -389,7 +389,7 @@ class TestElastiCacheIntegrationsConnector:
         assert repr(reply) not in str(excinfo.value)
 
     def test_handshake_carries_the_credentials_inline(self):
-        """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's identity from the
+        """One frame, `HELLO 3 AUTH <user> <token>`: the cache authenticates the caller from the
         credentials arriving on the HELLO, so no separate AUTH is sent."""
         self.start_cache()
         self.connect(auth_provider=lambda: ("test-user", "test-token"))
@@ -1180,7 +1180,7 @@ class TestElastiCacheIntegrationsConnector:
         assert not self.conn._closed
 
     def test_unknown_push_kind_is_a_protocol_error(self):
-        """The proxy only sends kinds this client understands, so an unknown kind means the
+        """The cache only sends kinds this client understands, so an unknown kind means the
         stream cannot be trusted. Internals: _handle_push."""
         conn = ElastiCacheIntegrationsConnector("host", 6379, tls=False)
         with pytest.raises(ElastiCacheIntegrationsProtocolError, match="unknown push kind"):
