@@ -94,6 +94,10 @@ class ConnectionManager:
         self._connected = threading.Event()
         # The current startup or reconnect attempt must produce a live connection by this time.
         self._ready_deadline = 0.0
+        # Set by a drop for AUTH_ERROR and cleared once a request gets any other reply. While set,
+        # a further AUTH_ERROR drop keeps the fallback deadline instead of opening a new window,
+        # so a cache that rejects every request cannot renew the window forever.
+        self._auth_outage = False
 
         self._closing = threading.Event()  # set by close(); also interrupts a backoff sleep
         self._reconnect_needed = threading.Event()  # "the connection needs rebuilding"
@@ -122,12 +126,18 @@ class ConnectionManager:
             return False
         return time.monotonic() < self._fallback_deadline
 
+    def note_request_served(self) -> None:
+        """Record that a request got a reply other than ``AUTH_ERROR``, which ends an auth outage."""
+        self._auth_outage = False
+
     def _start_outage_deadlines(self) -> None:
         """Set the reconnect and fallback deadlines from one clock reading."""
         self._ready_deadline = time.monotonic() + self._policy.connection_timeout_ms / 1000
         self._fallback_deadline = self._ready_deadline + self._policy.fallback_window
 
-    def invalidate_connection(self, connector: ElastiCacheIntegrationsConnector) -> None:
+    def invalidate_connection(
+        self, connector: ElastiCacheIntegrationsConnector, *, auth_rejected: bool = False
+    ) -> None:
         """Remove a serving connector and begin reconnecting.
 
         Used when a valid protocol reply says the connection's authentication is no longer usable,
@@ -135,12 +145,21 @@ class ConnectionManager:
         connector die.
         The state changes before the connector is closed, so the request that observed the error
         can pass through immediately and later requests cannot race back onto the stale connector.
+
+        ``auth_rejected`` marks a drop for an ``AUTH_ERROR`` reply. A second such drop before any
+        request is served keeps the first drop's fallback deadline.
         """
         with self._state_lock:
             if self._state is ConnectionState.CLOSED:
                 return
             if self._connector is connector:
-                self._start_outage_deadlines()
+                if auth_rejected and self._auth_outage:
+                    self._ready_deadline = (
+                        time.monotonic() + self._policy.connection_timeout_ms / 1000
+                    )
+                else:
+                    self._start_outage_deadlines()
+                self._auth_outage = auth_rejected
                 self._connected.clear()
                 self._connector = None
                 self._state = ConnectionState.RECONNECTING

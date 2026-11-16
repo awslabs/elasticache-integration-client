@@ -724,7 +724,9 @@ def test_auth_error_invalidates_connection_and_passes_request_through():
     )
 
     assert response is None
-    session._connection_manager.invalidate_connection.assert_called_once_with(connector)
+    session._connection_manager.invalidate_connection.assert_called_once_with(
+        connector, auth_rejected=True
+    )
     session.close()
 
 
@@ -752,9 +754,73 @@ def test_auth_error_with_fallback_closed_raises_at_once(operation):
         session.request(_auth_error_request(operation))
 
     assert connector.execute.call_count == 1
-    manager.invalidate_connection.assert_called_once_with(connector)
+    manager.invalidate_connection.assert_called_once_with(connector, auth_rejected=True)
     manager.wait_for_connector.assert_not_called()
     session.close()
+
+
+def _auth_rejecting_connector():
+    """A connector whose handshake and config succeed but whose every request gets AUTH_ERROR."""
+    connector = mock_connector()
+    default = connector.execute.side_effect
+
+    def _execute(command, *args, timeout_ms=None):
+        if command == "aws.request":
+            return RespError("AUTH_ERROR", "access denied")
+        return default(command, *args, timeout_ms=timeout_ms)
+
+    connector.execute.side_effect = _execute
+    return connector
+
+
+def test_repeated_auth_error_does_not_renew_the_fallback_window():
+    # Each AUTH_ERROR drops the connection, and the reconnect succeeds. The window must still run
+    # out: it opens at the first AUTH_ERROR, not at each one.
+    session = ElastiCacheIntegrationsSession(
+        _auth_rejecting_connector,
+        policy=ReconnectPolicy(fallback_duration=1, connection_timeout_ms=100),
+    )
+    request = _auth_error_request("GetItem")
+    deadline = time.monotonic() + 3
+    passed_through = 0
+    try:
+        while time.monotonic() < deadline:
+            try:
+                assert session.request(request) is None
+                passed_through += 1
+            except ElastiCacheIntegrationsCacheUnavailable:
+                break
+        else:
+            pytest.fail("AUTH_ERROR kept renewing the fallback window")
+        assert passed_through > 0
+        # Once the window has run out, later rejections fail at once.
+        with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):
+            session.request(request)
+    finally:
+        session.close()
+
+
+def test_served_request_ends_the_auth_outage():
+    manager_session = ElastiCacheIntegrationsSession(
+        mock_connector, policy=ReconnectPolicy(fallback_duration=60)
+    )
+    manager = manager_session._connection_manager
+    try:
+        first = manager.connector
+        manager.invalidate_connection(first, auth_rejected=True)
+        opened = manager._fallback_deadline
+        assert manager.wait_for_connector() is not None
+        # A second AUTH_ERROR drop before anything is served keeps the window.
+        manager.invalidate_connection(manager.connector, auth_rejected=True)
+        assert manager._fallback_deadline == opened
+        assert manager.wait_for_connector() is not None
+        # A served request ends the outage, so the next AUTH_ERROR opens a new window.
+        manager.note_request_served()
+        time.sleep(0.01)
+        manager.invalidate_connection(manager.connector, auth_rejected=True)
+        assert manager._fallback_deadline > opened
+    finally:
+        manager_session.close()
 
 
 def test_request_after_close_is_rejected_before_connector_use():

@@ -333,7 +333,8 @@ class ElastiCacheIntegrationsSession:
         the SDK or application decides whether to retry them.
 
         An ``AUTH_ERROR`` reply drops the connection so the reconnect re-authenticates. The
-        rejected request passes through while the fallback window is open.
+        rejected request passes through while the fallback window is open. The window opens at the
+        first ``AUTH_ERROR`` and is not renewed by later ones until a request gets another reply.
 
         Raises:
             ElastiCacheIntegrationsCacheUnavailable: If the cache is disconnected, or replied
@@ -356,14 +357,18 @@ class ElastiCacheIntegrationsSession:
 
         command, args = serialize_request(request)
         try:
-            return parse_request_response(connector.execute(command, *args))
+            response = parse_request_response(connector.execute(command, *args))
         except ElastiCacheIntegrationsRejectedError as exc:
             if exc.code != _AUTH_ERROR:
+                # Any other reply means the connection is authenticated.
+                self._connection_manager.note_request_served()
                 raise
-            self._connection_manager.invalidate_connection(connector)
+            self._connection_manager.invalidate_connection(connector, auth_rejected=True)
             if not self._connection_manager.fallback_allowed():
                 raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url) from exc
             return None
+        self._connection_manager.note_request_served()
+        return response
 
     def close(self) -> None:
         """Stop background work, then close the connection and all reconnect activity. Idempotent."""
