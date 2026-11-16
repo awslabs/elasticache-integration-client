@@ -834,7 +834,7 @@ export class ElastiCacheIntegrationsSession {
   }
 }
 
-function sanitizeEndpoint(requestUrl: string): string {
+export function sanitizeEndpoint(requestUrl: string): string {
   try {
     return new URL(requestUrl).origin;
   } catch {

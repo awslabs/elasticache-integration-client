@@ -390,7 +390,8 @@ export type AuthProvider =
       refreshAuth?: () => [string, string] | Promise<[string, string]>;
     };
 
-class ElastiCacheIntegrationsHandshakeRejected extends ElastiCacheIntegrationsConnectionError {}
+/** HELLO error codes that mean the cache rejected the credentials. */
+const AUTH_REJECTION_CODES = new Set(["WRONGPASS", "invalid-iam-credentials"]);
 
 type ConnectedSocket = Socket | TLSSocket;
 
@@ -561,7 +562,7 @@ export class ElastiCacheIntegrationsConnector {
           cause: error,
         });
       }
-      if (error instanceof ElastiCacheIntegrationsHandshakeRejected) {
+      if (error instanceof ElastiCacheIntegrationsAuthError) {
         try {
           await this.authProvider.refreshAuth?.();
         } catch {
@@ -1062,7 +1063,10 @@ export class ElastiCacheIntegrationsConnector {
   private verifyHelloReply(reply: RespValue): void {
     if (reply instanceof RespError) {
       this.markDead(new ElastiCacheIntegrationsConnectionLost("HELLO 3 rejected"));
-      throw new ElastiCacheIntegrationsHandshakeRejected(`HELLO 3 rejected: ${reply.code}`);
+      const message = `HELLO 3 rejected: ${reply.code}`;
+      throw AUTH_REJECTION_CODES.has(reply.code)
+        ? new ElastiCacheIntegrationsAuthError(message)
+        : new ElastiCacheIntegrationsConnectionError(message);
     }
     if (!(reply instanceof Map)) {
       const error = new ElastiCacheIntegrationsConnectionLost("unexpected HELLO 3 reply shape");

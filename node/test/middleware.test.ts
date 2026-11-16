@@ -10,6 +10,7 @@ import {
   ElastiCacheIntegrationsCacheUnavailable,
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsError,
+  ElastiCacheIntegrationsOriginError,
   ElastiCacheIntegrationsProtocolError,
   ElastiCacheIntegrationsRejectedError,
   ElastiCacheIntegrationsRequestNotSent,
@@ -829,7 +830,9 @@ describe("elastiCacheIntegrations middleware", () => {
     const failure = await handler({ input: {}, request: request() }).catch(
       (error: unknown) => error,
     );
-    expect(failure).toBe(cacheError);
+    expect(failure).toBeInstanceOf(ElastiCacheIntegrationsOriginError);
+    expect(failure).not.toBeInstanceOf(ElastiCacheIntegrationsError);
+    expect((failure as Error).cause).toBe(cacheError);
     expect((failure as Error & { $retryable?: object }).$retryable).toEqual({});
     expect(next).not.toHaveBeenCalled();
   });

@@ -50,7 +50,9 @@ middleware returns a retryable failure for every operation, the same as a droppe
 connection to the service, so the SDK's retry settings decide and the retry
 re-enters the session's reconnect wait and fallback gate. As without the cache, a
 retried write may be applied twice if the first attempt reached the service. On a
-healthy connection, `ORIGIN_ERROR` is returned to the SDK as retryable for a cataloged operation.
+healthy connection, `ORIGIN_ERROR` is returned to the SDK for a cataloged operation as
+`ElastiCacheIntegrationsOriginError`. A call without the cache can fail the same way, so this error is
+retryable and is not an `ElastiCacheIntegrationsError`.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once

@@ -12,6 +12,7 @@ import {
   type SocketChunkSource,
 } from "../src/connection.js";
 import {
+  ElastiCacheIntegrationsAuthError,
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsError,
@@ -1113,6 +1114,30 @@ describe("ElastiCacheIntegrationsConnector", () => {
       ElastiCacheIntegrationsConnectionLost,
     );
   });
+
+  it.each([
+    ["WRONGPASS", ElastiCacheIntegrationsAuthError, 1],
+    ["NOPROTO", ElastiCacheIntegrationsConnectionError, 0],
+  ] as const)(
+    "maps a %s HELLO rejection to its error type and refreshes credentials only for it",
+    async (code, errorType, refreshes) => {
+      const cache = await startCache({ helloResponse: Reply.error(code, "rejected") });
+      const authProvider = Object.assign(() => ["test-user", "cached-token"] as [string, string], {
+        refreshAuth: vi.fn(async () => ["test-user", "replacement-token"] as [string, string]),
+      });
+      const connector = new ElastiCacheIntegrationsConnector(cache.host, cache.port!, {
+        tls: false,
+        authProvider,
+      });
+
+      await connector.connect();
+      const error: unknown = await connector.handshake().catch((failure: unknown) => failure);
+      expect(error).toBeInstanceOf(errorType);
+      expect(error instanceof ElastiCacheIntegrationsAuthError).toBe(refreshes === 1);
+      expect(authProvider.refreshAuth).toHaveBeenCalledTimes(refreshes);
+      await connector.close();
+    },
+  );
 
   it("invalidates managed credentials after HELLO rejection", async () => {
     const cache = await startCache({

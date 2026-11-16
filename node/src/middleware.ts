@@ -26,6 +26,7 @@ import {
   ElastiCacheIntegrationsConnectionError,
   ElastiCacheIntegrationsConnectionLost,
   ElastiCacheIntegrationsError,
+  ElastiCacheIntegrationsOriginError,
   ElastiCacheIntegrationsRejectedError,
   ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
@@ -33,6 +34,7 @@ import {
 import { isIdempotentOperation } from "./idempotency.js";
 import { ElastiCacheIntegrationsRequest, RequestMetadata } from "./models.js";
 import type { ElastiCacheIntegrationsResponse } from "./models.js";
+import { sanitizeEndpoint } from "./session.js";
 import type { ElastiCacheIntegrationsSession } from "./session.js";
 
 const CACHE_MIDDLEWARE = "elastiCacheIntegrations";
@@ -216,7 +218,9 @@ export function cacheRequestHandler<THandler extends object>(
       );
       if (error instanceof ElastiCacheIntegrationsRejectedError) {
         if (error.code === ORIGIN_ERROR && session.isConnectionHealthy && idempotent) {
-          throw markRetryable(error);
+          throw new ElastiCacheIntegrationsOriginError(sanitizeEndpoint(request.url), {
+            cause: error,
+          });
         }
         throw error;
       }

@@ -63,3 +63,23 @@ export class ElastiCacheIntegrationsCacheUnavailable extends Error {
     this.endpointUrl = endpointUrl;
   }
 }
+
+/**
+ * ElastiCacheIntegrations could not complete the request to the origin service.
+ *
+ * A call without the cache can fail the same way, so this is not an
+ * ElastiCacheIntegrationsError, and Smithy's retry strategy may retry it.
+ */
+export class ElastiCacheIntegrationsOriginError extends Error {
+  readonly $retryable = {};
+  readonly endpointUrl: string;
+
+  constructor(endpointUrl: string, options?: ErrorOptions) {
+    super(
+      `ElastiCacheIntegrations could not complete the origin request to endpoint "${endpointUrl}".`,
+      options,
+    );
+    this.name = new.target.name;
+    this.endpointUrl = endpointUrl;
+  }
+}
