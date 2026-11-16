@@ -569,6 +569,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @throws ElastiCacheIntegrationsConnectionError if any other step fails
      * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the overrides
      *     (CONFIG_INVALID)
+     * @throws ElastiCacheIntegrationsError if the auth provider fails
      */
     public ResolvedConfig connectAndAuthenticate(
             Supplier<AuthCredentials> authProvider, Map<String, Object> overrides) {
@@ -578,7 +579,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
             creds = authProvider.get();
         } catch (Exception e) {
             markDead();
-            throw new ElastiCacheIntegrationsConnectionError("Auth provider failed", e);
+            throw new ElastiCacheIntegrationsError("Auth provider failed", e);
         }
         handshake(creds.getUserId(), creds.getToken());
         return configureAndStartReader(overrides);
@@ -604,6 +605,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
      * @return the resolved configuration from the cache
      * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
      * @throws ElastiCacheIntegrationsConnectionError if any other step fails
+     * @throws ElastiCacheIntegrationsError if the auth provider fails
      */
     public ResolvedConfig connectAndAuthenticate(Supplier<AuthCredentials> authProvider) {
         return connectAndAuthenticate(authProvider, Collections.emptyMap());

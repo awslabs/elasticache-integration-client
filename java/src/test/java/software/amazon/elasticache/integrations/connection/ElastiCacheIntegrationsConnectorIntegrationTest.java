@@ -128,6 +128,25 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
     }
 
     @Test
+    void connectAndAuthenticate_authProviderFailureIsNotAConnectionError() {
+        ElastiCacheIntegrationsConnector conn =
+                new ElastiCacheIntegrationsConnector("localhost", server.getPort(), clientSslContext);
+        try {
+            ElastiCacheIntegrationsError error =
+                    assertThrows(
+                            ElastiCacheIntegrationsError.class,
+                            () ->
+                                    conn.connectAndAuthenticate(
+                                            () -> {
+                                                throw new IllegalStateException("no credentials");
+                                            }));
+            assertFalse(error instanceof ElastiCacheIntegrationsConnectionError);
+        } finally {
+            conn.close();
+        }
+    }
+
+    @Test
     void connectAndAuthenticate_withSupplier() {
         ElastiCacheIntegrationsConnector conn =
                 new ElastiCacheIntegrationsConnector("localhost", server.getPort(), clientSslContext);
