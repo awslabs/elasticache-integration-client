@@ -67,6 +67,7 @@ describe("generateIamAuthToken", () => {
     expect(token).toContain("X-Amz-Credential=");
     expect(token).toContain("X-Amz-Signature=");
     expect(token).toContain("X-Amz-Expires=900");
+    expect(token).toContain("X-Amz-SignedHeaders=host");
   });
 
   it("reports missing credentials without exposing token material", async () => {

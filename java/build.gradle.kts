@@ -103,6 +103,77 @@ if (awsSdkRuntimeVersion.isPresent) {
     }
 }
 
+val examplesSourceSet = sourceSets.create("examples") {
+    java.srcDir("examples")
+    resources {
+        srcDir("examples")
+        include("META-INF/**")
+    }
+    compileClasspath += sourceSets.main.get().output + configurations.runtimeClasspath.get()
+    runtimeClasspath += output + compileClasspath
+}
+
+dependencies {
+    add(examplesSourceSet.implementationConfigurationName, platform("software.amazon.awssdk:bom:${providers.gradleProperty("awsSdkVersion").getOrElse("2.55.6")}"))
+    add(examplesSourceSet.implementationConfigurationName, "software.amazon.awssdk:dynamodb")
+    // Resolves `login_session` profiles created by `aws login`.
+    add(examplesSourceSet.runtimeOnlyConfigurationName, "software.amazon.awssdk:signin")
+    // signin pulls in slf4j-api with no backend, which prints a warning at startup.
+    add(examplesSourceSet.runtimeOnlyConfigurationName, "org.slf4j:slf4j-nop:1.7.36")
+}
+
+fun parseEnvLines(text: String): Map<String, String> =
+    text.lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("#") && it.contains("=") }
+        .associate { line ->
+            val separator = line.indexOf('=')
+            line.substring(0, separator).trim() to
+                line.substring(separator + 1).trim().removeSurrounding("\"").removeSurrounding("'")
+        }
+
+fun registerE2eExample(name: String, mainClassName: String, taskDescription: String) =
+    tasks.register<JavaExec>(name) {
+        group = "application"
+        description = taskDescription
+        dependsOn(examplesSourceSet.classesTaskName)
+        classpath = examplesSourceSet.runtimeClasspath
+        mainClass.set(mainClassName)
+
+        // TunnelResolverProvider uses the JDK 18+ resolver SPI.
+        javaLauncher.set(javaToolchains.launcherFor {
+            languageVersion.set(JavaLanguageVersion.of(21))
+        })
+
+        doFirst {
+            // TunnelResolverProvider reads ELASTICACHE_CACHE_HOST and ELASTICACHE_TUNNEL_HOST
+            // and resolves only the cache host to the tunnel, so STS, SSO, and
+            // DynamoDB keep resolving normally.
+            val dotenv = rootProject.file("../.env")
+            val dotenvValues = if (dotenv.isFile) parseEnvLines(dotenv.readText()) else emptyMap()
+            dotenvValues.forEach { (key, value) ->
+                if (System.getenv(key).isNullOrEmpty()) {
+                    environment(key, value)
+                }
+            }
+        }
+    }
+
+registerE2eExample(
+    "runLocalE2eExample",
+    "software.amazon.elasticache.integrations.examples.LocalE2e",
+    "Runs the live ElastiCache Integrations DynamoDB E2E scenarios with the sync client.",
+)
+registerE2eExample(
+    "runLocalE2eAsyncExample",
+    "software.amazon.elasticache.integrations.examples.LocalE2eAsync",
+    "Runs the live ElastiCache Integrations DynamoDB E2E scenarios with the async client.",
+)
+
+tasks.named("check") {
+    dependsOn(examplesSourceSet.classesTaskName)
+}
+
 tasks.withType<JavaCompile>().configureEach {
     if (JavaVersion.current().isJava9Compatible) {
         options.release.set(8)
@@ -128,6 +199,11 @@ tasks.jar {
 tasks.withType<AbstractArchiveTask>().configureEach {
     isPreserveFileTimestamps = false
     isReproducibleFileOrder = true
+}
+
+// The examples are not shipped, so they can use the JDK 18+ resolver SPI.
+tasks.named<JavaCompile>(examplesSourceSet.compileJavaTaskName) {
+    options.release.set(21)
 }
 
 // Gradle itself runs on JDK 21. Pass -PtestJavaVersion=<n> to run the tests on another

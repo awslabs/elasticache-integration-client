@@ -1,6 +1,5 @@
 # ElastiCacheIntegrations (Python client)
 
-
 ## Install & test
 
 ```bash
@@ -37,6 +36,26 @@ configure `.github/workflows/python-release.yml` as its trusted publisher for th
 environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
 packaging, artifact validation, and wheel smoke stages for an optional version
 without entering the release environment or publishing to PyPI.
+
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `python/`:
+
+```bash
+python -m pip install -e .
+python examples/local_e2e.py
+```
+
+The example loads the repository-root `.env` and runs the scenarios listed in
+the repository README.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
+`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
+`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
 
 ## Current state
 
