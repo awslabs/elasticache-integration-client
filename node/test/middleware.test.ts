@@ -734,8 +734,16 @@ describe("elastiCacheIntegrations middleware", () => {
 
   it.each([
     ["a timeout", () => new ElastiCacheIntegrationsTimeoutError("cache unavailable"), true],
-    ["a dropped-connection timeout", () => new ElastiCacheIntegrationsTimeoutError("timed out"), false],
-    ["a connection error", () => new ElastiCacheIntegrationsConnectionError("connect failed"), false],
+    [
+      "a dropped-connection timeout",
+      () => new ElastiCacheIntegrationsTimeoutError("timed out"),
+      false,
+    ],
+    [
+      "a connection error",
+      () => new ElastiCacheIntegrationsConnectionError("connect failed"),
+      false,
+    ],
   ])("marks %s on a write retryable without calling origin", async (_, makeError, healthy) => {
     const cacheError = makeError();
     const session = fakeSession({
