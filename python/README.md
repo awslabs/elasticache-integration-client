@@ -1,266 +1,237 @@
-# ElastiCacheIntegrations (Python client)
+# ElastiCache Integrations for Python
 
-## Install & test
+ElastiCache Integrations provides a caching layer for AWS SDK for Python (Boto3) DynamoDB requests. It connects your DynamoDB client to an ElastiCache Serverless cache, sends supported requests through the cache, and serves cacheable responses without contacting DynamoDB.
 
-```bash
-cd python
-pip install -e '.[test]'   # runtime deps plus pytest and TLS test fixtures
-python -m pytest           # see tests/README.md for details
-pip install -e '.[dev]'    # pinned ruff, mypy, build, twine
-ruff format --check . && ruff check . && mypy
-```
+## Requirements
 
-Runtime requires Python ≥ 3.10. See [`tests/README.md`](tests/README.md) for the test layout and
-how to run the unit vs. end-to-end tests.
+- Python 3.10 or later.
+- boto3 and botocore 1.43 or later (below 2).
 
-## Releases
+## Installation
 
-Python publication is driven by annotated Git tags. Stable releases use
-`vMAJOR.MINOR.PATCH`; release candidates use `vMAJOR.MINOR.PATCH-rc.N`, which maps to the
-PEP 440 version `MAJOR.MINOR.PATCHrcN`. A release tag applies to every language client: Node,
-Python, and Java release together.
-
-The tag is the release version source of truth. The `Python Release` workflow
-converts it to PEP 440 form and stamps `pyproject.toml` only in its temporary
-checkout, leaving the checked-in version at its local development baseline. It
-runs the reusable Python CI workflow, builds one wheel and one source
-distribution, and smoke tests the wheel on Python 3.10, 3.12, and 3.14 before
-waiting for approval from the protected `release` environment and publishing
-with PyPI trusted publishing and attestations. The workflow verifies the
-published version and attaches the distributions plus `python-SHA256SUMS` to
-the matching GitHub Release.
-
-The PyPI distribution name is `aws-elasticache-integration-client`, and the import package is
-`aws_elasticache_integration_client`. The PyPI project must
-configure repository owner `awslabs`, repository `elasticache-integration-client`, workflow
-`python-release.yml`, and environment `release` as its trusted publisher. PyPI matches the
-repository name in the GitHub Actions OIDC token, so this publisher configuration must be updated
-when the GitHub repository is renamed; GitHub's repository redirects do not apply to trusted
-publishing authentication. No PyPI token is used by the workflow. A manual workflow run performs
-the same test, packaging, artifact validation, and wheel smoke stages for an optional version
-without entering the release environment or publishing to PyPI.
-
-## Live DynamoDB E2E example
-
-Complete the repository-wide
-[live cache setup](../README.md#run-the-examples-against-a-live-cache),
-then run from `python/`:
+The client is published to PyPI as [`aws-elasticache-integration-client`](https://pypi.org/project/aws-elasticache-integration-client/). The import package is `aws_elasticache_integration_client`.
 
 ```bash
-python -m pip install -e .
-python examples/local_e2e.py
+pip install aws-elasticache-integration-client
 ```
 
-The example loads the repository-root `.env` and runs the scenarios listed in
-the repository README.
-Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
-miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
-`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
-`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
-`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
-`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
+It installs its dependencies with it, including the [ElastiCache developer toolkit](https://pypi.org/project/developer-toolkit-elasticache/) for IAM authentication. It has no native dependencies.
 
-## Current state
+## Basic Example
 
-The library delivers the happy path: intercept → serialize → `aws.config` handshake →
-`aws.request` → return the cached response over a real TLS RESP3 connection, with
-session-level IAM auth. The transport runs on a **pure-Python RESP3 connector**
-(`ElastiCacheIntegrationsConnector`) — no Glide or other native dependency.
-Its per-request timeout defaults to 5000 ms and can be changed with the
-`cache_request_timeout` field (see below).
+Before:
 
-Cache requests may complete out of order when the cache returns a request ID and later delivers
-the result in a `aws.response` RESP3 push. Deferred requests do not block later FIFO replies. If a
-deferred request times out, only that request is abandoned, and a late push for its ID is dropped.
-A timeout while a request is still FIFO-correlated closes the connection to prevent reply
-misrouting. A RESP3 push with an unrecognized kind is treated as protocol corruption and closes
-the connection. One connection sends at most 100 requests awaiting replies at once. Additional
-callers wait for a slot within their `cache_request_timeout` instead of failing at the concurrency
-boundary, and waiting callers are admitted in arrival order. Queue admission uses at most 75% of
-that timeout, reserving 25% to send and receive a reply. If that budget is exhausted, the request
-is not sent to the cache and continues to origin regardless of operation idempotency.
+```python
+import boto3
 
-## Installing into a client
+ddb = boto3.client("dynamodb", region_name="us-east-1")
 
-`install()` takes a boto3 client the application already built, so the client keeps its own
-profile, `botocore.config.Config`, endpoint and everything else, and its region and credentials
-are the ones the cache is authenticated with.
+ddb.get_item(TableName="Users", Key={"id": {"S": "42"}})
+ddb.close()
+```
+
+After:
 
 ```python
 import boto3
 import aws_elasticache_integration_client
 
 ddb = boto3.client("dynamodb", region_name="us-east-1")
-
 aws_elasticache_integration_client.install(
-    client=ddb, endpoint="my-cache:6379", cache_name="my-cache"
+    client=ddb,
+    endpoint="my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+    cache_name="my-cache",
 )
 
-ddb.get_item(TableName="my-table", Key={"id": {"S": "1"}})  # unchanged
+ddb.get_item(TableName="Users", Key={"id": {"S": "42"}})  # unchanged
+ddb.close()  # also disconnects the cache
 ```
+
+The only change to your application is the call to `install(...)`; see [Configuration](#configuration) for its options. It changes the client you pass in place and returns nothing. Everything else stays the same: you call DynamoDB exactly as before, and the ElastiCache Integrations layer in front of it serves what it can from the cache.
+
+`install` connects to the cache before it returns. If it cannot connect or [authenticate](#authentication), it raises instead of leaving a client that never caches. Your client is then left as it was, so you can keep using it without the cache.
+
+## How it works
+
+- **The cache decides what it serves.** When the client connects, the cache tells it which requests it wants. Those are sent to the cache; everything else goes to DynamoDB as it would without ElastiCache Integrations. See [Request routing](#request-routing).
+- **The cache going down does not take your application down.** If the connection to the cache is lost, the client reconnects in the background, and meanwhile requests go to DynamoDB as they would without ElastiCache Integrations in the middle. Once the connection is back, so is the caching layer. See [Reconnection and fallback](#reconnection-and-fallback) for the full details, and [Configuration](#configuration) to change how long requests wait and fall back.
+- **Closing the client also disconnects the cache.**
+
+## Examples
+
+### Your own session and settings for DynamoDB
+
+`install` keeps everything about the client you pass: its profile, credentials, endpoint and `botocore.config.Config`, including timeouts, retries and connection pool. Set those on the client as usual:
+
+```python
+import boto3
+from botocore.config import Config
+import aws_elasticache_integration_client
+
+session = boto3.Session(profile_name="prod", region_name="us-east-1")
+ddb = session.client(
+    "dynamodb",
+    config=Config(connect_timeout=1, read_timeout=2, max_pool_connections=50),
+)
+
+aws_elasticache_integration_client.install(
+    client=ddb,
+    endpoint="my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+    cache_name="my-cache",
+)
+```
+
+These settings apply to the requests that go to DynamoDB. The connection to the cache has its own options, in [Configuration](#configuration).
+
+The client is synchronous. Install into each boto3 client you create; a client can have the cache installed only once.
+
+## Configuration
+
+Every option has a default, so set only what you change. The docstrings of `install` and `ElastiCacheIntegrationsClientConfiguration` have the full details.
+
+Arguments of `install(...)`, all keyword-only:
 
 | Argument | Default | Meaning |
 |---|---|---|
 | `client` | required | The boto3 client to route through the cache. |
-| `endpoint` | required | Cache endpoint as `host:port`. |
+| `endpoint` | required | The cache endpoint, as `host:port`. |
 | `cache_name` | required | The ElastiCache Serverless cache name. |
-| `user_id` | `default.iam-user` | ElastiCache IAM user id. |
-| `verify` | `True` | Verify the cache's TLS certificate. `False` is for self-signed test rigs only. |
-| `ca_certs` | `None` | CA bundle for the cache's certificate, instead of the system trust store. |
-| `client_configuration` | all defaults | See [Configuration](#configuration). |
+| `user_id` | `default.iam-user` | The ElastiCache IAM user. See [Authentication](#authentication). |
+| `verify` | `True` | Verify the cache's TLS certificate. `False` is for local testing only. |
+| `ca_certs` | system trust store | The path to a CA bundle to verify the cache's certificate with. |
+| `client_configuration` | all defaults | An `ElastiCacheIntegrationsClientConfiguration` with the options below. |
 
-Everything above describes the connection to the **cache**, which the boto3 client knows nothing
-about. TLS to AWS, and everything else about reaching the service, stays the client's own
-configuration.
+These describe the connection to the cache, which the boto3 client knows nothing about. The connection to DynamoDB stays the client's own configuration.
 
-Closing the client disconnects the cache first, then closes the client as usual. A client can
-have the cache installed once; a second `install()` on the same client raises
-`ElastiCacheIntegrationsConfigError`.
-
-## Configuration
-
-Optional ElastiCacheIntegrations settings go in one `aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration`, passed as
-`client_configuration`. Every field has a default, so set only what you change. Cache policy
-settings are sent to the cache through `aws.config`.
-
-```python
-aws_elasticache_integration_client.install(
-    client=ddb,
-    endpoint="my-cache:6379",
-    cache_name="my-cache",
-    client_configuration=aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration(
-        cache_request_timeout=2000,
-        connection_timeout=5000,
-        fallback_duration=60,
-        cache_policy_overrides={"cached_tables": ["Users", "Sessions"]},
-        iam_token_refresh_delay=300,
-    ),
-)
-```
+Fields of `aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfiguration(...)`, all keyword-only:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `cache_request_timeout` | 5000 ms | How long to wait for each ElastiCacheIntegrations request's reply. |
-| `connection_timeout` | 5000 ms | How long to try at startup, and how long a request waits for reconnection after a connection is lost. |
-| `fallback_duration` | `None` (indefinite) | How long requests may go to the origin service while there is no cache connection (see below). |
-| `cache_policy_overrides` | `None` | Settings that change what ElastiCacheIntegrations caches: `cached_tables` and `cached_operations` allowlists, and the cache entry lifetimes. See below. |
-| `cache_policy_timeout` | 3600 s | How long ElastiCacheIntegrations may use a cache policy without confirmation from the cache. |
-| `iam_token_refresh_delay` | 300 s | When the IAM toolkit signs a replacement token in the background. A whole number of seconds. |
+| `cache_request_timeout` | 5000 | How long to wait for the cache to answer a request, in whole milliseconds. See [Errors](#errors) for what a timeout looks like. |
+| `connection_timeout` | 5000 | How long to try connecting at startup, and how long a request waits for a lost connection to come back, in whole milliseconds. See [Reconnection and fallback](#reconnection-and-fallback). |
+| `fallback_duration` | `None` (no limit) | How long requests may go to DynamoDB while the cache is unreachable, in whole seconds. `0` means never. A negative value means no limit. See [Reconnection and fallback](#reconnection-and-fallback). |
+| `cache_policy_overrides` | `None` | What to cache and for how long, as a `dict`. See [Cache policy overrides](#cache-policy-overrides). |
+| `cache_policy_timeout` | 3600 | How long the client keeps using a cache policy the cache has not confirmed, in whole seconds. See [Cache policy timeout](#cache-policy-timeout). |
+| `iam_token_refresh_delay` | `None` (300) | How long after a token is issued a replacement is signed in the background, in whole seconds. 1 to 879. `None` uses the toolkit's default of 300. See [Authentication](#authentication). |
 
-Building `ElastiCacheIntegrationsClientConfiguration` raises `ElastiCacheIntegrationsConfigError` for a value that is not usable.
+Creating `ElastiCacheIntegrationsClientConfiguration` with a value it cannot use, such as a timeout that is not a positive `int`, raises `ElastiCacheIntegrationsConfigError`. So does `install` for a bad endpoint, a client with no region, or a client with no credentials.
 
 ### Cache policy overrides
 
-`cached_tables` and `cached_operations` are **allowlists**, and they intersect: only those
-operations, on only those tables. Each one empty or absent means everything, so the example
-above caches `Users` and `Sessions` and nothing else. There is no exclude form — to keep one
-table out of the cache, name the tables that should be in it.
+These are sent to the cache as a `dict`:
 
-Lifetimes are set per category (`item_ttl`, `item_negative_ttl`, `query_ttl`, `scan_ttl`),
-connection-wide at the top level or per table under `table_overrides`; a `table_overrides`
-entry is settings only and never puts a table in scope.
+| Key | Meaning |
+|---|---|
+| `cached_tables` | The tables to cache. Empty or absent means all tables. |
+| `cached_operations` | The operations to cache, such as `GetItem` or `Query`. Empty or absent means all of them. |
+| `item_ttl`, `item_negative_ttl`, `query_ttl`, `scan_ttl` | How long each kind of entry lives. `item_negative_ttl` covers "this item does not exist". |
+| `item_write_behavior` | How a write updates the cached item. |
+| `table_overrides` | The settings above for one table, keyed by table name. |
+
+`cached_tables` and `cached_operations` are allowlists, and they combine: only those operations, on only those tables. There is no way to exclude a table; to keep one out of the cache, list the tables that should be in it. A `table_overrides` entry only changes settings; it does not add its table to `cached_tables`.
+
+The cache checks the overrides when the client connects. If it does not allow a value, it rejects the overrides with `ElastiCacheIntegrationsOverridesRejected` rather than adjusting them. A key it does not recognize is ignored, so check the spelling of each key.
+
+### Example
 
 ```python
-cache_policy_overrides = {
-    "cached_tables": ["Users", "Sessions"],
-    "cached_operations": ["GetItem", "Query"],
-    "item_ttl": 500,
-    "item_negative_ttl": 0,  # do not cache "this item does not exist"
-    "table_overrides": {"Users": {"item_ttl": 60}},
-}
+import boto3
+from botocore.config import Config
+import aws_elasticache_integration_client
+from aws_elasticache_integration_client import (
+    ElastiCacheIntegrationsClientConfiguration,
+    ElastiCacheIntegrationsError,
+)
+
+# Your DynamoDB client, configured as usual. install keeps all of it.
+session = boto3.Session(profile_name="prod", region_name="us-east-1")
+ddb = session.client("dynamodb", config=Config(read_timeout=3))
+
+try:
+    aws_elasticache_integration_client.install(
+        client=ddb,
+        endpoint="my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+        cache_name="my-cache",
+        client_configuration=ElastiCacheIntegrationsClientConfiguration(
+            cache_request_timeout=2000,  # wait at most 2 s for the cache
+            fallback_duration=60,  # requests may go to DynamoDB for 60 s while the cache is unreachable
+            # Cache only the Users and Sessions tables, and set their item lifetime.
+            cache_policy_overrides={"cached_tables": ["Users", "Sessions"], "item_ttl": 60},
+        ),
+    )
+except ElastiCacheIntegrationsError as e:
+    # The cache could not be reached or rejected the credentials. ddb is unchanged: run without it.
+    print(f"Starting without the cache: {e}")
+
+ddb.get_item(TableName="Users", Key={"id": {"S": "42"}})
+ddb.close()
 ```
 
-A value the cache does not allow is refused at connect time with
-`ElastiCacheIntegrationsOverridesRejected`, rather than being quietly adjusted. A field name
-the cache does not recognise is **ignored**, so a typo fails silently — the names above are
-the whole set.
+## Request routing
 
-## IAM authentication
+When the client connects, the cache sends it a set of routing rules. The client checks each request against them itself: a request that matches any rule is sent to the cache, and every other request goes straight to DynamoDB, with no round trip to the cache.
 
-IAM token generation and refresh come from the Amazon ElastiCache developer toolkit, the
-[`developer-toolkit-elasticache`](https://pypi.org/project/developer-toolkit-elasticache/) package on PyPI.
-The toolkit validates and lowercases cache names and user IDs, re-reads the credentials for
-every newly signed token, and owns the SigV4 signing contract. ElastiCacheIntegrations sends the bearer token
-only in the TLS-protected `HELLO 3 AUTH` exchange; origin request signing remains owned by boto3.
+A rule can look at the request's service, operation, method, URL, headers and JSON body. A rule that fails to evaluate, or a body that is not a JSON object, counts as no match. A rule the client cannot understand at all rejects the whole set, because using only the rest would route requests differently from what the cache intended: connecting fails and is retried, and a refresh keeps the previous rules.
 
-The credentials are the ones behind the boto3 client, so the cache is authenticated as the same
-principal as the requests, and rotation (SSO, assume-role, container, instance metadata) keeps
-working because the credentials object refreshes itself. A client built with
-`signature_version=UNSIGNED` carries none and is rejected.
+A request with a streaming body always goes to DynamoDB, because reading it for the cache would consume it.
 
-`install()` creates a toolkit token manager. It caches the current token, signs a
-replacement in the background after 300 seconds by default, and force-refreshes when a live
-connection explicitly rejects the cached token. Set `iam_token_refresh_delay` to customize that
-background signing point through `ElastiCacheIntegrationsClientConfiguration`; it must be a whole number greater than
-0 and less than 880 seconds, preserving the toolkit's 20-second safety margin on the 15-minute token.
-
-Independently, ElastiCacheIntegrations sends `AUTH` on the live connection every 15 minutes to refresh the
-connection's authentication with the cache. A rejected background `AUTH` leaves the existing connection alive on its
-previous authentication and is retried with backoff. Only a timeout or unexpected reply closes the
-connection for FIFO safety. Closing the boto3 client stops both ElastiCacheIntegrations re-authentication and the
-toolkit's token refresh.
-
-## Reconnection and fallback
-
-A lost connection is rebuilt in the background and retried until it succeeds. Right after the
-loss, a request waits up to `connection_timeout` for the new connection. If the connection is not
-back by then, the AWS SDK sends the request to the origin service using the application's own
-credentials. The same timeout bounds startup; client creation fails if no connection is ready.
-
-How long requests may fall back, counted from the end of `connection_timeout`, is controlled by
-`fallback_duration`:
-
-| `fallback_duration` | Behavior |
-|---|---|
-| `None` (default), or negative | Serve from the origin service indefinitely, so a cache outage never becomes an application outage. |
-| `N > 0` | Serve from the origin service for N seconds, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
-| `0` | Never fall back — wait up to `connection_timeout` for a connection, then raise `ElastiCacheIntegrationsCacheUnavailable`. |
-
-The window is **per outage, not a total budget**: `fallback_duration=60` allows 60 seconds of
-fallback each time the connection is lost, and a connection that keeps flapping gets a fresh 60
-seconds after every successful reconnect.
-
-`aws_elasticache_integration_client.ElastiCacheIntegrationsCacheUnavailable` subclasses botocore's `ConnectionClosedError`, so it is retryable and
-an application's existing `except botocore...` blocks already catch it. Retryable cuts both ways:
-under the SDK's default retry mode a raised request is retried, which is usually what you want — a
-retry after backoff can land once the connection is back. With `fallback_duration=0`, a routed
-request waits only for the part of `connection_timeout` left in the current outage. Later retries in
-the same outage do not restart that wait.
-
-When there is no live cache connection, the request has not been sent and can safely pass through
-for any operation, including routed writes, while the fallback window remains open.
-A write sent to origin during an outage can leave a stale cache entry until its TTL expires.
-After a request is sent, it can fail the same way a call to the service can: the connection is
-lost, the reply times out, or the cache could not reach the service (`ORIGIN_ERROR` on a healthy
-connection). These become the botocore errors the SDK raises for such failures, so the client's
-retry settings decide whether to retry. A retry goes through the cache again and may fall back to
-origin. Like a retry without the cache, a retried write may be applied twice if the first attempt
-reached the service. A lost connection becomes a botocore error for every operation. A timeout, a
-connection error and an `ORIGIN_ERROR` become botocore errors only for an operation in the shared
-replay-safe catalog. `AUTH_ERROR` closes the stale connection and passes the rejected
-request through while reconnection obtains fresh authentication. With `fallback_duration=0`, the
-rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other RESP
-errors, and timeouts or connection errors for non-idempotent operations, propagate without origin
-fallback.
+The client asks the cache for its current rules and [cache policy](#cache-policy-overrides) periodically, at an interval the cache chooses, and replaces the rules all at once, so a request never sees half of an update.
 
 ## Cache policy timeout
 
-ElastiCacheIntegrations automatically confirms the resolved cache policy in the background through `aws.config`.
-A new policy replaces the current one. An unchanged reply confirms that the current policy is still
-valid. Both replies restart the timeout.
+If those periodic [refreshes](#request-routing) fail, the client keeps using the last policy the cache confirmed. [`cache_policy_timeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
 
-If confirmation fails, ElastiCacheIntegrations keeps using the last confirmed policy. That tolerance is bounded by
-`cache_policy_timeout`, one hour by default. After the timeout, the next failed confirmation drops
-the connection so a replacement can fetch a current policy. Requests follow the `fallback_duration`
-rules while the connection is being replaced.
+## Reconnection and fallback
 
-## Known limitations
+**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off and continue until one succeeds or the client is closed.
 
-- The client emits no metrics. Reconnects and cache policy staleness are logged only, so while
-  `fallback_duration` allows fallback, a cache outage shows up only as extra traffic to the origin
-  service.
-- The client has no dedicated health check. A cache that disappears without closing the socket is
-  detected when a command on the connection times out, which closes the connection and starts a
-  reconnect. That command is whichever comes first: the next request, the next background
-  `aws.config` refresh (every `refresh_interval` seconds, which the cache sets), or the next
-  background `AUTH` (every 15 minutes).
+**Requests during an outage.** A request the cache would serve first waits for the connection to come back, up to [`connection_timeout`](#configuration). This wait is per outage, not per request: a request that arrives later in the same outage waits only for what is left of it. If the connection comes back in time, the request is served from the cache.
+
+**After the wait.** If the connection is still down, the request goes to DynamoDB for as long as [`fallback_duration`](#configuration) allows, counted from the end of the wait. The default has no limit, a positive value allows that many seconds, and `0` never allows it. Once the window ends, the request fails with `ElastiCacheIntegrationsCacheUnavailable`, a [retryable error](#errors) for the SDK to handle. A write sent to DynamoDB this way can leave a stale entry in the cache until its [TTL](#cache-policy-overrides) expires.
+
+The window is per outage, not a total budget: with `fallback_duration=60`, each outage gets 60 seconds of fallback, and a connection that keeps dropping gets a fresh 60 seconds after every successful reconnect.
+
+**A request already sent when the connection drops.** It fails with a [retryable error](#errors), whatever its operation, the same as when the connection to DynamoDB drops without the cache. Your SDK retry settings decide whether it is sent again, and the retry goes through the same wait and fallback window as any other request. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
+
+**When the cache rejects the connection's authentication.** If the cache answers a request with `AUTH_ERROR`, the client drops the connection and reconnects with a fresh token. The rejected request goes to DynamoDB if the fallback window allows it, and fails with `ElastiCacheIntegrationsCacheUnavailable` at once with `fallback_duration=0`.
+
+**When the connection is busy.** One connection has at most 100 requests waiting for the cache at a time. Further requests wait for a free slot, in arrival order, for up to three quarters of [`cache_request_timeout`](#configuration). A request that does not get a slot in time is not sent to the cache and goes to DynamoDB, whatever its operation and whatever `fallback_duration` is.
+
+**At startup.** `install` keeps trying to connect until [`connection_timeout`](#configuration) has passed, then raises the last attempt's failure: `ElastiCacheIntegrationsConnectionError` if it could not connect (with the last connection failure as its `__cause__`), `ElastiCacheIntegrationsAuthError` if the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never leaves a client that is not connected to the cache.
+
+## Errors
+
+The client's exceptions are in `aws_elasticache_integration_client.exceptions`. Most extend `ElastiCacheIntegrationsError`, which is also exported from the top-level package with `ElastiCacheIntegrationsConfigError` and `ElastiCacheIntegrationsCacheUnavailable`.
+
+A failure the SDK may retry is raised as a botocore `ConnectionClosedError` or `ReadTimeoutError`, so your retry configuration applies to it as it does to a request to DynamoDB, and the `except` blocks you already have for those catch it. After the SDK's retries, the last one reaches you:
+
+| Error | When |
+|---|---|
+| `ConnectionClosedError` | The connection to the cache was lost after the request was sent, for any operation. |
+| `ReadTimeoutError` | The cache did not answer a read within `cache_request_timeout`. |
+| `ElastiCacheIntegrationsOriginError` | The cache could not get a read's response from DynamoDB (`ORIGIN_ERROR`). |
+| `ElastiCacheIntegrationsCacheUnavailable` | There is no connection to the cache and the [fallback window](#reconnection-and-fallback) has closed. |
+
+Reads here are the operations in [`shared/idempotent-operations.json`](../shared/idempotent-operations.json), such as `GetItem`, `Query` and `Scan`, which are safe to send again. `ElastiCacheIntegrationsOriginError` and `ElastiCacheIntegrationsCacheUnavailable` subclass `ConnectionClosedError`, not `ElastiCacheIntegrationsError`. For the first two, the client's own exception, such as `ElastiCacheIntegrationsConnectionLost` or `ElastiCacheIntegrationsTimeoutError`, is the `__cause__`.
+
+Any other failure is raised as the client's own `ElastiCacheIntegrationsError`, without retries. For example, an error returned by the cache, such as a rejected request, is an `ElastiCacheIntegrationsRejectedError` with the cache's error code in `code`. A write the cache did not answer in time is an `ElastiCacheIntegrationsTimeoutError`, because it is not safe to send again.
+
+## Authentication
+
+The client signs in to the cache with an IAM authentication token, using the region and credentials of the boto3 client you pass to `install`. See the [Configuration example](#example) for a client with its own profile. The cache is accessed as the same identity as your DynamoDB requests, and credential rotation (SSO, assumed roles, container and instance credentials) keeps working, because the client reads the credentials again for every token it signs. A client created with `signature_version=UNSIGNED` has no credentials, and `install` rejects it.
+
+That identity needs the `elasticache:Connect` permission on the cache and on the ElastiCache user ([`user_id`](#configuration), `default.iam-user` by default).
+
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires; set [`iam_token_refresh_delay`](#configuration) to change when. The token is sent only to the cache, over TLS.
+
+About every 15 minutes, the client authenticates each live connection again with the current token. If the cache rejects it, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or its reply is not the expected `OK`, the client drops the connection and [reconnects](#reconnection-and-fallback).
+
+Token signing and refresh come from the [ElastiCache developer toolkit](https://pypi.org/project/developer-toolkit-elasticache/), which also validates the cache name and user ID and converts them to lowercase.
+
+## Logging
+
+The client logs through the standard `logging` module, under the `aws_elasticache_integration_client` logger. It adds only a `NullHandler`, so nothing is printed until your application configures logging. It logs connection loss and reconnection, and failed background refreshes. It never logs credentials or tokens.
+
+## Development
+
+See [DEVELOPER.md](DEVELOPER.md) for building, testing and releasing the client.
