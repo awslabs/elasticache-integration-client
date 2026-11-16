@@ -1415,6 +1415,7 @@ class ElastiCacheIntegrationsSessionTest {
         assertThrows(ElastiCacheIntegrationsConnectionError.class, () -> session.request(request()));
     }
 
+    @SuppressWarnings("UnnecessaryLambda") // Reads better at the call sites.
     private static Supplier<ElastiCacheIntegrationsConnector> neverReconnects() {
         return () -> new TestConnector(true);
     }

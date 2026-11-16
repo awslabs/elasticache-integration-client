@@ -41,6 +41,8 @@ public final class ElastiCacheIntegrationsRequestCancellation {
     /**
      * Run {@code cancellationAction} on cancellation, or now if the request is already cancelled.
      * Only one action may be registered at a time.
+     *
+     * @param cancellationAction the action to run on cancellation
      */
     public void register(Runnable cancellationAction) {
         if (!action.compareAndSet(null, cancellationAction)) {
@@ -51,7 +53,11 @@ public final class ElastiCacheIntegrationsRequestCancellation {
         }
     }
 
-    /** Remove {@code cancellationAction} if it is still registered. */
+    /**
+     * Remove {@code cancellationAction} if it is still registered.
+     *
+     * @param cancellationAction the action to remove
+     */
     public void clear(Runnable cancellationAction) {
         action.compareAndSet(cancellationAction, null);
     }

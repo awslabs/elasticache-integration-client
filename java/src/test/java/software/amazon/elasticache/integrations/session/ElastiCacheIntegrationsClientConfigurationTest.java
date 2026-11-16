@@ -119,6 +119,7 @@ class ElastiCacheIntegrationsClientConfigurationTest {
     }
 
     @Test
+    @SuppressWarnings("UnnecessaryStringBuilder") // A StringBuilder is a test value.
     void clientConfigurationRejectsOverridesThatAreNotJsonSerializable() {
         Map<Object, Object> nonStringKey = new HashMap<>();
         nonStringKey.put(1, "x");
