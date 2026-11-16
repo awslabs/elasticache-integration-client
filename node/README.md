@@ -190,7 +190,7 @@ The client signs in to the cache with an IAM authentication token, using the reg
 
 That identity needs the `elasticache:Connect` permission on the cache and on the ElastiCache user ([`userId`](#configuration), `default.iam-user` by default).
 
-Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and authenticates each live connection again on a regular schedule, with the current token. If the cache rejects the token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelay`](#configuration) to change when the replacement is signed.
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires. About every 15 minutes, it also authenticates each live connection again with the current token. If the cache rejects the token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelay`](#configuration) to change when the replacement is signed.
 
 Token signing and refresh come from the [ElastiCache developer toolkit](https://www.npmjs.com/package/@aws/developer-toolkit-elasticache).
 
