@@ -401,10 +401,7 @@ class ElastiCacheIntegrationsSession implements Closeable {
                 if (lastFailure == null) {
                     throw new ElastiCacheIntegrationsConnectionError("Cache initial connection failed");
                 }
-                // Auth errors are connection errors in Java but not in Python, so check them first.
-                if (timedOut
-                        && lastFailure instanceof ElastiCacheIntegrationsConnectionError
-                        && !(lastFailure instanceof ElastiCacheIntegrationsAuthError)) {
+                if (timedOut && lastFailure instanceof ElastiCacheIntegrationsConnectionError) {
                     throw new ElastiCacheIntegrationsConnectionError(
                             "opening a connection timed out after " + timeoutMs + "ms", lastFailure);
                 }

@@ -1537,10 +1537,9 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
         try {
             conn.connect();
 
-            ElastiCacheIntegrationsConnectionError error =
+            ElastiCacheIntegrationsAuthError error =
                     assertThrows(
-                            ElastiCacheIntegrationsConnectionError.class,
-                            () -> conn.handshake(TEST_USER, TEST_TOKEN));
+                            ElastiCacheIntegrationsAuthError.class, () -> conn.handshake(TEST_USER, TEST_TOKEN));
 
             assertTrue(error.getMessage().contains("NOPROTO"));
             assertFalse(error.getMessage().contains(TEST_TOKEN));

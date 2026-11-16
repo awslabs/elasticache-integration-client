@@ -243,7 +243,7 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 **A request already sent when the connection drops.** It fails with a [retryable error](#errors), whatever its operation, the same as when the connection to DynamoDB drops without the cache. Your SDK retry settings decide whether it is sent again, and the retry goes through the same wait and fallback window as any other request. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
-**At startup.** `install` keeps trying to connect until [`connectionTimeoutMs`](#configuration) has passed, then throws the last attempt's failure: `ElastiCacheIntegrationsConnectionError` if it could not connect, `ElastiCacheIntegrationsAuthError` if the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never returns a client that is not connected to the cache.
+**At startup.** `install` keeps trying to connect until [`connectionTimeoutMs`](#configuration) has passed, then throws the last attempt's failure: `ElastiCacheIntegrationsConnectionError` if it could not connect, `ElastiCacheIntegrationsAuthError` if the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never returns a client that is not connected to the cache. `ElastiCacheIntegrationsAuthError` does not extend `ElastiCacheIntegrationsConnectionError`, because a rejected credential is fixed in IAM rather than in the network, so catch it separately.
 
 ## Errors
 

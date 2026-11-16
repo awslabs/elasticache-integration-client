@@ -20,8 +20,8 @@ import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
-import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
 import software.amazon.elasticache.integrations.mock.MockCache;
 import software.amazon.elasticache.integrations.mock.MockTcpProxy;
 import software.amazon.elasticache.integrations.mock.MockTlsServer;
@@ -230,7 +230,7 @@ class IamAuthClientIntegrationTest {
                                 : new RespError("ERR", "unexpected token"));
 
         assertThrows(
-                ElastiCacheIntegrationsError.class,
+                ElastiCacheIntegrationsAuthError.class,
                 () ->
                         cacheBuilder()
                                 .install(
@@ -254,7 +254,7 @@ class IamAuthClientIntegrationTest {
                 (userId, token) -> new RespError("expired-iam-token", "token expired"));
 
         assertThrows(
-                ElastiCacheIntegrationsError.class,
+                ElastiCacheIntegrationsAuthError.class,
                 () ->
                         cacheBuilder()
                                 .install(

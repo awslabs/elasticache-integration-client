@@ -1343,6 +1343,32 @@ class ElastiCacheIntegrationsSessionTest {
     }
 
     @Test
+    void creatingASessionRethrowsAuthErrorUnchanged() {
+        // A rejected AUTH is retried like any other failure, but is not reported as a timeout.
+        AtomicInteger attempts = new AtomicInteger();
+        ElastiCacheIntegrationsSession session =
+                new ElastiCacheIntegrationsSession(
+                        () ->
+                                new TestConnector() {
+                                    @Override
+                                    public void handshake(String userId, String authToken) {
+                                        attempts.incrementAndGet();
+                                        throw new ElastiCacheIntegrationsAuthError("HELLO 3 rejected: WRONGPASS");
+                                    }
+                                },
+                        () -> new AuthCredentials(TEST_USER, TEST_TOKEN),
+                        null,
+                        timeoutPolicy(300, -1));
+
+        ElastiCacheIntegrationsAuthError thrown =
+                assertThrows(ElastiCacheIntegrationsAuthError.class, session::open);
+
+        assertEquals("HELLO 3 rejected: WRONGPASS", thrown.getMessage());
+        assertTrue(attempts.get() >= 2, "AUTH rejection was not retried: " + attempts.get());
+        assertEquals(ElastiCacheIntegrationsSession.State.CLOSED, session.getState());
+    }
+
+    @Test
     void connectionTimeoutBoundsConnectAndConfigure() throws Exception {
         // The cache accepts the connection and never answers HELLO, so the timeout has to cover the
         // handshake, not only the connect. The connector's own 5 s read timeout would otherwise apply.
