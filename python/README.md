@@ -5,7 +5,7 @@ ElastiCache Integrations provides a caching layer for AWS SDK for Python (Boto3)
 ## Requirements
 
 - Python 3.10 or later.
-- boto3 and botocore 1.43 or later (below 2).
+- boto3 and botocore 1.43 or later.
 
 ## Installation
 
