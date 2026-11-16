@@ -32,9 +32,12 @@ the matching GitHub Release.
 
 The PyPI distribution name is `aws-elasticache-integration-client`, and the import package is
 `aws_elasticache_integration_client`. The PyPI project must
-configure `.github/workflows/python-release.yml` as its trusted publisher for the `release`
-environment. No PyPI token is used by the workflow. A manual workflow run performs the same test,
-packaging, artifact validation, and wheel smoke stages for an optional version
+configure repository owner `awslabs`, repository `elasticache-integration-client`, workflow
+`python-release.yml`, and environment `release` as its trusted publisher. PyPI matches the
+repository name in the GitHub Actions OIDC token, so this publisher configuration must be updated
+when the GitHub repository is renamed; GitHub's repository redirects do not apply to trusted
+publishing authentication. No PyPI token is used by the workflow. A manual workflow run performs
+the same test, packaging, artifact validation, and wheel smoke stages for an optional version
 without entering the release environment or publishing to PyPI.
 
 ## Live DynamoDB E2E example
