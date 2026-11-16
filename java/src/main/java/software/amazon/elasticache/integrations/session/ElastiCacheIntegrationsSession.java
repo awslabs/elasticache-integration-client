@@ -44,9 +44,9 @@ import software.amazon.elasticache.integrations.resp.RespValue;
  * succeeds or the session closes.
  *
  * <p>While no connector is available, a matching request waits up to the connection timeout for the
- * reconnect, then may use origin fallback until the configured fallback duration expires. After a
- * request is admitted to Cache, the HTTP adapters never fall back to the origin directly; a
- * retryable failure is returned to the SDK, whose retry goes through this wait and window again.
+ * reconnect, then may use origin fallback until the configured fallback duration expires. Once a
+ * request is sent to Cache, the HTTP adapters never send it to the origin themselves; a retryable
+ * failure is returned to the SDK, whose retry goes through this wait and window again.
  *
  * <p>Resolved CEL predicates determine which requests are sent to Cache. Requests with no matching
  * predicate are declined for origin pass-through. The background runners started by {@link #open()}

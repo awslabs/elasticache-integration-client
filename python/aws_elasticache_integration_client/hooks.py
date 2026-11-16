@@ -199,8 +199,7 @@ class ElastiCacheIntegrationsHandle:
         failure on a connection to the service is, so the SDK's retry configuration decides and
         the retry goes through the cache again. On a healthy connection, a RESP error is
         SDK-retryable only when its code is in ``_RETRYABLE_CODES``: the cache decides which code
-        to send.
-        Non-ElastiCacheIntegrations exceptions propagate.
+        to send. Non-ElastiCacheIntegrations exceptions propagate.
         """
         try:
             http_request = _aws_to_cache_request(request, kwargs.get("event_name", ""))

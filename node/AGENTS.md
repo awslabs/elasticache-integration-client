@@ -105,8 +105,8 @@ require the corresponding tests, README, and package checks to change with it.
   not bytes-like, such as streams, passed through to the origin without
   calling ElastiCacheIntegrations, a request that was never sent passed to the
   origin, timeouts and dropped-connection failures SDK-retryable for every
-  operation, RESP errors SDK-retryable only for `ORIGIN_ERROR` and
-  `INTERNAL_ERROR_RETRY`, other RESP/validation/shutdown
+  operation, RESP errors on a healthy connection SDK-retryable only for
+  `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, other RESP/validation/shutdown
   failures propagating, and ElastiCacheIntegrations-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,

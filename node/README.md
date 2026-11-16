@@ -27,10 +27,10 @@ This package currently ports the Python implementation's:
   with a per-outage window;
 - AWS SDK v3 middleware that receives the final signed request, strips volatile
   SigV4 headers and the `host`, `x-amz-content-sha256`, and
-  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, marks a
-  timeout or a dropped-connection failure retryable for every operation, and
-  marks a RESP error retryable only for `ORIGIN_ERROR` and
-  `INTERNAL_ERROR_RETRY`;
+  `x-amz-user-agent` headers from the ElastiCacheIntegrations copy, and lets the
+  SDK retry a timeout or a dropped connection for every operation, and an error
+  from the cache only for `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY` on a healthy
+  connection;
 - an async `install()` that adds ElastiCacheIntegrations to an AWS SDK v3 client
   the application already built.
 
@@ -45,14 +45,14 @@ callers wait for a slot within `cacheRequestTimeout` instead of failing at the c
 boundary. Queue admission uses at most 75% of that timeout, reserving 25% to send and receive a
 reply. If that budget is exhausted, the request is not sent to the cache and continues to origin,
 for every operation. The middleware sends requests with no matching predicate
-directly to origin. If the connection drops or the request times out after it was sent,
-the middleware returns a retryable failure for every operation, the same as that
-failure on a connection to the service, so the SDK's retry settings decide and the
-retry re-enters the session's reconnect wait and fallback gate. As without the
-cache, a retried write may be applied twice if the first attempt reached the
-service. If the cache returns an error on a healthy connection, the cache
-decides whether it can be retried: the SDK can retry `ORIGIN_ERROR` and
-`INTERNAL_ERROR_RETRY`, and no other error.
+directly to origin. After a request is sent, retries work as they do without the
+cache: the SDK's retry settings decide whether and how many times a request is
+retried. If the connection drops or the request times out, the SDK can retry it,
+for every operation. A retry goes through the cache again, or to the service if
+the cache is still down. As without the cache, a retried write may be applied
+twice if the first attempt reached the service. If the cache returns
+`ORIGIN_ERROR` or `INTERNAL_ERROR_RETRY` on a healthy connection, the SDK can
+retry the request.
 `AUTH_ERROR` closes the stale connection, starts background recovery, and
 passes the explicitly rejected request through. With `fallbackDuration` set to
 0, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at once
@@ -120,13 +120,9 @@ Wrapped AWS requests are fully serialized and signed by the SDK before
 ElastiCacheIntegrations intercepts them. ElastiCacheIntegrations strips volatile
 SigV4 headers, plus the `host`, `x-amz-content-sha256`, and `x-amz-user-agent`
 headers that the JS SDK adds, only from its copied request model;
-the original signed request remains untouched for origin pass-through. When the
-ElastiCacheIntegrations connection drops or a request times out, the failure
-returns to the SDK's retry pipeline for every operation. The retry re-enters the
-session, which waits for reconnection and applies the configured fallback window
-before using origin. A RESP error is marked SDK-retryable only for `ORIGIN_ERROR`
-and `INTERNAL_ERROR_RETRY`. Other RESP errors, and request
-validation errors and fallback-window exhaustion propagate. Calling `destroy()`
+the original signed request remains untouched for origin pass-through. Other
+errors from the cache, request validation errors and fallback-window exhaustion
+reach the application. Calling `destroy()`
 detaches ElastiCacheIntegrations before SDK teardown, rejects in-flight ElastiCacheIntegrations requests without
 passing shutdown failures to the origin, stops reconnect activity, and is safe
 to repeat. A client can have the cache installed once; a second `install()` on

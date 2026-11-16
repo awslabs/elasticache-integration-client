@@ -247,9 +247,9 @@ If those periodic [refreshes](#request-routing) fail, the client keeps using the
 
 ## Errors
 
-If a request times out or loses its connection to the cache, the SDK can retry it, for any operation. This is the same as without the cache. If the cache returns an error on a healthy connection, the cache decides whether it can be retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no other error. Your SDK retry settings decide how many times a request is retried.
+Retries work as they do without the cache: the SDK's retry settings decide whether and how many times a request is retried. If a request times out or loses its connection to the cache, the SDK can retry it, for any operation. If the cache returns `ORIGIN_ERROR` or `INTERNAL_ERROR_RETRY` on a healthy connection, the SDK can retry the request. Other errors from the cache are not retried.
 
-The client's exceptions all extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a request the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
+A failure the SDK retried reaches you as an `SdkClientException`, as it does without the cache. An error from the cache that is not retried reaches you as an `ElastiCacheIntegrationsError`.
 
 ## Authentication
 

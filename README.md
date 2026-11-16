@@ -10,21 +10,18 @@ through the cache protocol, and allow cacheable responses to be served without
 contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
-The clients never check the operation to decide whether a failure can be
-retried. If a request times out or loses its connection to the cache, the SDK
-can retry it, for any operation. This is the same as without the cache. If the
-cache returns an error on a healthy connection, the cache decides whether it can
-be retried: the SDK can retry `ORIGIN_ERROR` and `INTERNAL_ERROR_RETRY`, and no
-other error. The SDK's
-retry settings decide how many times a request is retried.
+Retries work as they do without the cache: the SDK's retry settings decide
+whether and how many times a request is retried. If a request times out or loses
+its connection to the cache, the SDK can retry it, for any operation. If the
+cache returns `ORIGIN_ERROR` or `INTERNAL_ERROR_RETRY` on a healthy connection,
+the SDK can retry the request. Other errors from the cache are not retried.
 
 When a routed request has not reached the cache because the connection is down,
 it may use the configured origin fallback window, including for writes.
 `AUTH_ERROR` closes the stale connection and safely passes the rejected
 request through while reconnecting. With the fallback set to 0, the rejected
 request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
-RESP errors are non-retryable and do
-not trigger origin fallback.
+errors from the cache are not retried and do not trigger origin fallback.
 
 `shared/protocol-vectors.json` holds wire vectors: the exact RESP bytes each
 client must send for a given request or config, and the response or error type

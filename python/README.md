@@ -208,13 +208,12 @@ the same outage do not restart that wait.
 When there is no live cache connection, the request has not been sent and can safely pass through
 for any operation, including routed writes, while the fallback window remains open.
 A write sent to origin during an outage can leave a stale cache entry until its TTL expires.
-After a request is sent, a lost connection, a timeout or a connection error becomes a
-botocore-retryable error for every operation, the same as that failure on a connection to the
-service, so the client's retry configuration decides whether to retry. Like a retry without the
-cache, a retried write may be applied twice if the first attempt reached the service. The retry
-goes through the cache again and may fall back to origin. If the cache returns an error on a healthy
-connection, the cache decides whether it can be retried: botocore can retry `ORIGIN_ERROR` and
-`INTERNAL_ERROR_RETRY`, and no other error. `AUTH_ERROR` closes the stale connection and passes the
+After a request is sent, retries work as they do without the cache: the client's retry
+configuration decides whether and how many times a request is retried. botocore can retry a lost
+connection, a timeout or a connection error, for every operation. As without the cache, a retried
+write may be applied twice if the first attempt reached the service. The retry goes through the
+cache again and may fall back to origin. If the cache returns `ORIGIN_ERROR` or
+`INTERNAL_ERROR_RETRY` on a healthy connection, botocore can retry the request. `AUTH_ERROR` closes the stale connection and passes the
 rejected request through while reconnection obtains fresh authentication. With
 `fallback_duration=0`, the rejected request raises `ElastiCacheIntegrationsCacheUnavailable` at
 once instead. Other errors from the cache reach the application without a retry or origin
