@@ -34,8 +34,11 @@ import software.amazon.awssdk.identity.spi.IdentityProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.auth.IamAuthTokenProvider;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsAuthError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsError;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOverridesRejected;
 
 /**
  * Installs ElastiCache Integrations into an application's AWS SDK client builder.
@@ -270,7 +273,11 @@ public final class ElastiCacheIntegrationsClient {
          *     DynamoDbClient.builder().region(Region.US_EAST_1)}
          * @return the built client
          * @throws ElastiCacheIntegrationsConfigError if an option or the client cannot be used
-         * @throws ElastiCacheIntegrationsError if the cache connection or authentication fails
+         * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+         * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the cache policy
+         *     overrides
+         * @throws ElastiCacheIntegrationsConnectionError if no connection could be opened in time
+         * @throws ElastiCacheIntegrationsError if the cache connection fails in another way
          */
         public <B extends AwsClientBuilder<B, C> & SdkSyncClientBuilder<B, C>, C extends SdkClient>
                 C install(B sdkClientBuilder) {
@@ -352,7 +359,11 @@ public final class ElastiCacheIntegrationsClient {
          * @param sdkClientBuilder the application's asynchronous client builder
          * @return the built client
          * @throws ElastiCacheIntegrationsConfigError if an option or the client cannot be used
-         * @throws ElastiCacheIntegrationsError if the cache connection or authentication fails
+         * @throws ElastiCacheIntegrationsAuthError if the cache rejects the credentials
+         * @throws ElastiCacheIntegrationsOverridesRejected if the cache rejects the cache policy
+         *     overrides
+         * @throws ElastiCacheIntegrationsConnectionError if no connection could be opened in time
+         * @throws ElastiCacheIntegrationsError if the cache connection fails in another way
          */
         public <B extends AwsClientBuilder<B, C> & SdkAsyncClientBuilder<B, C>, C extends SdkClient>
                 C installAsync(B sdkClientBuilder) {
