@@ -720,10 +720,10 @@ class TestElastiCacheIntegrationsConnector:
             self.send_request()
         assert self.cache.last_request is not None  # the frame really did go out
 
-    def test_send_refused_after_close_reports_not_sent(self):
+    def test_send_refused_after_close_is_connection_lost(self):
         """A send parked behind a wedge and overtaken by close() never reaches the transport.
 
-        The _send liveness guard rejects it, so the caller learns the command was not sent
+        The _send liveness guard rejects it, so the caller gets a lost connection at once
         instead of waiting out its full reply timeout.
         """
         self.connect_and_handshake(request_timeout_ms=5000)
@@ -759,18 +759,18 @@ class TestElastiCacheIntegrationsConnector:
         assert isinstance(outcome[0], ElastiCacheIntegrationsConnectionLost), outcome[0]
         assert self.cache.last_request is None
 
-    def test_execute_after_close_reports_not_sent(self):
-        """execute() on a closed connector never touches a transport, so it reports not-sent."""
+    def test_execute_after_close_is_connection_lost(self):
+        """execute() on a closed connector never touches a transport and raises a lost connection."""
         self.connect()
         self.conn.close()
         with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.conn.execute("aws.request", b"x")
 
-    def test_execute_reports_not_sent_when_the_loop_is_gone(self):
+    def test_execute_is_connection_lost_when_the_loop_is_gone(self):
         """The call_soon_threadsafe arm: the loop dies between the pre-check and the schedule.
 
         execute() checks for a live loop, then hands _send to it; a close() in that window makes
-        the schedule raise RuntimeError. Nothing was written, so it reports not-sent.
+        the schedule raise RuntimeError. Nothing was written, and it raises a lost connection.
         """
         self.connect_and_handshake()
         with mock.patch.object(
@@ -788,7 +788,7 @@ class TestElastiCacheIntegrationsConnector:
         with pytest.raises(ElastiCacheIntegrationsConnectionLost):
             self.send_request()
 
-    def test_admission_timeout_is_not_reported_as_transport_not_sent(self):
+    def test_admission_timeout_is_request_not_sent(self):
         """Admission exhaustion keeps its dedicated error rather than a transport failure."""
         self.start_cache(failure="hang")  # the first request is sent but never answered
         self.connect_and_handshake(max_pending=1)
