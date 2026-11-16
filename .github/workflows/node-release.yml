@@ -226,7 +226,7 @@ jobs:
         env:
           DIST_TAG: ${{ needs.package.outputs.dist-tag }}
           TARBALL: ${{ needs.package.outputs.tarball }}
-        # Trusted publishing adds provenance automatically once the repository is public.
+        # Trusted publishing adds provenance automatically for this public repository.
         run: npm publish ".artifacts/$TARBALL" --ignore-scripts --access public --tag "$DIST_TAG"
 
       - name: Wait for npm propagation

@@ -149,7 +149,7 @@ class ElastiCacheIntegrationsSession:
                 jitter=policy.jitter,
             )
             self._config_refresher.start()
-            # Keep the connection's FAS fresh in the background. Started only after bring-up
+            # Keep the connection's credentials fresh in the background. Started only after bring-up
             # succeeds, so a failed bring-up still throws without leaving a thread behind.
             self._reauth_runner = Refresher(
                 policy.auth_refresh_interval,
@@ -306,7 +306,7 @@ class ElastiCacheIntegrationsSession:
             self._connection_manager.invalidate_connection(connector)
 
     def _reauth_once(self) -> None:
-        """Re-run AUTH on the live connector to refresh its FAS. Runs in the background.
+        """Re-run AUTH on the live connector to refresh its credentials. Runs in the background.
 
         Sends plain ``AUTH`` (not the ``HELLO 3`` bring-up handshake): the connection has already
         negotiated RESP3, so a refresh only needs to re-authenticate with a fresh token.

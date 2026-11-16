@@ -432,7 +432,7 @@ class ElastiCacheIntegrationsClientTest {
 
     @Test
     void authErrorWithZeroFallbackRaisesThroughInstalledClientAndSkipsOrigin() {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "access denied"));
         RecordingOriginClient origin = new RecordingOriginClient();
 
         try (DynamoDbClient client =

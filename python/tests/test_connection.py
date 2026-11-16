@@ -389,7 +389,7 @@ class TestElastiCacheIntegrationsConnector:
         assert repr(reply) not in str(excinfo.value)
 
     def test_handshake_carries_the_credentials_inline(self):
-        """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's FAS from the
+        """One frame, `HELLO 3 AUTH <user> <token>`: the proxy derives the caller's identity from the
         credentials arriving on the HELLO, so no separate AUTH is sent."""
         self.start_cache()
         self.connect(auth_provider=lambda: ("test-user", "test-token"))

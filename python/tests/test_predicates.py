@@ -1,8 +1,8 @@
 """Tests for aws_elasticache_integration_client.predicates — CEL evaluation of resolved-config predicates.
 
 Requires ``cel-python`` (a runtime dependency). The expressions used here are the ones the proxy
-actually emits (see ElastiCacheProxyRust/src/libproxy/aws_elasticache_integration_client/config.rs), so these tests double as a
-cross-check that the client evaluates the proxy's wire format correctly.
+actually emits, so these tests double as a cross-check that the client evaluates the proxy's wire
+format correctly.
 """
 
 import json

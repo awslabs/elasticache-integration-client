@@ -2,7 +2,7 @@
 
 ## Scope
 
-- This repository is a TypeScript implementation of the ElastiCacheIntegrations Node.js client.
+- This directory is the TypeScript implementation of the ElastiCache Integrations Node.js client.
 - `README.md` is the source for user-facing API behavior and feature scope.
 - Keep this file focused on repository workflow, constraints, and non-obvious
   implementation context.
@@ -12,7 +12,8 @@
 - `src/`: production TypeScript modules.
 - `test/`: Vitest tests organized by production concern.
 - `test/mock-cache.ts`: reusable local plaintext/TLS ElastiCacheIntegrations mock.
-- `scripts/`: build, cleanup, and package smoke-test tooling.
+- `scripts/`: build, cleanup, idempotency-catalog generation, release version
+  stamping, and package smoke-test tooling.
 - `src/index.ts`: public package export boundary.
 - `src/predicates.ts`: compiled CEL request-routing predicates.
 - `.github/workflows/node-ci.yml`: CI validation on Node.js 22, 24, and 26.
@@ -33,8 +34,10 @@
 - Before reporting completion, state which validation commands actually ran and
   whether any expected checks were not run.
 
-CI runs formatting, linting, typechecking, `npm test`, and package smoke checks
-as separate steps. `npm run verify` is the equivalent aggregate local gate.
+CI runs the idempotency-catalog check, formatting, linting, typechecking,
+`npm test`, and package smoke checks as separate steps. CI leaves out the two
+alignment test files, which run in `alignment-ci.yml`. `npm run verify` runs
+the same checks plus the alignment tests.
 
 ## Repository contracts
 
@@ -82,8 +85,10 @@ require the corresponding tests, README, and package checks to change with it.
   leave pending requests unresolved after peer loss, protocol failure, close,
   or destroy, or that resurrect a closed connector or allow concurrent
   connects. Safe path: reject use before connect, register before writing,
-  enforce the response-size bound, and reset the whole connection on timeout
-  so late replies cannot match later requests.
+  enforce the response-size bound, and close the whole connection when a FIFO
+  or partly written request times out, so late replies cannot match later
+  requests. A timed-out request already moved to the request-ID map removes
+  only its own entry and keeps the connection.
 - **Session lifecycle and recovery:** flag changes that permit requests before
   `connect → authenticate → aws.config`, use after close, or duplicate
   teardown, create parallel recovery flights, reuse stale AUTH credentials, or
@@ -98,10 +103,11 @@ require the corresponding tests, README, and package checks to change with it.
   bytes-like, or destroy the SDK before ElastiCacheIntegrations. Safe path: preserve final
   serialized unsigned request ordering, synthetic responses, bodies that are
   not bytes-like, such as streams, passed through to the origin without
-  calling ElastiCacheIntegrations, a lost connection SDK-retryable for every
-  operation, other dropped-connection fallback only for cataloged operations,
-  healthy-connection `ORIGIN_ERROR` retries
-  only for cataloged operations, other RESP/non-idempotent/validation/shutdown
+  calling ElastiCacheIntegrations, a request that was never sent passed to the
+  origin, a lost connection SDK-retryable for every operation, other transport
+  failures on a dropped connection SDK-retryable only for cataloged operations,
+  healthy-connection `ORIGIN_ERROR` and timeout retries only for cataloged
+  operations, other RESP/non-idempotent/validation/shutdown
   failures propagating, and ElastiCacheIntegrations-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,
@@ -167,13 +173,15 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
 
 - TLS and certificate verification are enabled by default. `verify: false`
   (TLS without certificate verification) is for local or test endpoints only.
-  Tests that go through `install()` use the TLS mock cache with the localhost
-  fixture as `caCerts`; plaintext (`tls: false`) is reachable only by
-  constructing the connector directly in tests.
+  Tests that send traffic through `install()` use the TLS mock cache with the
+  localhost fixture as `caCerts`; `test/client.test.ts` tests `install()` with
+  mocked connection and session modules. Plaintext (`tls: false`) is reachable
+  only by constructing the connector directly in tests.
 - Never log or commit AWS credentials, IAM tokens, authorization headers, or
   other secret material. Wrapped requests are fully serialized but not
-  origin-signed; Roxy owns origin signing. ElastiCache IAM `elasticache:connect`
-  token signing remains separate and is confined to `AUTH`.
+  origin-signed; the cache signs the requests it sends to the origin.
+  ElastiCache IAM `elasticache:connect` token signing remains separate and is
+  confined to `AUTH`.
 - Prefer hermetic tests and local mocks over live AWS or ElastiCacheIntegrations endpoints.
 - The checked-in TLS certificate and key under `test/fixtures/tls/` are
   localhost-only test fixtures and must not be used for production.
@@ -183,16 +191,18 @@ Normal AWS SDK retry and deserialization behavior remains in scope.
 - Do not commit generated `dist/`, `coverage/`, `.artifacts/`, or `.omx/`
   contents.
 - `npm run pack:smoke` verifies the tarball contains both ESM and CommonJS
-  entrypoints and excludes source, tests, `node_modules`, cache artifacts, and
-  private keys. It also runs publint and `@arethetypeswrong/cli` against the tarball.
+  entrypoints and excludes `src/`, `test/`, `coverage/`, `node_modules/`,
+  `.omx/`, and `*.key` files. It also runs publint and `@arethetypeswrong/cli`
+  against the tarball, checks the packed name and version, and installs the
+  tarball into ESM and CommonJS consumer projects.
 - `.github/workflows/node-release.yml` validates annotated release tags, builds
   one npm tarball, and publishes that exact artifact through the protected
   `release` environment. The tag supplies the published version; keep checked-in
   package and runtime versions at the local development baseline and let
   `scripts/set-package-version.mjs` stamp the release checkout. Manual
   dispatches are non-publishing dry runs. Keep npm publication tokenless through
-  trusted publishing after the package has been bootstrapped. Do not force npm
-  provenance while the source repository is private; trusted publishing adds it
-  automatically once the repository is public.
+  trusted publishing after the package has been bootstrapped. Do not pass
+  `--provenance`; trusted publishing adds provenance automatically for this
+  public repository.
 
 Keep changes small and reviewable.

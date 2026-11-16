@@ -155,7 +155,7 @@ interface ResolvedClientConfiguration {
 }
 
 /**
- * Validate the public seconds-based configuration and convert it to the milliseconds the
+ * Validate the public configuration and convert its seconds-based fields to the milliseconds the
  * transport uses.
  *
  * Runs before transport initialization so a bad value fails fast instead of after a connection

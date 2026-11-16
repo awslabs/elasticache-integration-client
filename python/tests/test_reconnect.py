@@ -525,7 +525,7 @@ def test_zero_window_auth_error_raises_and_reconnects(rig):
     """With ``fallback_duration=0``, an ``AUTH_ERROR`` raises at once; the reconnect still runs."""
     r = rig(
         policy=ReconnectPolicy(fallback_duration=0, base_delay=0.001, max_delay=0.01, jitter=0.0),
-        response=Reply.error("AUTH_ERROR", "no FAS"),
+        response=Reply.error("AUTH_ERROR", "access denied"),
     )
 
     with pytest.raises(ElastiCacheIntegrationsCacheUnavailable):

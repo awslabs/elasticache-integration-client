@@ -598,7 +598,7 @@ class ElastiCacheIntegrationsSessionTest {
     @ParameterizedTest
     @ValueSource(strings = {"GetItem", "PutItem"})
     void authErrorPassesThroughAndStartsReconnect(String operation) {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "access denied"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(createConnection(), TEST_USER, TEST_TOKEN);
         try {
@@ -622,7 +622,7 @@ class ElastiCacheIntegrationsSessionTest {
     @ParameterizedTest
     @ValueSource(strings = {"GetItem", "PutItem"})
     void authErrorWithFallbackClosedRaisesAtOnce(String operation) {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "access denied"));
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(
                         this::createConnection,
@@ -652,7 +652,7 @@ class ElastiCacheIntegrationsSessionTest {
 
     @Test
     void zeroWindowAuthErrorRaisesAndReconnects() throws Exception {
-        cache.setReply(Reply.error("AUTH_ERROR", "missing FAS"));
+        cache.setReply(Reply.error("AUTH_ERROR", "access denied"));
         AtomicInteger connectionCount = new AtomicInteger();
         ElastiCacheIntegrationsSession session =
                 new ElastiCacheIntegrationsSession(

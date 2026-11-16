@@ -258,7 +258,7 @@ describe("ElastiCacheIntegrationsSession", () => {
           ? Buffer.from(
               '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
             )
-          : new RespError("AUTH_ERROR", "missing FAS"),
+          : new RespError("AUTH_ERROR", "access denied"),
       ),
       close,
     });
@@ -306,7 +306,7 @@ describe("ElastiCacheIntegrationsSession", () => {
             ? Buffer.from(
                 '{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"true","vars":{}}]}',
               )
-            : new RespError("AUTH_ERROR", "missing FAS"),
+            : new RespError("AUTH_ERROR", "access denied"),
         ),
       });
       const session = new ElastiCacheIntegrationsSession(
@@ -342,7 +342,7 @@ describe("ElastiCacheIntegrationsSession", () => {
   it("zero window auth error raises and reconnects", async () => {
     const cache = new MockCache({
       config: { predicates: [{ expr: "true", vars: {} }] },
-      response: Reply.error("AUTH_ERROR", "no FAS"),
+      response: Reply.error("AUTH_ERROR", "access denied"),
     });
     await cache.start();
     const factory = vi.fn(

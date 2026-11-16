@@ -42,8 +42,7 @@ from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSe
 
 _CRLF = b"\r\n"
 
-# The resolved config the real proxy returns for empty overrides — see
-# ElastiCacheProxyRust/src/libproxy/aws_elasticache_integration_client/config.rs::resolve. One CEL predicate caching every
+# The resolved config the real proxy returns for empty overrides. One CEL predicate caching every
 # supported read regardless of table; `version` is the predicate *format* version ("1.0", constant).
 #
 # Routing only: the reply carries version, refresh_interval and predicates and no lifetime.

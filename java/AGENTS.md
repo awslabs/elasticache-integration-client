@@ -2,7 +2,7 @@
 
 ## Scope
 
-- This repository is a Java implementation of the Cache client for AWS SDK v2.
+- This directory is the Java implementation of the ElastiCache Integrations client for AWS SDK v2.
 - `README.md` is the source for user-facing API behavior and feature scope.
 - Keep this file focused on repository workflow, constraints, and non-obvious
   implementation context.
@@ -18,21 +18,23 @@
     session, handles, interceptors, transports, ReconnectPolicy and the parsing and SDK adapter helpers
     are package-private. In `auth/`, IamAuthTokenGenerator is package-private, and IamAuthTokenProvider
     and AuthCredentials are internal but must stay public because other packages use them.
-  - `protocol/`: Cache wire protocol serialization.
+  - `protocol/`: ElastiCache Integrations wire protocol serialization.
   - `predicate/`: compiled CEL request-routing predicates.
   - `resp/`: RESP3 codec and value types.
-  - `auth/`: Cache adapters for the ElastiCache IAM toolkit dependency.
+  - `auth/`: adapters for the ElastiCache IAM toolkit dependency.
   - `model/`: ElastiCacheIntegrationsRequest, ElastiCacheIntegrationsResponse, metadata types.
-  - `exception/`: Cache error hierarchy.
+  - `exception/`: ElastiCacheIntegrations error hierarchy.
 - `src/test/java/software/amazon/elasticache/integrations/`: JUnit 5 tests organized by
   production concern.
-- `src/test/.../mock/`: MockCache and MockTlsServer for integration testing.
+- `src/test/.../mock/`: MockCache, MockTlsServer, and MockTcpProxy (a TCP relay
+  that can drop connections, for reconnect tests) for integration testing.
 - `build.gradle.kts`: Gradle Kotlin DSL build configuration.
 
 ## Validation
 
 - Use `./gradlew build` for the complete local gate: compile with Error Prone,
-  Spotless check, tests, JaCoCo reports, Javadoc, and the JAR contents check.
+  Spotless check, tests, JaCoCo reports and coverage gate (85% line, 70%
+  branch), Javadoc, and the JAR contents check.
   Gradle must run on JDK 21.
 - Run `./gradlew spotlessApply` to format `src/` with google-java-format.
 - Run tests on another JDK with `./gradlew test -PtestJavaVersion=<8|11|17|21>`.
@@ -55,9 +57,9 @@
 - Preserve the package structure `software.amazon.elasticache.integrations.*`.
 - Ensure changed behavior has focused regression coverage; add or update tests
   when existing coverage does not already lock the behavior.
-- Use `MockCache` and `MockTlsServer` for Cache command/response integration
-  tests. A purpose-built socket is acceptable for transport-failure or
-  handshake tests.
+- Use `MockCache` and `MockTlsServer` for cache command/response integration
+  tests, and `MockTcpProxy` to drop connections. A purpose-built socket is
+  acceptable for transport-failure or handshake tests.
 
 ## Review bot
 
@@ -83,7 +85,7 @@ require the corresponding tests, README, and build checks to change with it.
   successful or not, so the application's builder can be installed into again. A
   builder that already has an `httpClient` fails with
   `ElastiCacheIntegrationsConfigError`.
-- **Wire shape:** flag changes that can alter Cache interoperability or corrupt
+- **Wire shape:** flag changes that can alter cache interoperability or corrupt
   bytes. Safe path: preserve binary-safe RESP framing and the exact
   `aws.request` five-argument order—method, URL, normalized headers, body,
   metadata—and the JSON-object `aws.config` contract.
@@ -105,10 +107,11 @@ require the corresponding tests, README, and build checks to change with it.
 - **Authentication and transport:** flag divergence from the built SDK client's
   region and credentials provider (read from `serviceClientConfiguration()`),
   stale IAM tokens, reusable connections after HELLO/AUTH failure, disabled
-  TLS verification, or plaintext by default. Safe path: force-refresh
-  credentials for each fresh 15-minute token, periodically re-AUTH live
-  connections, keep the last valid state after an explicit rejection, invalidate
-  the stream after a timeout or malformed reply, confine tokens to the initial
+  TLS verification, or plaintext by default. Safe path: resolve the SDK
+  client's credentials again for each fresh 15-minute token, force-refresh the
+  token after an AUTH rejection, periodically re-AUTH live connections, keep
+  the last valid state after an explicit rejection, invalidate the stream after
+  a timeout or malformed reply, confine tokens to the initial
   HELLO AUTH trailer and subsequent AUTH commands, and keep verified TLS with
   hostname checking as the default.
 - **Client readiness:** flag returning a partially initialized client or masking
@@ -148,7 +151,7 @@ require the corresponding tests, README, and build checks to change with it.
 
 ### Scope gate
 
-Failover to another Cache endpoint remains out of scope. CEL predicate routing,
+Failover to another cache endpoint remains out of scope. CEL predicate routing,
 indefinite background reconnection with a bounded origin-fallback window,
 periodic config refresh, and deferred responses delivered by `aws.response`
 pushes are
@@ -210,9 +213,9 @@ at `SEVERE` on every occurrence.
   other secret material.
 - The Java IAM toolkit is the Maven Central dependency
   `software.amazon.elasticache:developer-toolkit-elasticache`. Keep token
-  validation and signing in that library; Cache owns only
+  validation and signing in that library; this client owns only
   the adapter, TLS connection, and HELLO/AUTH lifecycle.
-- Prefer hermetic tests and local mocks over live AWS or Cache endpoints.
+- Prefer hermetic tests and local mocks over live AWS or cache endpoints.
 - `MockTlsServer` generates a self-signed `CN=localhost` certificate at test
   time with BouncyCastle (test scope only). It is a localhost-only fixture and
   must not be used for production.
@@ -221,8 +224,8 @@ at `SEVERE` on every occurrence.
 
 - Do not commit generated `build/`, `.gradle/` contents, or IDE project files.
 - Release publishing is configured by `release.gradle.kts` and enabled only
-  with `-PreleasePublishing`, so normal Java 8 builds do not load the
-  JDK-11+ publishing plugin. The tag-triggered workflow builds and smoke-tests
+  with `-PreleasePublishing`, so normal builds do not load the publishing
+  plugin. The tag-triggered workflow builds and smoke-tests
   artifacts with the tag-derived `releaseVersion` before publish-step-scoped
   credentials sign and publish them from the protected `release` environment.
   Keep the checked-in Gradle version at the local development baseline.
