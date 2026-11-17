@@ -228,7 +228,7 @@ The client confirms its cache policy with the cache periodically. If those confi
 
 ## Reconnection and fallback
 
-**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off and continue until one succeeds or the client is closed.
+**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with a fresh [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off and continue until one succeeds or the client is closed.
 
 **Requests during an outage.** A request the cache would serve first waits for the connection to come back, up to [`connectionTimeoutMs`](#configuration). This wait is per outage, not per request: a request that arrives later in the same outage waits only for what is left of it. If the connection comes back in time, the request is served from the cache.
 
@@ -240,7 +240,22 @@ The client confirms its cache policy with the cache periodically. If those confi
 
 ## Errors
 
-The client's exceptions extend `ElastiCacheIntegrationsError`, except `ElastiCacheIntegrationsCacheUnavailable` and `ElastiCacheIntegrationsOriginError`. Those two are `IOException`s, because a call without the cache can fail the same way, so the SDK retries them. A request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, arrives after the SDK's retries as an `SdkClientException`. On an asynchronous client, `join()` wraps the failure in a `CompletionException` too. To find the client's exception, walk the cause chain. On a synchronous client, an error returned by the cache, such as a rejected request, is thrown as the client's exception itself.
+Retries work as they do without the cache: your SDK retry settings decide whether, and how many times, a request is retried. A request that times out or fails because the cache could not complete it can be retried, for any operation. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
+
+Your application handles these failures as it does without the cache: once the SDK's retries run out, you get the same `SdkClientException`. That includes the cache being unreachable when requests may not go to DynamoDB (see [`fallbackDurationSeconds`](#configuration)).
+
+Errors specific to the cache all extend `ElastiCacheIntegrationsError`. For example, `install` throws one when it cannot connect to the cache:
+
+```java
+try {
+    ddb = ElastiCacheIntegrationsClient.builder()
+            .endpoint("my-cache-abc123.serverless.use1.cache.amazonaws.com:6379")
+            .cacheName("my-cache")
+            .install(dynamoDb);
+} catch (ElastiCacheIntegrationsError e) {
+    ddb = dynamoDb.build(); // run without the cache
+}
+```
 
 ## Authentication
 
@@ -248,7 +263,7 @@ The client signs in to the cache with an IAM authentication token, using the reg
 
 That identity needs the `elasticache:Connect` permission on the cache and on the ElastiCache user ([`userId`](#configuration), `default.iam-user` by default).
 
-Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires. About every 15 minutes, it also authenticates each live connection again with the current token. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelaySeconds`](#configuration) to change when the replacement is signed.
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and authenticates each live connection again with it. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH`, or its reply cannot be read, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`iamTokenRefreshDelaySeconds`](#configuration) to change when the replacement is signed.
 
 Token signing and refresh come from the [ElastiCache developer toolkit](https://central.sonatype.com/artifact/software.amazon.elasticache/developer-toolkit-elasticache).
 
