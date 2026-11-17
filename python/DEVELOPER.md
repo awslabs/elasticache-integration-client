@@ -41,8 +41,7 @@ One connection sends at most 100 requests awaiting replies at once. Further call
 
 ## Live DynamoDB E2E example
 
-Complete the repository-wide
-[live cache setup](../EXAMPLES.md),
+Copy the repository-root [`.env.example`](../.env.example) to `.env` and fill it in,
 then run from `python/`:
 
 ```bash
@@ -50,8 +49,7 @@ python -m pip install -e .
 python examples/local_e2e.py
 ```
 
-The example loads the repository-root `.env` and runs the scenarios listed in
-[EXAMPLES.md](../EXAMPLES.md).
+The example loads the repository-root `.env` and runs its scenarios against the cache.
 Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
 miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
 `ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,

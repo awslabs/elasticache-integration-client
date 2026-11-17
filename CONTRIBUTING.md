@@ -45,8 +45,6 @@ GitHub provides additional documentation on [forking a repository](https://help.
 ```
 
 - Building, testing and releasing a client: [Python](python/DEVELOPER.md), [Node.js](node/DEVELOPER.md), [Java](java/DEVELOPER.md).
-- The test cases every client runs: [shared/README.md](shared/README.md).
-- Running the examples against a real cache: [EXAMPLES.md](EXAMPLES.md).
 
 ## Finding contributions to work on
 

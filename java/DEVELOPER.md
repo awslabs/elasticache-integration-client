@@ -16,8 +16,7 @@ Two further suites run in CI and can be reproduced locally:
 
 ## Live DynamoDB E2E example
 
-Complete the repository-wide
-[live cache setup](../EXAMPLES.md),
+Copy the repository-root [`.env.example`](../.env.example) to `.env` and fill it in,
 then run from `java/`:
 
 ```bash
@@ -27,7 +26,7 @@ then run from `java/`:
 
 `runLocalE2eExample` uses `DynamoDbClient` and `runLocalE2eAsyncExample` uses
 `DynamoDbAsyncClient`. Both load the repository-root `.env` and run the
-scenarios listed in [EXAMPLES.md](../EXAMPLES.md). The examples run on JDK 21 because
+example's scenarios against the cache. The examples run on JDK 21 because
 they route `ELASTICACHE_CACHE_HOST` to `ELASTICACHE_TUNNEL_HOST` with the JDK 18+
 resolver SPI (`TunnelResolverProvider`); the client itself still targets
 Java 8.
