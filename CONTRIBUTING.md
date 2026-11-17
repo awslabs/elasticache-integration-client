@@ -45,6 +45,7 @@ GitHub provides additional documentation on [forking a repository](https://help.
 ```
 
 - Building, testing and releasing a client: [Python](python/DEVELOPER.md), [Node.js](node/DEVELOPER.md), [Java](java/DEVELOPER.md).
+- Adding third-party code to the repository or to a published package? Add its attribution to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).
 
 ## Finding contributions to work on
 
