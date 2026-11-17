@@ -24,5 +24,6 @@ Closes #<!-- issue number, if any -->
 - [ ] The client's local checks pass (see its `DEVELOPER.md`).
 - [ ] If the behavior changes in one client, the other clients and `shared/` test cases are updated, or a follow-up issue is linked.
 - [ ] The README of each affected client is updated.
+- [ ] `CHANGELOG.md` is updated for a user-visible change.
 
 By submitting this pull request, I confirm that you can use, modify, copy, and redistribute this contribution, under the terms of your choice.
