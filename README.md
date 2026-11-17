@@ -19,6 +19,12 @@ Then install the client for your language and add one call:
 **Java**
 
 ```java
+import java.util.Collections;
+import software.amazon.awssdk.regions.Region;
+import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
+import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
+import software.amazon.elasticache.integrations.session.ElastiCacheIntegrationsClient;
+
 DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
         .endpoint("my-cache-abc123.serverless.use1.cache.amazonaws.com:6379")
         .cacheName("my-cache")
