@@ -119,7 +119,7 @@ dependencies {
     // Resolves `login_session` profiles created by `aws login`.
     add(examplesSourceSet.runtimeOnlyConfigurationName, "software.amazon.awssdk:signin")
     // signin pulls in slf4j-api with no backend, which prints a warning at startup.
-    add(examplesSourceSet.runtimeOnlyConfigurationName, "org.slf4j:slf4j-nop:1.7.36")
+    add(examplesSourceSet.runtimeOnlyConfigurationName, "org.slf4j:slf4j-nop:2.0.20")
 }
 
 fun parseEnvLines(text: String): Map<String, String> =
