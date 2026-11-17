@@ -75,6 +75,10 @@ Open a [GitHub issue](https://github.com/awslabs/elasticache-integration-client/
 
 GitHub is a platform for collaborative coding. If you're interested in writing code, we encourage you to contribute by submitting pull requests from forked copies of this repository. Additionally, please consider creating GitHub issues for reporting bugs and suggesting new features. Feel free to comment on issues that interest you. For more info see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md#security-issue-notifications) for more information.
+
 ## License
 
 This project is licensed under the [Apache-2.0 License](LICENSE).
