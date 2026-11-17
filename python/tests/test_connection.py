@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for aws_elasticache_integration_client.connection, organized by the connector contract:
 
 1. Establishment — connect() yields a usable connection or a ElastiCacheIntegrationsConnectionError

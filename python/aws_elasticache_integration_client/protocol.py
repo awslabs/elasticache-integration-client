@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """RESP3 protocol layer for the ElastiCacheIntegrations client.
 
 This module builds the two ElastiCacheIntegrations commands and interprets their replies:

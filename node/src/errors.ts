@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /** Base class for all ElastiCacheIntegrations errors; an optional originating `cause` is passed to native `Error`. */
 export class ElastiCacheIntegrationsError extends Error {
   constructor(message: string, options?: ErrorOptions) {

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the session's background re-AUTH wiring (CR-A1).
 
 A real ElastiCacheIntegrationsSession is built over a mock connector (no network). The runner starts with the

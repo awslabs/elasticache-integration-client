@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * The per-call abort signal an AWS SDK v3 caller passes as `send(command, { abortSignal })`.
  *

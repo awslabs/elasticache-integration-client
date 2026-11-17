@@ -52,6 +52,11 @@ Run commands from the client directory they apply to:
   with the `DENYLIST` secret. Fork pull requests skip it because they get no
   secrets. The job is not in the `ci` aggregate, so a failed run does not block
   merge.
+- Repository: run `scripts/check-license-headers.sh` from any directory. It
+  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, or Python
+  file has no `SPDX-License-Identifier: Apache-2.0` header in its first 5
+  lines. Files under `vendor/`, `node_modules/`, and `shared/` are skipped. CI
+  runs it on every pull request, and the `ci` aggregate needs it.
 - Before reporting completion, state which validation commands actually ran and
   which expected checks were not run.
 

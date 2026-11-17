@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for aws_elasticache_integration_client.resp — the standalone RESP3 wire codec."""
 
 import pytest

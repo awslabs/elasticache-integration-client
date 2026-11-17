@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for aws_elasticache_integration_client.exceptions — the connector error taxonomy."""
 
 import pytest

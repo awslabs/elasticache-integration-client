@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the managed adapter around the ElastiCache IAM toolkit."""
 
 from __future__ import annotations

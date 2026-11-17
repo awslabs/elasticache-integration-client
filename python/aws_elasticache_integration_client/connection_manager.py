@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Owns the connection to the cache for its whole life: brings it up, replaces it, gives it up.
 
 :class:`ConnectionManager` keeps exactly one live connector. It opens the first one, hands each new

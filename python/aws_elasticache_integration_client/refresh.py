@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generic periodic-callback runner used to drive refresh tasks.
 
 :class:`Refresher` runs a no-arg callback on a jittered interval, in a daemon thread, until told to stop.

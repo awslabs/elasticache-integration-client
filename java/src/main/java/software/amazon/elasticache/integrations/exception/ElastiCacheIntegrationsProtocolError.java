@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package software.amazon.elasticache.integrations.exception;
 
 /** A RESP frame was malformed or could not be decoded. */

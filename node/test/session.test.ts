@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 import { createServer } from "node:net";
 
 import { describe, expect, it, vi } from "vitest";

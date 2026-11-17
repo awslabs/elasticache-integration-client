@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Core data models for the ElastiCacheIntegrations client.
 
 These are plain data containers shared across every component (protocol, session, hooks). The

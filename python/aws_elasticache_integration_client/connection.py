@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Pure-Python connector: one TCP+TLS connection, driven from a single thread.
 
 Every read and write runs on one thread with its own event loop. To send, a caller hands the

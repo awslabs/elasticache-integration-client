@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """ElastiCache Integrations adapters for the Amazon ElastiCache IAM developer toolkit.
 
 The toolkit owns parameter validation, normalization, region and credential

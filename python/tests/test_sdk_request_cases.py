@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the cross-client SDK request cases in shared/sdk-request-cases.json.
 
 Each case goes through the real boto3 client into the mock cache. Node and Java run the same

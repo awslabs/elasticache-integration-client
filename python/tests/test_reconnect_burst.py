@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for the reconnect hold (CR-N3): a request with no connector waits a bounded time for a
 quick reconnect before falling back to the origin.
 

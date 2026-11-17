@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """ElastiCacheIntegrationsSession serves requests over a cache connection, and decides what to do when there is none.
 
 The connection itself is owned by a :class:`~aws_elasticache_integration_client.connection_manager.ConnectionManager`, which

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Public entry point: the :func:`aws_elasticache_integration_client.install` function."""
 
 from __future__ import annotations

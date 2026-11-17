@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package software.amazon.elasticache.integrations.exception;
 
 /** The socket died mid-flight, and pending requests are failed. */

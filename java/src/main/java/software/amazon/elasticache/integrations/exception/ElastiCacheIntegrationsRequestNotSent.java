@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 package software.amazon.elasticache.integrations.exception;
 
 /** A request exhausted its admission budget before any bytes were sent to the cache. */

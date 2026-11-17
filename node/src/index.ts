@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 /** ElastiCacheIntegrations client package, public API. */
 export { install } from "./client.js";
 export type { ElastiCacheIntegrationsClientConfiguration } from "./client.js";

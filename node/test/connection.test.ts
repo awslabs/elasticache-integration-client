@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 import { lookup } from "node:dns/promises";
 import { readFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";

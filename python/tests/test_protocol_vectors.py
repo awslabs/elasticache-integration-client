@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the cross-client wire vectors in shared/protocol-vectors.json.
 
 Node and Java run the same file, so a client that drifts from the shared bytes fails its own gate.

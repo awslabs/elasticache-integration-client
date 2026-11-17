@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Unit tests for the contract logic in tests/mock.py.
 
 Only covers what the connector/integration tests don't already exercise by *using* the mock:

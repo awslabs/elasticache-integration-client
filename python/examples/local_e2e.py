@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the ElastiCache Integrations DynamoDB E2E scenarios against a live cache and table.
 
 1. Cache hit: a second read returns the item after it was deleted from DynamoDB.

@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 import { connect as connectTcp, isIP, type Socket } from "node:net";
 import {
   connect as connectTls,

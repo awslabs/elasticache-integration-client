@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Error taxonomy for the ElastiCacheIntegrations client.
 
 ``ElastiCacheIntegrationsError`` is the base for everything that can fail on the way to the cache; the subclasses name

@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Generic RESP3 wire codec for the ElastiCacheIntegrations client.
 
 Owns the RESP value types (:data:`RespValue`, :class:`RespError`), the framing functions

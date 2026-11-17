@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for aws_elasticache_integration_client.install: its wiring and resource handling.
 
 install() takes the application's boto3 client and the session it came from, brings up the

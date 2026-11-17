@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Client-side evaluation of the CEL routing predicates returned by ``aws.config``.
 
 The cache is authoritative about what may be cached: it returns an ordered list of predicates, each

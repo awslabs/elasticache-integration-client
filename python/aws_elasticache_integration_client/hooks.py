@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """boto3 ``before-send`` interception for the ElastiCacheIntegrations client.
 
 Registers a ``before-send`` handler on a botocore client's event system. The handler builds an

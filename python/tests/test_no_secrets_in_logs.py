@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """The client never logs, or puts in an error, credentials, the IAM token or customer data.
 
 Every scenario runs a real boto3 client against the mock cache with marker values in the

@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 import java.util.jar.JarFile
 import java.util.zip.ZipFile
 import org.gradle.api.tasks.compile.JavaCompile

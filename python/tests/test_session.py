@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for aws_elasticache_integration_client.session.
 
 The connector double comes from :func:`tests.mock.mock_connector` — a ``create_autospec`` bound to

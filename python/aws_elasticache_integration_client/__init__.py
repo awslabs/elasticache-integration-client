@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """ElastiCacheIntegrations client package — public API.
 
 Read-through / write-through caching for AWS SDK calls, routed over RESP3 to an ElastiCache

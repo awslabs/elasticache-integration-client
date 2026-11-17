@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for reconnect, fallback, and client-initiated connection replacement.
 
 Behavioral tests use a real :class:`ElastiCacheIntegrationsConnector` and :class:`MockCache`

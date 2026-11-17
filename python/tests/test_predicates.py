@@ -1,3 +1,6 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for aws_elasticache_integration_client.predicates — CEL evaluation of resolved-config predicates.
 
 Requires ``cel-python`` (a runtime dependency). The expressions used here are the ones the cache
