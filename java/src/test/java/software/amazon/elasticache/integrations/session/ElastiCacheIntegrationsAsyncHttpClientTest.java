@@ -47,6 +47,7 @@ import software.amazon.awssdk.services.dynamodb.model.PutItemRequest;
 import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
@@ -445,8 +446,12 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 new ElastiCacheIntegrationsAsyncHttpClient(
                         new CacheUnavailableSession(), preparedContext(), origin, false, Runnable::run, null);
 
-        assertThrows(
-                ExecutionException.class, () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
