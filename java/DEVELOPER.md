@@ -14,6 +14,30 @@ Two further suites run in CI and can be reproduced locally:
 - The AWS SDK compatibility matrix, which builds and tests against a range of SDK versions down to the supported floor. Select one with `-PawsSdkVersion=<version>` and `-PawsSdkRuntimeVersion=<version>`.
 - The cross-client alignment tests, which run the fixtures in `shared/` that every client must agree on. Run them with `-PtestIncludeTags=alignment`.
 
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `java/`:
+
+```bash
+./gradlew runLocalE2eExample
+./gradlew runLocalE2eAsyncExample
+```
+
+`runLocalE2eExample` uses `DynamoDbClient` and `runLocalE2eAsyncExample` uses
+`DynamoDbAsyncClient`. Both load the repository-root `.env` and run the
+scenarios listed in the repository README. The examples run on JDK 21 because
+they route `ELASTICACHE_CACHE_HOST` to `ELASTICACHE_TUNNEL_HOST` with the JDK 18+
+resolver SPI (`TunnelResolverProvider`); the client itself still targets
+Java 8.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_REQUEST_TIMEOUT_SECONDS`,
+`AWS_REGION` (default `us-east-1`), `ELASTICACHE_TABLE_NAME`, and
+`ELASTICACHE_CONCURRENCY`.
+
 ## Releasing
 
 Java releases are built from annotated `vMAJOR.MINOR.PATCH` or `vMAJOR.MINOR.PATCH-rc.N` tags. The tag is the release version source of truth: the workflow passes it to Gradle as `releaseVersion`, and the checked-in version stays at its local development baseline. A manual workflow run can take a version for a non-publishing dry run.
