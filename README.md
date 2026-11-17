@@ -19,7 +19,7 @@ includes a set of test examples.
 
 ## Getting started
 
-You need an ElastiCache Serverless for Valkey cache with DynamoDB caching enabled. See [Getting started with DynamoDB caching](TODO-AWS-DOCS-LINK).
+You need an ElastiCache Serverless for Valkey cache with DynamoDB caching enabled. See the [Amazon ElastiCache User Guide](https://docs.aws.amazon.com/AmazonElastiCache/latest/dg/WhatIs.html).
 
 Then install the client for your language and add one call:
 
