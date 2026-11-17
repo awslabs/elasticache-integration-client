@@ -173,9 +173,26 @@ The client confirms its cache policy with the cache periodically. If those confi
 
 ## Errors
 
-A request's error is not wrapped: after the SDK's retries, `client.send()` rejects with the client's error itself. A failure the SDK may retry, such as a read the cache could not answer in time, is marked `$retryable`, so the SDK retries it as it would a transient network error.
+Retries work as they do without the cache: your SDK retry settings decide whether, and how many times, a request is retried. A request that times out or fails because the cache could not complete it can be retried, for any operation. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
-Only three error classes are exported: `ElastiCacheIntegrationsError`, `ElastiCacheIntegrationsConfigError` for an option or client `install()` cannot use, and `ElastiCacheIntegrationsCacheUnavailable` for a request after the [fallback window](#reconnection-and-fallback) has ended. The client's other errors extend `ElastiCacheIntegrationsError`; tell them apart by `error.name`. `ElastiCacheIntegrationsCacheUnavailable` does not extend it.
+Your application handles these failures as it does without the cache: once the SDK's retries run out, `client.send()` rejects with the same error. That includes the cache being unreachable when requests may not go to DynamoDB (see [`fallbackDuration`](#configuration)).
+
+Errors specific to the cache all extend `ElastiCacheIntegrationsError`. For example, `install()` rejects with one when it cannot connect to the cache:
+
+```ts
+import { ElastiCacheIntegrationsError, install } from "@aws-sdk/aws-elasticache-integration-client";
+
+try {
+  await install({
+    client: dynamodb,
+    endpoint: "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+    cacheName: "my-cache",
+  });
+} catch (error) {
+  if (!(error instanceof ElastiCacheIntegrationsError)) throw error;
+  // dynamodb is unchanged: it runs without the cache
+}
+```
 
 ## Authentication
 
