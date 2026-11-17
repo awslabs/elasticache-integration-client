@@ -1,6 +1,6 @@
-# ElastiCache Integrations for Python
+# ElastiCache integration client for Python
 
-ElastiCache Integrations provides a caching layer for AWS SDK for Python (Boto3) DynamoDB requests. It connects your DynamoDB client to an ElastiCache Serverless cache, sends supported requests through the cache, and serves cacheable responses without contacting DynamoDB.
+ElastiCache Integrations provides a caching layer for AWS SDK for Python (Boto3) DynamoDB requests. It connects your DynamoDB client to an ElastiCache Serverless cache, sends supported requests through the cache, and serves cacheable responses.
 
 ## Requirements
 
@@ -51,7 +51,7 @@ The only change to your application is the call to `install(...)`; see [Configur
 
 ## How it works
 
-- **The cache decides what it serves.** When the client connects, the cache tells it which requests it wants. Those are sent to the cache; everything else goes to DynamoDB as it would without ElastiCache Integrations. See [Request routing](#request-routing).
+- **You choose what is cached.** Requests for the tables and operations you choose go through the cache; everything else goes to DynamoDB as it would without ElastiCache Integrations. See [Request routing](#request-routing).
 - **The cache going down does not take your application down.** If the connection to the cache is lost, the client reconnects in the background, and meanwhile requests go to DynamoDB as they would without ElastiCache Integrations in the middle. Once the connection is back, so is the caching layer. See [Reconnection and fallback](#reconnection-and-fallback) for the full details, and [Configuration](#configuration) to change how long requests wait and fall back.
 - **Closing the client also disconnects the cache.**
 
@@ -83,7 +83,7 @@ The client is synchronous; there is no asynchronous client. A boto3 client can h
 
 ## Configuration
 
-Every option has a default, so set only what you change. The docstrings of `install` and `ElastiCacheIntegrationsClientConfiguration` have the full details.
+The docstrings of `install` and `ElastiCacheIntegrationsClientConfiguration` have the full details.
 
 Arguments of `install(...)`, all keyword-only:
 
@@ -93,7 +93,6 @@ Arguments of `install(...)`, all keyword-only:
 | `endpoint` | required | The cache endpoint, as `host:port`. |
 | `cache_name` | required | The ElastiCache Serverless cache name. |
 | `user_id` | `default.iam-user` | The ElastiCache IAM user. See [Authentication](#authentication). |
-| `verify` | `True` | Verify the cache's TLS certificate. `False` is for local testing only. |
 | `ca_certs` | system trust store | The path to a CA bundle to verify the cache's certificate with. |
 | `client_configuration` | all defaults | An `ElastiCacheIntegrationsClientConfiguration` with the options below. |
 
@@ -109,8 +108,6 @@ Fields of `aws_elasticache_integration_client.ElastiCacheIntegrationsClientConfi
 | `iam_token_refresh_delay` | `None` (300) | How long after a token is issued a replacement is signed in the background, in whole seconds. 1 to 879. See [Authentication](#authentication). |
 
 ### Cache policy overrides
-
-These are sent to the cache as a `dict`:
 
 | Key | Meaning |
 |---|---|
@@ -157,15 +154,11 @@ ddb.close()
 
 ## Request routing
 
-When the client connects, the cache sends it a set of routing rules. The client checks each request against them itself: a request that matches any rule is sent to the cache, and every other request goes straight to DynamoDB, with no round trip to the cache.
-
-A rule can look at the request's service, operation, method, URL, headers and JSON body. A rule that fails to evaluate, or a body that is not a JSON object, counts as no match. A rule the client cannot understand at all rejects the whole set, because using only the rest would route requests differently from what the cache intended: connecting fails and is retried, and a refresh keeps the previous rules.
-
-The client asks the cache for its current rules and [cache policy](#cache-policy-overrides) periodically, at an interval the cache chooses, and applies an update all at once, so a request never sees half of one.
+Requests for the tables and operations you choose in [`cache_policy_overrides`](#cache-policy-overrides) go through the cache. Without overrides, all of them do. Every other request goes straight to DynamoDB, with no round trip to the cache.
 
 ## Cache policy timeout
 
-If those periodic [refreshes](#request-routing) fail, the client keeps using the last policy the cache confirmed. [`cache_policy_timeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
+The client confirms its cache policy with the cache periodically. If those confirmations fail, the client keeps using the last policy the cache confirmed. [`cache_policy_timeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
 
 ## Reconnection and fallback
 
