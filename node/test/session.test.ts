@@ -338,6 +338,9 @@ describe("ElastiCacheIntegrationsSession", () => {
       expect(failure).toBeInstanceOf(expected);
       if (expected === ElastiCacheIntegrationsCacheUnavailable) {
         expect((failure as Error).cause).toBe(notSent);
+        expect((failure as Error).message).toMatch(
+          /: the cache connection had no free capacity in time$/,
+        );
       }
       expect(session.isConnectionHealthy).toBe(true);
       await session.close();

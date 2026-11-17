@@ -64,6 +64,11 @@ def test_cache_unavailable_message_says_the_request_was_not_served():
     assert message == (
         "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed."
     )
+    with_reason = ElastiCacheIntegrationsCacheUnavailable(endpoint_url="x", reason="no capacity")
+    assert str(with_reason) == (
+        "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not "
+        "allowed: no capacity"
+    )
 
 
 def test_origin_error_is_retryable_without_claiming_the_sdk_connection_closed():

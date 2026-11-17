@@ -359,7 +359,9 @@ class ElastiCacheIntegrationsSession:
             connector = self._connection_manager.wait_for_connector()
         if connector is None:
             if not self._connection_manager.fallback_allowed():
-                raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url)
+                raise ElastiCacheIntegrationsCacheUnavailable(
+                    endpoint_url=request.url, reason="there is no cache connection"
+                )
             return None  # pass through
 
         command, args = serialize_request(request)
@@ -367,14 +369,19 @@ class ElastiCacheIntegrationsSession:
             return parse_request_response(connector.execute(command, *args))
         except ElastiCacheIntegrationsRequestNotSent as exc:
             if self._connection_manager.policy.fallback_duration == 0:
-                raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url) from exc
+                raise ElastiCacheIntegrationsCacheUnavailable(
+                    endpoint_url=request.url,
+                    reason="the cache connection had no free capacity in time",
+                ) from exc
             raise
         except ElastiCacheIntegrationsRejectedError as exc:
             if exc.code != _AUTH_ERROR:
                 raise
             self._connection_manager.invalidate_connection(connector)
             if not self._connection_manager.fallback_allowed():
-                raise ElastiCacheIntegrationsCacheUnavailable(endpoint_url=request.url) from exc
+                raise ElastiCacheIntegrationsCacheUnavailable(
+                    endpoint_url=request.url, reason="the cache replied AUTH_ERROR"
+                ) from exc
             return None
 
     def close(self) -> None:

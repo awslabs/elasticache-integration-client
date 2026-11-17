@@ -68,11 +68,16 @@ class ElastiCacheIntegrationsCacheUnavailable(ConnectionClosedError):
     """ElastiCacheIntegrations could not serve a request from the cache and origin fallback is not allowed."""
 
     #: ``endpoint_url`` is kept in ``kwargs``, as on every botocore transport error, but is not in
-    #: the message.
+    #: the message. An optional ``reason`` is added after a colon.
     fmt = (
         "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is "
         "not allowed."
     )
+
+    def __init__(self, *args, **kwargs):
+        if kwargs.get("reason"):
+            self.fmt = self.fmt[:-1] + ": {reason}"
+        super().__init__(*args, **kwargs)
 
 
 class ElastiCacheIntegrationsOriginError(ConnectionClosedError):

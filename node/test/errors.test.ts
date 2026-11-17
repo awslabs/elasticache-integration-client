@@ -74,6 +74,9 @@ describe("ElastiCacheIntegrations errors", () => {
     expect(error.message).toBe(
       "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed.",
     );
+    expect(new ElastiCacheIntegrationsCacheUnavailable("x", "no capacity").message).toBe(
+      "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed: no capacity",
+    );
   });
 
   it("preserves the RESP error code on a rejection", () => {

@@ -55,10 +55,10 @@ export class ElastiCacheIntegrationsCacheUnavailable extends Error {
   readonly $retryable = {};
   readonly endpointUrl: string;
 
-  constructor(endpointUrl: string) {
-    super(
-      "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed.",
-    );
+  constructor(endpointUrl: string, reason?: string) {
+    const message =
+      "ElastiCacheIntegrations could not serve the request from the cache, and origin fallback is not allowed";
+    super(reason === undefined ? `${message}.` : `${message}: ${reason}`);
     this.name = new.target.name;
     this.endpointUrl = endpointUrl;
   }

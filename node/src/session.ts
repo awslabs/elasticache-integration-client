@@ -515,7 +515,10 @@ export class ElastiCacheIntegrationsSession {
       // A close during the wait also ends it here, and the request falls back
       if (currentConnector === undefined) {
         if (this.fallbackAllowed()) return undefined;
-        throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
+        throw new ElastiCacheIntegrationsCacheUnavailable(
+          sanitizeEndpoint(request.url),
+          "there is no cache connection",
+        );
       }
     }
     if (currentConnector === undefined) {
@@ -533,7 +536,10 @@ export class ElastiCacheIntegrationsSession {
       if (error instanceof ElastiCacheIntegrationsRejectedError && error.code === AUTH_ERROR) {
         this.handleDisconnect(currentConnector);
         if (!this.fallbackAllowed()) {
-          throw new ElastiCacheIntegrationsCacheUnavailable(sanitizeEndpoint(request.url));
+          throw new ElastiCacheIntegrationsCacheUnavailable(
+            sanitizeEndpoint(request.url),
+            "the cache replied AUTH_ERROR",
+          );
         }
         return undefined;
       }
@@ -543,6 +549,7 @@ export class ElastiCacheIntegrationsSession {
       ) {
         const unavailable = new ElastiCacheIntegrationsCacheUnavailable(
           sanitizeEndpoint(request.url),
+          "the cache connection had no free capacity in time",
         );
         unavailable.cause = error;
         throw unavailable;

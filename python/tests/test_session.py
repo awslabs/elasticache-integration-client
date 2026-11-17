@@ -777,6 +777,7 @@ def test_request_not_sent_raises_cache_unavailable_only_in_strict_mode(fallback_
 
     if strict:
         assert caught.value.__cause__ is not_sent
+        assert str(caught.value).endswith(": the cache connection had no free capacity in time")
     assert session.is_connection_healthy
     session.close()
 
