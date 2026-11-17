@@ -12,10 +12,12 @@ body:
     id: client
     attributes:
       label: Client
+      multiple: true
       options:
         - Java
         - Python
         - Node.js
+        - All clients
     validations:
       required: true
 
@@ -23,6 +25,7 @@ body:
     id: client-version
     attributes:
       label: Client version
+      description: For more than one client, give each one's version.
       placeholder: e.g. 0.1.0
     validations:
       required: true
