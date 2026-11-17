@@ -174,7 +174,24 @@ The client confirms its cache policy with the cache periodically. If those confi
 
 ## Errors
 
-The client's exceptions are in `aws_elasticache_integration_client.exceptions`. Most extend `ElastiCacheIntegrationsError`, but a request's failure is often wrapped before it reaches you. A failure the SDK may retry, such as a read the cache could not answer in time, is raised as a botocore `ConnectionClosedError` or `ReadTimeoutError`, so your retry configuration applies to it, and arrives after the SDK's retries. To find the client's exception, look at its `__cause__`. `ElastiCacheIntegrationsCacheUnavailable` and `ElastiCacheIntegrationsOriginError` are themselves `ConnectionClosedError` subclasses, not `ElastiCacheIntegrationsError`. An error returned by the cache, such as a rejected request, is raised as the client's exception itself.
+Retries work as they do without the cache: your botocore retry configuration decides whether, and how many times, a request is retried. A request that times out or fails because the cache could not complete it can be retried, for any operation. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
+
+Your application handles these failures as it does without the cache: once botocore's retries run out, you get the same botocore error. That includes the cache being unreachable when requests may not go to DynamoDB (see [`fallback_duration`](#configuration)).
+
+Errors specific to the cache all extend `ElastiCacheIntegrationsError`. For example, `install` raises one when it cannot connect to the cache:
+
+```python
+from aws_elasticache_integration_client import ElastiCacheIntegrationsError
+
+try:
+    aws_elasticache_integration_client.install(
+        client=ddb,
+        endpoint="my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+        cache_name="my-cache",
+    )
+except ElastiCacheIntegrationsError:
+    pass  # ddb is unchanged: it runs without the cache
+```
 
 ## Authentication
 
