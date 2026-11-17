@@ -1,4 +1,4 @@
-# Integration Client for ElastiCache
+# ElastiCache integration clients
 
 This repository contains client libraries for Amazon ElastiCache integration.
 Currently, cache integration with Amazon DynamoDB is supported.
