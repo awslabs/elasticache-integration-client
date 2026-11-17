@@ -1,6 +1,13 @@
 # Integration Client for ElastiCache
 
-ElastiCache Integrations provides a caching layer for AWS SDK DynamoDB requests. It connects your DynamoDB client to an ElastiCache Serverless cache, sends supported requests through the cache, and serves cacheable responses. You install it into the DynamoDB client you already use, and the rest of your code stays the same.
+This repository contains client libraries for Amazon ElastiCache integration.
+Currently, cache integration with Amazon DynamoDB is supported.
+
+These integration client libraries enable applications to transparently route DynamoDB requests to an
+ElastiCache Serverless for Valkey cache with DynamoDB caching enabled.
+DynamoDB table data is automatically cached and returned according to the client configuration.
+Each language-specific integration client directory contains instructions for configuration and
+includes a set of test examples.
 
 ## Clients
 
