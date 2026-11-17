@@ -2193,7 +2193,7 @@ describe("ElastiCacheIntegrationsSession config refresh", () => {
   it("propagates an in-flight request error when it races a stale drop", async () => {
     // request() itself cannot tell whether this request already reached ElastiCacheIntegrations before the
     // connector closed, so it must not silently convert the failure into an origin fallback: only
-    // the middleware knows whether the request is idempotent enough to safely retry.
+    // the middleware decides whether the SDK may retry it.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const clock = { now: 0 };
     const connector = fakeConnector();

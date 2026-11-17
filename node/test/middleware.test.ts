@@ -588,7 +588,7 @@ describe("elastiCacheIntegrations middleware", () => {
     const next = vi.fn<FinalizeHandler<object, object>>(async () => ({
       response: new HttpResponse({ statusCode: 200 }),
     }));
-    // Idempotency does not matter here: the request has not reached ElastiCacheIntegrations while reconnecting.
+    // The request has not reached the cache while reconnecting, so it goes to the origin.
     const handler = cacheMiddleware("svc", session)(next, { commandName: "RunCommand" });
 
     await expect(handler({ input: {}, request: request() })).resolves.toEqual({

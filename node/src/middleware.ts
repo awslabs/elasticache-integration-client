@@ -223,7 +223,7 @@ export function cacheRequestHandler<THandler extends object>(
         }
         throw error;
       }
-      // A lost connection on a healthy connection is an aborted request, which is not retried.
+      // A lost connection on a healthy connection is an interrupted request, which is not retried.
       if (!session.isConnectionHealthy && isTransportFailure(error)) throw markRetryable(error);
       if (error instanceof ElastiCacheIntegrationsTimeoutError) throw markRetryable(error);
       throw error;
