@@ -60,7 +60,7 @@ sourceSets {
 }
 
 dependencies {
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.4")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.23.0")
     implementation("dev.cel:compiler:0.15.0")
     implementation("dev.cel:runtime:0.15.0")
     // IamAuthTokenProvider.newTokenManager() returns a toolkit type, so consumers compile against it.
@@ -85,7 +85,7 @@ dependencies {
     // Optional: for testing with real SDK clients
     testImplementation("software.amazon.awssdk:dynamodb")
 
-    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.86") // MockTlsServer certificates
+    testImplementation("org.bouncycastle:bcpkix-jdk18on:1.87") // MockTlsServer certificates
     testImplementation("org.junit.jupiter:junit-jupiter:5.14.4")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
