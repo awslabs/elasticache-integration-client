@@ -67,7 +67,7 @@ Open a [GitHub issue](https://github.com/awslabs/elasticache-integration-client/
 
 ## Contributing
 
-Each client's `DEVELOPER.md` explains how to build, test and release it. [CONTRIBUTING.md](CONTRIBUTING.md) explains the repository layout, the shared test cases, and how to run the examples against a real cache.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
