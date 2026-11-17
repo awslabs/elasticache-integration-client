@@ -169,7 +169,7 @@ The client confirms its cache policy with the cache periodically. If those confi
 
 **A request already sent when the connection drops.** It fails with a [retryable error](#errors), whatever its operation, the same as when the connection to DynamoDB drops without the cache. Your SDK retry settings decide whether it is sent again, and the retry goes through the same wait and fallback window as any other request. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
-**At startup.** `install()` keeps trying to connect until [`connectionTimeout`](#configuration) has passed, then rejects with the last attempt's failure: an error named `ElastiCacheIntegrationsConnectionError` if it could not connect or the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never leaves the client with a cache it could not connect to.
+**At startup.** `install()` keeps trying to connect until [`connectionTimeout`](#configuration) has passed, then rejects with the last attempt's failure: `ElastiCacheIntegrationsConnectionError` if it could not connect, `ElastiCacheIntegrationsAuthError` if the cache rejected its credentials, or `ElastiCacheIntegrationsOverridesRejected` if the cache rejected the [cache policy overrides](#cache-policy-overrides). It never leaves the client with a cache it could not connect to.
 
 ## Errors
 
