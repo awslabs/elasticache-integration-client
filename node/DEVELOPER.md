@@ -59,7 +59,7 @@ Each live connection runs `AUTH` again on a jittered 15-minute base interval. A 
 
 The middleware is added after the SDK's deserializer, so it sees the final serialized, signed request and the command name. It builds the cache request from a copy without the SigV4 headers (`authorization`, `x-amz-date`, `x-amz-security-token`) and the `host`, `x-amz-content-sha256` and `x-amz-user-agent` headers the JS SDK adds. The original signed request stays untouched for the origin.
 
-The client's request handler is wrapped in a `Proxy`, because the request handler is the only step that receives the call's `abortSignal`, and an application may share one handler between clients. A handler assigned to `config.requestHandler` after `install()` is wrapped too. A cache response is returned to the SDK as a synthetic `HttpResponse`, so normal deserialization and retry apply. A body that is not bytes-like, such as a stream, passes through to the origin without calling the cache.
+The client's request handler is wrapped too, because the request handler is the only step that receives the call's `abortSignal`. It is wrapped rather than having its `handle` patched, because an application may share one handler between clients. A handler assigned to `config.requestHandler` after `install()` is wrapped too. A cache response is returned to the SDK as a synthetic `HttpResponse`, so normal deserialization and retry apply. A body that is not bytes-like, such as a stream, passes through to the origin without calling the cache.
 
 How a failed cache request reaches the SDK:
 
@@ -69,6 +69,26 @@ How a failed cache request reaches the SDK:
 - Other RESP errors, malformed responses, non-idempotent failures, validation errors and shutdown failures propagate.
 
 `destroy()` detaches the cache before the SDK's own teardown, rejects in-flight cache requests without passing them to the origin, stops reconnecting, closes the IAM token manager and is safe to repeat. `install()` resolves only after authentication, the session and the middleware are in place; on failure it releases only what it opened and never destroys the caller's client.
+
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `node/`:
+
+```bash
+npm ci
+npm run example:local-e2e
+```
+
+The example loads the repository-root `.env` and runs the scenarios listed in
+the repository README.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
+`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
+`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
 
 ## Releasing
 
