@@ -234,16 +234,14 @@ class ElastiCacheIntegrationsHttpClientTest {
 
     @ParameterizedTest
     @CsvSource({
-        "ORIGIN_ERROR, GetItem, true",
-        "ORIGIN_ERROR, UpdateItem, true",
-        "INTERNAL_ERROR, GetItem, true",
-        "INTERNAL_ERROR, UpdateItem, true"
+        "ORIGIN_ERROR, GetItem",
+        "ORIGIN_ERROR, UpdateItem",
+        "INTERNAL_ERROR, GetItem",
+        "INTERNAL_ERROR, UpdateItem"
     })
-    void retryableCodeIsRetryableWithoutContactingOrigin(
-            String code, String operation, boolean healthy) {
+    void retryableCodeIsRetryableWithoutContactingOrigin(String code, String operation) {
         StubSession session = new StubSession();
-        session.healthy = healthy;
-        session.failure = new ElastiCacheIntegrationsRejectedError(code, "not applied");
+        session.failure = new ElastiCacheIntegrationsRejectedError(code, "outcome unknown");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, operation);
 
@@ -279,7 +277,7 @@ class ElastiCacheIntegrationsHttpClientTest {
     void retryableCodeOnDroppedConnectionIsNotRetryable(String code) {
         StubSession session = new StubSession();
         session.healthy = false;
-        session.failure = new ElastiCacheIntegrationsRejectedError(code, "not applied");
+        session.failure = new ElastiCacheIntegrationsRejectedError(code, "outcome unknown");
         RecordingHttpClient origin = new RecordingHttpClient();
         ElastiCacheIntegrationsHttpClient client = newClient(session, origin, false, "GetItem");
 

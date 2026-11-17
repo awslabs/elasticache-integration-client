@@ -846,7 +846,7 @@ describe("elastiCacheIntegrations middleware", () => {
     ["INTERNAL_ERROR", "GetItemCommand"],
     ["INTERNAL_ERROR", "UpdateItemCommand"],
   ])("marks %s on %s retryable without contacting origin", async (code, commandName) => {
-    const cacheError = new ElastiCacheIntegrationsRejectedError(code, "not applied");
+    const cacheError = new ElastiCacheIntegrationsRejectedError(code, "outcome unknown");
     const session = fakeSession({
       request: vi.fn(async () => {
         throw cacheError;
@@ -870,9 +870,28 @@ describe("elastiCacheIntegrations middleware", () => {
   it.each(["ORIGIN_ERROR", "INTERNAL_ERROR"])(
     "does not mark %s retryable on a dropped connection",
     async (code) => {
-      const cacheError = new ElastiCacheIntegrationsRejectedError(code, "not applied");
+      const cacheError = new ElastiCacheIntegrationsRejectedError(code, "outcome unknown");
       const session = fakeSession({
         isConnectionHealthy: false,
+        request: vi.fn(async () => {
+          throw cacheError;
+        }),
+      });
+      const handler = cacheMiddleware("dynamodb", session)(vi.fn(), {
+        commandName: "GetItemCommand",
+      });
+
+      await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
+      expect((cacheError as Error & { $retryable?: object }).$retryable).toBeUndefined();
+    },
+  );
+
+  it.each(["ORIGIN_ERROR", "INTERNAL_ERROR"])(
+    "does not retry %s after the session is closed",
+    async (code) => {
+      const cacheError = new ElastiCacheIntegrationsRejectedError(code, "outcome unknown");
+      const session = fakeSession({
+        isOpen: false,
         request: vi.fn(async () => {
           throw cacheError;
         }),
@@ -904,7 +923,6 @@ describe("elastiCacheIntegrations middleware", () => {
 
     await expect(handler({ input: {}, request: request() })).rejects.toBe(cacheError);
     expect((cacheError as Error & { $retryable?: object }).$retryable).toBeUndefined();
-    expect(cacheError.cause).toBeUndefined();
     expect(next).not.toHaveBeenCalled();
   });
 

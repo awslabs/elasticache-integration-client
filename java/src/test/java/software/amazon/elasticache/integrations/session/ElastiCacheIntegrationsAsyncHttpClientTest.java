@@ -49,6 +49,7 @@ import software.amazon.elasticache.integrations.auth.AuthCredentials;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsConnector;
 import software.amazon.elasticache.integrations.connection.ElastiCacheIntegrationsRequestCancellation;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
+import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConnectionLost;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsOriginError;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsProtocolError;
@@ -338,6 +339,29 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
+    void droppedWriteConnectionErrorIsRetryableWithoutContactingOrigin() {
+        RecordingOrigin origin = new RecordingOrigin();
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new DroppedConnectionErrorSession(),
+                        preparedContext("UpdateItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsConnectionError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
     void writeRequestNotSentDelegatesToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
@@ -396,17 +420,16 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
 
     @ParameterizedTest
     @CsvSource({
-        "ORIGIN_ERROR, GetItem, true",
-        "ORIGIN_ERROR, UpdateItem, true",
-        "INTERNAL_ERROR, GetItem, true",
-        "INTERNAL_ERROR, UpdateItem, true"
+        "ORIGIN_ERROR, GetItem",
+        "ORIGIN_ERROR, UpdateItem",
+        "INTERNAL_ERROR, GetItem",
+        "INTERNAL_ERROR, UpdateItem"
     })
-    void retryableCodeIsRetryableWithoutContactingOrigin(
-            String code, String operation, boolean healthy) {
+    void retryableCodeIsRetryableWithoutContactingOrigin(String code, String operation) {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new CodeSession(code, healthy),
+                        new CodeSession(code, true),
                         preparedContext(operation),
                         origin,
                         false,
@@ -486,6 +509,28 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                         () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
         assertTrue(failure.getCause() instanceof RetryableException);
         assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsCacheUnavailable);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @Test
+    void retryableCodeAfterCloseIsNotRetryable() {
+        RecordingOrigin origin = new RecordingOrigin();
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new ClosedOriginErrorSession(),
+                        preparedContext("GetItem"),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRejectedError);
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -918,6 +963,33 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
             throw new ElastiCacheIntegrationsConnectionLost("session closed");
+        }
+    }
+
+    private static final class ClosedOriginErrorSession extends ElastiCacheIntegrationsSession {
+        private ClosedOriginErrorSession() {
+            super(new ElastiCacheIntegrationsConnector("unused", 1, null), "user", "token");
+        }
+
+        @Override
+        ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "outcome unknown");
+        }
+    }
+
+    private static final class DroppedConnectionErrorSession extends OpenSession {
+        @Override
+        boolean isConnectionHealthy() {
+            return false;
+        }
+
+        @Override
+        ElastiCacheIntegrationsResponse request(
+                ElastiCacheIntegrationsRequest request,
+                ElastiCacheIntegrationsRequestCancellation cancellation) {
+            throw new ElastiCacheIntegrationsConnectionError("connect failed");
         }
     }
 
