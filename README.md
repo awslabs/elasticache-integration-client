@@ -1,74 +1,32 @@
-# ElastiCache Integrations
+# ElastiCache integration clients
 
-A collection of client libraries for integrating applications with
-ElastiCache Integrations. Each client is organized in its own language-specific
-directory.
+This repository contains client libraries for Amazon ElastiCache integration. 
+Currently, cache integration with Amazon DynamoDB is supported. 
 
-ElastiCache Integrations provides a caching layer for AWS service requests. Its
-clients connect an application's AWS SDK to the cache, send supported requests
-through the cache protocol, and allow cacheable responses to be served without
-contacting the origin service. Client-specific documentation describes the
-supported features and fallback behavior for each language.
+These integration client libraries enable applications to transparently route DynamoDB requests to an 
+ElastiCache Serverless for Valkey cache with DynamoDB caching enabled. 
+DynamoDB table data is automatically cached and returned according to the client configuration.
+Each language-specific integration client directory contains instructions for configuration and
+includes a set of test examples.
 
-The language-neutral replay-safety catalog is
-`shared/idempotent-operations.json`. Java packages it as a resource, Python
-copies it into built packages, and Node generates its compiled lookup from the
-same source with a CI freshness check. After a request is sent, a lost cache
-connection is SDK-retryable for every operation, as a dropped connection to the
-service is without the cache. Other indeterminate cache failures fall back to
-the origin only for cataloged operations after the cache connection drops;
-mixed or unknown operations are treated as non-idempotent. On a healthy
-connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
-When a routed request has not reached the cache because the connection is down,
-it may use the configured origin fallback window, including for writes.
-`AUTH_ERROR` closes the stale connection and safely passes the rejected
-request through while reconnecting. With the fallback set to 0, the rejected
-request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
-RESP errors are non-retryable and do
-not trigger origin fallback.
-
-`shared/protocol-vectors.json` holds wire vectors: the exact RESP bytes each
-client must send for a given request or config, and the response or error type
-each client must produce for a given reply. Every client's test suite runs all
-of them, and Python, the reference client, defines the expected values. The
-Node and Java vector tests list the vectors they do not match yet in
-`KNOWN_GAPS`, each with a fragment of the failure message it produces today. A
-listed vector must keep failing with that message until it is fixed and
-removed.
-
-`shared/sdk-request-cases.json` holds SDK-level cases: a DynamoDB call and the
-`aws.request` it must produce. Each client sends the call through its real
-AWS SDK into its mock cache and checks the method, URL, and metadata. It also
-checks that the body, as parsed JSON, equals the call's `params`, and that no
-excluded header is sent. The header names sent must equal the case's
-`expected.headers`, and a header whose expected value is `null` is checked by
-name only. Each SDK adds or omits a few headers of its own, so each runner
-lists those names in `ACCEPTED_HEADER_DIFFERENCES`. An entry that no longer
-matches what the SDK sends fails the test.
-
-Local test runs include both sets of tests. CI runs them in a separate
-`alignment` job for each changed client and excludes them from the client jobs,
-so `CI / alignment / <client>` reports drift from the shared fixtures on its
-own.
-
-Each client includes a live DynamoDB E2E example that runs the scenarios
-described in [Run the examples against a live cache](#run-the-examples-against-a-live-cache).
-
-## Repository layout
+## Repository structure
 
 ```text
 .
 ├── node/    # Node.js client
 ├── java/    # Java client
 ├── python/  # Python client
-└── shared/  # Language-neutral client contracts
+└── shared/  # Language-neutral client code
 ```
 
-## Run the examples against a live cache
+## Running the live examples
 
-The examples use a real DynamoDB table and ElastiCache Serverless cache. They load
-configuration from the repository-root `.env`; values already exported in the
+The included examples run against a live DynamoDB table and ElastiCache Serverless cache you configure. They load
+configuration from the repository-root `.env` file; values already exported in the
 shell take precedence.
+
+> [!WARNING]
+> The included examples write data to the configured DynamoDB table and cache using exported credentials and can overwrite existing data. Do not use production credentials or tables when running these examples.
 
 ### 1. Configure credentials and endpoints
 
@@ -121,9 +79,9 @@ through `dns.lookup` in Node, `socket.getaddrinfo` in Python, and a JDK
 `InetAddressResolverProvider` in Java. No example changes system DNS, so
 credential and DynamoDB endpoints keep resolving normally.
 
-### 2. Create the DynamoDB table once
+### 2. Create the DynamoDB table (optional)
 
-Skip this step when `ELASTICACHE_TABLE_NAME` already exists:
+Skip this step when the table defined in `ELASTICACHE_TABLE_NAME` already exists:
 
 ```bash
 set -a
@@ -140,7 +98,7 @@ aws dynamodb wait table-exists \
   --table-name "$ELASTICACHE_TABLE_NAME"
 ```
 
-### 3. Run an example
+### 3. Run the examples
 
 Each run generates a fresh item ID, so the first ElastiCache Integrations read is always a cache
 miss and concurrent runs do not interfere. Set `ELASTICACHE_ITEM_ID` only to pin one
@@ -170,10 +128,10 @@ Python:
 
 Each example runs these scenarios in order and stops at the first failure:
 
-1. Cache hit. The example seeds an item directly in DynamoDB, reads it through
-   ElastiCache Integrations, deletes it directly, and confirms with a strongly consistent read
-   that DynamoDB no longer has it. A second ElastiCache Integrations read must still return the
-   item. If the client bypasses ElastiCache Integrations or falls back to DynamoDB, this fails.
+1. Cache hit. The example writes an item to DynamoDB, reads it through
+   ElastiCache, deletes it, and confirms with a strongly consistent read
+   that DynamoDB no longer contains the item. A second ElastiCache read must still return the
+   item. If the client bypasses ElastiCache or falls back to DynamoDB, this example fails.
 2. Concurrent reads. The example seeds `ELASTICACHE_CONCURRENCY` items (default 16)
    and reads them through ElastiCache Integrations in parallel. Each response must carry its own
    key's item. After deleting the items from DynamoDB, a second parallel round
@@ -193,16 +151,10 @@ Each example runs these scenarios in order and stops at the first failure:
    delete) through ElastiCache Integrations must be visible to strongly consistent direct
    DynamoDB reads.
 
-The examples do not call `UpdateItem`, `TransactGetItems`, or
-`TransactWriteItems`. When they were last checked, the cache routed them and
-DynamoDB rejected them with `UnrecognizedClientException`. Every later request
-on the same connection then failed with `AUTH_ERROR`.
+The example deletes every item before exiting.
 
-The example deletes every item it wrote before exiting.
-
-### 4. Match a failure to its cause
-
-These failures come from the setup, not from the client:
+### Troubleshooting issues with the examples
+Below are issues related you may encounter related to example configuration:
 
 - `HELLO 3 rejected: WRONGPASS` means that the cache rejected the IAM token.
   The client signed it, but with the wrong region or with expired credentials:
@@ -230,7 +182,5 @@ These failures come from the setup, not from the client:
 - A TLS certificate error means that `ELASTICACHE_CACHE_HOST` is an IP address
   or `localhost`. Set it to the cache endpoint's DNS name and put the tunnel
   address in `ELASTICACHE_TUNNEL_HOST`.
-
-Node prints `@aws-sdk/core/protocols - WARN - JsonCodec2: you have called a
-string method on a Uint8Array request body` once a minute. The client causes
-it, the request still succeeds, and a fix is tracked separately.
+- Node applications may print or log the error `@aws-sdk/core/protocols - WARN - JsonCodec2: you have called a
+string method on a Uint8Array request body` even though the request still succeeds.
