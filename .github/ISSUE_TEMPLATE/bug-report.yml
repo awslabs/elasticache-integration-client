@@ -1,0 +1,77 @@
+name: Bug report
+description: Report something that doesn't work as documented
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please don't include credentials, IAM tokens or other secrets.
+        To report a security issue, use the [AWS vulnerability reporting page](https://aws.amazon.com/security/vulnerability-reporting/) instead of an issue.
+
+  - type: dropdown
+    id: client
+    attributes:
+      label: Client
+      options:
+        - Java
+        - Python
+        - Node.js
+    validations:
+      required: true
+
+  - type: input
+    id: client-version
+    attributes:
+      label: Client version
+      placeholder: e.g. 0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: sdk-version
+    attributes:
+      label: AWS SDK and runtime versions
+      placeholder: e.g. AWS SDK for Java 2.30.0 on JDK 21, boto3 1.43.0 on Python 3.12, AWS SDK for JavaScript 3.900.0 on Node.js 22
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: A clear description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: The smallest code snippet or steps that show the problem, including how you call `install` and the options you set.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: errors
+    attributes:
+      label: Errors and logs
+      description: The full error, with its cause, and any relevant client logs.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: For example, whether the cache was reachable, recent changes, or how often it happens.
+    validations:
+      required: false
