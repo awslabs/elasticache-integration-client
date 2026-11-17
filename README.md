@@ -1,20 +1,31 @@
 # Integration Client for ElastiCache
 
-The Integration Client for ElastiCache adds a cache in front of your application's DynamoDB requests. You install it into the DynamoDB client you already use: supported requests go through an ElastiCache Serverless cache, and the rest of your code stays the same.
+ElastiCache Integrations provides a caching layer for AWS SDK DynamoDB requests. It connects your DynamoDB client to an ElastiCache Serverless cache, sends supported requests through the cache, and serves cacheable responses. You install it into the DynamoDB client you already use, and the rest of your code stays the same.
 
 ## Clients
 
 | Language | Package | Requires | Documentation |
 |---|---|---|---|
+| Java | [`software.amazon.elasticache:aws-elasticache-integration-client`](https://central.sonatype.com/artifact/software.amazon.elasticache/aws-elasticache-integration-client) | JDK 8, AWS SDK for Java v2 2.21.0 | [java/README.md](java/README.md) |
 | Python | [`aws-elasticache-integration-client`](https://pypi.org/project/aws-elasticache-integration-client/) | Python 3.10, boto3 1.43 | [python/README.md](python/README.md) |
 | Node.js | [`@aws-sdk/aws-elasticache-integration-client`](https://www.npmjs.com/package/@aws-sdk/aws-elasticache-integration-client) | Node.js 22, AWS SDK for JavaScript v3 | [node/README.md](node/README.md) |
-| Java | [`software.amazon.elasticache:aws-elasticache-integration-client`](https://central.sonatype.com/artifact/software.amazon.elasticache/aws-elasticache-integration-client) | JDK 8, AWS SDK for Java v2 2.21.0 | [java/README.md](java/README.md) |
 
 ## Getting started
 
 You need an ElastiCache Serverless for Valkey cache with DynamoDB caching enabled. See [Getting started with DynamoDB caching](TODO-AWS-DOCS-LINK).
 
 Then install the client for your language and add one call:
+
+**Java**
+
+```java
+DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
+        .endpoint("my-cache-abc123.serverless.use1.cache.amazonaws.com:6379")
+        .cacheName("my-cache")
+        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
+
+ddb.getItem(r -> r.tableName("Users").key(Collections.singletonMap("id", AttributeValue.fromS("42")))); // unchanged
+```
 
 **Python**
 
@@ -46,17 +57,6 @@ await install({
 });
 
 await dynamodb.send(new GetItemCommand({ TableName: "Users", Key: { id: { S: "42" } } })); // unchanged
-```
-
-**Java**
-
-```java
-DynamoDbClient ddb = ElastiCacheIntegrationsClient.builder()
-        .endpoint("my-cache-abc123.serverless.use1.cache.amazonaws.com:6379")
-        .cacheName("my-cache")
-        .install(DynamoDbClient.builder().region(Region.US_EAST_1));
-
-ddb.getItem(r -> r.tableName("Users").key(Collections.singletonMap("id", AttributeValue.fromS("42")))); // unchanged
 ```
 
 Each client's README covers configuration, what happens when the cache is unreachable, errors and authentication.
