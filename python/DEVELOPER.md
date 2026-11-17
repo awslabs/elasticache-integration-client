@@ -28,12 +28,36 @@ Replies are correlated in FIFO order. The cache may instead reply with a request
 
 One connection sends at most 100 requests awaiting replies at once. Further callers wait for a slot, in arrival order, within their `cache_request_timeout` instead of failing at once. Admission uses at most 75% of that timeout, keeping 25% to send the request and receive the reply. A request whose admission budget runs out is not sent to the cache and goes to the origin, whatever its operation.
 
-## Known gaps
+## Known limitations
 
-- **Observability.** Reconnection and config staleness are logged but emit no metrics, so under the default `fallback_duration` a cache outage has no symptom other than the origin service's bill.
-- **Detecting a silently dead peer.** A peer that vanishes without closing the socket is noticed only when the next request times out. Closing that gap needs a periodic health check.
-- **IAM authentication validation.** Exercise the toolkit-backed flow against a real IAM-enabled cache, in addition to the hermetic mock-cache coverage.
-- **Public TTL controls.** Entry lifetimes are resolved by the cache from the `aws.config` overrides. The public API does not expose per-request lifetime overrides.
+- The client emits no metrics. Reconnects and cache policy staleness are logged only, so while
+  `fallback_duration` allows fallback, a cache outage shows up only as extra traffic to the origin
+  service.
+- The client has no dedicated health check. A cache that disappears without closing the socket is
+  detected when a command on the connection times out, which closes the connection and starts a
+  reconnect. That command is whichever comes first: the next request, the next background
+  `aws.config` refresh (every `refresh_interval` seconds, which the cache sets), or the next
+  background `AUTH` (every 15 minutes).
+
+## Live DynamoDB E2E example
+
+Complete the repository-wide
+[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+then run from `python/`:
+
+```bash
+python -m pip install -e .
+python examples/local_e2e.py
+```
+
+The example loads the repository-root `.env` and runs the scenarios listed in
+the repository README.
+Each run uses a freshly generated item ID so the first ElastiCache Integrations read is a cache
+miss; set `ELASTICACHE_ITEM_ID` only to pin one ID. Supported overrides include
+`ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`,
+`ELASTICACHE_TUNNEL_HOST`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_CA_CERT`,
+`ELASTICACHE_REQUEST_TIMEOUT_SECONDS`, `AWS_REGION` (default `us-east-1`),
+`ELASTICACHE_TABLE_NAME`, and `ELASTICACHE_CONCURRENCY`.
 
 ## Releasing
 
