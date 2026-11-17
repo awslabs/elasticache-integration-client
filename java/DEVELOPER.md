@@ -17,7 +17,7 @@ Two further suites run in CI and can be reproduced locally:
 ## Live DynamoDB E2E example
 
 Complete the repository-wide
-[live cache setup](../README.md#run-the-examples-against-a-live-cache),
+[live cache setup](../CONTRIBUTING.md#run-the-examples-against-a-live-cache),
 then run from `java/`:
 
 ```bash
