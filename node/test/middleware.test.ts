@@ -864,6 +864,7 @@ describe("elastiCacheIntegrations middleware", () => {
     expect(failure).not.toBeInstanceOf(ElastiCacheIntegrationsError);
     expect((failure as Error).cause).toBe(cacheError);
     expect((failure as Error & { $retryable?: object }).$retryable).toEqual({});
+    expect((failure as Error & { code?: string }).code).toBe("ECONNRESET");
     expect(next).not.toHaveBeenCalled();
   });
 

@@ -72,6 +72,11 @@ export class ElastiCacheIntegrationsCacheUnavailable extends Error {
  */
 export class ElastiCacheIntegrationsOriginError extends Error {
   readonly $retryable = {};
+  /**
+   * The code a dropped connection to the service has without the cache, so application code that
+   * checks `err.code` for a network error handles this error the same way.
+   */
+  readonly code = "ECONNRESET";
   readonly endpointUrl: string;
 
   constructor(endpointUrl: string, options?: ErrorOptions) {
