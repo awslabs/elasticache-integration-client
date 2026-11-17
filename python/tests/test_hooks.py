@@ -344,9 +344,7 @@ def test_retryable_code_is_sdk_retryable_without_fallback(code, operation):
     assert exc_info.value.__cause__ is rejection
 
 
-@pytest.mark.parametrize(
-    "code", ["UNSUPPORTED", "PARSE_ERROR", "SOME_NEW_CODE"]
-)
+@pytest.mark.parametrize("code", ["UNSUPPORTED", "PARSE_ERROR", "SOME_NEW_CODE"])
 @pytest.mark.parametrize("operation", ["GetItem", "UpdateItem"])
 def test_other_codes_are_non_retryable_without_fallback(code, operation):
     sdk = MockClient()
