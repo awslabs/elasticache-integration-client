@@ -5,9 +5,10 @@
  * AWS SigV4 authentication headers and the JS SDK-only headers, and builds a ElastiCacheIntegrationsRequest.
  * A wrapper around the client's request handler, which is the only step that gets the call's
  * `abortSignal`, then calls ElastiCacheIntegrationsSession and returns a synthetic HttpResponse. Predicate
- * declines and requests that were never sent go to the SDK's origin pipeline. A lost connection
- * is SDK-retryable for every operation, and other dropped-connection or timeout failures only for
- * idempotent operations, so the SDK keeps its normal retry and deserialization behavior.
+ * declines and requests that were never sent go to the SDK's origin pipeline. A timeout or a
+ * dropped-connection failure is SDK-retryable for every operation, as it is without the cache. On
+ * a healthy connection, a RESP error is SDK-retryable only for the codes in `RETRYABLE_CODES`.
+ * The SDK keeps its normal retry and deserialization behavior.
  *
  * The SDK's real signer is left intact so requests can still be forwarded to
  * the origin with valid signatures; only the ElastiCacheIntegrations path drops the auth
@@ -31,14 +32,16 @@ import {
   ElastiCacheIntegrationsRequestNotSent,
   ElastiCacheIntegrationsTimeoutError,
 } from "./errors.js";
-import { isIdempotentOperation } from "./idempotency.js";
 import { ElastiCacheIntegrationsRequest, RequestMetadata } from "./models.js";
 import type { ElastiCacheIntegrationsResponse } from "./models.js";
 import { sanitizeEndpoint } from "./session.js";
 import type { ElastiCacheIntegrationsSession } from "./session.js";
 
 const CACHE_MIDDLEWARE = "elastiCacheIntegrations";
-const ORIGIN_ERROR = "ORIGIN_ERROR";
+/**
+ * RESP error codes whose outcome is unknown, so the SDK may retry. Every other code is terminal.
+ */
+const RETRYABLE_CODES: ReadonlySet<string> = new Set(["ORIGIN_ERROR", "INTERNAL_ERROR"]);
 
 type RetryableError = Error & { $retryable: Record<string, never> };
 
@@ -212,32 +215,17 @@ export function cacheRequestHandler<THandler extends object>(
         return next();
       }
 
-      const idempotent = isIdempotentOperation(
-        request.metadata.service,
-        request.metadata.operation,
-      );
       if (error instanceof ElastiCacheIntegrationsRejectedError) {
-        if (error.code === ORIGIN_ERROR && session.isConnectionHealthy && idempotent) {
+        if (RETRYABLE_CODES.has(error.code) && session.isConnectionHealthy) {
           throw new ElastiCacheIntegrationsOriginError(sanitizeEndpoint(request.url), {
             cause: error,
           });
         }
         throw error;
       }
-
-      if (!session.isConnectionHealthy && error instanceof ElastiCacheIntegrationsConnectionLost) {
-        throw markRetryable(error); // retryable error so the SDK decides whether to retry or not
-      }
-      if (!session.isConnectionHealthy && idempotent && isTransportFailure(error)) {
-        throw markRetryable(error);
-      }
-      if (
-        session.isConnectionHealthy &&
-        idempotent &&
-        error instanceof ElastiCacheIntegrationsTimeoutError
-      ) {
-        throw markRetryable(error);
-      }
+      // A lost connection on a healthy connection is an aborted request, which is not retried.
+      if (!session.isConnectionHealthy && isTransportFailure(error)) throw markRetryable(error);
+      if (error instanceof ElastiCacheIntegrationsTimeoutError) throw markRetryable(error);
       throw error;
     }
   };

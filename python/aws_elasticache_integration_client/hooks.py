@@ -45,7 +45,6 @@ from aws_elasticache_integration_client.models import (
     ElastiCacheIntegrationsResponse,
     RequestMetadata,
 )
-from aws_elasticache_integration_client.idempotency import is_idempotent_operation
 from aws_elasticache_integration_client.session import ElastiCacheIntegrationsSession
 
 from botocore.awsrequest import AWSPreparedRequest, AWSResponse
@@ -62,7 +61,8 @@ _HANDLE_ATTRIBUTE = "_elasticache_integrations_handle"
 
 logger = logging.getLogger(__name__)
 
-_ORIGIN_ERROR = "ORIGIN_ERROR"
+#: RESP error codes whose outcome is unknown, so the SDK may retry. Every other code is terminal.
+_RETRYABLE_CODES = frozenset({"ORIGIN_ERROR", "INTERNAL_ERROR"})
 
 
 #: Prepared-body types ElastiCacheIntegrations can put in a single ``aws.request`` frame. Anything else is a
@@ -197,12 +197,10 @@ class ElastiCacheIntegrationsHandle:
         fallback window, which is safe for every operation.
 
         After sending, the request can fail the same way a call to the service can: the connection
-        is lost, the reply times out, or the cache could not reach the service (ORIGIN_ERROR on a
-        healthy connection). These become the botocore errors the SDK raises for such failures, so
-        the SDK's retry settings decide whether to retry. A retry goes through the cache again. A
-        lost connection becomes a botocore error for every operation. A timeout, a connection
-        error and an ORIGIN_ERROR become botocore errors only for an operation in the
-        idempotent-operations list, and are raised as is otherwise. Other RESP errors, and
+        is lost, the reply times out, or the cache could not get a response from the service
+        (``ORIGIN_ERROR`` or ``INTERNAL_ERROR`` on a healthy connection). These become the botocore
+        errors the SDK raises for such failures, for every operation, so the SDK's retry settings
+        decide whether to retry. A retry goes through the cache again. Other RESP errors, and
         exceptions that are not ElastiCacheIntegrations errors, are raised as is.
         """
         try:
@@ -232,23 +230,17 @@ class ElastiCacheIntegrationsHandle:
                 if self._session.is_open:
                     return None
                 raise
-            idempotent = is_idempotent_operation(
-                http_request.metadata.service, http_request.metadata.operation
-            )
+            # A request failed by close() is not retried: the client is shutting down.
+            if not self._session.is_open:
+                raise
             if isinstance(exc, ElastiCacheIntegrationsRejectedError):
-                if exc.code == _ORIGIN_ERROR and self._session.is_connection_healthy and idempotent:
+                if exc.code in _RETRYABLE_CODES and self._session.is_connection_healthy:
                     raise ElastiCacheIntegrationsOriginError(endpoint_url=request.url) from exc
                 raise
-            if not self._session.is_open:
-                raise  # session closed: never retry
             # Let the SDK retry. The retry goes through the cache again, waits briefly for a
             # reconnect, and goes to the service only if the cache is still down.
             if isinstance(exc, ElastiCacheIntegrationsConnectionLost):
-                raise ConnectionClosedError(
-                    endpoint_url=request.url
-                ) from exc  # retryable error so the SDK decides whether to retry or not
-            if not idempotent:
-                raise  # non-idempotent operations stop here for other failures
+                raise ConnectionClosedError(endpoint_url=request.url) from exc
             if isinstance(exc, ElastiCacheIntegrationsTimeoutError):
                 raise ReadTimeoutError(endpoint_url=request.url) from exc
             if isinstance(exc, ElastiCacheIntegrationsConnectionError):

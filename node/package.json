@@ -34,21 +34,17 @@
     "LICENSE"
   ],
   "scripts": {
-    "generate:idempotency": "node scripts/generate-idempotency.mjs",
-    "check:idempotency": "node scripts/generate-idempotency.mjs --check",
     "clean": "node scripts/clean.mjs",
-    "prebuild": "npm run check:idempotency",
     "build": "npm run clean && tsc -p tsconfig.esm.json && tsc -p tsconfig.cjs.json && node scripts/write-cjs-package.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.esm.json --noEmit && tsc -p tsconfig.cjs.json --noEmit",
-    "test:idempotency-catalog": "node --test scripts/idempotency-catalog.test.mjs",
     "test:version-stamp": "node --test scripts/set-package-version.test.mjs",
-    "test": "npm run test:idempotency-catalog && npm run test:version-stamp && vitest run --coverage",
+    "test": "npm run test:version-stamp && vitest run --coverage",
     "pack:smoke": "npm run build && node scripts/package-smoke.mjs",
     "example:local-e2e": "npm run build && node examples/local-e2e.mjs",
-    "verify": "npm run check:idempotency && npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
+    "verify": "npm run format:check && npm run lint && npm run typecheck && npm test && npm run pack:smoke"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "0.18.5",

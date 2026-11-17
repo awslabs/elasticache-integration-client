@@ -98,9 +98,6 @@ jobs:
       - name: Validate distribution metadata
         run: python -m twine check release/dist/*
 
-      - name: Check packaged idempotency catalog
-        run: unzip -l release/dist/*.whl | grep -q "aws_elasticache_integration_client/idempotent-operations.json"
-
       - name: Upload immutable release distributions
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

@@ -113,8 +113,6 @@ jobs:
           python -m venv consumer
           consumer/bin/pip install "$WHEEL_DIR"/*.whl
           consumer/bin/python - <<'PY'
-          from importlib.resources import files
-
           import aws_elasticache_integration_client
 
           for name in (
@@ -124,11 +122,6 @@ jobs:
               "ElastiCacheIntegrationsError",
           ):
               assert hasattr(aws_elasticache_integration_client, name), name
-          assert (
-              files("aws_elasticache_integration_client")
-              .joinpath("idempotent-operations.json")
-              .is_file()
-          )
           print("wheel import ok:", aws_elasticache_integration_client.__file__)
           PY
 

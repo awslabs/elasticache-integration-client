@@ -12,7 +12,7 @@
 - `src/`: production TypeScript modules.
 - `test/`: Vitest tests organized by production concern.
 - `test/mock-cache.ts`: reusable local plaintext/TLS ElastiCacheIntegrations mock.
-- `scripts/`: build, cleanup, idempotency-catalog generation, release version
+- `scripts/`: build, cleanup, release version
   stamping, and package smoke-test tooling.
 - `src/index.ts`: public package export boundary.
 - `src/predicates.ts`: compiled CEL request-routing predicates.
@@ -34,7 +34,7 @@
 - Before reporting completion, state which validation commands actually ran and
   whether any expected checks were not run.
 
-CI runs the idempotency-catalog check, formatting, linting, typechecking,
+CI runs formatting, linting, typechecking,
 `npm test`, and package smoke checks as separate steps. CI leaves out the two
 alignment test files, which run in `alignment-ci.yml`. `npm run verify` runs
 the same checks plus the alignment tests.
@@ -104,10 +104,9 @@ require the corresponding tests, README, and package checks to change with it.
   serialized unsigned request ordering, synthetic responses, bodies that are
   not bytes-like, such as streams, passed through to the origin without
   calling ElastiCacheIntegrations, a request that was never sent passed to the
-  origin, a lost connection SDK-retryable for every operation, other transport
-  failures on a dropped connection SDK-retryable only for cataloged operations,
-  healthy-connection `ORIGIN_ERROR` and timeout retries only for cataloged
-  operations, other RESP/non-idempotent/validation/shutdown
+  origin, timeouts and dropped-connection failures SDK-retryable for every
+  operation, RESP errors on a healthy connection SDK-retryable only for
+  `ORIGIN_ERROR` and `INTERNAL_ERROR`, other RESP/validation/shutdown
   failures propagating, and ElastiCacheIntegrations-first teardown.
 - **Authentication and transport:** flag divergence from the SDK credential
   provider, stale IAM tokens, reusable connections after initial AUTH failure,

@@ -3,6 +3,7 @@ package software.amazon.elasticache.integrations.session;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -296,7 +297,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void zeroFallbackDroppedIdempotentTransportFailureIsRetryableWithoutContactingOrigin() {
+    void zeroFallbackDroppedTransportFailureIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
@@ -314,7 +315,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void nonIdempotentTransportFailureDoesNotContactOrigin() {
+    void writeTimeoutIsRetryableWithoutContactingOrigin() {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
@@ -330,13 +331,14 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                         ExecutionException.class,
                         () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
-        assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
+        assertTrue(failure.getCause() instanceof RetryableException);
+        assertTrue(failure.getCause().getCause() instanceof ElastiCacheIntegrationsTimeoutError);
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
 
     @Test
-    void nonIdempotentRequestNotSentDelegatesToOrigin() throws Exception {
+    void writeRequestNotSentDelegatesToOrigin() throws Exception {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
@@ -392,13 +394,20 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         client.close();
     }
 
-    @Test
-    void idempotentOriginErrorIsRetryableWithoutContactingOrigin() {
+    @ParameterizedTest
+    @CsvSource({
+        "ORIGIN_ERROR, GetItem, true",
+        "ORIGIN_ERROR, UpdateItem, true",
+        "INTERNAL_ERROR, GetItem, true",
+        "INTERNAL_ERROR, UpdateItem, true"
+    })
+    void retryableCodeIsRetryableWithoutContactingOrigin(
+            String code, String operation, boolean healthy) {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new OriginErrorSession(),
-                        preparedContext("GetItem"),
+                        new CodeSession(code, healthy),
+                        preparedContext(operation),
                         origin,
                         false,
                         Runnable::run,
@@ -417,13 +426,14 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         client.close();
     }
 
-    @Test
-    void nonIdempotentOriginErrorIsNonRetryableWithoutContactingOrigin() {
+    @ParameterizedTest
+    @ValueSource(strings = {"ORIGIN_ERROR", "INTERNAL_ERROR"})
+    void retryableCodeOnDroppedConnectionIsNotRetryable(String code) {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
-                        new OriginErrorSession(),
-                        preparedContext("UpdateItem"),
+                        new CodeSession(code, false),
+                        preparedContext("GetItem"),
                         origin,
                         false,
                         Runnable::run,
@@ -435,6 +445,30 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
                         () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
 
         assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRejectedError);
+        assertEquals(0, origin.executeCount.get());
+        client.close();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"UNSUPPORTED, UpdateItem", "PARSE_ERROR, GetItem", "SOME_NEW_CODE, UpdateItem"})
+    void otherCodesAreNonRetryableWithoutContactingOrigin(String code, String operation) {
+        RecordingOrigin origin = new RecordingOrigin();
+        ElastiCacheIntegrationsAsyncHttpClient client =
+                new ElastiCacheIntegrationsAsyncHttpClient(
+                        new CodeSession(code, true),
+                        preparedContext(operation),
+                        origin,
+                        false,
+                        Runnable::run,
+                        null);
+
+        ExecutionException failure =
+                assertThrows(
+                        ExecutionException.class,
+                        () -> client.execute(executeRequest()).get(2, TimeUnit.SECONDS));
+
+        assertTrue(failure.getCause() instanceof ElastiCacheIntegrationsRejectedError);
+        assertNull(failure.getCause().getCause());
         assertEquals(0, origin.executeCount.get());
         client.close();
     }
@@ -457,7 +491,7 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
     }
 
     @Test
-    void shutdownFailureDoesNotStartIdempotentFallback() {
+    void shutdownFailureIsNotRetryable() {
         RecordingOrigin origin = new RecordingOrigin();
         ElastiCacheIntegrationsAsyncHttpClient client =
                 new ElastiCacheIntegrationsAsyncHttpClient(
@@ -852,12 +886,25 @@ class ElastiCacheIntegrationsAsyncHttpClientTest {
         }
     }
 
-    private static final class OriginErrorSession extends OpenSession {
+    private static final class CodeSession extends OpenSession {
+        private final String code;
+        private final boolean healthy;
+
+        private CodeSession(String code, boolean healthy) {
+            this.code = code;
+            this.healthy = healthy;
+        }
+
+        @Override
+        boolean isConnectionHealthy() {
+            return healthy;
+        }
+
         @Override
         ElastiCacheIntegrationsResponse request(
                 ElastiCacheIntegrationsRequest request,
                 ElastiCacheIntegrationsRequestCancellation cancellation) {
-            throw new ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "origin unavailable");
+            throw new ElastiCacheIntegrationsRejectedError(code, "rejected");
         }
     }
 

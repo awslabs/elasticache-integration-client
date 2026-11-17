@@ -10,22 +10,18 @@ through the cache protocol, and allow cacheable responses to be served without
 contacting the origin service. Client-specific documentation describes the
 supported features and fallback behavior for each language.
 
-The language-neutral replay-safety catalog is
-`shared/idempotent-operations.json`. Java packages it as a resource, Python
-copies it into built packages, and Node generates its compiled lookup from the
-same source with a CI freshness check. After a request is sent, a lost cache
-connection is SDK-retryable for every operation, as a dropped connection to the
-service is without the cache. Other indeterminate cache failures fall back to
-the origin only for cataloged operations after the cache connection drops;
-mixed or unknown operations are treated as non-idempotent. On a healthy
-connection, an `ORIGIN_ERROR` is SDK-retryable only for a cataloged operation.
+Retries work as they do without the cache: the SDK's retry settings decide
+whether and how many times a request is retried. If a request times out or loses
+its connection to the cache, the SDK can retry it, for any operation. If the
+cache returns `ORIGIN_ERROR` or `INTERNAL_ERROR` on a healthy connection,
+the SDK can retry the request. Other errors from the cache are not retried.
+
 When a routed request has not reached the cache because the connection is down,
 it may use the configured origin fallback window, including for writes.
 `AUTH_ERROR` closes the stale connection and safely passes the rejected
 request through while reconnecting. With the fallback set to 0, the rejected
 request raises `ElastiCacheIntegrationsCacheUnavailable` at once instead. Other
-RESP errors are non-retryable and do
-not trigger origin fallback.
+errors from the cache are not retried and do not trigger origin fallback.
 
 `shared/protocol-vectors.json` holds wire vectors: the exact RESP bytes each
 client must send for a given request or config, and the response or error type

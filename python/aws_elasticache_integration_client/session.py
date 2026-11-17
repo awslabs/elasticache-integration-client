@@ -329,9 +329,9 @@ class ElastiCacheIntegrationsSession:
         ``connection_timeout`` for the reconnect to land before falling back. This gives a quick
         reconnect time to finish rather than sending the request to the origin.
 
-        Once a request is sent to ElastiCacheIntegrations, failures propagate to the hook. For a
-        replay-safe operation the hook returns them through botocore as retryable, so
-        the SDK or application decides whether to retry them.
+        Once a request is sent to ElastiCacheIntegrations, failures propagate to the hook, which
+        returns the retryable ones through botocore as retryable, so the SDK or application
+        decides whether to retry them.
 
         An ``AUTH_ERROR`` reply drops the connection so the reconnect re-authenticates. The
         rejected request passes through while the fallback window is open.

@@ -194,7 +194,7 @@ def test_missing_or_malformed_event_name_raises(event_name):
         hooks._aws_to_cache_request(request, event_name)
 
 
-def test_dropped_idempotent_elasticache_integrations_failure_is_sdk_retryable():
+def test_dropped_connection_failure_is_sdk_retryable():
     # The SDK retries it, and the retry goes through the cache again.
     sdk = MockClient()
     session = mock_session()
@@ -206,7 +206,7 @@ def test_dropped_idempotent_elasticache_integrations_failure_is_sdk_retryable():
         sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
 
 
-def test_dropped_idempotent_timeout_is_sdk_retryable():
+def test_dropped_connection_timeout_is_sdk_retryable():
     sdk = MockClient()
     session = mock_session()
     session.is_connection_healthy = False
@@ -218,22 +218,22 @@ def test_dropped_idempotent_timeout_is_sdk_retryable():
 
 
 @pytest.mark.parametrize(
-    "cache_error",
+    ("cache_error", "sdk_error"),
     [
-        ElastiCacheIntegrationsTimeoutError("timed out"),
-        ElastiCacheIntegrationsConnectionError("connect failed"),
+        (ElastiCacheIntegrationsTimeoutError("timed out"), ReadTimeoutError),
+        (ElastiCacheIntegrationsConnectionError("connect failed"), ConnectionClosedError),
     ],
 )
-def test_non_idempotent_transport_failure_is_non_retryable(cache_error):
-    """A non-idempotent timeout or connection error is not marked retryable."""
+def test_write_transport_failure_is_sdk_retryable(cache_error, sdk_error):
+    """A write's timeout or connection error is retryable, as it is without the cache."""
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = cache_error
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
-    with pytest.raises(type(cache_error)) as exc_info:
-        request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(sdk_error) as exc_info:
         sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
-    assert exc_info.value is cache_error
+    assert exc_info.value.__cause__ is cache_error
 
 
 def test_connection_lost_is_retryable_for_any_operation():
@@ -263,7 +263,7 @@ def test_connection_lost_after_close_is_not_retryable():
     assert exc_info.value is cache_error
 
 
-def test_non_idempotent_request_not_sent_passes_through_to_origin():
+def test_write_request_not_sent_passes_through_to_origin():
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = ElastiCacheIntegrationsRequestNotSent("admission timed out")
@@ -275,7 +275,7 @@ def test_non_idempotent_request_not_sent_passes_through_to_origin():
     assert first_non_none_response(responses) is None
 
 
-def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
+def test_healthy_connection_deferred_timeout_is_sdk_retryable():
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = ElastiCacheIntegrationsTimeoutError("timed out")
@@ -292,7 +292,7 @@ def test_healthy_idempotent_deferred_timeout_is_sdk_retryable():
         ElastiCacheIntegrationsConnectionError("connect failed"),
     ],
 )
-def test_idempotent_connection_errors_are_sdk_retryable(cache_error):
+def test_connection_errors_are_sdk_retryable(cache_error):
     sdk = MockClient()
     session = mock_session()
     session.request.side_effect = cache_error
@@ -330,27 +330,63 @@ def test_auth_rejection_is_not_converted_to_a_connection_error():
     assert exc_info.value is rejection
 
 
-def test_idempotent_origin_error_is_sdk_retryable_without_fallback():
+@pytest.mark.parametrize("code", ["ORIGIN_ERROR", "INTERNAL_ERROR"])
+@pytest.mark.parametrize("operation", ["GetItem", "UpdateItem"])
+def test_retryable_code_is_sdk_retryable_without_fallback(code, operation):
     sdk = MockClient()
     session = mock_session()
-    rejection = ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "origin unavailable")
+    rejection = ElastiCacheIntegrationsRejectedError(code, "not applied")
     session.request.side_effect = rejection
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
     with pytest.raises(ElastiCacheIntegrationsOriginError) as exc_info:
-        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+        sdk.meta.events.emit(f"before-send.dynamodb.{operation}", request=request)
     assert exc_info.value.__cause__ is rejection
 
 
-def test_non_idempotent_origin_error_is_non_retryable_without_fallback():
+@pytest.mark.parametrize(
+    "code", ["UNSUPPORTED", "PARSE_ERROR", "SOME_NEW_CODE"]
+)
+@pytest.mark.parametrize("operation", ["GetItem", "UpdateItem"])
+def test_other_codes_are_non_retryable_without_fallback(code, operation):
     sdk = MockClient()
     session = mock_session()
+    rejection = ElastiCacheIntegrationsRejectedError(code, "rejected")
+    session.request.side_effect = rejection
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    responses = None
+    with pytest.raises(ElastiCacheIntegrationsRejectedError) as exc_info:
+        responses = sdk.meta.events.emit(f"before-send.dynamodb.{operation}", request=request)
+    assert responses is None
+    assert exc_info.value is rejection
+    assert not isinstance(exc_info.value, ConnectionClosedError)
+
+
+@pytest.mark.parametrize("code", ["ORIGIN_ERROR", "INTERNAL_ERROR"])
+def test_retryable_code_on_dropped_connection_is_not_retryable(code):
+    sdk = MockClient()
+    session = mock_session()
+    session.is_connection_healthy = False
+    rejection = ElastiCacheIntegrationsRejectedError(code, "not applied")
+    session.request.side_effect = rejection
+    hooks.ElastiCacheIntegrationsHandle(sdk, session)
+    request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
+    with pytest.raises(ElastiCacheIntegrationsRejectedError) as exc_info:
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
+    assert exc_info.value is rejection
+
+
+def test_retryable_code_after_close_is_not_retryable():
+    sdk = MockClient()
+    session = mock_session()
+    session.is_open = False
     rejection = ElastiCacheIntegrationsRejectedError("ORIGIN_ERROR", "origin unavailable")
     session.request.side_effect = rejection
     hooks.ElastiCacheIntegrationsHandle(sdk, session)
     request = mock.Mock(method="POST", url="https://host/", headers={}, body=b"{}")
     with pytest.raises(ElastiCacheIntegrationsRejectedError) as exc_info:
-        sdk.meta.events.emit("before-send.dynamodb.UpdateItem", request=request)
+        sdk.meta.events.emit("before-send.dynamodb.GetItem", request=request)
     assert exc_info.value is rejection
 
 
@@ -368,7 +404,7 @@ def test_malformed_response_is_non_retryable(operation):
     assert exc_info.value is protocol_error
 
 
-def test_shutdown_failure_does_not_start_idempotent_fallback():
+def test_shutdown_failure_is_not_retryable():
     sdk = MockClient()
     session = mock_session()
     session.is_open = False
