@@ -136,6 +136,11 @@ def _decode_bulk_string(
     end = after_header + length
     if end + 2 > len(data):  # body + trailing CRLF not all present yet
         raise IncompleteFrame("bulk string body incomplete")
+    if data[end : end + 2] != _CRLF:  # a wrong length would return a cut body and desync
+        # The bytes found there come from the response body, so they stay out of the message.
+        raise ElastiCacheIntegrationsProtocolError(
+            f"Malformed RESP bulk string terminator after the declared {length}-byte body"
+        )
     return bytes(data[after_header:end]), end + 2
 
 

@@ -196,12 +196,23 @@ def test_truncation_raises_incomplete_frame(partial, message):
         (b"*notanint\r\n", "Malformed RESP array length"),
         (b">2\r\n:1\r\n:2\r\n", "Invalid RESP push kind"),
         (b"_bogus\r\n", "Malformed RESP null"),
+        (b"$4\r\nhello\r\n", "Malformed RESP bulk string terminator"),
+        (b"*1\r\n$4\r\nhello\r\n", "Malformed RESP bulk string terminator"),
     ],
 )
 def test_decode_garbage_raises_protocol_error(garbage, message):
     """Genuinely corrupt input raises ElastiCacheIntegrationsProtocolError, naming what it could not read."""
     with pytest.raises(ElastiCacheIntegrationsProtocolError, match=message):
         decode_resp(garbage)
+
+
+def test_bulk_terminator_error_does_not_echo_body_bytes():
+    """A short declared length leaves body bytes where the CRLF should be; they stay out of the error."""
+    with pytest.raises(ElastiCacheIntegrationsProtocolError) as excinfo:
+        decode_resp(b"$6\r\nsecretXY\r\n")
+    message = str(excinfo.value)
+    assert "6-byte body" in message
+    assert "XY" not in message and "secret" not in message
 
 
 # --- nesting depth cap --------------------------------------------------------
