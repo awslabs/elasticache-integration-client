@@ -4,12 +4,18 @@ public class PendingRequestsTests
 {
     private static readonly RespValue Ok = new RespSimpleString("OK");
 
+    private static PendingSlot Add(PendingRequests pending, bool deferrable)
+    {
+        Assert.True(pending.TryReserve());
+        return pending.Add(deferrable, 0);
+    }
+
     [Fact]
     public async Task InBandRepliesResolveInOrder()
     {
         var pending = new PendingRequests(10);
-        var first = pending.TryAdd(deferrable: false, 0)!;
-        var second = pending.TryAdd(deferrable: false, 0)!;
+        var first = Add(pending, false);
+        var second = Add(pending, false);
 
         pending.ResolveHead(new RespInteger(1));
         pending.ResolveHead(new RespInteger(2));
@@ -32,7 +38,7 @@ public class PendingRequestsTests
     public void AnInBandReplyWithOnlyDeferredRequestsPendingIsAProtocolError()
     {
         var pending = new PendingRequests(10);
-        pending.TryAdd(deferrable: true, 0);
+        Add(pending, true);
         pending.TryDefer("id");
 
         Assert.Throws<ElastiCacheIntegrationsProtocolException>(() => pending.ResolveHead(Ok));
@@ -42,8 +48,8 @@ public class PendingRequestsTests
     public async Task DeferredRepliesResolveByIdInAnyOrder()
     {
         var pending = new PendingRequests(10);
-        var a = pending.TryAdd(deferrable: true, 0)!;
-        var b = pending.TryAdd(deferrable: true, 0)!;
+        var a = Add(pending, true);
+        var b = Add(pending, true);
 
         Assert.True(pending.TryDefer("id-a"));
         Assert.True(pending.TryDefer("id-b"));
@@ -60,7 +66,7 @@ public class PendingRequestsTests
     public async Task ANonDeferrableHeadTakesASimpleStringInBand()
     {
         var pending = new PendingRequests(10);
-        var auth = pending.TryAdd(deferrable: false, 0)!;
+        var auth = Add(pending, false);
 
         Assert.False(pending.TryDefer("QUEUED"));
         pending.ResolveHead(new RespSimpleString("QUEUED"));
@@ -72,8 +78,8 @@ public class PendingRequestsTests
     public void DuplicateDeferredIdIsAProtocolError()
     {
         var pending = new PendingRequests(10);
-        pending.TryAdd(deferrable: true, 0);
-        pending.TryAdd(deferrable: true, 0);
+        Add(pending, true);
+        Add(pending, true);
         pending.TryDefer("id");
 
         Assert.Throws<ElastiCacheIntegrationsProtocolException>(() => pending.TryDefer("id"));
@@ -83,21 +89,66 @@ public class PendingRequestsTests
     public void LimitCountsFifoAndDeferredSlots()
     {
         var pending = new PendingRequests(2);
-        pending.TryAdd(deferrable: true, 0);
+        Add(pending, true);
         pending.TryDefer("id");
-        pending.TryAdd(deferrable: true, 0);
+        Add(pending, true);
 
-        Assert.Null(pending.TryAdd(deferrable: true, 0));
+        Assert.False(pending.TryReserve());
         pending.TryResolveDeferred("id", Ok);
-        Assert.NotNull(pending.TryAdd(deferrable: true, 0));
+        Assert.True(pending.TryReserve());
+    }
+
+    [Fact]
+    public async Task AWaiterGetsTheSlotOfEachWayASlotLeaves()
+    {
+        var pending = new PendingRequests(1);
+
+        async Task Freed(Action leave)
+        {
+            var waiter = pending.ReserveAsync(TestContext.Current.CancellationToken);
+            Assert.False(waiter.IsCompleted);
+            leave();
+            await waiter.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        }
+
+        // Each step's waiter holds the reservation the next Add uses.
+        Add(pending, false);
+        await Freed(() => pending.ResolveHead(Ok));
+        pending.Add(deferrable: true, 0);
+        pending.TryDefer("a");
+        await Freed(() => pending.TryResolveDeferred("a", Ok));
+        var deferred = pending.Add(deferrable: true, 0);
+        pending.TryDefer("b");
+        await Freed(() => pending.Abandon(deferred));
+        var dropped = pending.Add(deferrable: true, 0);
+        pending.Abandon(dropped);
+        await Freed(() => pending.TryDefer("c"));
+        pending.Add(deferrable: false, 0);
+        await Freed(() => pending.FailAll("lost", null));
+
+        // After FailAll an added slot fails at once and frees its reservation.
+        pending.Add(deferrable: false, 0);
+        Assert.True(pending.TryReserve());
+    }
+
+    [Fact]
+    public void AnAbandonedFifoSlotKeepsItsSlotUntilItsReplyArrives()
+    {
+        var pending = new PendingRequests(1);
+        var stale = Add(pending, false);
+        pending.Abandon(stale);
+
+        Assert.False(pending.TryReserve());
+        pending.ResolveHead(Ok);
+        Assert.True(pending.TryReserve());
     }
 
     [Fact]
     public async Task AnAbandonedFifoSlotStaysAndAbsorbsItsReply()
     {
         var pending = new PendingRequests(10);
-        var stale = pending.TryAdd(deferrable: false, 0)!;
-        var next = pending.TryAdd(deferrable: false, 0)!;
+        var stale = Add(pending, false);
+        var next = Add(pending, false);
 
         Assert.True(pending.Abandon(stale));
         Assert.True(pending.IsInFifo(stale));
@@ -112,7 +163,7 @@ public class PendingRequestsTests
     public void AnAbandonedHeadThatIsDeferredIsDroppedAndItsPushIsUnknown()
     {
         var pending = new PendingRequests(10);
-        var stale = pending.TryAdd(deferrable: true, 0)!;
+        var stale = Add(pending, true);
         pending.Abandon(stale);
 
         Assert.True(pending.TryDefer("id"));
@@ -124,7 +175,7 @@ public class PendingRequestsTests
     public void AbandoningADeferredSlotRemovesItFromTheMap()
     {
         var pending = new PendingRequests(10);
-        var slot = pending.TryAdd(deferrable: true, 0)!;
+        var slot = Add(pending, true);
         pending.TryDefer("id");
 
         Assert.False(pending.Abandon(slot));
@@ -137,10 +188,10 @@ public class PendingRequestsTests
     public async Task AbandoningAResolvedSlotLeavesAReusedIdAlone()
     {
         var pending = new PendingRequests(10);
-        var first = pending.TryAdd(deferrable: true, 0)!;
+        var first = Add(pending, true);
         pending.TryDefer("id");
         pending.TryResolveDeferred("id", new RespInteger(1));
-        var second = pending.TryAdd(deferrable: true, 0)!;
+        var second = Add(pending, true);
         pending.TryDefer("id");
 
         Assert.False(pending.Abandon(first));
@@ -152,7 +203,7 @@ public class PendingRequestsTests
     public void AbandoningASlotAnsweredInBandDoesNothing()
     {
         var pending = new PendingRequests(10);
-        var slot = pending.TryAdd(deferrable: false, 0)!;
+        var slot = Add(pending, false);
         pending.ResolveHead(Ok);
 
         Assert.False(pending.Abandon(slot));
@@ -191,7 +242,7 @@ public class PendingRequestsTests
     private static void FailAnAbandonedSlot(string message)
     {
         var pending = new PendingRequests(10);
-        pending.Abandon(pending.TryAdd(deferrable: false, 0)!);
+        pending.Abandon(Add(pending, false));
         pending.FailAll(message, null);
     }
 
@@ -199,14 +250,14 @@ public class PendingRequestsTests
     public async Task FailAllFailsEverySlotAndEveryLaterOne()
     {
         var pending = new PendingRequests(10);
-        var deferred = pending.TryAdd(deferrable: true, 0)!;
+        var deferred = Add(pending, true);
         pending.TryDefer("id");
-        var second = pending.TryAdd(deferrable: false, 0)!;
+        var second = Add(pending, false);
         var cause = new IOException("reset");
 
         pending.FailAll("lost", cause);
 
-        foreach (var slot in new[] { deferred, second, pending.TryAdd(deferrable: false, 0)! })
+        foreach (var slot in new[] { deferred, second, Add(pending, false) })
         {
             var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => slot.Reply);
             Assert.Equal("lost", error.Message);
@@ -220,8 +271,8 @@ public class PendingRequestsTests
     public async Task WhenEmptyCompletesOnceTheLastSlotLeaves()
     {
         var pending = new PendingRequests(10);
-        pending.TryAdd(deferrable: true, 0);
-        pending.TryAdd(deferrable: false, 0);
+        Add(pending, true);
+        Add(pending, false);
         pending.TryDefer("id");
 
         var empty = pending.WhenEmptyAsync();

@@ -168,7 +168,7 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
     }
 
     /// <summary>Sends <c>aws.request</c> and returns its final reply: served, or rejected by the cache.</summary>
-    /// <exception cref="ElastiCacheIntegrationsPendingLimitException">Too many requests in flight; nothing was sent.</exception>
+    /// <exception cref="ElastiCacheIntegrationsPendingLimitException">No slot freed in time; nothing was sent.</exception>
     /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.RequestTimeout"/>.</exception>
     /// <exception cref="ElastiCacheIntegrationsConnectionLostException">The connection died before the reply.</exception>
     /// <exception cref="ElastiCacheIntegrationsProtocolException">The reply has the wrong shape; the connection stays up.</exception>
@@ -185,13 +185,22 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
     }
 
     /// <summary>
-    /// Sends one command and waits for its reply. <paramref name="timeout"/> bounds the wait for
-    /// the write lock, then again the send and the reply. A timeout or cancellation abandons only
-    /// this command: its reply is dropped when it arrives. A failed write kills the connection.
+    /// Sends one command and waits for its reply. With <see cref="ElastiCacheIntegrationsClientOptions.MaxPending"/>
+    /// commands in flight it first waits for a free slot, for at most 75% of <paramref name="timeout"/>.
+    /// <paramref name="timeout"/> then bounds the wait for the write lock, and again the send and
+    /// the reply. A timeout or cancellation abandons only this command: its reply is dropped when
+    /// it arrives. A failed write kills the connection.
     /// </summary>
+    /// <exception cref="ElastiCacheIntegrationsPendingLimitException">No slot freed in time; nothing was sent.</exception>
     internal async Task<RespValue> ExecuteAsync(
         string command, ReadOnlyMemory<byte> frame, bool deferrable, TimeSpan timeout, CancellationToken cancellationToken)
     {
+        if (!_pending.TryReserve())
+        {
+            await ReserveAsync(command, timeout, cancellationToken).ConfigureAwait(false);
+        }
+
+        var reserved = true;
         using var deadline = new CancellationTokenSource(timeout, _time);
         using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
         PendingSlot? slot = null;
@@ -210,8 +219,8 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
                 deadline.CancelAfter(timeout);
                 wait.Token.ThrowIfCancellationRequested();
 
-                slot = _pending.TryAdd(deferrable, _time.GetTimestamp()) ?? throw new ElastiCacheIntegrationsPendingLimitException(
-                    $"The connection already has {_options.MaxPending} requests in flight.");
+                slot = _pending.Add(deferrable, _time.GetTimestamp());
+                reserved = false;
                 if (!slot.Reply.IsCompleted)
                 {
                     await WriteAsync(frame, deadline.Token).ConfigureAwait(false);
@@ -233,6 +242,31 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
 
             cancellationToken.ThrowIfCancellationRequested();
             throw new ElastiCacheIntegrationsTimeoutException($"{command} got no reply within {timeout.TotalMilliseconds} ms.");
+        }
+        finally
+        {
+            if (reserved)
+            {
+                _pending.Unreserve();
+            }
+        }
+    }
+
+    /// <summary>Waits for a free slot for 75% of <paramref name="timeout"/>, leaving the rest for the send and the reply, as the Java and Node clients do.</summary>
+    /// <exception cref="ElastiCacheIntegrationsPendingLimitException">No slot freed in time.</exception>
+    private async Task ReserveAsync(string command, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var budget = timeout - (timeout / 4);
+        using var deadline = new CancellationTokenSource(budget, _time);
+        using var wait = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadline.Token);
+        try
+        {
+            await _pending.ReserveAsync(wait.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new ElastiCacheIntegrationsPendingLimitException(
+                $"{command} was not sent: the connection had {_options.MaxPending} requests in flight for {budget.TotalMilliseconds} ms.");
         }
     }
 

@@ -251,10 +251,11 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
             {
                 reply = await connection.RequestAsync(request, cancellationToken).ConfigureAwait(false);
             }
+            // Nothing was sent, so any operation may go to DynamoDB.
             catch (ElastiCacheIntegrationsPendingLimitException e)
             {
                 OnPendingLimit();
-                return ElastiCacheIntegrationsOutcome.Retryable(e);
+                return NoFallback ? ElastiCacheIntegrationsOutcome.Retryable(e) : ElastiCacheIntegrationsOutcome.Origin;
             }
             catch (Exception e) when (RequestOutcomes.FromException(e, replayable) is { } outcome)
             {
@@ -288,8 +289,8 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         if (last < 0 || _time.GetElapsedTime(last, now) >= PendingBurstGap)
         {
             _logger.LogWarning(ElastiCacheIntegrationsEvents.PendingLimitReached,
-                "The connection has MaxPending {MaxPending} calls in flight; calls over the limit fail with a retryable error",
-                _options.MaxPending);
+                "The connection had MaxPending {MaxPending} calls in flight for 75% of the timeout; calls that find no free slot in time {Action}",
+                _options.MaxPending, NoFallback ? "fail with a retryable error" : "go to DynamoDB");
         }
     }
 

@@ -66,15 +66,23 @@ public class SessionTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task AFullConnectionIsRetryableAndStaysUp(bool noFallback)
+    public async Task ARequestWithNoFreeSlotGoesToDynamoDBOrIsRetryableWithoutFallback(bool noFallback)
     {
         await using var rig = await SessionRig.StartAsync(SessionRig.Options(fallback: noFallback ? TimeSpan.Zero : null));
         rig.Connection.OnRequest = (_, _) => Task.FromException<RequestReply>(new ElastiCacheIntegrationsPendingLimitException("full"));
 
         var outcome = await rig.SendAsync();
 
-        Assert.Equal(OutcomeKind.Retryable, outcome.Kind);
-        Assert.IsType<ElastiCacheIntegrationsPendingLimitException>(outcome.Error);
+        if (noFallback)
+        {
+            Assert.Equal(OutcomeKind.Retryable, outcome.Kind);
+            Assert.IsType<ElastiCacheIntegrationsPendingLimitException>(outcome.Error);
+        }
+        else
+        {
+            Assert.Equal(OutcomeKind.Origin, outcome.Kind);
+        }
+
         Assert.True(rig.Session.IsOpen);
     }
 

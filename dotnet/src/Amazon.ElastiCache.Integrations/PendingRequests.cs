@@ -38,10 +38,12 @@ internal sealed class PendingSlot
 
 /// <summary>
 /// The commands waiting for replies: a FIFO in wire order, and a map of the requests the cache
-/// deferred with <c>+id</c>. Thread safe.
+/// deferred with <c>+id</c>. At most <c>maxPending</c> slots: a caller reserves one before
+/// <see cref="Add"/>, and it is freed when the slot leaves. Thread safe.
 /// </summary>
 internal sealed class PendingRequests(int maxPending)
 {
+    private readonly SemaphoreSlim _free = new(maxPending, maxPending);
     private readonly object _lock = new();
     private readonly Queue<PendingSlot> _fifo = new();
     private readonly Dictionary<string, PendingSlot> _deferred = new(StringComparer.Ordinal);
@@ -60,11 +62,20 @@ internal sealed class PendingRequests(int maxPending)
         }
     }
 
+    /// <summary>Reserves a free slot without waiting. False when <c>maxPending</c> slots are in use.</summary>
+    public bool TryReserve() => _free.Wait(0);
+
+    /// <summary>Waits for a free slot and reserves it.</summary>
+    public Task ReserveAsync(CancellationToken cancellationToken) => _free.WaitAsync(cancellationToken);
+
+    /// <summary>Frees a reservation that was not used by <see cref="Add"/>.</summary>
+    public void Unreserve() => _free.Release();
+
     /// <summary>
-    /// Adds a slot at the FIFO tail. Null when <c>maxPending</c> slots are in use. After
-    /// <see cref="FailAll"/> the slot is returned already failed.
+    /// Adds a slot at the FIFO tail, using a reservation. After <see cref="FailAll"/> the slot is
+    /// returned already failed and the reservation is freed.
     /// </summary>
-    public PendingSlot? TryAdd(bool deferrable, long sentAt)
+    public PendingSlot Add(bool deferrable, long sentAt)
     {
         var slot = new PendingSlot(deferrable, sentAt);
         lock (_lock)
@@ -73,12 +84,8 @@ internal sealed class PendingRequests(int maxPending)
             {
                 slot.InFifo = false;
                 slot.Fail(new ElastiCacheIntegrationsConnectionLostException(failure.Message, failure.Cause));
+                _free.Release();
                 return slot;
-            }
-
-            if (_fifo.Count + _deferred.Count >= maxPending)
-            {
-                return null;
             }
 
             _fifo.Enqueue(slot);
@@ -99,6 +106,7 @@ internal sealed class PendingRequests(int maxPending)
             }
 
             slot.InFifo = false;
+            _free.Release();
             CheckEmpty();
         }
 
@@ -134,6 +142,7 @@ internal sealed class PendingRequests(int maxPending)
             head.InFifo = false;
             if (head.Abandoned)
             {
+                _free.Release();
                 CheckEmpty();
             }
             else
@@ -157,6 +166,7 @@ internal sealed class PendingRequests(int maxPending)
                 return false;
             }
 
+            _free.Release();
             CheckEmpty();
         }
 
@@ -178,6 +188,7 @@ internal sealed class PendingRequests(int maxPending)
                 if (_deferred.TryGetValue(id, out var current) && ReferenceEquals(current, slot))
                 {
                     _deferred.Remove(id);
+                    _free.Release();
                     CheckEmpty();
                 }
 
@@ -215,7 +226,7 @@ internal sealed class PendingRequests(int maxPending)
         return _empty.Task;
     }
 
-    /// <summary>Fails every pending slot, and every later <see cref="TryAdd"/>.</summary>
+    /// <summary>Fails every pending slot, and every later <see cref="Add"/>.</summary>
     public void FailAll(string message, Exception? cause)
     {
         List<PendingSlot> slots;
@@ -230,6 +241,11 @@ internal sealed class PendingRequests(int maxPending)
 
             _fifo.Clear();
             _deferred.Clear();
+            if (slots.Count > 0)
+            {
+                _free.Release(slots.Count);
+            }
+
             _empty.TrySetResult();
         }
 

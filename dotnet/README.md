@@ -119,7 +119,7 @@ A DynamoDB error in a cached or proxied reply, such as `ResourceNotFoundExceptio
 | `InsecureSkipVerify` | `false` | Keep TLS but skip the certificate check. Local and test endpoints only. Wins over `CaCertificates` and logs a warning (event 1001). |
 | `FallbackDuration` | infinite | How long calls go to DynamoDB while the cache is down. `TimeSpan.Zero` turns fallback off. See [Reconnect and fallback](#reconnect-and-fallback). |
 | `Reconnect` | see below | Connect retries and backoff. |
-| `MaxPending` | `100` | Calls in flight on the connection. A call over the limit is not sent and fails with a retryable error, so the SDK retries it (event 1308, once per burst). |
+| `MaxPending` | `100` | Calls in flight on the connection. A call over the limit waits for a free slot for up to 75% of its timeout. If none frees, the call is not sent and goes to DynamoDB, whatever the operation; with `FallbackDuration` zero it fails with a retryable error instead, so the SDK retries it (event 1308, once per burst). |
 | `MaxResponseSize` | 16 MiB | The largest reply accepted. A larger one closes the connection. |
 | `OriginHandler` | built from the SDK config | The `HttpMessageHandler` for calls that go to DynamoDB. It is never disposed by the client. |
 | `LoggerFactory` | stderr, Information and up | Where the client logs. See [Logging](#logging). |
@@ -327,7 +327,7 @@ From a call:
 | Exception | When |
 |-----------|------|
 | The modeled SDK exception, for example `ResourceNotFoundException` | DynamoDB returned that error, through the cache or directly. |
-| `HttpRequestException` | A call the SDK may retry failed in the client and the SDK's retries ran out. `InnerException` is the client error: `ElastiCacheIntegrationsTimeoutException`, `ElastiCacheIntegrationsConnectionLostException`, `ElastiCacheIntegrationsProtocolException`, `ElastiCacheIntegrationsPendingLimitException` (`MaxPending` calls were already in flight; this one was not sent), or an `ElastiCacheIntegrationsServerException` with `ORIGIN_ERROR`, `MOVED` or `NOAUTH`. After a timeout, a lost connection, a corrupt reply or `ORIGIN_ERROR`, only a listed operation is retried. |
+| `HttpRequestException` | A call the SDK may retry failed in the client and the SDK's retries ran out. `InnerException` is the client error: `ElastiCacheIntegrationsTimeoutException`, `ElastiCacheIntegrationsConnectionLostException`, `ElastiCacheIntegrationsProtocolException`, `ElastiCacheIntegrationsPendingLimitException` (with `FallbackDuration` zero: no slot of `MaxPending` freed in time; this one was not sent), or an `ElastiCacheIntegrationsServerException` with `ORIGIN_ERROR`, `MOVED` or `NOAUTH`. After a timeout, a lost connection, a corrupt reply or `ORIGIN_ERROR`, only a listed operation is retried. |
 | `ElastiCacheIntegrationsCacheUnavailableException` | No cache connection, and the fallback window is spent or `FallbackDuration` is zero. Not retried by the SDK. |
 | `ElastiCacheIntegrationsServerException` | The cache rejected the call (`PARSE_ERROR`, `UNSUPPORTED`, `INTERNAL_ERROR`, ...), or `ORIGIN_ERROR` for an operation that is not listed. Not retried, never sent to DynamoDB. `Code` holds the code. |
 | `ElastiCacheIntegrationsTimeoutException`, `ElastiCacheIntegrationsConnectionLostException`, `ElastiCacheIntegrationsProtocolException` | A call that is not listed in the catalog may have run in the cache, then its reply timed out, the connection was lost or the reply was corrupt. Not retried. |
@@ -388,7 +388,7 @@ logging provider cannot stop the client. Event ids:
 | 1305 | `CacheUnavailable` | Warning, once per outage |
 | 1306 | `ConfigStale` | Warning |
 | 1307 | `ConfigUnusable` | Error, once until a usable config is applied |
-| 1308 | `PendingLimitReached` | Warning, once per burst: again after 1 s with no call over the limit |
+| 1308 | `PendingLimitReached` | Warning, once per burst: again after 1 s with no call that found no free slot in time |
 
 ## Limitations
 
