@@ -191,6 +191,57 @@ class PredicateEvaluatorTest {
     }
 
     @Test
+    void multiTableWritesRouteWhenAnyTableIsAllowlisted() {
+        PredicateEvaluator evaluator =
+                PredicateEvaluator.compile(writeAnyAllowlistConfig("Users", "Sessions"));
+
+        assertTrue(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "BatchWriteItem", "dynamodb", "{\"RequestItems\":{\"Users\":[],\"Orders\":[]}}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(
+                        request("BatchWriteItem", "dynamodb", "{\"RequestItems\":{\"Orders\":[]}}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(request("BatchWriteItem", "dynamodb", "{\"RequestItems\":{}}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "BatchGetItem", "dynamodb", "{\"RequestItems\":{\"Users\":{},\"Orders\":{}}}")));
+        assertTrue(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "TransactWriteItems",
+                                "dynamodb",
+                                "{\"TransactItems\":[{\"ConditionCheck\":{\"TableName\":\"Orders\"}},"
+                                        + "{\"Update\":{\"TableName\":\"Sessions\"}}]}")));
+        assertTrue(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "TransactWriteItems",
+                                "dynamodb",
+                                "{\"TransactItems\":[{\"ConditionCheck\":{\"Key\":{}}},"
+                                        + "{\"Put\":{\"TableName\":\"Users\"}}]}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "TransactWriteItems",
+                                "dynamodb",
+                                "{\"TransactItems\":[{\"Put\":{\"TableName\":\"Orders\"}}]}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "TransactWriteItems", "dynamodb", "{\"TransactItems\":[{\"Put\":{\"Key\":{}}}]}")));
+        assertFalse(
+                evaluator.shouldRouteToCache(
+                        request(
+                                "TransactGetItems",
+                                "dynamodb",
+                                "{\"TransactItems\":[{\"Get\":{\"TableName\":\"Users\"}},"
+                                        + "{\"Get\":{\"TableName\":\"Orders\"}}]}")));
+    }
+
+    @Test
     void uninspectableBodiesDoNotRoute() {
         PredicateEvaluator evaluator = PredicateEvaluator.compile(tableAllowlistConfig("Users"));
 
@@ -294,6 +345,38 @@ class PredicateEvaluatorTest {
                                 + "&& body.TransactItems.all(i, i.all(k, "
                                 + "\"TableName\" in i[k] && i[k].TableName in allowed))",
                         vars("ops", transactionOperations, "allowed", allowed)));
+    }
+
+    /** The reply of a proxy that routes a multi-table write when any of its tables is allowlisted. */
+    private static Map<String, Object> writeAnyAllowlistConfig(String... tables) {
+        List<String> allowed = Arrays.asList(tables);
+        String requestItems =
+                "service == 'dynamodb' && operation in ops "
+                        + "&& has(body.RequestItems) && size(body.RequestItems) > 0 ";
+        String transactItems =
+                "service == 'dynamodb' && operation in ops "
+                        + "&& has(body.TransactItems) && size(body.TransactItems) > 0 ";
+        return config(
+                predicate(
+                        "service == 'dynamodb' && operation in ops "
+                                + "&& has(body.TableName) && body.TableName in allowed",
+                        vars("ops", SINGLE_TABLE_OPERATIONS, "allowed", allowed)),
+                predicate(
+                        requestItems + "&& body.RequestItems.all(t, t in allowed)",
+                        vars("ops", Collections.singletonList("BatchGetItem"), "allowed", allowed)),
+                predicate(
+                        requestItems + "&& !body.RequestItems.all(t, !(t in allowed))",
+                        vars("ops", Collections.singletonList("BatchWriteItem"), "allowed", allowed)),
+                predicate(
+                        transactItems
+                                + "&& body.TransactItems.all(i, i.all(k, "
+                                + "\"TableName\" in i[k] && i[k].TableName in allowed))",
+                        vars("ops", Collections.singletonList("TransactGetItems"), "allowed", allowed)),
+                predicate(
+                        transactItems
+                                + "&& !body.TransactItems.all(i, i.all(k, "
+                                + "!(\"TableName\" in i[k] && i[k].TableName in allowed)))",
+                        vars("ops", Collections.singletonList("TransactWriteItems"), "allowed", allowed)));
     }
 
     @SafeVarargs
