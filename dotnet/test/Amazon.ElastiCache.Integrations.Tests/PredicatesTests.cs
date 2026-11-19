@@ -10,6 +10,9 @@ public class PredicatesTests
     private const string TableName = "service == 'dynamodb' && operation in ops && has(body.TableName) && body.TableName in allowed";
     private const string RequestItems = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, t in allowed)";
     private const string TransactItems = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, has(i[k].TableName) && i[k].TableName in allowed))";
+    private const string RequestItemsAny = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && !body.RequestItems.all(t, !(t in allowed))";
+    private const string TransactItemsGuarded = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, \"TableName\" in i[k] && i[k].TableName in allowed))";
+    private const string TransactItemsAny = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && !body.TransactItems.all(i, i.all(k, !(\"TableName\" in i[k] && i[k].TableName in allowed)))";
     private const string TableNameExcept = "service == 'dynamodb' && operation in ops && has(body.TableName) && !(body.TableName in excluded)";
     private const string RequestItemsExcept = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, !(t in excluded))";
     private const string TransactItemsExcept = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, has(i[k].TableName) && !(i[k].TableName in excluded)))";
@@ -32,6 +35,14 @@ public class PredicatesTests
         (TableName, Vars(SingleTableOps, "allowed", "Users", "Sessions")),
         (RequestItems, Vars(BatchOps, "allowed", "Users", "Sessions")),
         (TransactItems, Vars(TransactOps, "allowed", "Users", "Sessions")));
+
+    // {"cached_tables":["Users","Sessions"]} from a proxy that routes a multi-table write when any table is allowlisted.
+    private static readonly string WriteAnyConfig = Config(
+        (TableName, Vars(SingleTableOps, "allowed", "Users", "Sessions")),
+        (RequestItems, Vars(["BatchGetItem"], "allowed", "Users", "Sessions")),
+        (RequestItemsAny, Vars(["BatchWriteItem"], "allowed", "Users", "Sessions")),
+        (TransactItemsGuarded, Vars(["TransactGetItems"], "allowed", "Users", "Sessions")),
+        (TransactItemsAny, Vars(["TransactWriteItems"], "allowed", "Users", "Sessions")));
 
     // A denylist shape: current overrides no longer produce it, but the evaluator must still run it.
     private static readonly string DenyConfig = Config(
@@ -67,6 +78,25 @@ public class PredicatesTests
         { "TransactGetItems", """{"TransactItems":[]}""", false },
         { "TransactGetItems", """{"TableName":"Users"}""", false },
         { "CreateTable", """{"TableName":"Users"}""", false },
+    };
+
+    public static TheoryData<string, string, bool> WriteAnyCases => new()
+    {
+        { "BatchWriteItem", """{"RequestItems":{"Users":[],"Orders":[]}}""", true },
+        { "BatchWriteItem", """{"RequestItems":{"Orders":[],"Sessions":[]}}""", true },
+        { "BatchWriteItem", """{"RequestItems":{"Orders":[]}}""", false },
+        { "BatchWriteItem", """{"RequestItems":{}}""", false },
+        { "BatchGetItem", """{"RequestItems":{"Users":{},"Orders":{}}}""", false },
+        { "BatchGetItem", """{"RequestItems":{"Users":{},"Sessions":{}}}""", true },
+        { "TransactWriteItems", """{"TransactItems":[{"Put":{"TableName":"Users"}},{"Put":{"TableName":"Orders"}}]}""", true },
+        { "TransactWriteItems", """{"TransactItems":[{"ConditionCheck":{"TableName":"Orders"}},{"Update":{"TableName":"Sessions"}}]}""", true },
+        { "TransactWriteItems", """{"TransactItems":[{"Put":{"TableName":"Orders"}}]}""", false },
+        { "TransactWriteItems", """{"TransactItems":[{"ConditionCheck":{"Key":{}}}]}""", false },
+        { "TransactWriteItems", """{"TransactItems":[{"ConditionCheck":{"Key":{}}},{"Put":{"TableName":"Users"}}]}""", true },
+        { "TransactWriteItems", """{"TransactItems":[]}""", false },
+        { "TransactGetItems", """{"TransactItems":[{"Get":{"TableName":"Users"}},{"Get":{"TableName":"Orders"}}]}""", false },
+        { "TransactGetItems", """{"TransactItems":[{"Get":{"TableName":"Users"}},{"Get":{"Key":{}}}]}""", false },
+        { "PutItem", """{"TableName":"Orders"}""", false },
     };
 
     public static TheoryData<string, string, bool> DenyCases => new()
@@ -130,6 +160,13 @@ public class PredicatesTests
     public void AllowlistRoutesOnlyListedTables(string operation, string body, bool expected)
     {
         Assert.Equal(expected, Compile(AllowConfig).ShouldRoute(Request(operation, body)));
+    }
+
+    [Theory]
+    [MemberData(nameof(WriteAnyCases))]
+    public void MultiTableWriteRoutesWhenAnyTableIsListed(string operation, string body, bool expected)
+    {
+        Assert.Equal(expected, Compile(WriteAnyConfig).ShouldRoute(Request(operation, body)));
     }
 
     [Theory]
