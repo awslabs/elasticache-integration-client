@@ -50,8 +50,11 @@ public sealed class ElastiCacheIntegrationsClientOptions
     /// <summary>Limit for TCP connect plus the TLS handshake.</summary>
     public TimeSpan ConnectTimeout { get; init; } = TimeSpan.FromSeconds(1);
 
-    /// <summary>Limit for one request's send and reply, counted once it may write; the wait to write has the same limit.</summary>
-    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromMilliseconds(100);
+    /// <summary>
+    /// Limit for one request's send and reply, counted once it may write; the wait to write has the same limit.
+    /// A miss or a write includes the proxy's DynamoDB call, so this covers that call's 5 s budget, as in the other clients.
+    /// </summary>
+    public TimeSpan RequestTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     /// <summary>Limit for each of <c>AUTH</c>, <c>HELLO</c> and <c>aws.config</c>, counted like <see cref="RequestTimeout"/>.</summary>
     public TimeSpan ConfigTimeout { get; init; } = TimeSpan.FromSeconds(2);

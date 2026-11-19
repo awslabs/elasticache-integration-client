@@ -125,14 +125,14 @@ A DynamoDB error in a cached or proxied reply, such as `ResourceNotFoundExceptio
 
 ### Timeouts
 
-All timeouts are `TimeSpan` values. The defaults below are the current ones; `RequestTimeout`
-and `ReconnectWait` are still under review and may change before GA.
+All timeouts are `TimeSpan` values. The defaults below are the current ones; `ReconnectWait` is
+still under review and may change before GA.
 
 | Option | Default | Limit for |
 |--------|---------|-----------|
 | `ConnectTimeout` | 1 s | TCP connect plus the TLS handshake. |
 | `ConfigTimeout` | 2 s | Each of `AUTH`, `HELLO 3` and `aws.config`, counted like `RequestTimeout`. Also how long `DisposeAsync` drains. |
-| `RequestTimeout` | 100 ms | One call's send and reply, counted once it may write. Waiting to write has the same limit. |
+| `RequestTimeout` | 5 s | One call's send and reply, counted once it may write. Waiting to write has the same limit. A miss or a write includes the cache's DynamoDB call, so keep it at or above that call's 5 s budget: a write that times out here fails even when DynamoDB applied it. Same default as the other clients. |
 | `ReconnectWait` | 100 ms | How long a call waits for a reconnect in progress before it falls back. |
 | `Reconnect.AttemptTimeout` | 5 s | One whole bring-up attempt: connect, `AUTH`, `HELLO 3` and `aws.config`. |
 | `ReauthInterval` | 30 min | How often the live connection re-authenticates. Must be under 12 hours. Keep it under one hour: see [Authentication](#authentication). |

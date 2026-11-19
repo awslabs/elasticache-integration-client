@@ -134,6 +134,24 @@ public class ConnectionTests
     }
 
     [Fact]
+    public async Task ADefaultRequestWaitsOutTheProxysDynamoDBCall()
+    {
+        var timeout = new ElastiCacheIntegrationsClientOptions { Endpoint = "-", CacheName = "-" }.RequestTimeout;
+        await using var rig = await Rig.StartAsync(resp3: false, requestTimeout: timeout);
+        var slow = rig.Connection.RequestAsync(Request("slow"), Token);
+        await ReadBodyAsync(rig.Cache);
+
+        rig.Time.Advance(TimeSpan.FromSeconds(5) - TimeSpan.FromMilliseconds(1));
+        await rig.Cache.SendAsync(MockCache.Served("slow"));
+        Assert.Equal("slow", BodyOf(await slow));
+
+        var unanswered = rig.Connection.RequestAsync(Request("unanswered"), Token);
+        await ReadBodyAsync(rig.Cache);
+        rig.Time.Advance(timeout);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => unanswered);
+    }
+
+    [Fact]
     public void TheHeadStallLimitDefaultsTo10Seconds()
     {
         Assert.Equal(HeadStall, new ElastiCacheIntegrationsClientOptions { Endpoint = "-", CacheName = "-" }.HeadStallTimeout);
