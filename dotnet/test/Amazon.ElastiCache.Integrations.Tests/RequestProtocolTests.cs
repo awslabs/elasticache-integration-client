@@ -105,6 +105,20 @@ public class RequestProtocolTests
     }
 
     [Fact]
+    public void EncodesTheSameFrameIntoOneArray()
+    {
+        var request = Request(new() { ["X-Amz-Target"] = "DynamoDB_20120810.GetItem", ["x-note"] = "caf\u00e9 \ud83d\ude00", [""] = "v" }, "{\"k\":\"\u00e9\"}");
+        var writer = new ArrayBufferWriter<byte>();
+        ElastiCacheIntegrationsProtocol.WriteRequest(writer, request);
+
+        var frame = ElastiCacheIntegrationsProtocol.EncodeRequest(request);
+
+        Assert.Equal(writer.WrittenSpan.ToArray(), frame.ToArray());
+        Assert.Contains(":v\nx-amz-target:DynamoDB_20120810.GetItem\nx-note:caf\u00e9 \ud83d\ude00", Encoding.UTF8.GetString(frame.Span));
+        Assert.Throws<EncoderFallbackException>(() => ElastiCacheIntegrationsProtocol.EncodeRequest(Request(new() { ["x"] = "\ud800" }, "{}")));
+    }
+
+    [Fact]
     public void FormatsMetadataWithALowercaseService()
     {
         Assert.Equal("service=dynamodb&op=Query", ElastiCacheIntegrationsProtocol.FormatMetadata(new RequestMetadata("DynamoDB", "Query")));

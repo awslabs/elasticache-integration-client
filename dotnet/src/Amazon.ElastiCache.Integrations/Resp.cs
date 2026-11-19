@@ -168,20 +168,42 @@ internal static class RespEncoder
         }
 
         var counts = args.Length <= 16 ? stackalloc int[args.Length] : new int[args.Length];
-        long size = MaxHeaderLength;
         for (var i = 0; i < args.Length; i++)
         {
             counts[i] = args[i].ByteCount;
-            size += MaxHeaderLength + counts[i] + 2;
         }
 
         // One buffer for the whole frame, instead of growing it while writing a large body.
-        _ = writer.GetSpan((int)Math.Min(size, Array.MaxLength));
+        _ = writer.GetSpan(SizeBound(counts));
         WriteHeader(writer, (byte)'*', args.Length);
         for (var i = 0; i < args.Length; i++)
         {
             args[i].WriteBulk(writer, counts[i]);
         }
+    }
+
+    /// <summary>The buffer <see cref="WriteCommand(IBufferWriter{byte}, ReadOnlySpan{RespArg})"/> asks for: the frame fits in it.</summary>
+    /// <exception cref="ArgumentException">Text that is not valid UTF-16 (<see cref="EncoderFallbackException"/>).</exception>
+    public static int CommandSizeBound(ReadOnlySpan<RespArg> args)
+    {
+        var counts = args.Length <= 16 ? stackalloc int[args.Length] : new int[args.Length];
+        for (var i = 0; i < args.Length; i++)
+        {
+            counts[i] = args[i].ByteCount;
+        }
+
+        return SizeBound(counts);
+    }
+
+    private static int SizeBound(ReadOnlySpan<int> counts)
+    {
+        long size = MaxHeaderLength;
+        foreach (var count in counts)
+        {
+            size += MaxHeaderLength + count + 2;
+        }
+
+        return (int)Math.Min(size, Array.MaxLength);
     }
 
     /// <summary>

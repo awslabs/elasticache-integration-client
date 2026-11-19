@@ -246,31 +246,74 @@ internal static class ElastiCacheIntegrationsProtocol
         ArgumentNullException.ThrowIfNull(request);
         RespEncoder.WriteCommand(
             writer,
-            [RequestCommand, request.Method, request.Url, NormalizeHeaders(request.Headers), request.Body, FormatMetadata(request.Metadata)]);
+            [RequestCommand, request.Method, request.Url, NormalizeHeaderBytes(request.Headers), request.Body, FormatMetadata(request.Metadata)]);
+    }
+
+    /// <summary>The <c>aws.request</c> frame, in one array of the size the frame needs.</summary>
+    /// <exception cref="ArgumentException">Text that is not valid UTF-16.</exception>
+    public static ReadOnlyMemory<byte> EncodeRequest(ElastiCacheIntegrationsRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ReadOnlySpan<RespArg> args =
+            [RequestCommand, request.Method, request.Url, NormalizeHeaderBytes(request.Headers), request.Body, FormatMetadata(request.Metadata)];
+        var writer = new ArrayBufferWriter<byte>(RespEncoder.CommandSizeBound(args));
+        RespEncoder.WriteCommand(writer, args);
+        return writer.WrittenMemory;
     }
 
     /// <summary>
     /// Lowercased, trimmed <c>name:value</c> lines without the volatile and auth headers,
     /// sorted ordinally by name then value, joined with LF.
     /// </summary>
-    internal static string NormalizeHeaders(IReadOnlyDictionary<string, string> headers)
+    internal static string NormalizeHeaders(IReadOnlyDictionary<string, string> headers) =>
+        RespEncoder.StrictUtf8.GetString(NormalizeHeaderBytes(headers));
+
+    /// <summary><see cref="NormalizeHeaders"/> as UTF-8.</summary>
+    /// <exception cref="ArgumentException">Text that is not valid UTF-16 (<see cref="EncoderFallbackException"/>).</exception>
+    internal static byte[] NormalizeHeaderBytes(IReadOnlyDictionary<string, string> headers)
     {
-        var pairs = new List<(string Name, string Value)>(headers.Count);
+        var pairs = new (string Name, string Value)[headers.Count];
+        var count = 0;
+        var length = -1;
         foreach (var (name, value) in headers)
         {
             var normalized = name.Trim().ToLowerInvariant();
             if (!ExcludedHeaders.Contains(normalized))
             {
-                pairs.Add((normalized, value.Trim()));
+                var trimmed = value.Trim();
+                pairs[count++] = (normalized, trimmed);
+                length += RespEncoder.StrictUtf8.GetByteCount(normalized) + 1 + RespEncoder.StrictUtf8.GetByteCount(trimmed) + 1;
             }
         }
 
-        pairs.Sort(static (a, b) =>
+        if (count == 0)
+        {
+            return [];
+        }
+
+        var lines = pairs.AsSpan(0, count);
+        lines.Sort(static (a, b) =>
         {
             var byName = string.CompareOrdinal(a.Name, b.Name);
             return byName != 0 ? byName : string.CompareOrdinal(a.Value, b.Value);
         });
-        return string.Join('\n', pairs.Select(static p => $"{p.Name}:{p.Value}"));
+        var bytes = new byte[length];
+        var rest = bytes.AsSpan();
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var (name, value) = lines[i];
+            if (i > 0)
+            {
+                rest[0] = (byte)'\n';
+                rest = rest[1..];
+            }
+
+            rest = rest[RespEncoder.StrictUtf8.GetBytes(name, rest)..];
+            rest[0] = (byte)':';
+            rest = rest[(1 + RespEncoder.StrictUtf8.GetBytes(value, rest[1..]))..];
+        }
+
+        return bytes;
     }
 
     internal static string FormatMetadata(RequestMetadata metadata) => $"service={metadata.Service}&op={metadata.Operation}";
@@ -344,13 +387,23 @@ internal static class ElastiCacheIntegrationsProtocol
 
     private static Dictionary<string, string> ParseHeaders(ReadOnlySpan<byte> raw)
     {
-        var headers = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var line in Utf8(raw, "response headers").Split('\n'))
+        if (!System.Text.Unicode.Utf8.IsValid(raw))
         {
-            var colon = line.IndexOf(':');
+            // Throws the decoding error.
+            _ = Utf8(raw, "response headers");
+        }
+
+        // LF and colon never occur inside a multi-byte UTF-8 sequence, so the lines split on bytes.
+        var headers = new Dictionary<string, string>(StringComparer.Ordinal);
+        while (!raw.IsEmpty)
+        {
+            var end = raw.IndexOf((byte)'\n');
+            var line = end < 0 ? raw : raw[..end];
+            raw = end < 0 ? default : raw[(end + 1)..];
+            var colon = line.IndexOf((byte)':');
             if (colon >= 0)
             {
-                headers[line[..colon].Trim()] = line[(colon + 1)..].Trim();
+                headers[RespEncoder.StrictUtf8.GetString(line[..colon]).Trim()] = RespEncoder.StrictUtf8.GetString(line[(colon + 1)..]).Trim();
             }
         }
 
