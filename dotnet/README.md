@@ -390,6 +390,28 @@ logging provider cannot stop the client. Event ids:
 | 1307 | `ConfigUnusable` | Error, once until a usable config is applied |
 | 1308 | `PendingLimitReached` | Warning, once per burst: again after 1 s with no call over the limit |
 
+## Performance
+
+A cache hit skips the call to DynamoDB, but the SDK still marshals, signs and unmarshals the
+request and the response as it does for DynamoDB. On a response with many items, most of the
+CPU and memory of a hit is the SDK's, not the client's. Query hits returning 100 items (21 KB),
+16 concurrent requests, Graviton (c7g) host in the cache's region, per request:
+
+| | Client | AWS SDK for .NET | Java client, for comparison |
+|---|---|---|---|
+| CPU | about 200 µs | about 480 µs | about 190 µs |
+| Allocated | 36 KiB | 178 KiB | 84 KiB |
+
+Client CPU includes TLS and socket work. It does not include the .NET thread pool's idle
+spinning between async completions, which ran on otherwise idle cores and did not change
+latency or throughput.
+
+With the default workstation GC, the SDK's allocations cause frequent gen0 and gen1 collections,
+and those pauses set the latency at this concurrency: in the same test the client served
+14-23% fewer requests per second than the Java client, with 1.6-1.7x its p99. Server GC
+(`<ServerGarbageCollector>true</ServerGarbageCollector>` in the project file, or
+`DOTNET_gcServer=1`) cut the collections 20-fold and brought throughput to within 12% of Java.
+
 ## Limitations
 
 - Only `net8.0` is built. There is no `netstandard2.0` or .NET Framework target.
