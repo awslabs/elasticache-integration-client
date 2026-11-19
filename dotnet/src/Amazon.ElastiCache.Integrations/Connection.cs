@@ -99,7 +99,7 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
     /// <summary><c>AUTH</c> with a fresh token from the auth provider. A rejected token leaves the connection open.</summary>
     /// <exception cref="ElastiCacheIntegrationsConnectionException">The auth provider failed. A <see cref="ElastiCacheIntegrationsException"/> from it passes unchanged.</exception>
     /// <exception cref="ElastiCacheIntegrationsServerException">The cache rejected the token.</exception>
-    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.ConfigTimeout"/>.</exception>
+    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.ConfigTimeout"/>; the connection is closed.</exception>
     /// <exception cref="ElastiCacheIntegrationsConnectionLostException">The connection died.</exception>
     /// <exception cref="ElastiCacheIntegrationsProtocolException">A reply other than <c>+OK</c> or an error.</exception>
     public async Task ReauthenticateAsync(CancellationToken cancellationToken)
@@ -129,7 +129,7 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
 
     /// <summary>Sends the no-argument <c>aws.config</c>. Null means the config is unchanged.</summary>
     /// <exception cref="ElastiCacheIntegrationsServerException">An error reply; the config is kept.</exception>
-    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.ConfigTimeout"/>.</exception>
+    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.ConfigTimeout"/>; the connection is closed.</exception>
     /// <exception cref="ElastiCacheIntegrationsConnectionLostException">The connection died.</exception>
     /// <exception cref="ElastiCacheIntegrationsProtocolException">A reply that is not a config.</exception>
     public async Task<ResolvedConfig?> RefreshConfigAsync(CancellationToken cancellationToken)
@@ -169,7 +169,7 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
 
     /// <summary>Sends <c>aws.request</c> and returns its final reply: served, or rejected by the cache.</summary>
     /// <exception cref="ElastiCacheIntegrationsPendingLimitException">Too many requests in flight; nothing was sent.</exception>
-    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.RequestTimeout"/>.</exception>
+    /// <exception cref="ElastiCacheIntegrationsTimeoutException">No reply within <see cref="ElastiCacheIntegrationsClientOptions.RequestTimeout"/>. Without a request id from the cache, the connection is closed too.</exception>
     /// <exception cref="ElastiCacheIntegrationsConnectionLostException">The connection died before the reply.</exception>
     /// <exception cref="ElastiCacheIntegrationsProtocolException">The reply has the wrong shape; the connection stays up.</exception>
     public async Task<RequestReply> RequestAsync(ElastiCacheIntegrationsRequest request, CancellationToken cancellationToken)
@@ -186,8 +186,9 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
 
     /// <summary>
     /// Sends one command and waits for its reply. <paramref name="timeout"/> bounds the wait for
-    /// the write lock, then again the send and the reply. A timeout or cancellation abandons only
-    /// this command: its reply is dropped when it arrives. A failed write kills the connection.
+    /// the write lock, then again the send and the reply. A timeout waiting for an in-band reply
+    /// kills the connection; a timeout on a deferred request, or a cancellation, abandons only this
+    /// command, and its reply is dropped when it arrives. A failed write kills the connection.
     /// </summary>
     internal async Task<RespValue> ExecuteAsync(
         string command, ReadOnlyMemory<byte> frame, bool deferrable, TimeSpan timeout, CancellationToken cancellationToken)
@@ -226,13 +227,25 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
         }
         catch (OperationCanceledException) when (wait.IsCancellationRequested)
         {
-            if (slot is not null)
+            if (cancellationToken.IsCancellationRequested)
             {
-                Abandon(slot);
+                if (slot is not null)
+                {
+                    Abandon(slot);
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
             }
 
-            cancellationToken.ThrowIfCancellationRequested();
-            throw new ElastiCacheIntegrationsTimeoutException($"{command} got no reply within {timeout.TotalMilliseconds} ms.");
+            var message = $"{command} got no reply within {timeout.TotalMilliseconds} ms.";
+
+            // Replies arrive in order, so a missing one means the connection is unusable.
+            if (slot is not null && _pending.Abandon(slot))
+            {
+                Kill(message, null);
+            }
+
+            throw new ElastiCacheIntegrationsTimeoutException(message);
         }
     }
 
@@ -251,7 +264,7 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
         }
     }
 
-    /// <summary>A FIFO slot left waiting past <see cref="ElastiCacheIntegrationsClientOptions.HeadStallTimeout"/> means the head is stuck.</summary>
+    /// <summary>A cancelled FIFO slot left waiting past <see cref="ElastiCacheIntegrationsClientOptions.HeadStallTimeout"/> means the head is stuck.</summary>
     private void Abandon(PendingSlot slot)
     {
         if (!_pending.Abandon(slot))

@@ -57,8 +57,8 @@ public sealed class ElastiCacheIntegrationsClientOptions
     public TimeSpan ConfigTimeout { get; init; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// How long the oldest in-band reply may be missing before the connection is closed as stuck.
-    /// Above the proxy's 5 s DynamoDB call budget, so a slow miss never closes a healthy connection.
+    /// How long the in-band reply of a call its caller cancelled may be missing before the connection
+    /// is closed as stuck. Above the proxy's 5 s DynamoDB call budget.
     /// </summary>
     internal TimeSpan HeadStallTimeout { get; init; } = TimeSpan.FromSeconds(10);
 

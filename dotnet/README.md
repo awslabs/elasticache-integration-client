@@ -281,11 +281,13 @@ The cache's error replies follow the same contract as the other clients:
   `CONFIG_INVALID`, `INTERNAL_ERROR`, any unknown code) fails with
   `ElastiCacheIntegrationsServerException`. It is not retried and does not go to DynamoDB.
 
-A reply timeout fails only that call; the connection stays open. Replies arrive in order, so a
-connection whose oldest in-band reply is missing for 10 s is treated as stuck: it is closed (event
-1202), its calls fail as above, and it reconnects. 10 s is above the proxy's 5 s budget for a
-DynamoDB call, so a slow miss does not close a healthy connection. With a `RequestTimeout` of 10 s
-or more, an in-band reply timeout closes the connection at once.
+A timeout waiting for an in-band reply closes the connection: replies arrive in order, so a
+missing one means no later reply on it can be trusted. The other calls on it fail as above, and the
+client reconnects in the background. Calls that find no connection wait `ReconnectWait`, then go
+to DynamoDB while fallback is allowed, so with SDK retries on, a cache that stops answering costs a
+read one `RequestTimeout` and no error. A call cancelled by its caller does not close the
+connection; if its in-band reply is still missing 10 s after it was sent, the connection is closed
+as stuck (event 1202).
 
 A `MOVED` reply closes the connection and starts the reconnect. If it came in place of the reply,
 the cache did not run the call, so the call is sent once more the way a call with no connection
@@ -294,9 +296,9 @@ fails like a lost connection: retried by the SDK only for a listed operation. `N
 counts as not run: the engine refuses the command before the cache sees it.
 
 Replies may arrive out of order: the cache can answer with a request id and send the result later
-as a RESP3 push. A slow call then does not block the calls behind it. A call that times out is
-abandoned alone and the connection stays up; a late reply for it is dropped (event 1203). If the
-cache answers `HELLO 3` with `ERR` (no `HELLO`) or `NOPROTO` (no RESP3), the client uses RESP2,
+as a RESP3 push. A slow call then does not block the calls behind it. A call that times out after
+its request id is abandoned alone and the connection stays up; a late reply for it is dropped
+(event 1203). If the cache answers `HELLO 3` with `ERR` (no `HELLO`) or `NOPROTO` (no RESP3), the client uses RESP2,
 where replies come in order (event 1204). Any other error fails the attempt, which is retried.
 
 ## Config refresh

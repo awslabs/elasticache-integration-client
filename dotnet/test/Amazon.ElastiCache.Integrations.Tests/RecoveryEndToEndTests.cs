@@ -71,30 +71,51 @@ public class RecoveryEndToEndTests
     }
 
     [Fact]
-    public async Task AHungCacheTimesTheCallOutThenStallsAndIsReplaced()
+    public async Task AHungCacheTimesTheCallOutAndIsReplaced()
     {
         var hang = new StrongBox<bool>(true);
         var logger = new ListLogger();
         await using var server = new CacheServer { OnRequest = _ => Volatile.Read(ref hang.Value) ? new MockReply.Hang() : Cached("""{"Item":{"pk":{"S":"served"}}}""") };
         await using var client = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(
-            server.Options(requestTimeout: TimeSpan.FromMilliseconds(100), logger: logger, headStallTimeout: TimeSpan.FromSeconds(1)), SdkConfig(), Credentials, Token);
+            server.Options(requestTimeout: TimeSpan.FromMilliseconds(100), logger: logger), SdkConfig(), Credentials, Token);
 
         var thrown = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetItemAsync(Get(), Token));
 
         Assert.IsType<ElastiCacheIntegrationsTimeoutException>(thrown.InnerException);
         Volatile.Write(ref hang.Value, false);
         await WaitUntilAsync(() => server.Connections == 2 && client.Handle.IsOpen);
-        Assert.Contains(ElastiCacheIntegrationsEvents.HeadStalled, logger.Ids);
+        Assert.Contains(ElastiCacheIntegrationsEvents.ConnectionLost, logger.Ids);
         Assert.Equal("served", (await client.GetItemAsync(Get(), Token)).Item["pk"].S);
     }
 
     [Fact]
-    public async Task ALoggerThatThrowsDoesNotStopAStallFromBeingReplaced()
+    public async Task ACacheThatStopsAnsweringSendsReadsToDynamoDBWithoutErrors()
+    {
+        var origin = new HttpHandlerTests.RecordingOrigin("""{"Item":{"pk":{"S":"origin"}}}""");
+        await using var server = new CacheServer { OnRequest = _ => new MockReply.Hang() };
+        var config = SdkConfig();
+        config.MaxErrorRetry = 2;
+        await using var client = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(
+            server.Options(origin, requestTimeout: TimeSpan.FromMilliseconds(100)), config, Credentials, Token);
+        server.Hold();
+
+        for (var i = 0; i < 5; i++)
+        {
+            Assert.Equal("origin", (await client.GetItemAsync(Get(), Token)).Item["pk"].S);
+        }
+
+        Assert.Equal(5, origin.Calls);
+        Assert.Single(server.Requests);
+        server.Release();
+    }
+
+    [Fact]
+    public async Task ALoggerThatThrowsDoesNotStopAHungConnectionFromBeingReplaced()
     {
         var hang = new StrongBox<bool>(true);
         await using var server = new CacheServer { OnRequest = _ => Volatile.Read(ref hang.Value) ? new MockReply.Hang() : Cached("""{"Item":{"pk":{"S":"served"}}}""") };
         var logger = new ThrowingLogger(enabled: true);
-        var options = server.Options(requestTimeout: TimeSpan.FromMilliseconds(100), logger: logger, headStallTimeout: TimeSpan.FromSeconds(1));
+        var options = server.Options(requestTimeout: TimeSpan.FromMilliseconds(100), logger: logger);
         await using var client = await ElastiCacheIntegrationsClient.CreateDynamoDBClientAsync(options, SdkConfig(), Credentials, Token);
 
         var thrown = await Assert.ThrowsAsync<HttpRequestException>(() => client.GetItemAsync(Get(), Token));
@@ -102,7 +123,7 @@ public class RecoveryEndToEndTests
         Assert.IsType<ElastiCacheIntegrationsTimeoutException>(thrown.InnerException);
         Volatile.Write(ref hang.Value, false);
         await WaitUntilAsync(() => server.Connections == 2 && client.Handle.IsOpen);
-        Assert.Contains(ElastiCacheIntegrationsEvents.HeadStalled, logger.Attempted);
+        Assert.Contains(ElastiCacheIntegrationsEvents.ConnectionLost, logger.Attempted);
         Assert.Equal("served", (await client.GetItemAsync(Get(), Token)).Item["pk"].S);
     }
 

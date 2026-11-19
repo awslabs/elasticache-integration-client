@@ -92,25 +92,40 @@ public class ConnectionTests
         Assert.False(rig.Connection.IsOpen);
     }
 
-    [Fact]
-    public async Task ATimedOutRequestAbandonsOnlyItsSlot()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AnInBandReplyTimeoutClosesTheConnection(bool resp3)
     {
-        await using var rig = await Rig.StartAsync(resp3: false);
+        await using var rig = await Rig.StartAsync(resp3: resp3);
+        var late = rig.Connection.RequestAsync(Request("late"), Token);
+        await ReadBodyAsync(rig.Cache);
+        var behind = rig.Connection.RequestAsync(Request("behind"), Token);
+        await ReadBodyAsync(rig.Cache);
+
+        rig.Time.Advance(RequestTimeout);
+
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => late);
+        await ClosedAsync(rig.Connection);
+        Assert.False(rig.Connection.IsOpen);
+        Assert.Equal("aws.request got no reply within 100 ms.", (await rig.Connection.Closed).Message);
+        Assert.Contains(ElastiCacheIntegrationsEvents.ConnectionLost, rig.Logger.Ids);
+        await Assert.ThrowsAnyAsync<ElastiCacheIntegrationsException>(() => behind);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => rig.Connection.RequestAsync(Request("next"), Token));
+        Assert.Equal(0, rig.Connection.PendingCount);
+    }
+
+    [Fact]
+    public async Task TimedOutRequestsDoNotHoldPendingSlots()
+    {
+        await using var rig = await Rig.StartAsync(resp3: false, maxPending: 1);
         var late = rig.Connection.RequestAsync(Request("late"), Token);
         await ReadBodyAsync(rig.Cache);
 
         rig.Time.Advance(RequestTimeout);
+
         await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => late);
-        var next = rig.Connection.RequestAsync(Request("next"), Token);
-        await ReadBodyAsync(rig.Cache);
-        await rig.Cache.SendAsync(MockCache.Served("late"));
-        await rig.Cache.SendAsync(MockCache.Served("next"));
-
-        Assert.Equal("next", BodyOf(await next));
-        Assert.True(rig.Connection.IsOpen);
-
-        rig.Time.Advance(HeadStall);
-        Assert.True(rig.Connection.IsOpen);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => rig.Connection.RequestAsync(Request("next"), Token));
     }
 
     [Fact]
@@ -140,37 +155,38 @@ public class ConnectionTests
     }
 
     [Fact]
-    public async Task AnUnansweredHeadKillsTheConnectionAfterTheStallLimit()
+    public async Task ACancelledHeadLeftUnansweredKillsTheConnectionAfterTheStallLimit()
     {
-        await using var rig = await Rig.StartAsync(resp3: false);
-        var stuck = rig.Connection.RequestAsync(Request("stuck"), Token);
+        await using var rig = await Rig.StartAsync(resp3: false, requestTimeout: TimeSpan.FromMinutes(1));
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var stuck = rig.Connection.RequestAsync(Request("stuck"), cancel.Token);
         await ReadBodyAsync(rig.Cache);
-        rig.Time.Advance(RequestTimeout);
-        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => stuck);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => stuck);
         var behind = rig.Connection.RequestAsync(Request("behind"), Token);
         await ReadBodyAsync(rig.Cache);
 
-        rig.Time.Advance(HeadStall - RequestTimeout - TimeSpan.FromMilliseconds(1));
+        rig.Time.Advance(HeadStall - TimeSpan.FromMilliseconds(1));
         Assert.True(rig.Connection.IsOpen);
         rig.Time.Advance(TimeSpan.FromMilliseconds(1));
 
         await ClosedAsync(rig.Connection);
         Assert.Equal("No reply from the cache within 10000 ms.", (await rig.Connection.Closed).Message);
-        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => behind);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => behind);
         Assert.Contains(ElastiCacheIntegrationsEvents.HeadStalled, rig.Logger.Ids);
     }
 
     [Fact]
-    public async Task ASlowInBandReplyUnderTheStallLimitKeepsTheConnection()
+    public async Task ACancelledHeadAnsweredUnderTheStallLimitKeepsTheConnection()
     {
         await using var rig = await Rig.StartAsync(resp3: false);
-        var slow = rig.Connection.RequestAsync(Request("slow"), Token);
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var slow = rig.Connection.RequestAsync(Request("slow"), cancel.Token);
         await ReadBodyAsync(rig.Cache);
-        rig.Time.Advance(RequestTimeout);
-        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => slow);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => slow);
 
-        // Past ConfigTimeout, just under the stall limit.
-        rig.Time.Advance(HeadStall - RequestTimeout - TimeSpan.FromMilliseconds(1));
+        rig.Time.Advance(HeadStall - TimeSpan.FromMilliseconds(1));
         var behind = rig.Connection.RequestAsync(Request("behind"), Token);
         await ReadBodyAsync(rig.Cache);
         await rig.Cache.SendAsync(MockCache.Served("slow"));
@@ -183,23 +199,17 @@ public class ConnectionTests
     }
 
     [Fact]
-    public async Task AReauthThatTimesOutKeepsTheConnectionUntilTheStallLimit()
+    public async Task AReauthThatTimesOutClosesTheConnection()
     {
         await using var rig = await Rig.StartAsync(resp3: false);
         var reauth = rig.Connection.ReauthenticateAsync(Token);
         Assert.Equal("AUTH", (await rig.Cache.ReadCommandAsync())[0]);
+
         rig.Time.Advance(ConfigTimeout);
+
         await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => reauth);
-        Assert.True(rig.Connection.IsOpen);
-
-        var next = rig.Connection.RequestAsync(Request("next"), Token);
-        await ReadBodyAsync(rig.Cache);
-        await rig.Cache.SendAsync("+OK\r\n");
-        await rig.Cache.SendAsync(MockCache.Served("next"));
-
-        Assert.Equal("next", BodyOf(await next));
-        rig.Time.Advance(HeadStall);
-        Assert.True(rig.Connection.IsOpen);
+        await ClosedAsync(rig.Connection);
+        Assert.Equal("AUTH got no reply within 2000 ms.", (await rig.Connection.Closed).Message);
     }
 
     [Fact]
@@ -355,13 +365,14 @@ public class ConnectionTests
     }
 
     [Fact]
-    public async Task MovedForARequestThatTimedOutStillKillsTheConnection()
+    public async Task MovedForACancelledRequestStillKillsTheConnection()
     {
         await using var rig = await Rig.StartAsync(resp3: false);
-        var request = rig.Connection.RequestAsync(Request("a"), Token);
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(Token);
+        var request = rig.Connection.RequestAsync(Request("a"), cancel.Token);
         await ReadBodyAsync(rig.Cache);
-        rig.Time.Advance(RequestTimeout);
-        await Assert.ThrowsAsync<ElastiCacheIntegrationsTimeoutException>(() => request);
+        await cancel.CancelAsync();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => request);
 
         await rig.Cache.SendAsync("-MOVED 3999 127.0.0.1:6381\r\n");
 
