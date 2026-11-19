@@ -18,10 +18,10 @@
   `sdk-request-cases.json` are run by every client's tests and are not
   packaged. A change to the wire format or to how an SDK adapter
   builds a request updates the fixtures in the same change. The tests that run
-  them are tagged `alignment` (a pytest marker, a JUnit tag, the two Vitest
-  files, and an xUnit `Category=alignment` trait). Pull request CI runs them in
-  `.github/workflows/alignment-ci.yml` and excludes them from the client CI
-  workflows. The release workflows still run them before publishing.
+  them are tagged `alignment` (a pytest marker, a JUnit tag, and the two Vitest
+  files). Pull request CI runs them in `.github/workflows/alignment-ci.yml` and
+  excludes them from the client CI workflows. The release workflows still run
+  them before publishing.
 - `README.md`: repository-wide overview and client scope.
 - `.github/workflows/`: CI contracts for each client.
 
@@ -44,8 +44,7 @@ Run commands from the client directory they apply to:
   complete local gate. Gradle must run on JDK 21. Use `./gradlew spotlessApply`
   to fix formatting.
 - .NET: use `dotnet format --verify-no-changes`, `dotnet build -warnaserror`
-  and `dotnet test` for the complete local gate, and `scripts/pack-smoke.sh`
-  when changing package metadata, the public API or published contents.
+  and `dotnet test` for the complete local gate.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
