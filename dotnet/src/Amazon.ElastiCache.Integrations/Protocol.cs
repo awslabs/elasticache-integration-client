@@ -251,7 +251,7 @@ internal static class ElastiCacheIntegrationsProtocol
 
     /// <summary>
     /// Lowercased, trimmed <c>name:value</c> lines without the volatile and auth headers,
-    /// sorted ordinally by name then value, joined with LF.
+    /// sorted by Unicode code point by name then value, joined with LF.
     /// </summary>
     internal static string NormalizeHeaders(IReadOnlyDictionary<string, string> headers)
     {
@@ -267,10 +267,28 @@ internal static class ElastiCacheIntegrationsProtocol
 
         pairs.Sort(static (a, b) =>
         {
-            var byName = string.CompareOrdinal(a.Name, b.Name);
-            return byName != 0 ? byName : string.CompareOrdinal(a.Value, b.Value);
+            var byName = CompareCodePoints(a.Name, b.Name);
+            return byName != 0 ? byName : CompareCodePoints(a.Value, b.Value);
         });
         return string.Join('\n', pairs.Select(static p => $"{p.Name}:{p.Value}"));
+    }
+
+    private static int CompareCodePoints(string left, string right)
+    {
+        for (int leftIndex = 0, rightIndex = 0; leftIndex < left.Length && rightIndex < right.Length;)
+        {
+            var leftCodePoint = char.ConvertToUtf32(left, leftIndex);
+            var rightCodePoint = char.ConvertToUtf32(right, rightIndex);
+            if (leftCodePoint != rightCodePoint)
+            {
+                return leftCodePoint.CompareTo(rightCodePoint);
+            }
+
+            leftIndex += char.IsSurrogatePair(left, leftIndex) ? 2 : 1;
+            rightIndex += char.IsSurrogatePair(right, rightIndex) ? 2 : 1;
+        }
+
+        return left.Length.CompareTo(right.Length);
     }
 
     internal static string FormatMetadata(RequestMetadata metadata) => $"service={metadata.Service}&op={metadata.Operation}";

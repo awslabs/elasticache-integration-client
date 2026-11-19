@@ -98,6 +98,17 @@ public class RequestProtocolTests
     }
 
     [Fact]
+    public void SortsDuplicateHeaderValuesByUnicodeCodePoint() =>
+        Assert.Equal(
+            "x-key:\ue000\nx-key:\U00010000",
+            ElastiCacheIntegrationsProtocol.NormalizeHeaders(
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    ["X-Key"] = "\U00010000",
+                    ["x-key"] = "\ue000",
+                }));
+
+    [Fact]
     public void NormalizesToEmpty()
     {
         Assert.Equal("", ElastiCacheIntegrationsProtocol.NormalizeHeaders(new Dictionary<string, string>()));
