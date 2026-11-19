@@ -15,7 +15,7 @@ public class OptionsTests
         Assert.True(options.UseTls);
         Assert.False(options.InsecureSkipVerify);
         Assert.Equal(TimeSpan.FromSeconds(1), options.ConnectTimeout);
-        Assert.Equal(TimeSpan.FromMilliseconds(100), options.RequestTimeout);
+        Assert.Equal(TimeSpan.FromSeconds(5), options.RequestTimeout);
         Assert.Equal(TimeSpan.FromSeconds(2), options.ConfigTimeout);
         Assert.Equal(TimeSpan.FromMinutes(30), options.ReauthInterval);
         Assert.Equal(TimeSpan.FromMilliseconds(100), options.ReconnectWait);
