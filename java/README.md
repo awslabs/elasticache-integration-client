@@ -222,6 +222,8 @@ public class Main {
 
 Requests for the tables and operations you choose in [`cachePolicyOverrides`](#cache-policy-overrides) go through the cache. Without overrides, all of them do. Every other request goes straight to DynamoDB, with no round trip to the cache.
 
+Requests with a request-level credentials provider or credentials identity provider in `overrideConfiguration` always go straight to DynamoDB. The cache connection uses the client-level identity, so bypassing the cache lets the AWS SDK sign and authorize the request with its overridden identity.
+
 ## Cache policy timeout
 
 The client confirms its cache policy with the cache periodically. If those confirmations fail, the client keeps using the last policy the cache confirmed. [`cachePolicyTimeoutSeconds`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.

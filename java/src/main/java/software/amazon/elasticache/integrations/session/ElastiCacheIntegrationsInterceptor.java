@@ -129,6 +129,11 @@ class ElastiCacheIntegrationsInterceptor implements ExecutionInterceptor {
     public SdkHttpFullRequest modifyHttpRequest(
             Context.ModifyHttpRequest context, ExecutionAttributes executionAttributes) {
         SdkHttpFullRequest sdkRequest = (SdkHttpFullRequest) context.httpRequest();
+        if (ElastiCacheIntegrationsRequestContext.hasCredentialsOverride(context.request())) {
+            LOGGER.fine("Request overrides credentials; passing through to the service");
+            requestContext.capturePassThrough(executionAttributes);
+            return sdkRequest;
+        }
         if (!isCarriableBody(sdkRequest)) {
             // An InputStream may be readable only once, and a file may be too large to buffer.
             LOGGER.fine("Streaming request body; passing through to the service");

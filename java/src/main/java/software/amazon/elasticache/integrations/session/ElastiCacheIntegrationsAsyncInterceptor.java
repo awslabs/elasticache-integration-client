@@ -72,6 +72,11 @@ final class ElastiCacheIntegrationsAsyncInterceptor implements ExecutionIntercep
     public SdkHttpFullRequest modifyHttpRequest(
             Context.ModifyHttpRequest context, ExecutionAttributes executionAttributes) {
         SdkHttpFullRequest sdkRequest = (SdkHttpFullRequest) context.httpRequest();
+        if (ElastiCacheIntegrationsRequestContext.hasCredentialsOverride(context.request())) {
+            LOGGER.fine("Request overrides credentials; passing through to the service");
+            requestContext.capturePassThrough(executionAttributes);
+            return sdkRequest;
+        }
         if (!context
                 .asyncRequestBody()
                 .map(ElastiCacheIntegrationsAsyncInterceptor::isCarriableBody)
