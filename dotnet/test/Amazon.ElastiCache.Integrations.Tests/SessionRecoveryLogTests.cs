@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 namespace Amazon.ElastiCache.Integrations.Tests;
 
 /// <summary>A background run with no live connection is not a recovery.</summary>

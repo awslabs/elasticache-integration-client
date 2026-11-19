@@ -2,7 +2,7 @@
 # Fail when a tracked source file has no license header.
 #
 # Usage: scripts/check-license-headers.sh
-# It checks Java, TypeScript, JavaScript, Gradle Kotlin, and Python files that
+# It checks Java, TypeScript, JavaScript, Gradle Kotlin, C#, and Python files that
 # git tracks. Files under vendor/, node_modules/, and shared/ (test fixtures)
 # are skipped. The header must be in the first 5 lines:
 #
@@ -21,7 +21,7 @@ while IFS= read -r -d '' file; do
   fi
 done < <(
   git ls-files -z -- \
-    '*.java' '*.kts' '*.ts' '*.mts' '*.cts' '*.js' '*.mjs' '*.cjs' '*.py' \
+    '*.java' '*.kts' '*.ts' '*.mts' '*.cts' '*.js' '*.mjs' '*.cjs' '*.cs' '*.py' \
     ':!:**/vendor/**' ':!:vendor/**' \
     ':!:**/node_modules/**' ':!:node_modules/**' \
     ':!:shared/**'

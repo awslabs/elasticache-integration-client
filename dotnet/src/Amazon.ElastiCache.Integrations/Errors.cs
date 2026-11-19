@@ -1,3 +1,6 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 namespace Amazon.ElastiCache.Integrations;
 
 /// <summary>Base class for every error raised by the ElastiCache Integrations client.</summary>
