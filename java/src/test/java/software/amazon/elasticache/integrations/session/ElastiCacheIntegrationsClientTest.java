@@ -50,12 +50,14 @@ import software.amazon.awssdk.http.HttpExecuteRequest;
 import software.amazon.awssdk.http.HttpExecuteResponse;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.SdkHttpFullResponse;
+import software.amazon.awssdk.identity.spi.AwsCredentialsIdentity;
 import software.amazon.awssdk.identity.spi.AwsSessionCredentialsIdentity;
 import software.amazon.awssdk.identity.spi.IdentityProvider;
 import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClientBuilder;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsConfigError;
@@ -149,6 +151,71 @@ class ElastiCacheIntegrationsClientTest {
         assertEquals("service=dynamodb&op=ListTables", request.getMetadata());
         assertFalse(request.getHeaders().contains("authorization"));
         assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void requestCredentialsOverrideBypassesCacheAndSignsOriginRequest() {
+        RecordingOriginClient origin = new RecordingOriginClient(true);
+        AwsCredentialsProvider overrideCredentials =
+                StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("AKIDREQUESTOVERRIDE", "override-secret-key"));
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .originHttpClient(origin)
+                        .install(
+                                appBuilder()
+                                        .overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none())))) {
+            DynamoDbException failure =
+                    assertThrows(
+                            DynamoDbException.class,
+                            () ->
+                                    client.listTables(
+                                            request ->
+                                                    request.overrideConfiguration(
+                                                            override -> override.credentialsProvider(overrideCredentials))));
+            assertEquals(400, failure.statusCode());
+            assertEquals("AccessDeniedException", failure.awsErrorDetails().errorCode());
+        }
+
+        assertTrue(cache.getRequests().isEmpty(), "the cache must not receive the overridden request");
+        String authorization =
+                origin.request.get().httpRequest().firstMatchingHeader("Authorization").orElse("");
+        assertTrue(
+                authorization.contains("Credential=AKIDREQUESTOVERRIDE/"),
+                "the SDK must sign the origin request with its overridden credentials");
+    }
+
+    @Test
+    void requestCredentialsIdentityOverrideBypassesCacheAndSignsOriginRequest() {
+        RecordingOriginClient origin = new RecordingOriginClient(true);
+        IdentityProvider<AwsCredentialsIdentity> overrideIdentity =
+                credentialsIdentityProvider("AKIDIDENTITYOVERRIDE");
+
+        try (DynamoDbClient client =
+                cacheBuilder()
+                        .originHttpClient(origin)
+                        .install(
+                                appBuilder()
+                                        .overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none())))) {
+            DynamoDbException failure =
+                    assertThrows(
+                            DynamoDbException.class,
+                            () ->
+                                    client.listTables(
+                                            request ->
+                                                    request.overrideConfiguration(
+                                                            override -> override.credentialsProvider(overrideIdentity))));
+            assertEquals(400, failure.statusCode());
+            assertEquals("AccessDeniedException", failure.awsErrorDetails().errorCode());
+        }
+
+        assertTrue(cache.getRequests().isEmpty(), "the cache must not receive the overridden request");
+        String authorization =
+                origin.request.get().httpRequest().firstMatchingHeader("Authorization").orElse("");
+        assertTrue(
+                authorization.contains("Credential=AKIDIDENTITYOVERRIDE/"),
+                "the SDK must sign the origin request with its overridden identity");
     }
 
     @Test
@@ -839,6 +906,23 @@ class ElastiCacheIntegrationsClientTest {
         return false;
     }
 
+    private static IdentityProvider<AwsCredentialsIdentity> credentialsIdentityProvider(
+            String accessKeyId) {
+        return new IdentityProvider<AwsCredentialsIdentity>() {
+            @Override
+            public Class<AwsCredentialsIdentity> identityType() {
+                return AwsCredentialsIdentity.class;
+            }
+
+            @Override
+            public CompletableFuture<AwsCredentialsIdentity> resolveIdentity(
+                    ResolveIdentityRequest request) {
+                return CompletableFuture.completedFuture(
+                        AwsCredentialsIdentity.create(accessKeyId, "identity-secret-key"));
+            }
+        };
+    }
+
     private static final class RecordingOriginClientBuilder
             implements SdkHttpClient.Builder<RecordingOriginClientBuilder> {
         private final AtomicInteger buildCount = new AtomicInteger();
@@ -853,6 +937,15 @@ class ElastiCacheIntegrationsClientTest {
     private static final class RecordingOriginClient implements SdkHttpClient {
         private final AtomicReference<HttpExecuteRequest> request = new AtomicReference<>();
         private final AtomicInteger closeCount = new AtomicInteger();
+        private final boolean accessDenied;
+
+        private RecordingOriginClient() {
+            this(false);
+        }
+
+        private RecordingOriginClient(boolean accessDenied) {
+            this.accessDenied = accessDenied;
+        }
 
         @Override
         public ExecutableHttpRequest prepareRequest(HttpExecuteRequest request) {
@@ -860,16 +953,20 @@ class ElastiCacheIntegrationsClientTest {
             return new ExecutableHttpRequest() {
                 @Override
                 public HttpExecuteResponse call() {
+                    String responseBody =
+                            accessDenied
+                                    ? "{\"__type\":\"AccessDeniedException\",\"message\":\"denied\"}"
+                                    : "{\"TableNames\":[]}";
                     return HttpExecuteResponse.builder()
                             .response(
                                     SdkHttpFullResponse.builder()
-                                            .statusCode(200)
+                                            .statusCode(accessDenied ? 400 : 200)
                                             .putHeader("content-type", "application/x-amz-json-1.0")
+                                            .putHeader("x-amzn-errortype", accessDenied ? "AccessDeniedException" : "")
                                             .build())
                             .responseBody(
                                     AbortableInputStream.create(
-                                            new ByteArrayInputStream(
-                                                    "{\"TableNames\":[]}".getBytes(StandardCharsets.UTF_8))))
+                                            new ByteArrayInputStream(responseBody.getBytes(StandardCharsets.UTF_8))))
                             .build();
                 }
 

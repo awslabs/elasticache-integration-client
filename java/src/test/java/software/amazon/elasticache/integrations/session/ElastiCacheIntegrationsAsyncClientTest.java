@@ -47,10 +47,14 @@ import software.amazon.awssdk.http.SdkHttpFullResponse;
 import software.amazon.awssdk.http.SdkHttpRequest;
 import software.amazon.awssdk.http.async.AsyncExecuteRequest;
 import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
+import software.amazon.awssdk.identity.spi.AwsCredentialsIdentity;
+import software.amazon.awssdk.identity.spi.IdentityProvider;
+import software.amazon.awssdk.identity.spi.ResolveIdentityRequest;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClientBuilder;
 import software.amazon.awssdk.services.dynamodb.model.DescribeLimitsResponse;
+import software.amazon.awssdk.services.dynamodb.model.DynamoDbException;
 import software.amazon.awssdk.services.dynamodb.model.ListTablesResponse;
 import software.amazon.awssdk.utils.AttributeMap;
 import software.amazon.elasticache.integrations.exception.ElastiCacheIntegrationsCacheUnavailable;
@@ -137,6 +141,74 @@ class ElastiCacheIntegrationsAsyncClientTest {
         assertEquals("{}", new String(request.getBody(), StandardCharsets.UTF_8));
         assertFalse(request.getHeaders().contains("authorization"));
         assertFalse(request.getHeaders().contains("x-amz-date"));
+    }
+
+    @Test
+    void asyncRequestCredentialsOverrideBypassesCacheAndSignsOriginRequest() throws Exception {
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin(true);
+        StaticCredentialsProvider overrideCredentials =
+                StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create("AKIDREQUESTOVERRIDE", "override-secret-key"));
+
+        try (DynamoDbAsyncClient client =
+                installAsync(
+                        cacheBuilder().originAsyncHttpClient(origin),
+                        builder -> {
+                            sdkConfig(builder);
+                            builder.overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none()));
+                        })) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    client
+                                            .listTables(
+                                                    request ->
+                                                            request.overrideConfiguration(
+                                                                    override -> override.credentialsProvider(overrideCredentials)))
+                                            .get(5, TimeUnit.SECONDS));
+            assertTrue(causedBy(failure, DynamoDbException.class), failure.toString());
+        }
+
+        assertTrue(cache.getRequests().isEmpty(), "the cache must not receive the overridden request");
+        String authorization = origin.request.get().firstMatchingHeader("Authorization").orElse("");
+        assertTrue(
+                authorization.contains("Credential=AKIDREQUESTOVERRIDE/"),
+                "the SDK must sign the origin request with its overridden credentials");
+    }
+
+    @Test
+    void asyncRequestCredentialsIdentityOverrideBypassesCacheAndSignsOriginRequest()
+            throws Exception {
+        RecordingAsyncOrigin origin = new RecordingAsyncOrigin(true);
+        IdentityProvider<AwsCredentialsIdentity> overrideIdentity =
+                credentialsIdentityProvider("AKIDIDENTITYOVERRIDE");
+
+        try (DynamoDbAsyncClient client =
+                installAsync(
+                        cacheBuilder().originAsyncHttpClient(origin),
+                        builder -> {
+                            sdkConfig(builder);
+                            builder.overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none()));
+                        })) {
+            ExecutionException failure =
+                    assertThrows(
+                            ExecutionException.class,
+                            () ->
+                                    client
+                                            .listTables(
+                                                    request ->
+                                                            request.overrideConfiguration(
+                                                                    override -> override.credentialsProvider(overrideIdentity)))
+                                            .get(5, TimeUnit.SECONDS));
+            assertTrue(causedBy(failure, DynamoDbException.class), failure.toString());
+        }
+
+        assertTrue(cache.getRequests().isEmpty(), "the cache must not receive the overridden request");
+        String authorization = origin.request.get().firstMatchingHeader("Authorization").orElse("");
+        assertTrue(
+                authorization.contains("Credential=AKIDIDENTITYOVERRIDE/"),
+                "the SDK must sign the origin request with its overridden identity");
     }
 
     @Test
@@ -644,6 +716,23 @@ class ElastiCacheIntegrationsAsyncClientTest {
         return headers;
     }
 
+    private static IdentityProvider<AwsCredentialsIdentity> credentialsIdentityProvider(
+            String accessKeyId) {
+        return new IdentityProvider<AwsCredentialsIdentity>() {
+            @Override
+            public Class<AwsCredentialsIdentity> identityType() {
+                return AwsCredentialsIdentity.class;
+            }
+
+            @Override
+            public CompletableFuture<AwsCredentialsIdentity> resolveIdentity(
+                    ResolveIdentityRequest request) {
+                return CompletableFuture.completedFuture(
+                        AwsCredentialsIdentity.create(accessKeyId, "identity-secret-key"));
+            }
+        };
+    }
+
     private void awaitRecovered(ElastiCacheIntegrationsSession session) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
         while ((cache.getAuthAttempts().size() < 2
@@ -689,6 +778,15 @@ class ElastiCacheIntegrationsAsyncClientTest {
         private final AtomicReference<SdkHttpRequest> request = new AtomicReference<>();
         private final AtomicReference<byte[]> body = new AtomicReference<>();
         private final AtomicInteger closeCount = new AtomicInteger();
+        private final boolean accessDenied;
+
+        private RecordingAsyncOrigin() {
+            this(false);
+        }
+
+        private RecordingAsyncOrigin(boolean accessDenied) {
+            this.accessDenied = accessDenied;
+        }
 
         @Override
         public CompletableFuture<Void> execute(AsyncExecuteRequest executeRequest) {
@@ -721,12 +819,18 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                 @Override
                                 public void onComplete() {
                                     body.set(bytes.toByteArray());
+                                    String responseBody =
+                                            accessDenied
+                                                    ? "{\"__type\":\"AccessDeniedException\",\"message\":\"denied\"}"
+                                                    : "{\"TableNames\":[]}";
                                     executeRequest
                                             .responseHandler()
                                             .onHeaders(
                                                     SdkHttpFullResponse.builder()
-                                                            .statusCode(200)
+                                                            .statusCode(accessDenied ? 400 : 200)
                                                             .putHeader("content-type", "application/x-amz-json-1.0")
+                                                            .putHeader(
+                                                                    "x-amzn-errortype", accessDenied ? "AccessDeniedException" : "")
                                                             .build());
                                     executeRequest
                                             .responseHandler()
@@ -744,8 +848,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                                                             complete = true;
                                                                             subscriber.onNext(
                                                                                     ByteBuffer.wrap(
-                                                                                            "{\"TableNames\":[]}"
-                                                                                                    .getBytes(StandardCharsets.UTF_8)));
+                                                                                            responseBody.getBytes(StandardCharsets.UTF_8)));
                                                                             subscriber.onComplete();
                                                                         }
 
