@@ -46,6 +46,39 @@ public class SessionReconnectTests
     }
 
     [Fact]
+    public async Task ARequestLaterInTheOutageWaitsOnlyForWhatIsLeftOfReconnectWait()
+    {
+        var time = new RecordingTimeProvider();
+        await using var rig = await SessionRig.StartAsync(time: time);
+        rig.Connection.Drop();
+        await rig.Connector.NextAsync();
+        time.Advance(TimeSpan.FromMilliseconds(60));
+
+        var pending = rig.SendAsync();
+        await rig.EventuallyAsync(() => pending.IsCompleted || time.Armed(due => due == TimeSpan.FromMilliseconds(40)) > 0);
+        Assert.False(pending.IsCompleted);
+        time.Advance(TimeSpan.FromMilliseconds(40));
+
+        Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await pending);
+    }
+
+    [Fact]
+    public async Task PastReconnectWaitRequestsInTheSameOutageDoNotWait()
+    {
+        await using var rig = await SessionRig.StartAsync();
+        rig.Connection.Drop();
+        await rig.Connector.NextAsync();
+        rig.Time.Advance(TimeSpan.FromMilliseconds(100));
+
+        for (var i = 0; i < 3; i++)
+        {
+            var pending = rig.SendAsync();
+            await rig.EventuallyAsync(() => pending.IsCompleted);
+            Assert.Equal(ElastiCacheIntegrationsOutcome.Origin, await pending);
+        }
+    }
+
+    [Fact]
     public async Task ADeadConnectionIsNoticedByTheNextRequest()
     {
         await using var rig = await SessionRig.StartAsync(SessionRig.Options(reconnectWait: TimeSpan.Zero));

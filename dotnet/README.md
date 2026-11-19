@@ -134,7 +134,7 @@ and `ReconnectWait` are still under review and may change before GA.
 | `ConnectTimeout` | 1 s | TCP connect plus the TLS handshake. |
 | `ConfigTimeout` | 2 s | Each of `AUTH`, `HELLO 3` and `aws.config`, counted like `RequestTimeout`. Also how long `DisposeAsync` drains. |
 | `RequestTimeout` | 100 ms | One call's send and reply, counted once it may write. Waiting to write has the same limit. |
-| `ReconnectWait` | 100 ms | How long a call waits for a reconnect in progress before it falls back. |
+| `ReconnectWait` | 100 ms | How long after a drop calls wait for the reconnect before they fall back. Shared by all calls in one outage. |
 | `Reconnect.AttemptTimeout` | 5 s | One whole bring-up attempt: connect, `AUTH`, `HELLO 3` and `aws.config`. |
 | `ReauthInterval` | 30 min | How often the live connection re-authenticates. Must be under 12 hours. Keep it under one hour: see [Authentication](#authentication). |
 | `CachePolicyTimeout` | 1 h | How long a config the cache has not confirmed stays in use. See [Config refresh](#config-refresh). |
@@ -247,8 +247,10 @@ exponential backoff and jitter. The loop runs until it succeeds or the client is
 
 A call that finds no connection:
 
-1. Waits up to `ReconnectWait` for a reconnect in progress. If the connection lands in time, the
-   call is sent on it.
+1. Waits for the reconnect until `ReconnectWait` after the drop. The wait is per outage, not per
+   call: a call that arrives later in the same outage waits only for what is left of it, and once
+   `ReconnectWait` has passed calls do not wait at all. If the connection lands in time, the call is
+   sent on it.
 2. Then goes to DynamoDB with the original signed request, while inside `FallbackDuration`. The
    fallback window starts when `ReconnectWait` ends, not at the drop, so the wait does not use it
    up.
