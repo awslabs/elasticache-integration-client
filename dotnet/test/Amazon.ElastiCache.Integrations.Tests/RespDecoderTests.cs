@@ -53,6 +53,21 @@ public class RespDecoderTests
     public static TheoryData<string, object> Values => RespValueWriterTests.Values;
 
     [Theory]
+    [InlineData("*3\r\n:200\r\n$2\r\nh1\r\n$10\r\nabc", 9)]
+    [InlineData("$10\r\n", 12)]
+    [InlineData("$10\r\n0123456789", 2)]
+    [InlineData(">3\r\n$12\r\naws.response\r\n$1\r\n7\r\n*3\r\n:200\r\n$0\r\n\r\n$100\r\nab", 100)]
+    [InlineData("*3\r\n:200\r\n$1", 0)]
+    [InlineData("%1\r\n+k\r\n", 0)]
+    public void AnIncompleteValueReportsTheRestOfTheBlobItStoppedIn(string wire, long expected)
+    {
+        var buffer = new ReadOnlySequence<byte>(Bytes(wire));
+
+        Assert.False(RespDecoder.TryDecode(ref buffer, out _, out var missing));
+        Assert.Equal(expected, missing);
+    }
+
+    [Theory]
     [MemberData(nameof(Values))]
     public void DecodesEveryTypeByteAtATime(string wire, object expected)
     {

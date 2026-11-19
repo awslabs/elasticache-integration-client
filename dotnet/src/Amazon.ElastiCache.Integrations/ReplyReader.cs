@@ -5,8 +5,10 @@ namespace Amazon.ElastiCache.Integrations;
 /// <summary>
 /// Reads whole RESP values from a stream. A value may arrive split across any number of reads;
 /// bytes after it stay buffered for the next call. Not thread safe: one reader task owns it.
+/// With <paramref name="lowWater"/>, the socket under the stream wakes a read only once a large part of a
+/// large value has arrived.
 /// </summary>
-internal sealed class ReplyReader(Stream stream, int maxResponseSize)
+internal sealed class ReplyReader(Stream stream, int maxResponseSize, ReceiveLowWater? lowWater = null)
 {
     /// <summary>The buffer size between large values, below the large object heap threshold.</summary>
     internal const int ReadSize = 64 * 1024;
@@ -26,11 +28,12 @@ internal sealed class ReplyReader(Stream stream, int maxResponseSize)
     {
         while (true)
         {
+            long missing = 0;
             if (_end > _start)
             {
                 var buffered = new ReadOnlySequence<byte>(_buffer, _start, _end - _start);
                 var rest = buffered;
-                if (RespDecoder.TryDecode(ref rest, out var value))
+                if (RespDecoder.TryDecode(ref rest, out var value, out missing))
                 {
                     CheckSize(buffered.Length - rest.Length);
                     _start = _end - (int)rest.Length;
@@ -41,6 +44,7 @@ internal sealed class ReplyReader(Stream stream, int maxResponseSize)
                 CheckSize(buffered.Length);
             }
 
+            lowWater?.Update(missing);
             MakeRoom();
             var read = await stream.ReadAsync(_buffer.AsMemory(_end), cancellationToken).ConfigureAwait(false);
             if (read == 0)

@@ -373,10 +373,20 @@ internal static class RespDecoder
     /// false, with <paramref name="buffer"/> unchanged, when the value is not complete yet.
     /// </summary>
     /// <exception cref="ElastiCacheIntegrationsProtocolException">The bytes can never form a valid value.</exception>
-    public static bool TryDecode(ref ReadOnlySequence<byte> buffer, [NotNullWhen(true)] out RespValue? value)
+    public static bool TryDecode(ref ReadOnlySequence<byte> buffer, [NotNullWhen(true)] out RespValue? value) =>
+        TryDecode(ref buffer, out value, out _);
+
+    /// <summary>
+    /// As <see cref="TryDecode(ref ReadOnlySequence{byte}, out RespValue?)"/>. When the value is not complete,
+    /// <paramref name="missing"/> is a lower bound on the bytes it still needs: the rest of the blob string it
+    /// stopped in, or 0 when it stopped elsewhere.
+    /// </summary>
+    /// <exception cref="ElastiCacheIntegrationsProtocolException">The bytes can never form a valid value.</exception>
+    public static bool TryDecode(ref ReadOnlySequence<byte> buffer, [NotNullWhen(true)] out RespValue? value, out long missing)
     {
+        missing = 0;
         var reader = new SequenceReader<byte>(buffer);
-        if (!TryRead(ref reader, 0, out value))
+        if (!TryRead(ref reader, 0, ref missing, out value))
         {
             return false;
         }
@@ -385,7 +395,7 @@ internal static class RespDecoder
         return true;
     }
 
-    private static bool TryRead(ref SequenceReader<byte> reader, int depth, [NotNullWhen(true)] out RespValue? value)
+    private static bool TryRead(ref SequenceReader<byte> reader, int depth, ref long missing, [NotNullWhen(true)] out RespValue? value)
     {
         value = null;
         if (depth > MaxDepth)
@@ -436,24 +446,25 @@ internal static class RespDecoder
                     value = line.IsEmpty ? RespNull.Instance : throw Corrupt("Malformed RESP null");
                     return true;
                 case (byte)'$' or (byte)'!' or (byte)'=':
-                    return TryReadBlob(ref reader, prefix, ParseLong(line, "length"), out value);
+                    return TryReadBlob(ref reader, prefix, ParseLong(line, "length"), ref missing, out value);
                 case (byte)'%':
-                    return TryReadMap(ref reader, depth, ParseCount(line, 2), out value);
+                    return TryReadMap(ref reader, depth, ParseCount(line, 2), ref missing, out value);
                 case (byte)'|':
                     // Attributes are metadata for the value that follows; it is decoded and they are dropped.
-                    if (!TryReadMap(ref reader, depth, ParseCount(line, 2), out _))
+                    if (!TryReadMap(ref reader, depth, ParseCount(line, 2), ref missing, out _))
                     {
                         return false;
                     }
 
                     continue;
                 default:
-                    return TryReadAggregate(ref reader, prefix, depth, line, out value);
+                    return TryReadAggregate(ref reader, prefix, depth, line, ref missing, out value);
             }
         }
     }
 
-    private static bool TryReadBlob(ref SequenceReader<byte> reader, byte prefix, long length, [NotNullWhen(true)] out RespValue? value)
+    private static bool TryReadBlob(
+        ref SequenceReader<byte> reader, byte prefix, long length, ref long missing, [NotNullWhen(true)] out RespValue? value)
     {
         value = null;
         if (prefix == '$' && length == -1)
@@ -469,6 +480,7 @@ internal static class RespDecoder
 
         if (reader.Remaining < length + 2)
         {
+            missing = length + 2 - reader.Remaining;
             return false;
         }
 
@@ -492,7 +504,7 @@ internal static class RespDecoder
     }
 
     private static bool TryReadAggregate(
-        ref SequenceReader<byte> reader, byte prefix, int depth, ReadOnlySpan<byte> line, [NotNullWhen(true)] out RespValue? value)
+        ref SequenceReader<byte> reader, byte prefix, int depth, ReadOnlySpan<byte> line, ref long missing, [NotNullWhen(true)] out RespValue? value)
     {
         value = null;
         if (prefix == '*' && line.SequenceEqual("-1"u8))
@@ -505,7 +517,7 @@ internal static class RespDecoder
         var items = new List<RespValue>(Math.Min(count, 1024));
         for (var i = 0; i < count; i++)
         {
-            if (!TryRead(ref reader, depth + 1, out var item))
+            if (!TryRead(ref reader, depth + 1, ref missing, out var item))
             {
                 return false;
             }
@@ -522,13 +534,14 @@ internal static class RespDecoder
         return true;
     }
 
-    private static bool TryReadMap(ref SequenceReader<byte> reader, int depth, int count, [NotNullWhen(true)] out RespValue? value)
+    private static bool TryReadMap(
+        ref SequenceReader<byte> reader, int depth, int count, ref long missing, [NotNullWhen(true)] out RespValue? value)
     {
         value = null;
         var entries = new List<KeyValuePair<RespValue, RespValue>>(Math.Min(count, 1024));
         for (var i = 0; i < count; i++)
         {
-            if (!TryRead(ref reader, depth + 1, out var key) || !TryRead(ref reader, depth + 1, out var item))
+            if (!TryRead(ref reader, depth + 1, ref missing, out var key) || !TryRead(ref reader, depth + 1, ref missing, out var item))
             {
                 return false;
             }
