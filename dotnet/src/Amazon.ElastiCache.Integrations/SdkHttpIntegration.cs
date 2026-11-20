@@ -97,16 +97,6 @@ internal sealed class ElastiCacheIntegrationsHttpClientFactory(
             handler.MaxConnectionsPerServer = maxConnections;
         }
 
-        if (config.GetWebProxy() is { } proxy)
-        {
-            handler.Proxy = proxy;
-        }
-
-        if (handler.Proxy is not null && config.ProxyCredentials is not null)
-        {
-            handler.Proxy.Credentials = config.ProxyCredentials;
-        }
-
         return handler;
     }
 }
