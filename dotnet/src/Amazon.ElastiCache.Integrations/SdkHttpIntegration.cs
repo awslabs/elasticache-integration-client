@@ -35,6 +35,10 @@ internal sealed class ElastiCacheIntegrationsHttpHandler : HttpMessageHandler
         return await _origin.SendAsync(request, cancellationToken).ConfigureAwait(false);
     }
 
+    // The integration seam is intentionally async. The net8.0 DynamoDB service
+    // APIs use SendAsync; a direct synchronous transport call retains the
+    // original SDK origin path instead of blocking on asynchronous interceptor
+    // work or failing an otherwise valid request.
     protected override HttpResponseMessage Send(
         HttpRequestMessage request,
         CancellationToken cancellationToken) => _origin.Send(request, cancellationToken);

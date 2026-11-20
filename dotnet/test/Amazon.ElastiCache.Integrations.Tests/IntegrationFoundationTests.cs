@@ -99,6 +99,23 @@ public sealed class IntegrationFoundationTests
     }
 
     [Fact]
+    public async Task ThrowingInterceptorDisposeStillDisposesTheSdkClient()
+    {
+        var interceptor = new ThrowingDisposeInterceptor();
+        var client = ElastiCacheIntegrationsClient.CreateDynamoDBClient(
+            new AnonymousAWSCredentials(),
+            Config(),
+            interceptor,
+            new RecordingOrigin("origin"));
+
+        var exception = Assert.Throws<InvalidOperationException>(client.Dispose);
+
+        Assert.Equal("interceptor dispose failed", exception.Message);
+        Assert.Equal(1, interceptor.DisposeCalls);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => GetAsync(client));
+    }
+
+    [Fact]
     public async Task AsyncDisposalDrainsAnActiveInterception()
     {
         var interceptor = new BlockingInterceptor();
@@ -174,6 +191,27 @@ public sealed class IntegrationFoundationTests
         await handle.DisposeAsync();
 
         Assert.False(origin.Disposed);
+    }
+
+    [Fact]
+    public void SynchronousTransportPreservesTheOriginPath()
+    {
+        var origin = new RecordingOrigin("origin");
+        var interceptor = new RecordingInterceptor(_ => Response("intercepted"));
+        var config = Config();
+        using var handle = ElastiCacheIntegrationsClient.Install(config, interceptor, origin);
+        var factory = Assert.IsType<ElastiCacheIntegrationsHttpClientFactory>(config.HttpClientFactory);
+        using var http = factory.CreateHttpClient(config);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            "https://dynamodb.us-east-1.amazonaws.com/");
+
+        using var response = http.Send(request, Token);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(0, interceptor.Calls);
+        Assert.Equal(1, origin.Calls);
+        Assert.Same(request, origin.LastRequest);
     }
 
     private static AmazonDynamoDBConfig Config() => new()
@@ -302,6 +340,23 @@ public sealed class IntegrationFoundationTests
         }
     }
 
+    private sealed class ThrowingDisposeInterceptor : IElastiCacheIntegrationsRequestInterceptor
+    {
+        public int DisposeCalls { get; private set; }
+
+        public ValueTask<HttpResponseMessage?> InterceptAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => ValueTask.FromResult<HttpResponseMessage?>(null);
+
+        public void Dispose()
+        {
+            DisposeCalls++;
+            throw new InvalidOperationException("interceptor dispose failed");
+        }
+
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
     private sealed class RecordingOrigin(string responseValue) : HttpMessageHandler
     {
         public int Calls { get; private set; }
@@ -314,15 +369,24 @@ public sealed class IntegrationFoundationTests
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
-            Calls++;
-            LastRequest = request;
-            return Task.FromResult(Response(responseValue));
+            return Task.FromResult(Record(request));
         }
+
+        protected override HttpResponseMessage Send(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken) => Record(request);
 
         protected override void Dispose(bool disposing)
         {
             Disposed = true;
             base.Dispose(disposing);
+        }
+
+        private HttpResponseMessage Record(HttpRequestMessage request)
+        {
+            Calls++;
+            LastRequest = request;
+            return Response(responseValue);
         }
     }
 

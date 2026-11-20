@@ -92,11 +92,16 @@ public sealed class ElastiCacheIntegrationsDynamoDBClient : AmazonDynamoDBClient
     /// <inheritdoc />
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        try
         {
-            Handle.Dispose();
+            if (disposing)
+            {
+                Handle.Dispose();
+            }
         }
-
-        base.Dispose(disposing);
+        finally
+        {
+            base.Dispose(disposing);
+        }
     }
 }
