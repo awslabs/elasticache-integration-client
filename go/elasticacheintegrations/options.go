@@ -4,8 +4,10 @@
 package elasticacheintegrations
 
 import (
+	"context"
 	"crypto/x509"
 	"log/slog"
+	"net"
 	"time"
 )
 
@@ -107,6 +109,9 @@ type config struct {
 	backoffMin              time.Duration
 	backoffMax              time.Duration
 	jitter                  float64 // ± fraction applied to re-AUTH, refresh and backoff waits
+
+	plaintext bool                                                                 // no TLS, for the mock cache
+	dial      func(ctx context.Context, network, address string) (net.Conn, error) // nil: a net.Dialer
 }
 
 // strict reports whether a routed request may never go to DynamoDB.
