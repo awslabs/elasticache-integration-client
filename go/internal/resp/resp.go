@@ -101,11 +101,19 @@ var ErrCorrupt = errors.New("resp: corrupt stream")
 // ErrIncomplete is returned by Decode when the value has not fully arrived.
 var ErrIncomplete = errors.New("resp: incomplete value")
 
-// CorruptError says why a stream is corrupt. It never quotes the stream's bytes.
-type CorruptError struct{ Msg string }
+// ErrFrameTooLarge matches the CorruptError a Reader returns for a frame over its cap.
+var ErrFrameTooLarge = errors.New("resp: frame too large")
 
-func (e *CorruptError) Error() string        { return "resp: corrupt stream: " + e.Msg }
-func (e *CorruptError) Is(target error) bool { return target == ErrCorrupt }
+// CorruptError says why a stream is corrupt. It never quotes the stream's bytes.
+type CorruptError struct {
+	Msg      string
+	TooLarge bool // the frame is over the reader's cap
+}
+
+func (e *CorruptError) Error() string { return "resp: corrupt stream: " + e.Msg }
+func (e *CorruptError) Is(target error) bool {
+	return target == ErrCorrupt || (e.TooLarge && target == ErrFrameTooLarge)
+}
 
 func corrupt(msg string) error { return &CorruptError{Msg: msg} }
 
