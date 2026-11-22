@@ -254,3 +254,19 @@ func BenchmarkPredicates(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkScanJSON(b *testing.B) {
+	for _, c := range predBenchCases() {
+		b.Run(c.name, func(b *testing.B) {
+			b.SetBytes(int64(len(c.body)))
+			b.ReportAllocs()
+			for b.Loop() {
+				d, ok := scanJSON(c.body)
+				if !ok {
+					b.Fatal("refused")
+				}
+				d.release()
+			}
+		})
+	}
+}

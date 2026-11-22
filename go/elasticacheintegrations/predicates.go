@@ -4,13 +4,10 @@
 package elasticacheintegrations
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strconv"
-	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -207,6 +204,7 @@ func (p *predicates) shouldRoute(req *request) bool {
 		return false
 	}
 	pr := predicateRequest{req: req}
+	defer pr.release()
 	for _, pred := range p.list {
 		// A body that predicates cannot read matches none that read it, and only those are left.
 		if pred.readsBody && !pr.loadBody() {
@@ -228,23 +226,45 @@ func (pred *predicate) matches(pr *predicateRequest) bool {
 	return err == nil && out == types.True
 }
 
-// predicateRequest is one request as the predicates see it. The body and the headers are
-// prepared on first need. Not safe for concurrent use: one per evaluation.
+// predicateRequest is one request as the predicates see it. The body is scanned, and the
+// headers and the cel-go body are built, on first need. Not safe for concurrent use: one per
+// evaluation.
 type predicateRequest struct {
 	req      *request
 	bodyDone bool
-	bodyOK   bool
-	body     map[string]any
+	doc      *jsonDoc // nil when the body is not usable
+	celDone  bool
+	celBody  map[string]any
 	act      *requestActivation
 }
 
-// loadBody decodes the body on the first call. It reports whether predicates may read it.
+// loadBody scans the body on the first call. It reports whether predicates may read it.
 func (pr *predicateRequest) loadBody() bool {
 	if !pr.bodyDone {
 		pr.bodyDone = true
-		pr.body, pr.bodyOK = decodeBody(pr.req.body)
+		if len(pr.req.body) == 0 {
+			pr.doc = emptyDoc
+		} else {
+			pr.doc, _ = scanJSON(pr.req.body)
+		}
 	}
-	return pr.bodyOK
+	return pr.doc != nil
+}
+
+// body returns the body decoded for cel-go, once.
+func (pr *predicateRequest) body() (map[string]any, bool) {
+	if !pr.celDone {
+		pr.celDone = true
+		if pr.loadBody() {
+			pr.celBody, _ = pr.doc.celBody()
+		}
+	}
+	return pr.celBody, pr.celBody != nil
+}
+
+func (pr *predicateRequest) release() {
+	pr.doc.release()
+	pr.doc = nil
 }
 
 func (pr *predicateRequest) activation() *requestActivation {
@@ -277,9 +297,7 @@ func (a *requestActivation) ResolveName(name string) (any, bool) {
 		}
 		return a.headers, true
 	case "body":
-		if a.pr.loadBody() {
-			return a.pr.body, true
-		}
+		return a.pr.body()
 	}
 	return nil, false
 }
@@ -297,36 +315,12 @@ func predicateHeaders(h map[string]string) map[string]string {
 	return out
 }
 
-var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
-
 // decodeBody returns the body as cel-go input. An empty body is {}. It reports false when the
-// body is not one JSON object, is not valid UTF-8, or nests deeper than maxBodyDepth.
+// body is not usable by predicates (see scanJSON).
 func decodeBody(body []byte) (map[string]any, bool) {
-	if len(body) == 0 {
-		return map[string]any{}, true
-	}
-	body = bytes.TrimPrefix(body, utf8BOM)
-	if !utf8.Valid(body) {
-		return nil, false
-	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, false
-	}
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return nil, false
-	}
-	obj, ok := v.(map[string]any)
-	if !ok {
-		return nil, false
-	}
-	out, err := celValue(obj, 1)
-	if err != nil {
-		return nil, false
-	}
-	return out.(map[string]any), true
+	pr := predicateRequest{req: &request{body: body}}
+	defer pr.release()
+	return pr.body()
 }
 
 var errTooDeep = errors.New("nested too deep")
