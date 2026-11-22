@@ -52,6 +52,7 @@ type predicate struct {
 	program   cel.Program
 	vars      interpreter.Activation // nil without vars
 	readsBody bool
+	fast      *fastPredicate // nil when the expression has no fast form
 }
 
 // compilePredicates compiles the predicates of a resolved config, in config order. A config
@@ -137,6 +138,7 @@ func compilePredicate(entry any) (*predicate, *ConfigUnevaluableError) {
 	}
 	_, bodyShadowed := vars["body"]
 	pred.readsBody = !bodyShadowed && namesFree(checked.NativeRep().Expr(), "body", nil)
+	pred.fast = compileFast(checked.NativeRep(), vars)
 	return pred, nil
 }
 
@@ -218,6 +220,11 @@ func (p *predicates) shouldRoute(req *request) bool {
 }
 
 func (pred *predicate) matches(pr *predicateRequest) bool {
+	if pred.fast != nil {
+		if r := pred.fast.eval(pr); r != fastDefer {
+			return r == fastTrue
+		}
+	}
 	var act interpreter.Activation = pr.activation()
 	if pred.vars != nil {
 		act = interpreter.NewHierarchicalActivation(act, pred.vars) // a var wins over a request field
@@ -235,7 +242,17 @@ type predicateRequest struct {
 	doc      *jsonDoc // nil when the body is not usable
 	celDone  bool
 	celBody  map[string]any
+	hdrs     map[string]string
 	act      *requestActivation
+	locals   []fastValue // comprehension variables of the fast path, reused across predicates
+}
+
+// headers returns the request headers predicates see, built once.
+func (pr *predicateRequest) headers() map[string]string {
+	if pr.hdrs == nil {
+		pr.hdrs = predicateHeaders(pr.req.headers)
+	}
+	return pr.hdrs
 }
 
 // loadBody scans the body on the first call. It reports whether predicates may read it.
@@ -274,10 +291,9 @@ func (pr *predicateRequest) activation() *requestActivation {
 	return pr.act
 }
 
-// requestActivation resolves the request variables for cel-go. headers is built on first use.
+// requestActivation resolves the request variables for cel-go.
 type requestActivation struct {
-	pr      *predicateRequest
-	headers map[string]string
+	pr *predicateRequest
 }
 
 func (a *requestActivation) ResolveName(name string) (any, bool) {
@@ -292,10 +308,7 @@ func (a *requestActivation) ResolveName(name string) (any, bool) {
 	case "url":
 		return r.url, true
 	case "headers":
-		if a.headers == nil {
-			a.headers = predicateHeaders(r.headers)
-		}
-		return a.headers, true
+		return a.pr.headers(), true
 	case "body":
 		return a.pr.body()
 	}
