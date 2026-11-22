@@ -13,6 +13,7 @@
 - `node/`: TypeScript/Node.js ElastiCache Integrations client.
 - `java/`: Java/AWS SDK v2 ElastiCache Integrations client.
 - `python/`: Python/boto3 ElastiCache Integrations client.
+- `go/`: Go/AWS SDK for Go v2 ElastiCache Integrations client.
 - `shared/`: language-neutral client test fixtures. `protocol-vectors.json` and
   `sdk-request-cases.json` are run by every client's tests and are not
   packaged. A change to the wire format or to how an SDK adapter
@@ -44,6 +45,9 @@ Run commands from the client directory they apply to:
   to fix formatting.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
+- Go: use focused `go test -run` tests when appropriate and `scripts/verify.sh`
+  for the complete local gate (gofmt, go vet, staticcheck, `go test -race`, and
+  the license check).
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
   `<path>` is a file of case-insensitive Perl regular expressions, one per
   line, kept outside the repository. It fails when a file that git
@@ -53,7 +57,7 @@ Run commands from the client directory they apply to:
   secrets. The job is not in the `ci` aggregate, so a failed run does not block
   merge.
 - Repository: run `scripts/check-license-headers.sh` from any directory. It
-  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, or Python
+  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, Python, or Go
   file has no `SPDX-License-Identifier: Apache-2.0` header in its first 5
   lines. Files under `vendor/`, `node_modules/`, and `shared/` are skipped. CI
   runs it on every pull request, and the `ci` aggregate needs it.
