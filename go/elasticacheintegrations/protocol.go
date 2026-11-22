@@ -7,11 +7,16 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
+	"math"
+	"net/http"
+	"net/textproto"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -340,4 +345,280 @@ func appendJSONString(dst []byte, s string) []byte {
 
 func appendUnicodeEscape(dst []byte, r rune) []byte {
 	return append(dst, '\\', 'u', hexDigits[r>>12&0xf], hexDigits[r>>8&0xf], hexDigits[r>>4&0xf], hexDigits[r&0xf])
+}
+
+const (
+	responsePushKind  = "aws.response"
+	configInvalidCode = "CONFIG_INVALID"
+	okReply           = "OK"
+)
+
+// serverErrorKind is what a -CODE reply to aws.request means to the session.
+type serverErrorKind uint8
+
+const (
+	serverRejected serverErrorKind = iota // PARSE_ERROR, UNSUPPORTED, UNIMPLEMENTED, REGION_MISMATCH, any other code
+	serverOrigin                          // ORIGIN_ERROR, INTERNAL_ERROR: DynamoDB may answer a retry
+	serverAuth                            // AUTH_ERROR: drop the connection, send the request to DynamoDB
+	serverDrop                            // MOVED, NOAUTH: the engine refused it; drop the connection
+)
+
+// serverError is a -CODE reply, split at the first space.
+type serverError struct {
+	code    string
+	message string
+}
+
+func (e serverError) kind() serverErrorKind {
+	switch e.code {
+	case "ORIGIN_ERROR", "INTERNAL_ERROR":
+		return serverOrigin
+	case "AUTH_ERROR":
+		return serverAuth
+	case "MOVED", "NOAUTH":
+		return serverDrop
+	default:
+		return serverRejected
+	}
+}
+
+// err is the error a request ends with when the session returns the reply as is.
+func (e serverError) err() error {
+	if e.kind() == serverOrigin {
+		return &OriginError{Code: e.code, Message: e.message}
+	}
+	return &RejectedError{Code: e.code, Message: e.message}
+}
+
+// requestReply is a parsed aws.request reply: a served response or a server error.
+type requestReply struct {
+	response response
+	failed   bool        // the cache answered with a RESP error
+	server   serverError // when failed
+}
+
+// parseRequestReply reads the reply to aws.request, or the reply an aws.response push
+// carries: a RESP error, or [status, headers, body]. A reply of any other shape is a
+// *ProtocolError; the stream itself is still in step.
+func parseRequestReply(v resp.Value) (requestReply, error) {
+	switch v.Kind {
+	case resp.KindError:
+		return requestReply{failed: true, server: serverError{code: v.ErrorCode(), message: v.ErrorMessage()}}, nil
+	case resp.KindArray:
+	default:
+		return requestReply{}, &ProtocolError{Msg: "aws.request reply is " + v.String() + ", not an array"}
+	}
+	if len(v.Elems) != 3 {
+		return requestReply{}, &ProtocolError{Msg: "aws.request reply has " + strconv.Itoa(len(v.Elems)) + " elements, not 3"}
+	}
+	headers, body := v.Elems[1], v.Elems[2]
+	if headers.Kind != resp.KindBulkString || body.Kind != resp.KindBulkString {
+		return requestReply{}, &ProtocolError{Msg: "aws.request reply has headers " + headers.Kind.String() +
+			" and body " + body.Kind.String() + ", not bulk strings"}
+	}
+	status, err := parseStatus(v.Elems[0])
+	if err != nil {
+		return requestReply{}, err
+	}
+	h, err := parseResponseHeaders(headers.Bytes)
+	if err != nil {
+		return requestReply{}, err
+	}
+	return requestReply{response: response{statusCode: status, headers: h, body: body.Bytes}}, nil
+}
+
+// parseStatus reads an integer status, or a string one as Java's Integer.parseInt after
+// trim, and checks it is in 100-599.
+func parseStatus(v resp.Value) (int, error) {
+	var n int64
+	switch v.Kind {
+	case resp.KindInteger:
+		n = v.Int
+	case resp.KindBulkString, resp.KindSimpleString:
+		if !utf8.Valid(v.Bytes) {
+			return 0, &ProtocolError{Msg: "invalid UTF-8 in the response status"}
+		}
+		var err error
+		if n, err = strconv.ParseInt(trimJava(string(v.Bytes)), 10, 32); err != nil {
+			return 0, &ProtocolError{Msg: "the response status is not an integer"}
+		}
+	default:
+		return 0, &ProtocolError{Msg: "the response status is " + v.Kind.String()}
+	}
+	if n < 100 || n > 599 {
+		return 0, &ProtocolError{Msg: "response status " + strconv.FormatInt(n, 10) + " is out of range (100-599)"}
+	}
+	return int(n), nil
+}
+
+// parseResponseHeaders reads LF-separated name:value lines as Java does (split at the first
+// colon, trim both, skip lines without one, the last duplicate wins) into the header the SDK
+// reads: canonical keys, no Content-Length or Transfer-Encoding (the body sets the length),
+// and Age: 0 unless the cache sent a non-empty Age, so the SDK learns no clock skew from a
+// replayed Date.
+func parseResponseHeaders(b []byte) (http.Header, error) {
+	if !utf8.Valid(b) {
+		return nil, &ProtocolError{Msg: "invalid UTF-8 in the response headers"}
+	}
+	// Bounded, so empty or colon-free lines cost no memory.
+	hint := min(bytes.Count(b, []byte{'\n'})+1, maxHeaderHint) + 1
+	h := make(http.Header, hint)
+	values := make([]string, 0, hint) // backs every value, so a header costs no allocation of its own
+	set := func(name, value string) {
+		values = append(values, value)
+		h[name] = values[len(values)-1 : len(values) : len(values)]
+	}
+	block := string(b) // names and values are substrings of one string
+	for len(block) > 0 {
+		line, rest, _ := strings.Cut(block, "\n")
+		block = rest
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		name = canonicalHeaderKey(trimJava(name))
+		if name == "Content-Length" || name == "Transfer-Encoding" {
+			continue
+		}
+		set(name, trimJava(value))
+	}
+	if a := h["Age"]; len(a) == 0 || a[0] == "" { // the SDK reads an empty Age as none
+		set("Age", "0")
+	}
+	return h, nil
+}
+
+// maxHeaderHint bounds the header count parseResponseHeaders sizes its map for.
+const maxHeaderHint = 64
+
+// dynamoDBHeaders are DynamoDB response headers textproto does not intern, by the lowercase
+// name the cache sends.
+var dynamoDBHeaders = map[string]string{
+	"x-amz-crc32":      "X-Amz-Crc32",
+	"x-amzn-requestid": "X-Amzn-Requestid",
+	"x-amzn-errortype": "X-Amzn-Errortype",
+}
+
+func canonicalHeaderKey(name string) string {
+	if k, ok := dynamoDBHeaders[name]; ok {
+		return k
+	}
+	return textproto.CanonicalMIMEHeaderKey(name)
+}
+
+// asyncResponseID reports whether v is a deferred request id: a simple string other than
+// OK. The id must be valid UTF-8, or a deferred reply could resolve the wrong request.
+func asyncResponseID(v resp.Value) (string, bool, error) {
+	if v.Kind != resp.KindSimpleString || string(v.Bytes) == okReply {
+		return "", false, nil
+	}
+	if !utf8.Valid(v.Bytes) {
+		return "", false, &ProtocolError{Msg: "invalid UTF-8 in a deferred request id"}
+	}
+	return string(v.Bytes), true, nil
+}
+
+// parseResponsePush reads an aws.response push: [kind, id, reply]. Any other push is a
+// *ProtocolError: the client cannot place it, so the stream cannot be trusted.
+func parseResponsePush(v resp.Value) (string, resp.Value, error) {
+	if v.Kind != resp.KindPush || len(v.Elems) == 0 ||
+		(v.Elems[0].Kind != resp.KindBulkString && v.Elems[0].Kind != resp.KindSimpleString) {
+		return "", resp.Value{}, &ProtocolError{Msg: "push without a string kind"}
+	}
+	if kind := v.Elems[0].Bytes; !utf8.Valid(kind) || string(kind) != responsePushKind {
+		return "", resp.Value{}, &ProtocolError{Msg: "unknown push kind"}
+	}
+	if len(v.Elems) != 3 {
+		return "", resp.Value{}, &ProtocolError{Msg: "aws.response push has " + strconv.Itoa(len(v.Elems)) + " elements, not 3"}
+	}
+	id := v.Elems[1]
+	if id.Kind != resp.KindBulkString {
+		return "", resp.Value{}, &ProtocolError{Msg: "aws.response push id is " + id.Kind.String() + ", not a bulk string"}
+	}
+	if !utf8.Valid(id.Bytes) {
+		return "", resp.Value{}, &ProtocolError{Msg: "invalid UTF-8 in an aws.response push id"}
+	}
+	return string(id.Bytes), v.Elems[2], nil
+}
+
+// parseConfigReply reads the reply to aws.config: a JSON object in a bulk string. A null
+// reply to the no-argument form (refresh) means the config is unchanged: nil, nil.
+func parseConfigReply(v resp.Value, refresh bool) (*resolvedConfig, error) {
+	switch v.Kind {
+	case resp.KindError:
+		if code := v.ErrorCode(); code != configInvalidCode {
+			return nil, &RejectedError{Code: code, Message: v.ErrorMessage()}
+		}
+		return nil, &OverridesRejectedError{Message: v.ErrorMessage()}
+	case resp.KindNull:
+		if refresh {
+			return nil, nil
+		}
+		return nil, &ProtocolError{Msg: "aws.config reply is null"}
+	case resp.KindBulkString:
+	default:
+		return nil, &ProtocolError{Msg: "aws.config reply is " + v.String() + ", not a bulk string"}
+	}
+	// encoding/json would replace invalid UTF-8 instead of refusing it.
+	if !utf8.Valid(v.Bytes) {
+		return nil, &ProtocolError{Msg: "invalid UTF-8 in the aws.config reply"}
+	}
+	dec := json.NewDecoder(bytes.NewReader(v.Bytes))
+	dec.UseNumber()
+	var raw map[string]any
+	if err := dec.Decode(&raw); err != nil {
+		return nil, &ProtocolError{Msg: "aws.config reply is not a JSON object", Err: err}
+	}
+	if raw == nil {
+		return nil, &ProtocolError{Msg: "aws.config reply is not a JSON object"}
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, &ProtocolError{Msg: "aws.config reply has data after the JSON object"}
+	}
+	version, err := configVersion(raw["version"])
+	if err != nil {
+		return nil, err
+	}
+	interval, err := refreshInterval(raw["refresh_interval"])
+	if err != nil {
+		return nil, err
+	}
+	return &resolvedConfig{version: version, refreshInterval: interval, raw: raw}, nil
+}
+
+// configVersion is the negotiated version as text, as Java's String.valueOf; "" when absent.
+func configVersion(v any) (string, error) {
+	switch v := v.(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case json.Number:
+		return string(v), nil
+	case bool:
+		return strconv.FormatBool(v), nil
+	default:
+		return "", &ProtocolError{Msg: "aws.config version is not a string"}
+	}
+}
+
+// refreshInterval reads refresh_interval: required, an integral JSON number (60.0 is not),
+// positive and at most 2^31-1 seconds.
+func refreshInterval(v any) (time.Duration, error) {
+	if v == nil {
+		return 0, &ProtocolError{Msg: "aws.config reply has no refresh_interval"}
+	}
+	num, ok := v.(json.Number)
+	if !ok || strings.ContainsAny(string(num), ".eE") {
+		return 0, &ProtocolError{Msg: "aws.config refresh_interval is not an integer"}
+	}
+	n, err := strconv.ParseInt(string(num), 10, 64)
+	switch {
+	case err == nil && n > 0 && n <= math.MaxInt32:
+		return time.Duration(n) * time.Second, nil
+	case n < 0 || err == nil && n == 0:
+		return 0, &ProtocolError{Msg: "aws.config refresh_interval must be positive"}
+	default:
+		return 0, &ProtocolError{Msg: "aws.config refresh_interval exceeds 2147483647 seconds"}
+	}
 }

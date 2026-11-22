@@ -9,12 +9,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
+	"net/textproto"
+	"reflect"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf16"
+	"unicode/utf8"
 
+	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
 	"github.com/awslabs/elasticache-integration-client/go/internal/testutil"
 )
 
@@ -36,7 +45,23 @@ type protocolVectors struct {
 		Overrides json.RawMessage `json:"overrides"`
 		Frame     string          `json:"frame"`
 	} `json:"encode"`
-	Decode []json.RawMessage `json:"decode"`
+	Decode []struct {
+		Name     string `json:"name"`
+		Command  string `json:"command"`
+		Reply    string `json:"reply"`
+		Response *struct {
+			Status  int               `json:"status"`
+			Headers map[string]string `json:"headers"`
+			Body    string            `json:"body"`
+		} `json:"response"`
+		Config *struct {
+			Version         *string         `json:"version"`
+			RefreshInterval int64           `json:"refresh_interval"`
+			Raw             json.RawMessage `json:"raw"`
+		} `json:"config"`
+		Error string `json:"error"`
+		Code  string `json:"code"`
+	} `json:"decode"`
 }
 
 func loadProtocolVectors(t *testing.T) protocolVectors {
@@ -511,6 +536,630 @@ func TestAppendJSONStringEveryCodePoint(t *testing.T) {
 		}
 		if got := string(appendJSONString(nil, "a"+string(r)+"b")); got != `"a`+want+`b"` {
 			t.Fatalf("U+%04X: got %s, want %s", r, got, `"a`+want+`b"`)
+		}
+	}
+}
+
+func decodeReply(t testing.TB, wire string) resp.Value {
+	t.Helper()
+	v, n, err := resp.Decode([]byte(wire))
+	if err != nil || n != len(wire) {
+		t.Fatalf("decode %q: n=%d err=%v", wire, n, err)
+	}
+	return v
+}
+
+// servedHeaders is the header the SDK sees for headers the cache sent.
+func servedHeaders(sent map[string]string) http.Header {
+	h := http.Header{"Age": {"0"}}
+	for k, v := range sent {
+		h.Set(k, v)
+	}
+	return h
+}
+
+func TestAlignmentProtocolDecode(t *testing.T) {
+	for _, v := range loadProtocolVectors(t).Decode {
+		t.Run(v.Name, func(t *testing.T) {
+			reply := decodeReply(t, v.Reply)
+			switch v.Command {
+			case requestCommand:
+				checkRequestVector(t, reply, v.Response, v.Error, v.Code)
+			case configCommand:
+				cfg, err := parseConfigReply(reply, false)
+				switch v.Error {
+				case "":
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := v.Config
+					if (want.Version == nil && cfg.version != "") || (want.Version != nil && cfg.version != *want.Version) {
+						t.Errorf("version %q, want %v", cfg.version, want.Version)
+					}
+					if cfg.refreshInterval != time.Duration(want.RefreshInterval)*time.Second {
+						t.Errorf("refresh interval %v, want %ds", cfg.refreshInterval, want.RefreshInterval)
+					}
+					wantRaw := decodeNumbers(t, want.Raw)
+					if !reflect.DeepEqual(cfg.raw, wantRaw) {
+						t.Errorf("raw %v, want %v", cfg.raw, wantRaw)
+					}
+				case "overrides_rejected":
+					var oe *OverridesRejectedError
+					if !errors.As(err, &oe) {
+						t.Errorf("err = %v, want *OverridesRejectedError", err)
+					}
+				case "error":
+					if err == nil || !errors.Is(err, ErrIntegrations) {
+						t.Errorf("err = %v, want a package error", err)
+					}
+					var oe *OverridesRejectedError
+					if errors.As(err, &oe) {
+						t.Errorf("err = %v is an overrides rejection", err)
+					}
+				default:
+					t.Fatalf("unknown error kind %q", v.Error)
+				}
+			default:
+				t.Fatalf("unknown command %q", v.Command)
+			}
+		})
+	}
+}
+
+func checkRequestVector(t *testing.T, reply resp.Value, want *struct {
+	Status  int               `json:"status"`
+	Headers map[string]string `json:"headers"`
+	Body    string            `json:"body"`
+}, errKind, code string) {
+	t.Helper()
+	got, err := parseRequestReply(reply)
+	switch errKind {
+	case "":
+		if err != nil || got.failed {
+			t.Fatalf("err = %v, failed = %v", err, got.failed)
+		}
+		if got.response.statusCode != want.Status {
+			t.Errorf("status %d, want %d", got.response.statusCode, want.Status)
+		}
+		if w := servedHeaders(want.Headers); !reflect.DeepEqual(got.response.headers, w) {
+			t.Errorf("headers %v, want %v", got.response.headers, w)
+		}
+		if string(got.response.body) != want.Body {
+			t.Errorf("body %q, want %q", got.response.body, want.Body)
+		}
+	case "protocol":
+		var pe *ProtocolError
+		if !errors.As(err, &pe) {
+			t.Errorf("err = %v, want *ProtocolError", err)
+		}
+	case "rejected":
+		if err != nil || !got.failed || got.server.code != code {
+			t.Errorf("reply %+v, err %v; want server error %s", got.server, err, code)
+		}
+	default:
+		t.Fatalf("unknown error kind %q", errKind)
+	}
+}
+
+func decodeNumbers(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var m map[string]any
+	if err := dec.Decode(&m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestParseRequestReplyShapes(t *testing.T) {
+	body := `{"Item":{}}`
+	ok := func(status string) string {
+		return "*3\r\n" + status + "$0\r\n\r\n$" + strconv.Itoa(len(body)) + "\r\n" + body + "\r\n"
+	}
+	cases := []struct {
+		name, wire string
+		status     int // 0: a *ProtocolError
+	}{
+		{"integer", ok(":200\r\n"), 200},
+		{"integer 100", ok(":100\r\n"), 100},
+		{"integer 599", ok(":599\r\n"), 599},
+		{"integer 99", ok(":99\r\n"), 0},
+		{"integer 600", ok(":600\r\n"), 0},
+		{"integer huge", ok(":9223372036854775807\r\n"), 0},
+		{"bulk", ok("$3\r\n201\r\n"), 201},
+		{"bulk padded", ok("$7\r\n \t404\r\n\r\n"), 404},
+		{"bulk plus sign", ok("$4\r\n+200\r\n"), 200},
+		{"simple", ok("+500\r\n"), 500},
+		{"bulk empty", ok("$0\r\n\r\n"), 0},
+		{"bulk not a number", ok("$2\r\nok\r\n"), 0},
+		{"bulk over 32 bits", ok("$10\r\n4294967496\r\n"), 0},
+		{"bulk fraction", ok("$5\r\n200.0\r\n"), 0},
+		{"bulk underscore", ok("$4\r\n2_00\r\n"), 0},
+		{"bulk invalid UTF-8", ok("$4\r\n200\xff\r\n"), 0},
+		{"null status", ok("_\r\n"), 0},
+		{"array status", ok("*0\r\n"), 0},
+		{"map", "%1\r\n$1\r\na\r\n$1\r\nb\r\n", 0},
+		{"simple string reply", "+OK\r\n", 0},
+		{"null reply", "_\r\n", 0},
+		{"integer reply", ":1\r\n", 0},
+		{"push reply", ">3\r\n$12\r\naws.response\r\n$1\r\n1\r\n:1\r\n", 0},
+		{"four elements", "*4\r\n:200\r\n$0\r\n\r\n$0\r\n\r\n$0\r\n\r\n", 0},
+		{"empty array", "*0\r\n", 0},
+		{"null array", "*-1\r\n", 0},
+		{"integer headers", "*3\r\n:200\r\n:1\r\n$0\r\n\r\n", 0},
+		{"headers checked before status", "*3\r\n:999\r\n_\r\n$0\r\n\r\n", 0},
+		{"invalid UTF-8 headers", "*3\r\n:200\r\n$3\r\na:\xff\r\n$0\r\n\r\n", 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseRequestReply(decodeReply(t, c.wire))
+			if c.status == 0 {
+				var pe *ProtocolError
+				if !errors.As(err, &pe) {
+					t.Fatalf("err = %v, want *ProtocolError", err)
+				}
+				if strings.Contains(err.Error(), "Item") {
+					t.Errorf("error quotes the reply: %v", err)
+				}
+				return
+			}
+			if err != nil || got.failed {
+				t.Fatalf("err = %v, failed = %v", err, got.failed)
+			}
+			if got.response.statusCode != c.status || string(got.response.body) != body {
+				t.Errorf("got %d %q", got.response.statusCode, got.response.body)
+			}
+		})
+	}
+}
+
+func TestParseRequestReplyBodyIsNotCopied(t *testing.T) {
+	v := decodeReply(t, "*3\r\n:200\r\n$0\r\n\r\n$3\r\nabc\r\n")
+	got, err := parseRequestReply(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if &got.response.body[0] != &v.Elems[2].Bytes[0] {
+		t.Error("the body was copied")
+	}
+}
+
+func TestParseResponseHeaders(t *testing.T) {
+	cases := []struct {
+		name, in string
+		want     http.Header
+	}{
+		{"empty", "", http.Header{"Age": {"0"}}},
+		{"canonical keys", "x-amz-crc32:123\nx-amzn-requestid:R\ncontent-type:application/x-amz-json-1.0\nx-amzn-errortype:com.amazonaws.dynamodb.v20120810#ResourceNotFoundException",
+			http.Header{"X-Amz-Crc32": {"123"}, "X-Amzn-Requestid": {"R"}, "Content-Type": {"application/x-amz-json-1.0"},
+				"X-Amzn-Errortype": {"com.amazonaws.dynamodb.v20120810#ResourceNotFoundException"}, "Age": {"0"}}},
+		{"trimmed, split at the first colon", " Date : Thu, 01 Jan 2026 00:00:00 GMT \r\n", http.Header{"Date": {"Thu, 01 Jan 2026 00:00:00 GMT"}, "Age": {"0"}}},
+		{"last duplicate wins across case", "x-a:1\nX-A:2\nx-A:3", http.Header{"X-A": {"3"}, "Age": {"0"}}},
+		{"lines without colon and empty lines skipped", "a:1\n\ngarbage\n\nb", http.Header{"A": {"1"}, "Age": {"0"}}},
+		{"empty value", "x-e:", http.Header{"X-E": {""}, "Age": {"0"}}},
+		{"body length headers dropped", "content-length:999\ntransfer-encoding:chunked\nx:1", http.Header{"X": {"1"}, "Age": {"0"}}},
+		{"age kept", "age:120\ndate:d", http.Header{"Age": {"120"}, "Date": {"d"}}},
+		{"empty age set", "AGE:", http.Header{"Age": {"0"}}},
+		{"blank age set", "date:d\nage: \t", http.Header{"Age": {"0"}, "Date": {"d"}}},
+		{"invalid name kept as sent", "x y:1\n:2", http.Header{"x y": {"1"}, "": {"2"}, "Age": {"0"}}},
+		{"UTF-8 value", "x-n:café", http.Header{"X-N": {"café"}, "Age": {"0"}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := parseResponseHeaders([]byte(c.in))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, c.want) {
+				t.Errorf("got %v, want %v", got, c.want)
+			}
+			if got.Get("Age") != c.want.Get("Age") {
+				t.Errorf("Get(Age) = %q", got.Get("Age"))
+			}
+		})
+	}
+}
+
+func TestParseResponseHeadersMemoryIsBounded(t *testing.T) {
+	in := bytes.Repeat([]byte("\n\ngarbage\n"), 1<<17) // 1.25 MiB, no header
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	h, err := parseResponseHeaders(in)
+	runtime.ReadMemStats(&after)
+	if err != nil || len(h) != 1 {
+		t.Fatalf("headers %v, err %v", h, err)
+	}
+	// The header string plus small change; a size hint from the line count takes over 30 MiB.
+	if n := after.TotalAlloc - before.TotalAlloc; n > 2*uint64(len(in)) {
+		t.Errorf("allocated %d bytes for %d bytes of headers", n, len(in))
+	}
+}
+
+func TestResponseHeaderValuesPastTheHintAreIndependent(t *testing.T) {
+	var b strings.Builder
+	for i := range maxHeaderHint * 2 {
+		fmt.Fprintf(&b, "h%d:%d\n", i, i)
+	}
+	h, err := parseResponseHeaders([]byte(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h) != maxHeaderHint*2+1 {
+		t.Fatalf("%d headers", len(h))
+	}
+	for i := range maxHeaderHint * 2 {
+		vs := h["H"+strconv.Itoa(i)]
+		if len(vs) != 1 || cap(vs) != 1 || vs[0] != strconv.Itoa(i) {
+			t.Fatalf("H%d = %q, capacity %d", i, vs, cap(vs))
+		}
+	}
+}
+
+func TestResponseHeaderValuesAreIndependent(t *testing.T) {
+	h, err := parseResponseHeaders([]byte("a:1\nb:2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h["A"] = append(h["A"], "x") // must not write into B's value
+	h.Add("Age", "y")
+	if got := h["B"]; len(got) != 1 || got[0] != "2" {
+		t.Errorf("B = %q", got)
+	}
+}
+
+func TestServerErrorKinds(t *testing.T) {
+	cases := []struct {
+		wire string
+		code string
+		msg  string
+		kind serverErrorKind
+	}{
+		{"-PARSE_ERROR bad body\r\n", "PARSE_ERROR", "bad body", serverRejected},
+		{"-UNSUPPORTED op Scan\r\n", "UNSUPPORTED", "op Scan", serverRejected},
+		{"-UNIMPLEMENTED\r\n", "UNIMPLEMENTED", "", serverRejected},
+		{"-REGION_MISMATCH us-west-2\r\n", "REGION_MISMATCH", "us-west-2", serverRejected},
+		{"-ERR unknown\r\n", "ERR", "unknown", serverRejected},
+		{"-CONFIG_INVALID x\r\n", "CONFIG_INVALID", "x", serverRejected},
+		{"-\r\n", "", "", serverRejected},
+		{"-ORIGIN_ERROR upstream failed\r\n", "ORIGIN_ERROR", "upstream failed", serverOrigin},
+		{"-INTERNAL_ERROR pool\r\n", "INTERNAL_ERROR", "pool", serverOrigin},
+		{"-AUTH_ERROR no FAS\r\n", "AUTH_ERROR", "no FAS", serverAuth},
+		{"-MOVED 3999 127.0.0.1:6381\r\n", "MOVED", "3999 127.0.0.1:6381", serverDrop},
+		{"-NOAUTH Authentication required.\r\n", "NOAUTH", "Authentication required.", serverDrop},
+		{"-origin_error lower\r\n", "origin_error", "lower", serverRejected},
+	}
+	for _, c := range cases {
+		got, err := parseRequestReply(decodeReply(t, c.wire))
+		if err != nil || !got.failed {
+			t.Fatalf("%q: err = %v, failed = %v", c.wire, err, got.failed)
+		}
+		if got.server.code != c.code || got.server.message != c.msg || got.server.kind() != c.kind {
+			t.Errorf("%q: got %+v kind %d, want %s %q kind %d", c.wire, got.server, got.server.kind(), c.code, c.msg, c.kind)
+		}
+		e := got.server.err()
+		var oe *OriginError
+		var re *RejectedError
+		switch {
+		case c.kind == serverOrigin:
+			if !errors.As(e, &oe) || oe.Code != c.code || oe.Message != c.msg || errors.As(e, &re) {
+				t.Errorf("%q: err() = %#v, want *OriginError only", c.wire, e)
+			}
+		default:
+			if !errors.As(e, &re) || re.Code != c.code || re.Message != c.msg || errors.As(e, &oe) {
+				t.Errorf("%q: err() = %#v, want *RejectedError only", c.wire, e)
+			}
+		}
+		if !errors.Is(e, ErrIntegrations) {
+			t.Errorf("%q: %v does not match ErrIntegrations", c.wire, e)
+		}
+	}
+}
+
+func TestAsyncResponseID(t *testing.T) {
+	cases := []struct {
+		wire, id string
+		ok, err  bool
+	}{
+		{"+17\r\n", "17", true, false},
+		{"+abc-1\r\n", "abc-1", true, false},
+		{"+\r\n", "", true, false},
+		{"+OK\r\n", "", false, false},
+		{"+ok\r\n", "ok", true, false},
+		{"+\xff\r\n", "", false, true},
+		{"$2\r\n17\r\n", "", false, false},
+		{"-ERR x\r\n", "", false, false},
+		{"*3\r\n:200\r\n$0\r\n\r\n$0\r\n\r\n", "", false, false},
+	}
+	for _, c := range cases {
+		id, ok, err := asyncResponseID(decodeReply(t, c.wire))
+		var pe *ProtocolError
+		if id != c.id || ok != c.ok || (err != nil) != c.err || (err != nil && !errors.As(err, &pe)) {
+			t.Errorf("%q: got %q %v %v", c.wire, id, ok, err)
+		}
+	}
+}
+
+func TestParseResponsePush(t *testing.T) {
+	reply := "*3\r\n:200\r\n$0\r\n\r\n$2\r\n{}\r\n"
+	cases := []struct {
+		name, wire, id string // id "": a *ProtocolError
+	}{
+		{"bulk kind", ">3\r\n$12\r\naws.response\r\n$2\r\n17\r\n" + reply, "17"},
+		{"simple kind", ">3\r\n+aws.response\r\n$2\r\n17\r\n" + reply, "17"},
+		{"error reply", ">3\r\n$12\r\naws.response\r\n$1\r\n9\r\n-ORIGIN_ERROR x\r\n", "9"},
+		{"unknown kind", ">3\r\n$7\r\nmessage\r\n$2\r\n17\r\n" + reply, ""},
+		{"kind case matters", ">3\r\n$12\r\nAWS.RESPONSE\r\n$2\r\n17\r\n" + reply, ""},
+		{"invalid UTF-8 kind", ">3\r\n$2\r\n\xff\xfe\r\n$2\r\n17\r\n" + reply, ""},
+		{"integer kind", ">3\r\n:1\r\n$2\r\n17\r\n" + reply, ""},
+		{"empty", ">0\r\n", ""},
+		{"two elements", ">2\r\n$12\r\naws.response\r\n$2\r\n17\r\n", ""},
+		{"four elements", ">4\r\n$12\r\naws.response\r\n$2\r\n17\r\n" + reply + ":1\r\n", ""},
+		{"simple string id", ">3\r\n$12\r\naws.response\r\n+17\r\n" + reply, ""},
+		{"integer id", ">3\r\n$12\r\naws.response\r\n:17\r\n" + reply, ""},
+		{"invalid UTF-8 id", ">3\r\n$12\r\naws.response\r\n$1\r\n\xff\r\n" + reply, ""},
+		{"not a push", "*3\r\n$12\r\naws.response\r\n$2\r\n17\r\n" + reply, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id, inner, err := parseResponsePush(decodeReply(t, c.wire))
+			if c.id == "" {
+				var pe *ProtocolError
+				if !errors.As(err, &pe) {
+					t.Fatalf("err = %v, want *ProtocolError", err)
+				}
+				return
+			}
+			if err != nil || id != c.id {
+				t.Fatalf("id %q err %v", id, err)
+			}
+			if _, err := parseRequestReply(inner); err != nil {
+				t.Errorf("inner reply: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseConfigReply(t *testing.T) {
+	bulk := func(s string) string { return "$" + strconv.Itoa(len(s)) + "\r\n" + s + "\r\n" }
+	cases := []struct {
+		name, wire string
+		version    string
+		interval   time.Duration // 0: an error of wantErr's type
+		wantErr    error
+	}{
+		{"ok", bulk(`{"version":"1.0","refresh_interval":60}`), "1.0", time.Minute, nil},
+		{"max interval", bulk(`{"refresh_interval":2147483647}`), "", 2147483647 * time.Second, nil},
+		{"whitespace around", bulk(" \n{\"refresh_interval\":1}\t\r\n "), "", time.Second, nil},
+		{"numeric version", bulk(`{"version":1,"refresh_interval":1}`), "1", time.Second, nil},
+		{"bool version", bulk(`{"version":true,"refresh_interval":1}`), "true", time.Second, nil},
+		{"null interval", bulk(`{"refresh_interval":null}`), "", 0, &ProtocolError{}},
+		{"string interval", bulk(`{"refresh_interval":"60"}`), "", 0, &ProtocolError{}},
+		{"exponent interval", bulk(`{"refresh_interval":6e1}`), "", 0, &ProtocolError{}},
+		{"negative interval", bulk(`{"refresh_interval":-1}`), "", 0, &ProtocolError{}},
+		{"negative zero interval", bulk(`{"refresh_interval":-0}`), "", 0, &ProtocolError{}},
+		{"interval over int32", bulk(`{"refresh_interval":2147483648}`), "", 0, &ProtocolError{}},
+		{"interval over int64", bulk(`{"refresh_interval":99999999999999999999}`), "", 0, &ProtocolError{}},
+		{"interval under int64", bulk(`{"refresh_interval":-99999999999999999999}`), "", 0, &ProtocolError{}},
+		{"object version", bulk(`{"version":{},"refresh_interval":1}`), "", 0, &ProtocolError{}},
+		{"array version", bulk(`{"version":[],"refresh_interval":1}`), "", 0, &ProtocolError{}},
+		{"JSON null", bulk(`null`), "", 0, &ProtocolError{}},
+		{"JSON array", bulk(`[]`), "", 0, &ProtocolError{}},
+		{"JSON string", bulk(`"x"`), "", 0, &ProtocolError{}},
+		{"trailing data", bulk(`{"refresh_interval":1}{}`), "", 0, &ProtocolError{}},
+		{"trailing garbage", bulk(`{"refresh_interval":1} x`), "", 0, &ProtocolError{}},
+		{"empty", bulk(``), "", 0, &ProtocolError{}},
+		{"invalid UTF-8", bulk("{\"refresh_interval\":1,\"x\":\"\xff\"}"), "", 0, &ProtocolError{}},
+		{"null at bring-up", "_\r\n", "", 0, &ProtocolError{}},
+		{"simple string", "+OK\r\n", "", 0, &ProtocolError{}},
+		{"integer", ":1\r\n", "", 0, &ProtocolError{}},
+		{"config invalid", "-CONFIG_INVALID unknown key ttl\r\n", "", 0, &OverridesRejectedError{}},
+		{"other error", "-ERR unknown command 'aws.config'\r\n", "", 0, &RejectedError{}},
+		{"internal error", "-INTERNAL_ERROR pool\r\n", "", 0, &RejectedError{}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, err := parseConfigReply(decodeReply(t, c.wire), false)
+			if c.interval == 0 {
+				if cfg != nil || err == nil || reflect.TypeOf(err) != reflect.TypeOf(c.wantErr) {
+					t.Fatalf("got %v, %v; want %T", cfg, err, c.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cfg.version != c.version || cfg.refreshInterval != c.interval || cfg.raw == nil {
+				t.Errorf("got %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestParseConfigReplyDetails(t *testing.T) {
+	big := `{"refresh_interval":60,"n":9007199254740993,"f":1.5,"predicates":[{"expr":"true"}]}`
+	cfg, err := parseConfigReply(decodeReply(t, "$"+strconv.Itoa(len(big))+"\r\n"+big+"\r\n"), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.raw["n"] != json.Number("9007199254740993") || cfg.raw["f"] != json.Number("1.5") {
+		t.Errorf("numbers are not json.Number: %#v", cfg.raw)
+	}
+	if _, ok := cfg.raw["predicates"].([]any); !ok {
+		t.Errorf("predicates: %#v", cfg.raw["predicates"])
+	}
+	if got, err := parseConfigReply(decodeReply(t, "_\r\n"), true); got != nil || err != nil {
+		t.Errorf("null on refresh: %v, %v", got, err)
+	}
+	rejected, err := parseConfigReply(decodeReply(t, "-CONFIG_INVALID unknown key ttl\r\n"), true)
+	var oe *OverridesRejectedError
+	if rejected != nil || !errors.As(err, &oe) || oe.Message != "unknown key ttl" {
+		t.Errorf("got %v, %#v", rejected, err)
+	}
+	_, err = parseConfigReply(decodeReply(t, "-ERR boom now\r\n"), true)
+	var re *RejectedError
+	if !errors.As(err, &re) || re.Code != "ERR" || re.Message != "boom now" {
+		t.Errorf("got %#v", err)
+	}
+}
+
+func FuzzParseRequestReply(f *testing.F) {
+	for _, s := range replySeeds(f) {
+		f.Add([]byte(s))
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		v, _, err := resp.Decode(data)
+		if err != nil {
+			return
+		}
+		got, err := parseRequestReply(v)
+		if err != nil {
+			var pe *ProtocolError
+			if !errors.As(err, &pe) {
+				t.Fatalf("error %T is not a *ProtocolError", err)
+			}
+			return
+		}
+		if got.failed {
+			if v.Kind != resp.KindError {
+				t.Fatalf("a %s reply failed", v.Kind)
+			}
+			return
+		}
+		r := got.response
+		if r.statusCode < 100 || r.statusCode > 599 {
+			t.Fatalf("status %d", r.statusCode)
+		}
+		if r.headers.Get("Content-Length") != "" || r.headers.Get("Transfer-Encoding") != "" || r.headers.Get("Age") == "" {
+			t.Fatalf("headers %v", r.headers)
+		}
+		for k, vs := range r.headers {
+			if len(vs) != 1 || cap(vs) != 1 {
+				t.Fatalf("header %q has %d values, capacity %d", k, len(vs), cap(vs))
+			}
+		}
+	})
+}
+
+func FuzzParsePush(f *testing.F) {
+	for _, s := range replySeeds(f) {
+		f.Add([]byte(">3\r\n$12\r\naws.response\r\n$1\r\n1\r\n" + s))
+	}
+	f.Add([]byte("+17\r\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		v, _, err := resp.Decode(data)
+		if err != nil {
+			return
+		}
+		if id, ok, err := asyncResponseID(v); ok && (err != nil || !utf8.ValidString(id) || id == okReply) {
+			t.Fatalf("deferred id %q, %v", id, err)
+		}
+		id, inner, err := parsePushOrNil(v)
+		if err != nil {
+			return
+		}
+		if !utf8.ValidString(id) || v.Kind != resp.KindPush || len(v.Elems) != 3 {
+			t.Fatalf("accepted push %v with id %q", v, id)
+		}
+		_, _ = parseRequestReply(inner)
+	})
+}
+
+// parsePushOrNil parses pushes only, as the reader does.
+func parsePushOrNil(v resp.Value) (string, resp.Value, error) {
+	if v.Kind != resp.KindPush {
+		return "", resp.Value{}, errors.New("not a push")
+	}
+	return parseResponsePush(v)
+}
+
+func FuzzParseConfigReply(f *testing.F) {
+	for _, s := range replySeeds(f) {
+		f.Add([]byte(s), false)
+	}
+	f.Add([]byte("_\r\n"), true)
+	f.Fuzz(func(t *testing.T, data []byte, refresh bool) {
+		v, _, err := resp.Decode(data)
+		if err != nil {
+			return
+		}
+		cfg, err := parseConfigReply(v, refresh)
+		if err != nil {
+			if cfg != nil || !errors.Is(err, ErrIntegrations) {
+				t.Fatalf("cfg %v with error %v", cfg, err)
+			}
+			return
+		}
+		if cfg == nil {
+			if !refresh || v.Kind != resp.KindNull {
+				t.Fatalf("nil config for %v", v)
+			}
+			return
+		}
+		if cfg.raw == nil || cfg.refreshInterval < time.Second || cfg.refreshInterval > math.MaxInt32*time.Second ||
+			cfg.refreshInterval%time.Second != 0 {
+			t.Fatalf("config %+v", cfg)
+		}
+	})
+}
+
+// replySeeds are the reply frames of the shared decode vectors.
+func replySeeds(f *testing.F) []string {
+	var v protocolVectors
+	testutil.DecodeStrict(f, testutil.SharedFixture(f, "protocol-vectors.json"), &v)
+	var out []string
+	for _, d := range v.Decode {
+		out = append(out, d.Reply)
+	}
+	return out
+}
+
+// hitReply is an aws.request reply with DynamoDB's response headers and a body of n bytes.
+func hitReply(n int) string {
+	headers := "content-type:application/x-amz-json-1.0\nx-amzn-requestid:ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789ABCDEFGHIJKLMNOP\n" +
+		"x-amz-crc32:2745614147\ncontent-length:" + strconv.Itoa(n) + "\ndate:Thu, 01 Jan 2026 00:00:00 GMT\nserver:Server\nconnection:keep-alive"
+	body := strings.Repeat("x", n)
+	return "*3\r\n:200\r\n$" + strconv.Itoa(len(headers)) + "\r\n" + headers + "\r\n$" + strconv.Itoa(n) + "\r\n" + body + "\r\n"
+}
+
+func TestParseRequestReplyAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates")
+	}
+	v := decodeReply(t, hitReply(1024))
+	allocs := testing.AllocsPerRun(100, func() {
+		if _, err := parseRequestReply(v); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// The header string, the value slice and the map.
+	if allocs > 4 {
+		t.Errorf("parseRequestReply allocates %v times, want at most 4", allocs)
+	}
+}
+
+func BenchmarkParseRequestReply(b *testing.B) {
+	for _, n := range []int{1 << 10, 390 << 10} {
+		b.Run(strconv.Itoa(n>>10)+"KiB", func(b *testing.B) {
+			v := decodeReply(b, hitReply(n))
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := parseRequestReply(v); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+func TestCanonicalHeaderKeyMatchesTextproto(t *testing.T) {
+	for lower, canonical := range dynamoDBHeaders {
+		if got := textproto.CanonicalMIMEHeaderKey(lower); got != canonical {
+			t.Errorf("%s: textproto gives %s, the table %s", lower, got, canonical)
+		}
+		if canonicalHeaderKey(lower) != canonical {
+			t.Errorf("%s not interned", lower)
 		}
 	}
 }

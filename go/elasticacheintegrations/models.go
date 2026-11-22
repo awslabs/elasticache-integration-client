@@ -5,6 +5,7 @@ package elasticacheintegrations
 
 import (
 	"log/slog"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -46,8 +47,8 @@ func (r request) GoString() string { return logString(r) }
 // from wire data checks that statusCode is in 100-599.
 type response struct {
 	statusCode int
-	headers    map[string]string // lowercase names as sent by the cache
-	body       []byte            // owned by the response; never returned to a pool
+	headers    http.Header // canonical keys, as the SDK reads them
+	body       []byte      // owned by the response; never returned to a pool
 }
 
 // LogValue, String and GoString never include headers or the body.

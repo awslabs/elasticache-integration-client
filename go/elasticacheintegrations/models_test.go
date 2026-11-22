@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ func TestModelLogValuesLeaveOutHeadersAndBodies(t *testing.T) {
 	}
 	resp := &response{
 		statusCode: 200,
-		headers:    map[string]string{"x-amz-crc32": secret},
+		headers:    http.Header{"X-Amz-Crc32": {secret}},
 		body:       []byte(`{"Item":"` + secret + `"}`),
 	}
 	cfg := &resolvedConfig{
@@ -68,7 +69,7 @@ func TestModelValuesAndFmtLeaveOutHeadersAndBodies(t *testing.T) {
 		body:     []byte(secret),
 		metadata: newRequestMetadata("dynamodb", "GetItem"),
 	}
-	resp := response{statusCode: 200, headers: map[string]string{"x": secret}, body: []byte(secret)}
+	resp := response{statusCode: 200, headers: http.Header{"X": {secret}}, body: []byte(secret)}
 	cfg := resolvedConfig{version: "1.0", refreshInterval: time.Minute, raw: map[string]any{"p": secret}}
 
 	var buf bytes.Buffer
