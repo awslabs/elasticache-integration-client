@@ -64,13 +64,14 @@ type session struct {
 	reconnecting bool        // a reconnect goroutine runs
 	dead         *connection // the dropped connection the next reconnect goroutine reaps
 	confirmedAt  time.Time   // the last time the cache confirmed the config
+	refresh      *periodicRunner
 
 	reconnectFailures failureLog
 	notSent           failureLog
 }
 
-// openSession opens the first connection, retrying until ConnectionTimeout has passed. It
-// owns auth from now on, and closes it on failure.
+// openSession opens the first connection, retrying until ConnectionTimeout has passed, and
+// starts re-AUTH and config refresh. It owns auth from now on, and closes it on failure.
 func openSession(ctx context.Context, c *config, auth authProvider) (*session, error) {
 	s := newSession(c, auth)
 	if err := s.open(ctx); err != nil {
@@ -188,6 +189,11 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 	s.state = sessionOpen
 	s.reconnecting = false
 	failures = s.reconnectFailures.recovered() // before a drop of conn can count a failure
+	if s.refresh == nil {
+		s.startRunners(snap.config.refreshInterval)
+	} else {
+		s.refresh.setInterval(snap.config.refreshInterval)
+	}
 	o := s.outage.Load()
 	s.mu.Unlock()
 	if o != nil {
@@ -195,6 +201,109 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 	}
 	s.lg.debug(eventConfigApplied, "applied the cache config", slog.Any("config", snap.config))
 	return failures, true
+}
+
+// startRunners starts re-AUTH and config refresh. It runs once, under mu.
+func (s *session) startRunners(refreshInterval time.Duration) {
+	reauth := newPeriodicRunner("re-AUTH", s.cfg.reauthInterval, s.cfg,
+		func(failures int) time.Duration { return backoff(s.cfg, failures) }, s.reauthOnce)
+	s.refresh = newPeriodicRunner("config refresh", refreshInterval, s.cfg, nil, s.refreshOnce)
+	s.wg.Add(2)
+	go func() { defer s.wg.Done(); reauth.run(s.ctx) }()
+	go func() { defer s.wg.Done(); s.refresh.run(s.ctx) }()
+}
+
+// reauthOnce sends AUTH with fresh credentials on the live connection (Java
+// reauthenticateOnce). It does not run while there is none.
+func (s *session) reauthOnce(ctx context.Context) (bool, error) {
+	c := s.live.Load()
+	if c == nil || !c.alive() {
+		return false, nil
+	}
+	cctx, cancel := context.WithTimeout(ctx, s.cfg.cacheRequestTimeout)
+	creds, err := s.auth.credentials(cctx)
+	cancel()
+	if err != nil {
+		return true, err
+	}
+	if s.live.Load() != c {
+		return false, nil
+	}
+	if err := c.reauth(ctx, creds); err != nil {
+		if errors.As(err, new(*AuthError)) && c.alive() {
+			fctx, cancel := context.WithTimeout(ctx, s.cfg.cacheRequestTimeout)
+			_ = s.auth.forceRefresh(fctx)
+			cancel()
+		}
+		return true, err
+	}
+	return s.live.Load() == c, nil
+}
+
+// refreshOnce fetches the config on the live connection and applies it (Java refreshOnce).
+// It does not run while there is none.
+func (s *session) refreshOnce(ctx context.Context) (bool, error) {
+	c := s.live.Load()
+	if c == nil || !c.alive() {
+		return false, nil
+	}
+	rc, err := c.refreshConfig(ctx)
+	var next *snapshot
+	if err == nil && rc != nil {
+		var preds *predicates
+		if preds, err = compilePredicates(rc.raw); err == nil {
+			next = &snapshot{config: rc, predicates: preds}
+		}
+	}
+	if err != nil {
+		return s.refreshFailed(c, err)
+	}
+	return s.refreshConfirmed(c, next), nil
+}
+
+// refreshConfirmed restarts the staleness window and installs next, when not nil, if c is
+// still the live connection. It reports false when c was replaced.
+func (s *session) refreshConfirmed(c *connection, next *snapshot) bool {
+	s.mu.Lock()
+	if s.state != sessionOpen || s.live.Load() != c {
+		s.mu.Unlock()
+		return false
+	}
+	if next != nil {
+		s.snap.Store(next)
+		s.refresh.setInterval(next.config.refreshInterval)
+	}
+	s.confirmedAt = time.Now()
+	s.mu.Unlock()
+	if next != nil {
+		s.lg.debug(eventConfigApplied, "applied the cache config", slog.Any("config", next.config))
+	}
+	return true
+}
+
+// refreshFailed keeps the current config. Once it has gone unconfirmed for
+// CachePolicyTimeout, it drops c, so the reconnect fetches a current one.
+func (s *session) refreshFailed(c *connection, err error) (bool, error) {
+	if !c.alive() {
+		return true, err // the death already started the reconnect
+	}
+	s.mu.Lock()
+	if s.state != sessionOpen || s.live.Load() != c {
+		s.mu.Unlock()
+		return false, nil
+	}
+	age := time.Since(s.confirmedAt)
+	s.mu.Unlock()
+	if errors.As(err, new(*ConfigUnevaluableError)) || errors.As(err, new(*OverridesRejectedError)) {
+		s.lg.error(eventConfigUnusable, "the cache sent a config this client cannot use; keeping the current one",
+			slog.String("error", err.Error()))
+	}
+	if age >= s.cfg.cachePolicyTimeout {
+		s.lg.warn(eventConfigStale, "the config was not confirmed within CachePolicyTimeout; reconnecting to fetch a current one",
+			slog.Duration("age", age), slog.Duration("cache_policy_timeout", s.cfg.cachePolicyTimeout))
+		c.drop("the config was not confirmed within CachePolicyTimeout")
+	}
+	return true, err
 }
 
 // lost starts an outage when c is the live connection. It runs from onLost, so it must not
