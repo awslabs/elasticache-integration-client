@@ -131,8 +131,10 @@ jobs:
   # GitHub can't read Gradle dependencies from build.gradle.kts, so submit the
   # resolved graph. Dependabot alerts use the graph from main, and dependency
   # review compares the pull request's graph against it. The job only resolves
-  # dependencies; it doesn't build or change anything.
+  # dependencies; it doesn't build or change anything. Fork pull requests get a
+  # read-only token that can't submit the graph, so they skip it.
   java-dependency-graph:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -157,7 +159,8 @@ jobs:
   # Fail pull requests that add a dependency with a known high or critical
   # vulnerability. Dependabot alerts still report lower severities.
   dependency-review:
-    if: github.event_name == 'pull_request'
+    # Still runs when a fork pull request skips the graph submission.
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && needs.java-dependency-graph.result != 'failure' }}
     needs: java-dependency-graph
     runs-on: ubuntu-latest
     timeout-minutes: 10
