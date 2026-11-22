@@ -23,8 +23,9 @@ func addSeeds(f *testing.F) {
 	}
 }
 
-// FuzzDecode checks that Scan and Decode never panic, agree with each other, and that every
-// prefix of a complete value is incomplete with a Need that never passes the value's end.
+// FuzzDecode checks that Scan and Decode never panic, agree with each other, that every
+// prefix of a complete value is incomplete with a Need that never passes the value's end,
+// and that a decoded value encodes, decodes back equal, and encodes the same way again.
 func FuzzDecode(f *testing.F) {
 	addSeeds(f)
 	f.Fuzz(func(t *testing.T, data []byte) {
@@ -56,6 +57,17 @@ func FuzzDecode(f *testing.F) {
 		again, m, err := Decode(data[:ext.Len])
 		if err != nil || m != n || !equal(again, v) {
 			t.Fatalf("decoding the value alone differs: %d %v", m, err)
+		}
+		enc, err := AppendValue(nil, v)
+		if err != nil {
+			t.Fatalf("encoding a decoded value: %v", err)
+		}
+		back, k, err := Decode(enc)
+		if err != nil || k != len(enc) || !equal(back, v) {
+			t.Fatalf("round trip: %d of %d, %v", k, len(enc), err)
+		}
+		if enc2, err := AppendValue(nil, back); err != nil || string(enc2) != string(enc) {
+			t.Fatalf("encoding is not stable: %v", err)
 		}
 	})
 }

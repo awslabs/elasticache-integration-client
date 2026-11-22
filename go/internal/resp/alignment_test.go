@@ -47,6 +47,9 @@ func TestAlignmentRESPDecodeVectors(t *testing.T) {
 		t.Run(vec.Name, func(t *testing.T) {
 			v := mustDecode(t, vec.Reply)
 			checkPrefixes(t, []byte(vec.Reply), len(vec.Reply), 1)
+			if got, err := AppendValue(nil, v); err != nil || !equal(mustDecode(t, string(got)), v) {
+				t.Fatalf("re-encoding: %q, %v", got, err)
+			}
 			if vec.Code != "" && (v.Kind != KindError || v.ErrorCode() != vec.Code) {
 				t.Fatalf("got %v code %q, want error code %q", v, v.ErrorCode(), vec.Code)
 			}
@@ -55,7 +58,7 @@ func TestAlignmentRESPDecodeVectors(t *testing.T) {
 }
 
 // TestAlignmentRESPEncodeFrames decodes every command frame as an array of bulk strings
-// that starts with the command name.
+// that starts with the command name, and encodes those arguments back to the same bytes.
 func TestAlignmentRESPEncodeFrames(t *testing.T) {
 	for _, vec := range loadVectors(t).Encode {
 		t.Run(vec.Name, func(t *testing.T) {
@@ -64,10 +67,15 @@ func TestAlignmentRESPEncodeFrames(t *testing.T) {
 			if v.Kind != KindArray || len(v.Elems) == 0 {
 				t.Fatalf("got %v", v)
 			}
-			for _, e := range v.Elems {
+			args := make([][]byte, len(v.Elems))
+			for i, e := range v.Elems {
 				if e.Kind != KindBulkString {
 					t.Fatalf("element %v", e)
 				}
+				args[i] = e.Bytes
+			}
+			if got := string(AppendCommand(nil, args...)); got != vec.Frame {
+				t.Fatalf("re-encoded %q, want %q", got, vec.Frame)
 			}
 			if name := string(v.Elems[0].Bytes); name != "aws.request" && name != "aws.config" {
 				t.Fatalf("command %q", name)
