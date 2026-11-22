@@ -9,23 +9,25 @@ import (
 	"encoding/json"
 	"math"
 	"math/bits"
-	"slices"
+	"strings"
 	"sync"
 	"unicode/utf8"
 )
 
 // jsonDoc is a request body that scanJSON accepted. starts and ends hold, in document order,
-// the offset of every object and array and the offset just past it, so a container is
-// skipped with a binary search instead of a rescan.
+// the offset of every object and array and the offset just past it; after holds the index of
+// the first container that starts after it ends. So a walk skips a container without
+// scanning it again.
 type jsonDoc struct {
 	b      []byte // the body without its BOM
 	root   int    // offset of the top-level object
 	starts []int32
 	ends   []int32
+	after  []int32
 }
 
 // emptyDoc is the {} an empty body stands for. It is shared and never released.
-var emptyDoc = &jsonDoc{b: []byte("{}"), starts: []int32{0}, ends: []int32{2}}
+var emptyDoc = &jsonDoc{b: []byte("{}"), starts: []int32{0}, ends: []int32{2}, after: []int32{1}}
 
 // maxPooledContainers bounds the index a pooled jsonDoc keeps, so one huge body does not
 // pin its index in the pool.
@@ -44,7 +46,7 @@ func scanJSON(body []byte) (*jsonDoc, bool) {
 		return nil, false
 	}
 	d := jsonDocPool.Get().(*jsonDoc)
-	d.b, d.starts, d.ends = b, d.starts[:0], d.ends[:0]
+	d.b, d.starts, d.ends, d.after = b, d.starts[:0], d.ends[:0], d.after[:0]
 	i := skipWS(b, 0)
 	d.root = i
 	if i < len(b) && b[i] == '{' {
@@ -104,9 +106,10 @@ func (d *jsonDoc) container(i, depth int) (int, bool) {
 	slot := len(d.starts)
 	d.starts = append(d.starts, int32(i))
 	d.ends = append(d.ends, 0)
+	d.after = append(d.after, 0)
 	i = skipWS(b, i+1)
 	if i < len(b) && b[i] == closer {
-		d.ends[slot] = int32(i + 1)
+		d.ends[slot], d.after[slot] = int32(i+1), int32(slot+1)
 		return i + 1, true
 	}
 	for {
@@ -138,7 +141,7 @@ func (d *jsonDoc) container(i, depth int) (int, bool) {
 		case ',':
 			i = skipWS(b, i+1)
 		case closer:
-			d.ends[slot] = int32(i + 1)
+			d.ends[slot], d.after[slot] = int32(i+1), int32(len(d.starts))
 			return i + 1, true
 		default:
 			return 0, false
@@ -260,14 +263,10 @@ func isHex(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
-// end returns the offset just past the accepted value at pos.
-func (d *jsonDoc) end(pos int) int {
+// scalarEnd returns the offset just past the accepted string, number or literal at pos.
+func (d *jsonDoc) scalarEnd(pos int) int {
 	b := d.b
-	switch b[pos] {
-	case '{', '[':
-		k, _ := slices.BinarySearch(d.starts, int32(pos))
-		return int(d.ends[k])
-	case '"':
+	if b[pos] == '"' {
 		for j := pos + 1; ; {
 			q := bytes.IndexByte(b[j:], '"') + j
 			n := 0
@@ -279,14 +278,13 @@ func (d *jsonDoc) end(pos int) int {
 			}
 			j = q + 1
 		}
-	default:
-		j := pos + 1
-		for j < len(b) && b[j] != ',' && b[j] != ']' && b[j] != '}' && b[j] != ' ' &&
-			b[j] != '\n' && b[j] != '\r' && b[j] != '\t' {
-			j++
-		}
-		return j
 	}
+	j := pos + 1
+	for j < len(b) && b[j] != ',' && b[j] != ']' && b[j] != '}' && b[j] != ' ' &&
+		b[j] != '\n' && b[j] != '\r' && b[j] != '\t' {
+		j++
+	}
+	return j
 }
 
 // jsonIter walks the members of an accepted object or the elements of an accepted array.
@@ -294,26 +292,39 @@ type jsonIter struct {
 	d      *jsonDoc
 	object bool
 	i      int // the next member or element, or the closing bracket
+	ci     int // index of the first container at or after i
+	keyPos int // offset of the key next returned last
+	valEnd int // offset just past the value next returned last
+	valCI  int // container index of the value next returned last, when it is one
 }
 
-func (d *jsonDoc) iter(pos int) jsonIter {
-	return jsonIter{d: d, object: d.b[pos] == '{', i: skipWS(d.b, pos+1)}
+// iterAt walks the container at pos, whose container index is k.
+func (d *jsonDoc) iterAt(pos, k int) jsonIter {
+	return jsonIter{d: d, object: d.b[pos] == '{', i: skipWS(d.b, pos+1), ci: k + 1}
 }
 
 // next returns the next member, its raw key with quotes (nil in an array) and the offset of
 // its value. ok is false after the last one.
 func (it *jsonIter) next() (key []byte, val int, ok bool) {
-	b := it.d.b
+	d, b := it.d, it.d.b
 	if c := b[it.i]; c == '}' || c == ']' {
 		return nil, 0, false
 	}
 	val = it.i
 	if it.object {
-		keyEnd := it.d.end(val)
+		it.keyPos = val
+		keyEnd := d.scalarEnd(val)
 		key = b[val:keyEnd]
 		val = skipWS(b, skipWS(b, keyEnd)+1)
 	}
-	j := skipWS(b, it.d.end(val))
+	if c := b[val]; c == '{' || c == '[' {
+		it.valCI = it.ci
+		it.valEnd = int(d.ends[it.ci])
+		it.ci = int(d.after[it.ci])
+	} else {
+		it.valEnd = d.scalarEnd(val)
+	}
+	j := skipWS(b, it.valEnd)
 	if b[j] == ',' {
 		j = skipWS(b, j+1)
 	}
@@ -324,9 +335,18 @@ func (it *jsonIter) next() (key []byte, val int, ok bool) {
 // equalString reports whether the raw JSON string (with quotes) decodes to s.
 func equalString(raw []byte, s string) bool {
 	inner := raw[1 : len(raw)-1]
-	if bytes.IndexByte(inner, '\\') < 0 {
-		return string(inner) == s
+	if string(inner) == s {
+		// Equal text decodes to s unless it holds an escape, and then so does s.
+		return strings.IndexByte(s, '\\') < 0 || decodedEquals(raw, s)
 	}
+	// An escape only shortens the text, so a shorter or escape-free text cannot match.
+	if len(inner) < len(s) || bytes.IndexByte(inner, '\\') < 0 {
+		return false
+	}
+	return decodedEquals(raw, s)
+}
+
+func decodedEquals(raw []byte, s string) bool {
 	v, ok := decodeString(raw)
 	return ok && v == s
 }

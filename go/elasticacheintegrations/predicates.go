@@ -244,7 +244,8 @@ type predicateRequest struct {
 	celBody  map[string]any
 	hdrs     map[string]string
 	act      *requestActivation
-	locals   []fastValue // comprehension variables of the fast path, reused across predicates
+	locals   []fastValue  // comprehension variables of the fast path, reused across predicates
+	localBuf [2]fastValue // backs locals for up to two nested comprehensions
 }
 
 // headers returns the request headers predicates see, built once.

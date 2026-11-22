@@ -4,6 +4,10 @@
 package elasticacheintegrations
 
 import (
+	"bytes"
+	"slices"
+	"unicode/utf8"
+
 	"github.com/google/cel-go/common/types"
 
 	celast "github.com/google/cel-go/common/ast"
@@ -34,20 +38,28 @@ const (
 	fkList    // ref is []any
 	fkMap     // ref is map[string]any
 	fkHeaders // ref is map[string]string
-	fkJSONObj // n is the offset of an object in the body
-	fkJSONArr // n is the offset of an array in the body
-	fkJSONStr // n is the offset of a string in the body
+	fkJSONObj // an object in the body; n holds its start and end offsets
+	fkJSONArr // an array in the body, as fkJSONObj
+	fkJSONStr // a string in the body, with its quotes, as fkJSONObj
 )
 
 // fastValue is one value during evaluation.
 type fastValue struct {
 	kind fastKind
+	ci   int32 // fkJSONObj, fkJSONArr: the container index in the scanned body
 	n    int64
 	s    string
 	ref  any
 }
 
 var deferred = fastValue{}
+
+func jsonSpan(kind fastKind, start, end int) fastValue {
+	return fastValue{kind: kind, n: int64(start) | int64(end)<<32}
+}
+
+func (v fastValue) start() int { return int(uint32(v.n)) }
+func (v fastValue) end() int   { return int(v.n >> 32) }
 
 func boolValue(b bool) fastValue {
 	if b {
@@ -75,15 +87,20 @@ func nativeValue(v any) fastValue {
 	return deferred // float64: the fast path does not compare doubles
 }
 
-// jsonValue wraps the body value at pos. A number defers: the fast path does not model it.
-func jsonValue(d *jsonDoc, pos int) fastValue {
+// jsonValue wraps the body value at b[pos:end]. A number defers: the fast path does not
+// model it.
+func jsonValue(d *jsonDoc, pos, end, ci int) fastValue {
 	switch d.b[pos] {
 	case '{':
-		return fastValue{kind: fkJSONObj, n: int64(pos)}
+		v := jsonSpan(fkJSONObj, pos, end)
+		v.ci = int32(ci)
+		return v
 	case '[':
-		return fastValue{kind: fkJSONArr, n: int64(pos)}
+		v := jsonSpan(fkJSONArr, pos, end)
+		v.ci = int32(ci)
+		return v
 	case '"':
-		return fastValue{kind: fkJSONStr, n: int64(pos)}
+		return jsonSpan(fkJSONStr, pos, end)
 	case 't':
 		return boolValue(true)
 	case 'f':
@@ -106,7 +123,7 @@ func stringOf(pr *predicateRequest, v fastValue) (string, bool) {
 }
 
 func rawString(d *jsonDoc, v fastValue) []byte {
-	return d.b[v.n:d.end(int(v.n))]
+	return d.b[v.start():v.end()]
 }
 
 // equal compares two values of the same CEL type; any other pair defers.
@@ -140,29 +157,80 @@ func isString(k fastKind) bool { return k == fkString || k == fkJSONStr }
 // lookup returns the value of key in a map, headers or JSON object; ok is false when the key
 // is absent. A JSON object keeps the last value of a repeated key, as the decoded view does.
 func lookup(pr *predicateRequest, c fastValue, key string) (v fastValue, ok bool) {
+	if c.kind != fkJSONObj {
+		return lookupKey(pr, c, fastValue{kind: fkString, s: key})
+	}
+	it := pr.doc.iterAt(c.start(), int(c.ci))
+	for k, val, more := it.next(); more; k, val, more = it.next() {
+		if equalString(k, key) {
+			v, ok = jsonValue(pr.doc, val, it.valEnd, it.valCI), true
+		}
+	}
+	return v, ok
+}
+
+// lookupKey is lookup with a string value as the key, so a key read from the body is not
+// copied.
+func lookupKey(pr *predicateRequest, c, key fastValue) (v fastValue, ok bool) {
 	switch c.kind {
-	case fkMap:
-		x, ok := c.ref.(map[string]any)[key]
-		if !ok {
-			return deferred, false
+	case fkMap, fkHeaders:
+		var x any
+		if key.kind == fkJSONStr {
+			raw := rawString(pr.doc, key)
+			if bytes.IndexByte(raw, '\\') >= 0 {
+				s, ok := decodeString(raw)
+				if !ok {
+					return deferred, false
+				}
+				key = fastValue{kind: fkString, s: s}
+			} else if c.kind == fkMap {
+				x, ok = c.ref.(map[string]any)[string(raw[1:len(raw)-1])]
+				return valueIf(nativeValue(x), ok)
+			} else {
+				h, ok := c.ref.(map[string]string)[string(raw[1:len(raw)-1])]
+				return valueIf(fastValue{kind: fkString, s: h}, ok)
+			}
 		}
-		return nativeValue(x), true
-	case fkHeaders:
-		x, ok := c.ref.(map[string]string)[key]
-		if !ok {
-			return deferred, false
+		if c.kind == fkMap {
+			x, ok = c.ref.(map[string]any)[key.s]
+			return valueIf(nativeValue(x), ok)
 		}
-		return fastValue{kind: fkString, s: x}, true
+		h, ok := c.ref.(map[string]string)[key.s]
+		return valueIf(fastValue{kind: fkString, s: h}, ok)
 	case fkJSONObj:
-		it := pr.doc.iter(int(c.n))
+		it := pr.doc.iterAt(c.start(), int(c.ci))
 		for k, val, more := it.next(); more; k, val, more = it.next() {
-			if equalString(k, key) {
-				v, ok = jsonValue(pr.doc, val), true
+			if keyEquals(pr, k, key) {
+				v, ok = jsonValue(pr.doc, val, it.valEnd, it.valCI), true
 			}
 		}
 		return v, ok
 	}
 	return deferred, false
+}
+
+func valueIf(v fastValue, ok bool) (fastValue, bool) {
+	if !ok {
+		return deferred, false
+	}
+	return v, true
+}
+
+// keyEquals reports whether a raw JSON key equals a string value.
+func keyEquals(pr *predicateRequest, raw []byte, key fastValue) bool {
+	if key.kind == fkString {
+		return equalString(raw, key.s)
+	}
+	other := rawString(pr.doc, key)
+	if bytes.Equal(raw, other) {
+		return true // the same text decodes the same
+	}
+	if bytes.IndexByte(raw, '\\') < 0 && bytes.IndexByte(other, '\\') < 0 {
+		return false
+	}
+	a, ok1 := decodeString(raw)
+	b, ok2 := decodeString(other)
+	return ok1 && ok2 && a == b
 }
 
 func isMap(k fastKind) bool { return k == fkMap || k == fkHeaders || k == fkJSONObj }
@@ -196,7 +264,7 @@ func (n requestNode) eval(pr *predicateRequest, _ []fastValue) fastValue {
 		return fastValue{kind: fkHeaders, ref: pr.headers()}
 	case "body":
 		if pr.loadBody() {
-			return jsonValue(pr.doc, pr.doc.root)
+			return jsonValue(pr.doc, pr.doc.root, int(pr.doc.ends[0]), 0)
 		}
 	}
 	return deferred
@@ -227,11 +295,7 @@ func (n indexNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	k := n.key.eval(pr, locals)
 	switch {
 	case isMap(c.kind) && isString(k.kind):
-		key, ok := stringOf(pr, k)
-		if !ok {
-			return deferred
-		}
-		v, _ := lookup(pr, c, key)
+		v, _ := lookupKey(pr, c, k)
 		return v
 	case c.kind == fkList && k.kind == fkInt:
 		list := c.ref.([]any)
@@ -240,14 +304,14 @@ func (n indexNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		}
 		return nativeValue(list[k.n])
 	case c.kind == fkJSONArr && k.kind == fkInt:
-		it := pr.doc.iter(int(c.n))
+		it := pr.doc.iterAt(c.start(), int(c.ci))
 		for i := int64(0); ; i++ {
 			_, val, more := it.next()
 			if !more || k.n < 0 {
 				return deferred
 			}
 			if i == k.n {
-				return jsonValue(pr.doc, val)
+				return jsonValue(pr.doc, val, it.valEnd, it.valCI)
 			}
 		}
 	}
@@ -393,22 +457,69 @@ func (n inNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		}
 		return boolValue(false)
 	case fkJSONArr:
-		it := pr.doc.iter(int(c.n))
+		it := pr.doc.iterAt(c.start(), int(c.ci))
 		for _, val, more := it.next(); more; _, val, more = it.next() {
-			if eq := equal(pr, x, jsonValue(pr.doc, val)); eq.kind != fkBool || eq.n == 1 {
+			if eq := equal(pr, x, jsonValue(pr.doc, val, it.valEnd, it.valCI)); eq.kind != fkBool || eq.n == 1 {
 				return eq
 			}
 		}
 		return boolValue(false)
 	case fkMap, fkHeaders, fkJSONObj:
-		key, ok := stringOf(pr, x)
-		if !ok {
+		if !isString(x.kind) {
 			return deferred
 		}
-		_, found := lookup(pr, c, key)
+		_, found := lookupKey(pr, c, x)
 		return boolValue(found)
 	}
 	return deferred
+}
+
+// setInNode is x in a constant list of strings, answered from a set.
+type setInNode struct {
+	needle  fastNode
+	set     map[string]struct{}
+	general inNode
+}
+
+func (n setInNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
+	x := n.needle.eval(pr, locals)
+	var found bool
+	switch x.kind {
+	case fkString:
+		_, found = n.set[x.s]
+	case fkJSONStr:
+		raw := rawString(pr.doc, x)
+		if bytes.IndexByte(raw, '\\') >= 0 {
+			s, ok := decodeString(raw)
+			if !ok {
+				return deferred
+			}
+			_, found = n.set[s]
+		} else {
+			_, found = n.set[string(raw[1:len(raw)-1])]
+		}
+	default:
+		return n.general.eval(pr, locals) // the element by element rules
+	}
+	return boolValue(found)
+}
+
+// stringSet returns the set of a constant list whose elements are all strings.
+func stringSet(n fastNode) (map[string]struct{}, bool) {
+	c, ok := n.(constNode)
+	if !ok || c.v.kind != fkList {
+		return nil, false
+	}
+	list := c.v.ref.([]any)
+	set := make(map[string]struct{}, len(list))
+	for _, el := range list {
+		s, ok := el.(string)
+		if !ok {
+			return nil, false
+		}
+		set[s] = struct{}{}
+	}
+	return set, true
 }
 
 // fastPredicate is the fast form of one predicate. Immutable.
@@ -419,7 +530,9 @@ type fastPredicate struct {
 
 func (f *fastPredicate) eval(pr *predicateRequest) fastResult {
 	if cap(pr.locals) < f.slots {
-		pr.locals = make([]fastValue, f.slots)
+		if pr.locals = pr.localBuf[:]; f.slots > len(pr.localBuf) {
+			pr.locals = make([]fastValue, f.slots)
+		}
 	}
 	switch v := f.root.eval(pr, pr.locals[:f.slots]); {
 	case v.kind == fkDefer:
@@ -519,12 +632,18 @@ func (c *fastCompiler) call(call celast.CallExpr) (fastNode, bool) {
 		return notNode{nodes[0]}, true
 	case len(nodes) == 3 && fn == "_?_:_":
 		return condNode{nodes[0], nodes[1], nodes[2]}, true
+	case len(nodes) == 2 && (fn == "_==_" || fn == "_!=_" || fn == "_>_") && isSizeZero(nodes):
+		return emptyNode{nodes[0].(sizeNode).operand, fn == "_==_"}, true
 	case len(nodes) == 2 && (fn == "_==_" || fn == "_!=_"):
 		return equalNode{nodes[0], nodes[1], fn == "_!=_"}, true
 	case len(nodes) == 2 && (fn == "_<_" || fn == "_<=_" || fn == "_>_" || fn == "_>=_"):
 		return compareNode{nodes[0], nodes[1], fn}, true
 	case len(nodes) == 2 && fn == "@in":
-		return inNode{nodes[0], nodes[1]}, true
+		general := inNode{nodes[0], nodes[1]}
+		if set, ok := stringSet(nodes[1]); ok {
+			return setInNode{needle: nodes[0], set: set, general: general}, true
+		}
+		return general, true
 	case len(nodes) == 2 && fn == "_[_]":
 		return indexNode{nodes[0], nodes[1]}, true
 	}
@@ -532,10 +651,210 @@ func (c *fastCompiler) call(call celast.CallExpr) (fastNode, bool) {
 }
 
 // global compiles the global functions the fast path covers beyond the operators.
-func (c *fastCompiler) global(string, []fastNode) (fastNode, bool) { return nil, false }
+func (c *fastCompiler) global(fn string, args []fastNode) (fastNode, bool) {
+	if fn == "size" && len(args) == 1 {
+		return sizeNode{args[0]}, true
+	}
+	return nil, false
+}
 
 // member compiles the member functions the fast path covers.
-func (c *fastCompiler) member(celast.CallExpr, []fastNode) (fastNode, bool) { return nil, false }
+func (c *fastCompiler) member(call celast.CallExpr, args []fastNode) (fastNode, bool) {
+	if call.FunctionName() != "size" || len(args) != 0 {
+		return nil, false
+	}
+	target, ok := c.compile(call.Target())
+	return sizeNode{target}, ok
+}
 
-// comprehension compiles the macros the fast path covers.
-func (c *fastCompiler) comprehension(celast.ComprehensionExpr) (fastNode, bool) { return nil, false }
+// comprehension compiles the all() macro, which cel-go expands into a comprehension with the
+// accumulator initialised to true, loop condition @not_strictly_false(@result), step
+// @result && p and result @result. Every other comprehension has no fast form.
+func (c *fastCompiler) comprehension(comp celast.ComprehensionExpr) (fastNode, bool) {
+	accu := comp.AccuVar()
+	if comp.IterVar2() != "" || !isIdent(comp.Result(), accu) {
+		return nil, false
+	}
+	if init := comp.AccuInit(); init.Kind() != celast.LiteralKind || init.AsLiteral() != types.True {
+		return nil, false
+	}
+	cond, step := comp.LoopCondition(), comp.LoopStep()
+	if cond.Kind() != celast.CallKind || step.Kind() != celast.CallKind {
+		return nil, false
+	}
+	cc, sc := cond.AsCall(), step.AsCall()
+	if cc.FunctionName() != "@not_strictly_false" || len(cc.Args()) != 1 || !isIdent(cc.Args()[0], accu) ||
+		sc.FunctionName() != "_&&_" || len(sc.Args()) != 2 || !isIdent(sc.Args()[0], accu) {
+		return nil, false
+	}
+	rng, ok := c.compile(comp.IterRange())
+	if !ok {
+		return nil, false
+	}
+	slot := len(c.scope)
+	c.scope = append(c.scope, comp.IterVar())
+	c.slots = max(c.slots, slot+1)
+	pred, ok := c.compile(sc.Args()[1])
+	c.scope = c.scope[:slot]
+	return allNode{rng: rng, slot: slot, pred: pred}, ok
+}
+
+func isIdent(e celast.Expr, name string) bool {
+	return e.Kind() == celast.IdentKind && e.AsIdent() == name
+}
+
+type sizeNode struct{ operand fastNode }
+
+func (n sizeNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
+	v := n.operand.eval(pr, locals)
+	switch v.kind {
+	case fkList:
+		return fastValue{kind: fkInt, n: int64(len(v.ref.([]any)))}
+	case fkMap:
+		return fastValue{kind: fkInt, n: int64(len(v.ref.(map[string]any)))}
+	case fkHeaders:
+		return fastValue{kind: fkInt, n: int64(len(v.ref.(map[string]string)))}
+	case fkString, fkJSONStr:
+		s, ok := stringOf(pr, v)
+		if !ok {
+			return deferred
+		}
+		return fastValue{kind: fkInt, n: int64(utf8.RuneCountInString(s))} // code points
+	case fkJSONArr:
+		count := int64(0)
+		it := pr.doc.iterAt(v.start(), int(v.ci))
+		for _, _, more := it.next(); more; _, _, more = it.next() {
+			count++
+		}
+		return fastValue{kind: fkInt, n: count}
+	case fkJSONObj:
+		return distinctKeys(pr.doc, v)
+	}
+	return deferred
+}
+
+// isSizeZero reports whether the operands are size(x) and the literal 0.
+func isSizeZero(nodes []fastNode) bool {
+	_, isSize := nodes[0].(sizeNode)
+	c, isConst := nodes[1].(constNode)
+	return isSize && isConst && c.v.kind == fkInt && c.v.n == 0
+}
+
+// emptyNode is size(x) == 0 when empty is set, else size(x) != 0 or size(x) > 0. It answers as
+// sizeNode would, without counting.
+type emptyNode struct {
+	operand fastNode
+	empty   bool
+}
+
+func (n emptyNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
+	v := n.operand.eval(pr, locals)
+	var none bool
+	switch v.kind {
+	case fkList:
+		none = len(v.ref.([]any)) == 0
+	case fkMap:
+		none = len(v.ref.(map[string]any)) == 0
+	case fkHeaders:
+		none = len(v.ref.(map[string]string)) == 0
+	case fkString:
+		none = v.s == ""
+	case fkJSONStr:
+		none = v.end()-v.start() == 2 // an escape decodes to at least one code point
+	case fkJSONArr, fkJSONObj:
+		it := pr.doc.iterAt(v.start(), int(v.ci))
+		_, _, more := it.next()
+		none = !more
+	default:
+		return deferred
+	}
+	return boolValue(none == n.empty)
+}
+
+// distinctKeys counts the keys of a JSON object once each, as its decoded map holds them.
+func distinctKeys(d *jsonDoc, obj fastValue) fastValue {
+	var small [16][]byte
+	keys := small[:0]
+	escaped := false
+	it := d.iterAt(obj.start(), int(obj.ci))
+	for key, _, more := it.next(); more; key, _, more = it.next() {
+		keys = append(keys, key)
+		escaped = escaped || bytes.IndexByte(key, '\\') >= 0
+	}
+	if len(keys) <= 1 {
+		return fastValue{kind: fkInt, n: int64(len(keys))}
+	}
+	if escaped {
+		seen := make(map[string]struct{}, len(keys))
+		for _, k := range keys {
+			s, ok := decodeString(k)
+			if !ok {
+				return deferred
+			}
+			seen[s] = struct{}{}
+		}
+		return fastValue{kind: fkInt, n: int64(len(seen))}
+	}
+	slices.SortFunc(keys, bytes.Compare)
+	count := int64(1)
+	for i := 1; i < len(keys); i++ {
+		if !bytes.Equal(keys[i], keys[i-1]) {
+			count++
+		}
+	}
+	return fastValue{kind: fkInt, n: count}
+}
+
+type allNode struct {
+	rng  fastNode
+	slot int
+	pred fastNode
+}
+
+// eval answers false at the first false element, which is CEL's answer whatever the other
+// elements give; a defer or a non-bool element defers.
+func (n allNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
+	step := func(v fastValue) (fastValue, bool) {
+		locals[n.slot] = v
+		r := n.pred.eval(pr, locals)
+		if r.kind != fkBool {
+			return deferred, false
+		}
+		return r, r.n == 1
+	}
+	r := n.rng.eval(pr, locals)
+	switch r.kind {
+	case fkList:
+		for _, el := range r.ref.([]any) {
+			if v, more := step(nativeValue(el)); !more {
+				return v
+			}
+		}
+	case fkMap:
+		for k := range r.ref.(map[string]any) {
+			if v, more := step(fastValue{kind: fkString, s: k}); !more {
+				return v
+			}
+		}
+	case fkHeaders:
+		for k := range r.ref.(map[string]string) {
+			if v, more := step(fastValue{kind: fkString, s: k}); !more {
+				return v
+			}
+		}
+	case fkJSONArr, fkJSONObj:
+		it := pr.doc.iterAt(r.start(), int(r.ci))
+		for key, val, more := it.next(); more; key, val, more = it.next() {
+			el := jsonValue(pr.doc, val, it.valEnd, it.valCI)
+			if key != nil {
+				el = jsonSpan(fkJSONStr, it.keyPos, it.keyPos+len(key))
+			}
+			if v, more := step(el); !more {
+				return v
+			}
+		}
+	default:
+		return deferred
+	}
+	return boolValue(true)
+}

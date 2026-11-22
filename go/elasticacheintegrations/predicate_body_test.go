@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -219,6 +220,13 @@ func FuzzScanJSON(f *testing.F) {
 			if got, want := int(d.ends[k]), int(start)+int(dec.InputOffset()); got != want {
 				t.Fatalf("container at %d ends at %d, want %d", start, got, want)
 			}
+			next := k + 1
+			for next < len(d.starts) && d.starts[next] < d.ends[k] {
+				next++
+			}
+			if int(d.after[k]) != next {
+				t.Fatalf("container %d: after is %d, want %d", k, d.after[k], next)
+			}
 		}
 		if _, ok := d.celBody(); !ok {
 			t.Fatal("an accepted body does not decode")
@@ -256,30 +264,68 @@ func decodeBodyStd(body []byte) (map[string]any, bool) {
 	return out.(map[string]any), true
 }
 
-// walkDoc rebuilds the value at pos through iter, next, end and decodeString only.
+// containerIndex returns the index of the container that starts at pos.
+func (d *jsonDoc) containerIndex(pos int) int {
+	k, _ := slices.BinarySearch(d.starts, int32(pos))
+	return k
+}
+
+// end returns the offset just past the accepted value at pos.
+func (d *jsonDoc) end(pos int) int {
+	switch d.b[pos] {
+	case '{', '[':
+		return int(d.ends[d.containerIndex(pos)])
+	}
+	return d.scalarEnd(pos)
+}
+
+// iter walks the container at pos.
+func (d *jsonDoc) iter(pos int) jsonIter { return d.iterAt(pos, d.containerIndex(pos)) }
+
+// walkDoc rebuilds the value at pos through iterAt, next, end and decodeString only. A nested
+// container is walked from the span and container index next returned for it.
 func walkDoc(t *testing.T, d *jsonDoc, pos int) any {
 	t.Helper()
+	return walkValue(t, d, pos, d.containerIndex(pos))
+}
+
+func walkValue(t *testing.T, d *jsonDoc, pos, ci int) any {
+	t.Helper()
 	b := d.b
+	member := func(it *jsonIter, val int) any {
+		if got, want := it.valEnd, d.end(val); got != want {
+			t.Fatalf("value at %d: next says it ends at %d, want %d", val, got, want)
+		}
+		if c := b[val]; c == '{' || c == '[' {
+			if got, want := it.valCI, d.containerIndex(val); got != want {
+				t.Fatalf("value at %d: next says container %d, want %d", val, got, want)
+			}
+		}
+		return walkValue(t, d, val, it.valCI)
+	}
 	switch b[pos] {
 	case '{':
 		m := map[string]any{}
-		it := d.iter(pos)
+		it := d.iterAt(pos, ci)
 		for key, val, ok := it.next(); ok; key, val, ok = it.next() {
 			k, kok := decodeString(key)
 			if !kok {
 				t.Fatalf("key %q does not decode", key)
 			}
-			m[k] = walkDoc(t, d, val)
+			if !bytes.Equal(b[it.keyPos:it.keyPos+len(key)], key) {
+				t.Fatalf("key %q is not at %d", key, it.keyPos)
+			}
+			m[k] = member(&it, val)
 		}
 		return m
 	case '[':
 		l := []any{}
-		it := d.iter(pos)
+		it := d.iterAt(pos, ci)
 		for key, val, ok := it.next(); ok; key, val, ok = it.next() {
 			if key != nil {
 				t.Fatal("an array element has a key")
 			}
-			l = append(l, walkDoc(t, d, val))
+			l = append(l, member(&it, val))
 		}
 		return l
 	case '"':

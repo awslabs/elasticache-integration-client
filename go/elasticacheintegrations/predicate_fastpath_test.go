@@ -63,6 +63,26 @@ var fastProbes = []string{
 	"body.TableName in m",
 	"m[body.TableName] == true",
 	"m.k == body.a",
+	"size(body.a) > 0",
+	"size(body.a) == 2",
+	"body.a.size() == n",
+	"size(body) >= 2",
+	"size(body.TableName) == 5",
+	"size(body.a) > 0",
+	"size(body.a) != 0",
+	"size(body.a) == 0",
+	"size(body.TableName) == 0",
+	"body.a.all(x, x == 'x')",
+	"body.a.all(x, x in allowed)",
+	"body.a.all(x, has(x.k))",
+	"body.RequestItems.all(t, t in allowed)",
+	"size(body.RequestItems) > 0 && body.RequestItems.all(t, !(t in allowed))",
+	"body.TransactItems.all(i, i.all(k, \"TableName\" in i[k] && i[k].TableName in allowed))",
+	"body.TransactItems.all(i, i.all(k, has(i[k].TableName) && i[k].TableName in allowed))",
+	"body.a.all(x, body.a.all(y, x == y))",
+	"body.all(k, k != '')",
+	"ops.all(o, o != body.a)",
+	"m.all(k, k in allowed)",
 }
 
 // fastProbesNoBody run on every request without a body.
@@ -79,6 +99,11 @@ var fastProbesNoBody = []string{
 	"operation == 'GetItem' ? 'yes' : 'no'",
 	"operation",
 	"null == null && true != false",
+	"size(ops) == 2 && ops.size() == 2 && size(m) == 2 && size(headers) >= 0",
+	"ops.all(o, o != '')",
+	"headers.all(h, h != 'authorization')",
+	"size(operation) == 7",
+	"ops.all(a, ops.all(b, a == b || a != b))",
 }
 
 // genBody writes a random JSON object from a small vocabulary: missing keys, nulls, numbers,
@@ -238,6 +263,11 @@ func TestFastPathDefers(t *testing.T) {
 		{"headers.authorization == 'secret'", `{}`},     // excluded header
 		{"ops[5] == operation", `{}`},                   // index out of range
 		{"body.a == 'x' || body.b == 'x'", `{"b":"x"}`}, // missing key on the left of ||
+		{"size(body.a) > 0", `{"a":1}`},                 // size of a number
+		{"body.a.all(x, x == 'y')", `{"a":"x"}`},        // all over a string
+		{"body.a.all(x, x == 'y')", `{"a":[1]}`},        // defer inside the loop
+		{"body.a.all(x, x == 'y')", `{"a":["y",1]}`},    // a number after a true element
+		{"body.a.all(x, x)", `{"a":["x"]}`},             // non-bool element
 	}
 	for _, c := range cases {
 		pred := compileProbe(t, c.expr)
@@ -269,6 +299,20 @@ func TestFastPathAnswersWithoutCEL(t *testing.T) {
 		{"body.a[1] == true", `{"a":["x",true]}`, true},
 		{"body.a < 'M'", `{"a":"é"}`, false},
 		{"body.a == null", `{"a":null}`, true},
+		{"size(body.a) == 2", `{"a":{"x":1,"\u0078":2,"y":3}}`, true}, // a repeated key counts once
+		{"size(body) == 0", `{}`, true},
+		{"size(body.a) == 2", `{"a":{"x":1,"y":2,"x":3}}`, true},
+		{"size(body.a) == 17", `{"a":{"k0":0,"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10,"k11":11,"k12":12,"k13":13,"k14":14,"k15":15,"k16":16,"k0":0}}`, true},
+		{"size(body.a) == 3", `{"a":[1,"x",null]}`, true},
+		{"size(body.a) == 2", `{"a":"é😀"}`, true},
+		{"body.a.all(x, x == 'y')", `{"a":[]}`, true},
+		{"body.a.all(x, x == 'y')", `{"a":["z",1]}`, false}, // false before the defer
+		{"body.a.all(k, k == 'y')", `{"a":{"y":1,"\u0079":2}}`, true},
+		{"size(body.a) > 0", `{"a":"\u0000"}`, true},
+		{"size(body.a) == 0", `{"a":""}`, true},
+		{"size(body.a) != 0", `{"a":{"x":1,"x":2}}`, true},
+		{"size(body.a) == 0", `{"a":[ ]}`, true},
+		{"size(body.a) > 0", `{"a":[[]]}`, true},
 	}
 	for _, c := range cases {
 		pred := compileProbe(t, c.expr)
@@ -358,7 +402,24 @@ func genExpr(r *rand.Rand, depth int) string {
 	}
 	a := func() string { return genExpr(r, depth-1) }
 	field := func() string { return []string{"a", "b", "k", "x", "s", "r", "TableName"}[r.Intn(7)] }
-	switch r.Intn(11) {
+	// Iteration variables, some of which hide a vars key, a dotted vars prefix or a request
+	// variable.
+	iterVar := func() string {
+		return []string{"v", "w", "v", "w", "m", "s", "q", "body", "operation", "headers"}[r.Intn(10)]
+	}
+	switch r.Intn(14) {
+	case 11:
+		if r.Intn(2) == 0 {
+			return "(size(" + a() + ")" + []string{" == ", " != ", " > "}[r.Intn(3)] + "0)"
+		}
+		return "size(" + a() + ")"
+	case 12:
+		op := []string{" == ", " != ", " in ", " < "}[r.Intn(4)]
+		v := iterVar()
+		return "(" + a() + ").all(" + v + ", (" + v + op + a() + "))"
+	case 13:
+		v, w := iterVar(), iterVar()
+		return "(" + a() + ").all(" + v + ", (" + a() + ").all(" + w + ", (" + v + " == " + w + ") || has(" + v + "." + field() + ")))"
 	case 0:
 		return "(" + a() + " == " + a() + ")"
 	case 1:
@@ -397,6 +458,8 @@ var genBodies = []string{
 	`{"a":"\/","b":"/"}`, `{"a":{"a":{"b":"x"}},"b":["Users"]}`, `{"a":[["x"]],"b":{"x":1}}`, `{"k":"x"}`,
 	` { "a" : [ "x" , true ] , "b" : "x" } `, `{"a":"\ud83d\ude00","b":"😀"}`, `{"a":"\uD800\u0041","b":"\ufffdA"}`,
 	`{"a":"x","b":{"a":"x"}}`,
+	`{"a":[false,1],"b":[1,false]}`, `{"a":["x",false,"y"],"b":[true,"x"]}`, `{"a":[[],{},"x"],"b":[{"a":"x"},{"a":1},{}]}`,
+	`{"a":{"x":"x","x":1},"b":{"\u0078":true,"x":false}}`, `{"a":[[[]],[{"b":[{}]}],{"k":[[],"x"]}],"b":[]}`,
 }
 
 // checkGenerated compiles expr with each vars set and checks every fast answer against cel-go.
@@ -459,5 +522,106 @@ func TestFastPathDoesNotAllocate(t *testing.T) {
 		}
 	}); n != 0 {
 		t.Fatalf("%v allocations per evaluation", n)
+	}
+}
+
+// SDK-shaped bodies for the seven expressions, routed or not.
+var sevenBodies = []struct{ op, body string }{
+	{"GetItem", `{"TableName":"Users","Key":{"id":{"S":"1"}}}`},
+	{"GetItem", `{"TableName":"Secrets","Key":{"id":{"S":"1"}}}`},
+	{"GetItem", `{"Key":{"id":{"S":"1"}}}`},
+	{"PutItem", `{"TableName":"Users","Item":{"id":{"S":"1"},"n":{"N":"5"}}}`},
+	{"BatchGetItem", `{"RequestItems":{"Users":{"Keys":[{"id":{"S":"1"}}]},"Sessions":{"Keys":[]}}}`},
+	{"BatchGetItem", `{"RequestItems":{"Users":{"Keys":[]},"Secrets":{"Keys":[]}}}`},
+	{"BatchWriteItem", `{"RequestItems":{}}`},
+	{"TransactWriteItems", `{"TransactItems":[{"Put":{"TableName":"Users","Item":{}}},{"Delete":{"TableName":"Sessions","Key":{}}}]}`},
+	{"TransactWriteItems", `{"TransactItems":[{"Put":{"TableName":"Users","Item":{}}},{"Update":{"TableName":"Secrets","Key":{}}}]}`},
+	{"TransactWriteItems", `{"TransactItems":[{"ConditionCheck":{"Key":{}}}]}`},
+	{"TransactGetItems", `{"TransactItems":[]}`},
+	{"Scan", `{}`},
+}
+
+func TestSevenExpressionsGoFast(t *testing.T) {
+	vars := map[string]any{"ops": allOperations, "allowed": []string{"Users", "Sessions"}, "excluded": []string{"Secrets"}}
+	cases := append([]struct{ op, body string }{}, sevenBodies...)
+	for _, c := range predBenchCases() {
+		cases = append(cases, struct{ op, body string }{c.operation, string(c.body)})
+	}
+	for _, expr := range []string{exprAllOps, exprTableName, exprRequestItems, exprTransactItems,
+		exprTransactItemsProxy, exprTableNameDeny, exprRequestItemsDeny, exprTransactItemsDeny} {
+		pred := mustCompilePredicates(t, predConfig(predEntry(expr, vars))).list[0]
+		if pred.fast == nil {
+			t.Fatalf("%s has no fast form", expr)
+		}
+		for _, c := range cases {
+			if !checkFast(t, pred, expr, predReq(c.op, "dynamodb", c.body)) {
+				t.Errorf("%s defers on %s %.80s", expr, c.op, c.body)
+			}
+		}
+	}
+}
+
+func TestSizeZeroDoesNotCount(t *testing.T) {
+	for _, expr := range []string{"size(body.a) > 0", "size(body.a) != 0", "size(body.a) == 0"} {
+		if _, ok := compileProbe(t, expr).fast.root.(emptyNode); !ok {
+			t.Errorf("%s does not compile to an emptiness test", expr)
+		}
+	}
+	if _, ok := compileProbe(t, "size(body.a) >= 0").fast.root.(emptyNode); ok {
+		t.Error("size(body.a) >= 0 compiles to an emptiness test")
+	}
+}
+
+// TestRouteAllocations: routing a benchmark case allocates only the predicateRequest.
+func TestRouteAllocations(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector drops sync.Pool entries")
+	}
+	for _, c := range predBenchCases() {
+		p, r := c.compile(t), c.request()
+		if n := testing.AllocsPerRun(20, func() {
+			if !p.shouldRoute(r) {
+				t.Fatal("the case does not route")
+			}
+		}); n > 1 {
+			t.Errorf("%s: %v allocations per route", c.name, n)
+		}
+	}
+}
+
+// TestComprehensionScope: an iteration variable hides a vars key and a request variable, and an
+// inner variable hides an outer one of the same name.
+func TestComprehensionScope(t *testing.T) {
+	vars := map[string]any{"ops": []any{"GetItem", "Query"}, "s": "outer",
+		"m": map[string]any{"k": "z"}, "allowed": []any{"x"}}
+	cases := []struct {
+		expr, body string
+		want       bool
+	}{
+		{"ops.all(s, s != 'outer')", `{}`, true},
+		{"ops.all(s, s == 'outer')", `{}`, false},
+		{"ops.all(m, m in ops)", `{}`, true},
+		{"ops.all(operation, operation != 'PutItem')", `{}`, true},
+		{"body.a.all(body, body == 'x')", `{"a":["x"]}`, true},
+		{"body.a.all(headers, headers in allowed)", `{"a":["x","y"]}`, false},
+		{"body.a.all(s, body.b.all(s, s == 'y'))", `{"a":["x"],"b":["y"]}`, true},
+		{"body.a.all(s, body.b.all(s, s == 'x'))", `{"a":["x"],"b":["y"]}`, false},
+		{"body.a.all(s, body.b.all(w, s == 'x') && s == 'x')", `{"a":["x"],"b":["y"]}`, true},
+	}
+	for _, c := range cases {
+		pred := mustCompilePredicates(t, predConfig(predEntry(c.expr, vars))).list[0]
+		if pred.fast == nil {
+			t.Fatalf("%s has no fast form", c.expr)
+		}
+		r := predReq("GetItem", "dynamodb", c.body)
+		if !checkFast(t, pred, c.expr, r) {
+			t.Fatalf("%s defers on %s", c.expr, c.body)
+		}
+		pr := predicateRequest{req: r}
+		pr.loadBody()
+		if got := pred.fast.eval(&pr) == fastTrue; got != c.want {
+			t.Errorf("%s on %s: %v, want %v", c.expr, c.body, got, c.want)
+		}
+		pr.release()
 	}
 }
