@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Run every local gate for the Go client, in order, and stop at the first failure:
-# gofmt, go vet, staticcheck, go test -race (alignment tests included), license headers.
+# gofmt, go vet, staticcheck, go test -race (alignment tests included), go test without -race
+# (the allocation tests), license headers.
 #
 # Usage: go/scripts/verify.sh   (from any directory, also through a symlink)
 #
@@ -48,6 +49,10 @@ GOTOOLCHAIN=auto go run "$STATICCHECK" ./...
 
 echo "== go test -race -count=1 ./..."
 go test -race -count=1 ./...
+
+# The allocation tests skip under -race, so the tests also run once without it.
+echo "== go test -count=1 ./..."
+go test -count=1 ./...
 
 echo "== license headers"
 ../scripts/check-license-headers.sh

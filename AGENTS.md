@@ -46,8 +46,8 @@ Run commands from the client directory they apply to:
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
 - Go: use focused `go test -run` tests when appropriate and `scripts/verify.sh`
-  for the complete local gate (gofmt, go vet, staticcheck, `go test -race`, and
-  the license check).
+  for the complete local gate (gofmt, go vet, staticcheck, `go test -race`,
+  `go test` without `-race` so the allocation tests run, and the license check).
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
   `<path>` is a file of case-insensitive Perl regular expressions, one per
   line, kept outside the repository. It fails when a file that git
