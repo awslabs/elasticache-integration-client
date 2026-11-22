@@ -1,0 +1,100 @@
+// Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+package elasticacheintegrations
+
+import (
+	"context"
+	"log/slog"
+	"math/rand/v2"
+	"sync/atomic"
+	"time"
+)
+
+// backoff is the wait after failed attempt n (from 1): backoffMin doubling up to backoffMax,
+// with ±jitter, and at least 1ms.
+func backoff(c *config, attempt int) time.Duration {
+	d := c.backoffMin
+	for i := 1; i < attempt && d < c.backoffMax; i++ {
+		d = min(2*d, c.backoffMax)
+	}
+	return max(time.Millisecond, jittered(d, c.jitter).Round(time.Millisecond))
+}
+
+// jittered returns d scaled by a uniform factor in [1-j, 1+j).
+func jittered(d time.Duration, j float64) time.Duration {
+	if j == 0 {
+		return d
+	}
+	return time.Duration(float64(d) * (1 - j + 2*j*rand.Float64()))
+}
+
+// periodicRunner calls tick every interval ±jitter until its context ends. A failed tick
+// waits failureDelay(failures), or the interval when failureDelay is nil. A tick that did
+// not run (ran false) is skipped: it neither fails nor recovers.
+type periodicRunner struct {
+	name         string
+	interval     atomic.Int64 // time.Duration
+	jitter       float64
+	failureDelay func(failures int) time.Duration
+	tick         func(context.Context) (ran bool, err error)
+	logger       *logger
+}
+
+func newPeriodicRunner(name string, interval time.Duration, c *config,
+	failureDelay func(failures int) time.Duration, tick func(context.Context) (bool, error)) *periodicRunner {
+	r := &periodicRunner{name: name, jitter: c.jitter, failureDelay: failureDelay, tick: tick, logger: c.logger}
+	r.setInterval(interval)
+	return r
+}
+
+// setInterval changes the interval from the next wait on. A wait already armed keeps its delay.
+// A non-positive d is ignored, so the runner never spins.
+func (r *periodicRunner) setInterval(d time.Duration) {
+	if d > 0 {
+		r.interval.Store(int64(d))
+	}
+}
+
+// run loops until ctx ends. The caller runs it on a goroutine it owns.
+func (r *periodicRunner) run(ctx context.Context) {
+	failures := 0
+	timer := time.NewTimer(r.delay(failures))
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		ran, err := r.tick(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		switch {
+		case err != nil:
+			failures++
+			level := slog.LevelDebug
+			if failures == 1 || failures%100 == 0 {
+				level = slog.LevelWarn
+			}
+			r.logger.log(level, eventPeriodicFailed, r.name+" failed; retrying",
+				slog.Int("failures", failures), slog.String("error", err.Error()))
+		case ran:
+			if failures > 0 {
+				r.logger.info(eventPeriodicRecovered, r.name+" succeeded after failures",
+					slog.Int("failures", failures))
+			}
+			failures = 0
+		}
+		timer.Reset(r.delay(failures))
+	}
+}
+
+// delay is the next wait: the jittered interval, or the failure delay after failures.
+func (r *periodicRunner) delay(failures int) time.Duration {
+	if failures > 0 && r.failureDelay != nil {
+		return r.failureDelay(failures)
+	}
+	return jittered(time.Duration(r.interval.Load()), r.jitter)
+}
