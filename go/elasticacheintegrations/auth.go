@@ -5,10 +5,13 @@ package elasticacheintegrations
 
 import (
 	"context"
+	"errors"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -19,6 +22,13 @@ const (
 	tokenExpirySeconds = 900
 	tokenService       = "elasticache"
 	emptySHA256        = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+	tokenServeLifetime   = 880 * time.Second // 900 s minus the toolkit's 20 s margin
+	credsExpiryMargin    = 60 * time.Second  // a token is signed again once its credentials expire this soon
+	refreshMaxAttempts   = 8
+	refreshBackoffBase   = 100 * time.Millisecond
+	refreshBackoffMax    = 5 * time.Second
+	refreshBackoffJitter = 0.2
 )
 
 // signToken returns the IAM token: the presigned ElastiCache connect URL without its scheme.
@@ -79,4 +89,304 @@ func matchesIdentity(ctx context.Context, provider aws.CredentialsProvider, regi
 	}
 	creds, err := provider.Retrieve(ctx)
 	return err == nil && creds.AccessKeyID == signedKeyID
+}
+
+// authCredentials is the user and token for HELLO 3 AUTH and AUTH.
+type authCredentials struct {
+	user  string
+	token secret
+}
+
+// authProvider supplies AUTH credentials to the session. tokenManager is the one the client
+// uses; tests supply their own.
+type authProvider interface {
+	// credentials returns the user and a token that is still valid.
+	credentials(ctx context.Context) (authCredentials, error)
+	// forceRefresh drops the current token and waits for a new one, after the cache
+	// rejected an AUTH.
+	forceRefresh(ctx context.Context) error
+	// close stops the provider and waits for its goroutines.
+	close()
+}
+
+// tokenManager caches one IAM token and signs its replacement in the background, as the
+// developer toolkit's token manager does. One worker goroutine does every refresh.
+type tokenManager struct {
+	provider     aws.CredentialsProvider
+	cache        string
+	user         string
+	region       string
+	refreshDelay time.Duration
+	random       func() float64 // in [0, 1), for the backoff jitter
+
+	ctx    context.Context // cancelled by close
+	cancel context.CancelFunc
+	kick   chan struct{} // wakes the worker for a pending refresh
+	wg     sync.WaitGroup
+
+	mu             sync.Mutex
+	closed         bool
+	cached         *cachedToken
+	inflight       *refreshCall // the refresh callers wait for; nil when none is pending
+	retryNotBefore time.Time    // no refresh is started by token before this
+}
+
+type cachedToken struct {
+	token       secret
+	refreshAt   time.Time
+	expiresAt   time.Time
+	credsExpire time.Time // zero when the credentials cannot expire
+}
+
+func (c *cachedToken) usable(now time.Time) bool {
+	return now.Before(c.expiresAt) &&
+		(c.credsExpire.IsZero() || now.Before(c.credsExpire.Add(-credsExpiryMargin)))
+}
+
+type refreshCall struct {
+	done  chan struct{} // closed when token or err is set
+	token secret
+	err   error
+}
+
+var _ authProvider = (*tokenManager)(nil)
+
+// newTokenManager starts a token manager for the client's cache, user and refresh delay,
+// signing with region and the credentials of provider.
+func newTokenManager(c *config, region string, provider aws.CredentialsProvider) *tokenManager {
+	m := buildTokenManager(c, region, provider)
+	m.start()
+	return m
+}
+
+func buildTokenManager(c *config, region string, provider aws.CredentialsProvider) *tokenManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &tokenManager{
+		provider:     provider,
+		cache:        c.cacheName,
+		user:         c.userID,
+		region:       region,
+		refreshDelay: c.iamTokenRefreshDelay,
+		random:       rand.Float64,
+		ctx:          ctx,
+		cancel:       cancel,
+		kick:         make(chan struct{}, 1),
+	}
+}
+
+func (m *tokenManager) start() {
+	m.wg.Add(1)
+	go m.run()
+}
+
+func errAuthClosed() error { return &ConnectionError{Msg: "the client is closed"} }
+
+func (m *tokenManager) credentials(ctx context.Context) (authCredentials, error) {
+	tok, err := m.token(ctx)
+	if err != nil {
+		return authCredentials{}, err
+	}
+	return authCredentials{user: m.user, token: tok}, nil
+}
+
+// token returns the cached token while it is usable, starting a background refresh once it
+// is due, and otherwise waits for a refresh.
+func (m *tokenManager) token(ctx context.Context) (secret, error) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return secret{}, errAuthClosed()
+	}
+	now := time.Now()
+	if c := m.cached; c != nil && c.usable(now) {
+		if !now.Before(c.refreshAt) && !now.Before(m.retryNotBefore) {
+			m.startLocked()
+		}
+		m.mu.Unlock()
+		return c.token, nil
+	}
+	call := m.startLocked()
+	m.mu.Unlock()
+	return m.wait(ctx, call)
+}
+
+func (m *tokenManager) forceRefresh(ctx context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return errAuthClosed()
+	}
+	m.cached = nil
+	m.retryNotBefore = time.Time{}
+	call := m.startLocked()
+	m.mu.Unlock()
+	_, err := m.wait(ctx, call)
+	return err
+}
+
+func (m *tokenManager) close() {
+	m.mu.Lock()
+	if !m.closed {
+		m.closed = true
+		m.cached = nil
+		m.completeLocked(m.inflight, secret{}, errAuthClosed())
+	}
+	m.mu.Unlock()
+	m.cancel()
+	m.wg.Wait()
+}
+
+func (m *tokenManager) wait(ctx context.Context, call *refreshCall) (secret, error) {
+	select {
+	case <-call.done:
+		return call.token, call.err
+	case <-ctx.Done():
+		return secret{}, ctx.Err()
+	}
+}
+
+// startLocked returns the pending refresh, starting one if none is pending.
+func (m *tokenManager) startLocked() *refreshCall {
+	if m.inflight == nil {
+		m.inflight = &refreshCall{done: make(chan struct{})}
+		select {
+		case m.kick <- struct{}{}:
+		default:
+		}
+	}
+	return m.inflight
+}
+
+// completeLocked finishes call unless close already did.
+func (m *tokenManager) completeLocked(call *refreshCall, tok secret, err error) {
+	if call == nil || m.inflight != call {
+		return
+	}
+	m.inflight = nil
+	call.token, call.err = tok, err
+	close(call.done)
+}
+
+func (m *tokenManager) run() {
+	defer m.wg.Done()
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+	for {
+		var scheduled bool
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-m.kick:
+		case <-timer.C:
+			scheduled = true
+		}
+		m.mu.Lock()
+		if scheduled && !m.closed {
+			m.startLocked()
+			select { // the worker is already awake
+			case <-m.kick:
+			default:
+			}
+		}
+		call := m.inflight
+		m.mu.Unlock()
+		if call == nil {
+			continue // a refresh that was pending when the worker woke already ran
+		}
+		next, ok := m.refresh(call)
+		timer.Stop()
+		if ok {
+			timer.Reset(next)
+		}
+	}
+}
+
+// refresh signs a token for call, retrying with backoff. It returns when the worker should
+// run the next background refresh, or false for none.
+func (m *tokenManager) refresh(call *refreshCall) (time.Duration, bool) {
+	for attempt := 1; ; attempt++ {
+		issued := time.Now()
+		tok, creds, err := m.sign(issued)
+		if m.ctx.Err() != nil {
+			return 0, false
+		}
+		if err == nil {
+			return m.install(call, tok, creds, issued)
+		}
+		if attempt == refreshMaxAttempts {
+			return m.fail(call, err)
+		}
+		t := time.NewTimer(m.backoff(attempt))
+		select {
+		case <-m.ctx.Done():
+			t.Stop()
+			return 0, false
+		case <-t.C:
+		}
+	}
+}
+
+func (m *tokenManager) sign(now time.Time) (secret, aws.Credentials, error) {
+	creds, err := m.provider.Retrieve(m.ctx)
+	if err != nil {
+		return secret{}, creds, err
+	}
+	if !creds.HasKeys() {
+		return secret{}, creds, errors.New("the credentials have no access key id or secret access key")
+	}
+	tok, err := signToken(m.ctx, creds, m.cache, m.user, m.region, now)
+	return tok, creds, err
+}
+
+func (m *tokenManager) install(call *refreshCall, tok secret, creds aws.Credentials, issued time.Time) (time.Duration, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, false
+	}
+	c := &cachedToken{token: tok, refreshAt: issued.Add(m.refreshDelay), expiresAt: issued.Add(tokenServeLifetime)}
+	if creds.CanExpire {
+		c.credsExpire = creds.Expires
+	}
+	m.cached = c
+	m.retryNotBefore = time.Time{}
+	m.completeLocked(call, tok, nil)
+	return m.refreshDelay, true
+}
+
+// fail ends a refresh whose every attempt failed. A token that is still usable stays in use
+// and the next attempt runs after refreshBackoffMax.
+func (m *tokenManager) fail(call *refreshCall, lastErr error) (time.Duration, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return 0, false
+	}
+	now := time.Now()
+	if c := m.cached; c != nil && c.usable(now) {
+		m.retryNotBefore = now.Add(refreshBackoffMax)
+		m.completeLocked(call, c.token, nil)
+		return refreshBackoffMax, true
+	}
+	err := lastErr
+	if !errors.As(err, new(*ConnectionError)) {
+		msg := "cannot sign the IAM token"
+		if m.cached != nil {
+			msg = "cannot sign the IAM token before the previous one expired"
+		}
+		err = &ConnectionError{Msg: msg, Err: lastErr}
+	}
+	m.completeLocked(call, secret{}, err)
+	return 0, false
+}
+
+// backoff is the wait after failed attempt n: min(100 ms·2^(n-1), 5 s), ±20%.
+func (m *tokenManager) backoff(attempt int) time.Duration {
+	d := refreshBackoffBase << min(attempt-1, 30)
+	if d > refreshBackoffMax || d <= 0 {
+		d = refreshBackoffMax
+	}
+	jitter := 1 - refreshBackoffJitter + 2*refreshBackoffJitter*m.random()
+	return time.Duration(float64(d) * jitter).Round(time.Millisecond)
 }
