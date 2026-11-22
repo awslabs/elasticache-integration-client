@@ -140,10 +140,10 @@ type pendingEntry struct {
 	done       chan struct{} // closed once value or err is set
 	value      resp.Value
 	err        error
-	deadline   time.Time
 	deferrable bool // aws.request may be answered with +<id> and a push
 
 	// Guarded by pendingRequests.mu.
+	deadline  time.Time
 	where     entryPlace
 	abandoned bool   // the caller stopped waiting; the reply is discarded
 	id        string // when deferred
@@ -253,6 +253,16 @@ func (p *pendingRequests) abandon(e *pendingEntry) bool {
 		e.abandoned = true
 	}
 	return true
+}
+
+// extend moves e's reply deadline to at when that is later. The timer, armed for the earlier
+// deadline, re-arms for the later one when it fires.
+func (p *pendingRequests) extend(e *pendingEntry, at time.Time) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if e.where != finished && at.After(e.deadline) {
+		e.deadline = at
+	}
 }
 
 // expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. It

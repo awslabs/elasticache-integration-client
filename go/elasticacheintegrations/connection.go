@@ -27,7 +27,8 @@ type connection struct {
 	conn    net.Conn
 	reader  *resp.Reader // read by the bring-up, then only by the reader goroutine
 	pending *pendingRequests
-	onLost  func(error) // called once when the connection dies, not on close; must not block
+	turn    chan struct{} // the write turn: taken by a send, given back by a receive
+	onLost  func(error)   // called once when the connection dies, not on close; must not block
 
 	dead       chan struct{} // closed when the connection dies or is closed
 	dieOnce    sync.Once
@@ -42,6 +43,7 @@ func newConnection(c *config, nc net.Conn, onLost func(error)) *connection {
 		cfg:        c,
 		conn:       nc,
 		reader:     resp.NewReader(nc, c.readSize, c.maxResponseSize),
+		turn:       make(chan struct{}, 1),
 		onLost:     onLost,
 		dead:       make(chan struct{}),
 		readerDone: make(chan struct{}),
@@ -238,4 +240,155 @@ func (c *connection) checkDeadlines() {
 func (c *connection) timeoutError() error {
 	ms := strconv.FormatInt(c.cfg.cacheRequestTimeout.Milliseconds(), 10)
 	return &TimeoutError{Msg: "no reply within the " + ms + "ms cache request timeout"}
+}
+
+// request sends one aws.request and returns its parsed reply. A *ProtocolError there is a
+// reply of the wrong shape; the connection stays open.
+func (c *connection) request(ctx context.Context, r *request) (requestReply, error) {
+	cmd := newSerializedCommand()
+	cmd.appendRequest(r)
+	e, err := c.start(ctx, cmd.frame, true)
+	cmd.release()
+	if err != nil {
+		return requestReply{}, err
+	}
+	v, err := c.await(ctx, e)
+	if err != nil {
+		return requestReply{}, err
+	}
+	return parseRequestReply(v)
+}
+
+// reauth sends AUTH with fresh credentials. An error reply keeps the connection; any reply
+// other than +OK closes it. A timeout has already closed it.
+func (c *connection) reauth(ctx context.Context, creds authCredentials) error {
+	frame := resp.AppendCommandStrings(nil, "AUTH", creds.user, creds.token.reveal())
+	e, err := c.start(ctx, frame, false)
+	clear(frame)
+	if err != nil {
+		return err
+	}
+	v, err := c.await(ctx, e)
+	if err != nil {
+		return err
+	}
+	switch {
+	case v.Kind == resp.KindError:
+		return &AuthError{Code: v.ErrorCode(), Msg: "AUTH rejected"}
+	case v.Kind == resp.KindSimpleString && string(v.Bytes) == okReply:
+		return nil
+	}
+	c.drop("the cache answered AUTH with " + v.String())
+	return &AuthError{Msg: "AUTH reply is " + v.String() + ", not OK"}
+}
+
+// refreshConfig sends the no-argument aws.config. nil, nil means the config is unchanged.
+func (c *connection) refreshConfig(ctx context.Context) (*resolvedConfig, error) {
+	e, err := c.start(ctx, appendConfigRefresh(nil), false)
+	if err != nil {
+		return nil, err
+	}
+	v, err := c.await(ctx, e)
+	if err != nil {
+		return nil, err
+	}
+	return parseConfigReply(v, true)
+}
+
+// start writes frame and returns its pending entry. The request budget starts now: waiting
+// for a pending slot and the write turn may use 75% of it, the reply gets the rest, and at
+// least 25% of it after the write.
+func (c *connection) start(ctx context.Context, frame []byte, deferrable bool) (*pendingEntry, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	timeout := c.cfg.cacheRequestTimeout
+	deadline := time.Now().Add(timeout)
+	a := admission{until: deadline.Add(-timeout / 4)}
+	defer a.stop()
+	if err := c.pending.slots.acquire(ctx, &a); err != nil {
+		return nil, err
+	}
+	if err := c.takeTurn(ctx, &a); err != nil {
+		c.pending.slots.release()
+		return nil, err
+	}
+	e, err := c.write(ctx, frame, deferrable, deadline, a.until)
+	<-c.turn
+	return e, err
+}
+
+func errNoTurn() error {
+	return &RequestNotSentError{Msg: "the request was not sent within its budget for sending"}
+}
+
+// takeTurn waits for the write turn until a's budget ends.
+func (c *connection) takeTurn(ctx context.Context, a *admission) error {
+	select {
+	case c.turn <- struct{}{}:
+		return nil
+	default:
+	}
+	select {
+	case c.turn <- struct{}{}:
+		return nil
+	case <-a.expired():
+		return errNoTurn()
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.dead:
+		return errConnectionClosed()
+	}
+}
+
+// write registers the entry and writes the whole frame, under the write turn, so FIFO order
+// is wire order. The caller's slot belongs to the entry once it is registered.
+func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, deadline, sendBy time.Time) (*pendingEntry, error) {
+	if err := ctx.Err(); err != nil {
+		c.pending.slots.release()
+		return nil, err
+	}
+	if !time.Now().Before(sendBy) {
+		c.pending.slots.release()
+		return nil, errNoTurn()
+	}
+	e, err := c.pending.register(deferrable, deadline)
+	if err != nil {
+		c.pending.slots.release()
+		return nil, err
+	}
+	_ = c.conn.SetWriteDeadline(deadline)
+	_, err = c.conn.Write(frame)
+	// A TLS read may write too (a key update), so no stale deadline is left behind.
+	_ = c.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		// Part of the frame may be on the wire, so the stream is out of step.
+		if isTimeout(err) {
+			c.die(&ConnectionLostError{Msg: "a request write timed out"}, e,
+				&TimeoutError{Msg: "the request write timed out", Err: err})
+		} else {
+			c.die(&ConnectionLostError{Msg: "socket write failed", Err: err}, nil, nil)
+		}
+		<-e.done
+		if e.err == nil {
+			return e, nil // the reply arrived before the death
+		}
+		return nil, e.err
+	}
+	c.pending.extend(e, time.Now().Add(c.cfg.cacheRequestTimeout/4))
+	return e, nil
+}
+
+// await waits for e's reply or ctx. The tracker's timer ends e at its deadline. A caller
+// whose ctx ends gets ctx.Err() unless the reply had already arrived.
+func (c *connection) await(ctx context.Context, e *pendingEntry) (resp.Value, error) {
+	select {
+	case <-e.done:
+	case <-ctx.Done():
+		if c.pending.abandon(e) {
+			return resp.Value{}, ctx.Err()
+		}
+		<-e.done
+	}
+	return e.value, e.err
 }
