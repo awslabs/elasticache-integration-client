@@ -1,0 +1,42 @@
+{
+  "source": "dotnet/test/Amazon.ElastiCache.Integrations.Tests/SigV4PresignerTests.cs on dotnet-client: python/elasticache_integrations/auth.py with botocore 1.43.51",
+  "signing_time": "2026-10-17T08:30:00Z",
+  "vectors": [
+    {
+      "cache_name": "my-cache",
+      "user": "my-user",
+      "region": "us-east-1",
+      "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+      "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "session_token": "FwoGZXIvYXdzEBYaDHqa0AP",
+      "token": "my-cache/?Action=connect&User=my-user&ResourceType=ServerlessCache&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261017%2Fus-east-1%2Felasticache%2Faws4_request&X-Amz-Date=20261017T083000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Security-Token=FwoGZXIvYXdzEBYaDHqa0AP&X-Amz-Signature=5cd6d1367ef6a6c9c76ef37b1017b7158e33d14213bbed71a2cefab5059e3e9c"
+    },
+    {
+      "cache_name": "my-cache",
+      "user": "default.iam-user",
+      "region": "eu-west-1",
+      "access_key_id": "AKIAIOSFODNN7EXAMPLE",
+      "secret_access_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+      "session_token": "",
+      "token": "my-cache/?Action=connect&User=default.iam-user&ResourceType=ServerlessCache&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIAIOSFODNN7EXAMPLE%2F20261017%2Feu-west-1%2Felasticache%2Faws4_request&X-Amz-Date=20261017T083000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=547c1161244e4b15484a427773684cbda918d3f20975acd6d60f990330283356"
+    },
+    {
+      "cache_name": "cache-name-1",
+      "user": "user name+x/y=z",
+      "region": "ap-southeast-2",
+      "access_key_id": "AKIDEXAMPLE",
+      "secret_access_key": "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+      "session_token": "token/with+chars=",
+      "token": "cache-name-1/?Action=connect&User=user%20name%2Bx%2Fy%3Dz&ResourceType=ServerlessCache&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20261017%2Fap-southeast-2%2Felasticache%2Faws4_request&X-Amz-Date=20261017T083000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Security-Token=token%2Fwith%2Bchars%3D&X-Amz-Signature=a9afe9a13d534f356756aac2da9d5e2d76d892a924aed5ae81ea25f8dcdb2881"
+    },
+    {
+      "cache_name": "my-cache",
+      "user": "us\u00e9r~*!",
+      "region": "us-east-1",
+      "access_key_id": "AKIDEXAMPLE",
+      "secret_access_key": "secret",
+      "session_token": "",
+      "token": "my-cache/?Action=connect&User=us%C3%A9r~%2A%21&ResourceType=ServerlessCache&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20261017%2Fus-east-1%2Felasticache%2Faws4_request&X-Amz-Date=20261017T083000Z&X-Amz-Expires=900&X-Amz-SignedHeaders=host&X-Amz-Signature=0c5b41fe117983e603a12cb4c7e56203a948c8e34a7e719b431bef6fdaf28661"
+    }
+  ]
+}
