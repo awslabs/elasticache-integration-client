@@ -164,8 +164,9 @@ func checkHello(v resp.Value) error {
 }
 
 // die ends the connection once: it closes the socket, fails every pending entry with lost
-// (timedOut with timeoutErr), and, unless its owner closed it, logs and calls onLost.
-func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) {
+// (timedOut with timeoutErr), and, unless its owner closed it, logs and calls onLost. It
+// reports whether this call ended it.
+func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) bool {
 	first := false
 	c.dieOnce.Do(func() {
 		first = true
@@ -175,7 +176,7 @@ func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) {
 		c.pending.failAll(lost, timedOut, timeoutErr)
 	})
 	if !first || c.closing.Load() {
-		return
+		return first
 	}
 	if timedOut != nil {
 		c.cfg.logger.warn(eventInOrderTimeout, "an in-order reply did not arrive in time; closing the connection")
@@ -185,6 +186,7 @@ func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) {
 	if c.onLost != nil {
 		c.onLost(lost)
 	}
+	return true
 }
 
 // closeSocket closes the socket at once. Under TLS it skips the close_notify alert, whose
@@ -207,8 +209,9 @@ func (c *connection) close() {
 }
 
 // drop closes a live connection the session no longer trusts; onLost runs as for any death.
-func (c *connection) drop(reason string) {
-	c.die(&ConnectionLostError{Msg: reason}, nil, nil)
+// It reports whether this call ended the connection.
+func (c *connection) drop(reason string) bool {
+	return c.die(&ConnectionLostError{Msg: reason}, nil, nil)
 }
 
 // alive reports whether the connection has not died or been closed.

@@ -36,6 +36,7 @@ type outage struct {
 	readyAt       time.Time // requests wait for the reconnect until then
 	fallbackUntil time.Time // then go to DynamoDB until then
 	unlimited     bool      // no fallback limit
+	exhausted     atomic.Bool
 }
 
 func (o *outage) end() { o.readyOnce.Do(func() { close(o.ready) }) }
@@ -65,6 +66,7 @@ type session struct {
 	confirmedAt  time.Time   // the last time the cache confirmed the config
 
 	reconnectFailures failureLog
+	notSent           failureLog
 }
 
 // openSession opens the first connection, retrying until ConnectionTimeout has passed. It
@@ -302,4 +304,75 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	case <-ctx.Done():
 		return false
 	}
+}
+
+// request sends r through the cache and returns its one outcome (Java Session.request).
+func (s *session) request(ctx context.Context, r *request) requestOutcome {
+	strict := s.cfg.strict()
+	for {
+		if s.closed() {
+			return closedOutcome(strict)
+		}
+		if err := ctx.Err(); err != nil {
+			return failed(err, false)
+		}
+		if snap := s.snap.Load(); snap == nil || !snap.predicates.shouldRoute(r) {
+			return toOrigin()
+		}
+		c := s.live.Load()
+		if c == nil || !c.alive() {
+			if c != nil {
+				s.lost(c)
+			}
+			if o, done := s.awaitReconnect(ctx, strict); done {
+				return o
+			}
+			continue
+		}
+		reply, err := c.request(ctx, r)
+		o, drop := replyOutcome(reply, err, strict, s.closed())
+		if drop != "" && c.drop(drop) && reply.server.kind() == serverAuth {
+			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
+		}
+		if err != nil && errors.As(err, new(*RequestNotSentError)) {
+			if n, log := s.notSent.failed(); log {
+				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time",
+					slog.Uint64("count", n))
+			}
+		}
+		return o
+	}
+}
+
+// awaitReconnect waits for the current outage's reconnect until its ready deadline. done is
+// false when a connection was published (or the session closed): the caller looks again.
+func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOutcome, done bool) {
+	out := s.outage.Load()
+	if out == nil {
+		return closedOutcome(strict), true // no outage and no connection: only after close
+	}
+	if wait := time.Until(out.readyAt); wait > 0 {
+		t := time.NewTimer(wait)
+		select {
+		case <-out.ready:
+			t.Stop()
+			return requestOutcome{}, false
+		case <-ctx.Done():
+			t.Stop()
+			return failed(ctx.Err(), false), true
+		case <-t.C:
+		}
+	}
+	select {
+	case <-out.ready:
+		return requestOutcome{}, false
+	default:
+	}
+	if !strict && (out.unlimited || time.Now().Before(out.fallbackUntil)) {
+		return toOrigin(), true
+	}
+	if out.exhausted.CompareAndSwap(false, true) {
+		s.lg.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
+	}
+	return failure(unavailable("there is no cache connection, and fallback to DynamoDB is not allowed now", nil), strict, false), true
 }
