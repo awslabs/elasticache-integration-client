@@ -143,7 +143,7 @@ type pendingEntry struct {
 	deferrable bool // aws.request may be answered with +<id> and a push
 
 	// Guarded by pendingRequests.mu.
-	deadline  time.Time
+	deadline  time.Time // zero while the request is being written
 	where     entryPlace
 	abandoned bool   // the caller stopped waiting; the reply is discarded
 	id        string // when deferred
@@ -173,23 +173,27 @@ func newPendingRequests(maxPending int, onTimer func()) *pendingRequests {
 }
 
 // register adds an entry at the FIFO tail; the caller's slot belongs to it from now on. It
-// must be called under the write turn, just before the frame is written.
-func (p *pendingRequests) register(deferrable bool, deadline time.Time) (*pendingEntry, error) {
+// must be called under the write turn, just before the frame is written. The entry has no
+// reply deadline until setDeadline: the write has its own.
+func (p *pendingRequests) register(deferrable bool) (*pendingEntry, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
 		return nil, errConnectionClosed()
 	}
-	e := &pendingEntry{done: make(chan struct{}), deadline: deadline, deferrable: deferrable}
+	e := &pendingEntry{done: make(chan struct{}), deferrable: deferrable}
 	p.fifo = append(p.fifo, e)
-	p.armLocked(deadline)
 	return e, nil
 }
 
 // resolveHead completes the oldest FIFO entry with v. It reports false when none is pending.
+// After failAll it discards v: the connection is closing.
 func (p *pendingRequests) resolveHead(v resp.Value) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return true
+	}
 	e := p.popLocked()
 	if e == nil {
 		return false
@@ -204,6 +208,9 @@ func (p *pendingRequests) resolveHead(v resp.Value) bool {
 func (p *pendingRequests) deferHead(id string) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return true, nil // discarded: the connection is closing
+	}
 	if p.head == len(p.fifo) {
 		return false, &ProtocolError{Msg: "a deferred request id arrived with nothing pending"}
 	}
@@ -255,20 +262,22 @@ func (p *pendingRequests) abandon(e *pendingEntry) bool {
 	return true
 }
 
-// extend moves e's reply deadline to at when that is later. The timer, armed for the earlier
-// deadline, re-arms for the later one when it fires.
-func (p *pendingRequests) extend(e *pendingEntry, at time.Time) {
+// setDeadline gives e, once written, its reply deadline.
+func (p *pendingRequests) setDeadline(e *pendingEntry, at time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if e.where != finished && at.After(e.deadline) {
+	if e.where != finished && !p.closed {
 		e.deadline = at
+		p.armLocked(at)
 	}
 }
 
-// expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. It
-// returns a FIFO entry past its deadline, for which the connection must close; otherwise it
-// arms the timer for the next deadline.
-func (p *pendingRequests) expire(now time.Time, timeoutErr func() error) *pendingEntry {
+// expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. A
+// FIFO entry past its deadline fails with timeoutErr() and every other entry with lost(), as
+// failAll does, in the same critical section, so no reply can resolve it in between; expire
+// then returns it, and the connection must close. Otherwise it arms the timer for the next
+// deadline.
+func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error) *pendingEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -277,6 +286,9 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr func() error) *pendin
 	p.armedAt = time.Time{}
 	var next time.Time
 	for id, e := range p.deferred {
+		if e.deadline.IsZero() {
+			continue // still being written
+		}
 		if !e.deadline.After(now) {
 			delete(p.deferred, id)
 			p.finishLocked(e, resp.Value{}, timeoutErr())
@@ -285,7 +297,11 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr func() error) *pendin
 		next = earlier(next, e.deadline)
 	}
 	for _, e := range p.fifo[p.head:] {
+		if e.deadline.IsZero() {
+			continue
+		}
 		if !e.deadline.After(now) {
+			p.failAllLocked(lost(), e, timeoutErr())
 			return e
 		}
 		next = earlier(next, e.deadline)
@@ -301,6 +317,10 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr func() error) *pendin
 func (p *pendingRequests) failAll(lost error, timedOut *pendingEntry, timeoutErr error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.failAllLocked(lost, timedOut, timeoutErr)
+}
+
+func (p *pendingRequests) failAllLocked(lost error, timedOut *pendingEntry, timeoutErr error) {
 	if p.closed {
 		return
 	}
@@ -372,6 +392,13 @@ func (p *pendingRequests) armLocked(at time.Time) {
 		return
 	}
 	p.timer.Reset(time.Until(at))
+}
+
+func laterOf(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }
 
 func earlier(a, b time.Time) time.Time {

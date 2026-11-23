@@ -46,7 +46,7 @@ func TestPendingTimerRearms(t *testing.T) {
 		var p *pendingRequests
 		fatal := make(chan *pendingEntry, 1)
 		p = newPendingRequests(5, func() {
-			if e := p.expire(time.Now(), func() error { return &TimeoutError{} }); e != nil {
+			if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut); e != nil {
 				fatal <- e
 			}
 		})
@@ -83,7 +83,7 @@ func TestPendingTimerLoweredAfterRearmAndStoppedByFailAll(t *testing.T) {
 		start := time.Now()
 		p = newPendingRequests(5, func() {
 			fired = append(fired, time.Since(start))
-			p.expire(time.Now(), func() error { return &TimeoutError{} })
+			p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut)
 		})
 		a := track(t, p, true, start.Add(time.Second))
 		p.deferHead("1")
@@ -104,4 +104,60 @@ func TestPendingTimerLoweredAfterRearmAndStoppedByFailAll(t *testing.T) {
 			t.Fatalf("timer fired at %v, want [1s 2s]", fired)
 		}
 	})
+}
+
+// An entry still being written has no deadline: the timer firing for another entry neither
+// fails it nor closes the connection, also when its +id arrived before the write returned.
+// setDeadline then arms the timer for it.
+func TestPendingEntryBeingWrittenHasNoDeadline(t *testing.T) {
+	for _, deferBeforeWrite := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			var p *pendingRequests
+			fatal := make(chan *pendingEntry, 1)
+			p = newPendingRequests(5, func() {
+				if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut); e != nil {
+					fatal <- e
+				}
+			})
+			start := time.Now()
+			other := track(t, p, true, start.Add(time.Second))
+			p.deferHead("1")
+			if err := p.slots.acquire(context.Background(), budget(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			writing, err := p.register(true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if deferBeforeWrite {
+				p.deferHead("2")
+			}
+
+			time.Sleep(time.Second)
+			synctest.Wait()
+			if _, err := finishedWith(t, other); !errors.As(err, new(*TimeoutError)) {
+				t.Fatalf("other entry at 1s: %v", err)
+			}
+			select {
+			case <-writing.done:
+				t.Fatalf("deferred %v: the entry being written finished at 1s: %v", deferBeforeWrite, writing.err)
+			case <-fatal:
+				t.Fatalf("deferred %v: the entry being written closed the connection at 1s", deferBeforeWrite)
+			default:
+			}
+
+			p.setDeadline(writing, start.Add(3*time.Second))
+			time.Sleep(2 * time.Second)
+			synctest.Wait()
+			if deferBeforeWrite {
+				if _, err := finishedWith(t, writing); !errors.As(err, new(*TimeoutError)) {
+					t.Fatalf("deferred entry at 3s: %v", err)
+				}
+				return
+			}
+			if got := <-fatal; got != writing || time.Since(start) != 3*time.Second {
+				t.Fatalf("wrong fatal entry, or after %v", time.Since(start))
+			}
+		})
+	}
 }

@@ -164,9 +164,9 @@ func checkHello(v resp.Value) error {
 }
 
 // die ends the connection once: it closes the socket, fails every pending entry with lost
-// (timedOut with timeoutErr), and, unless its owner closed it, logs and calls onLost. It
+// (timedOut with timeoutErr), and, unless its owner closed it, logs ev and calls onLost. It
 // reports whether this call ended it.
-func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) bool {
+func (c *connection) die(ev eventID, lost error, timedOut *pendingEntry, timeoutErr error) bool {
 	first := false
 	c.dieOnce.Do(func() {
 		first = true
@@ -178,10 +178,11 @@ func (c *connection) die(lost error, timedOut *pendingEntry, timeoutErr error) b
 	if !first || c.closing.Load() {
 		return first
 	}
-	if timedOut != nil {
-		c.cfg.logger.warn(eventInOrderTimeout, "an in-order reply did not arrive in time; closing the connection")
+	if ev == eventInOrderTimeout {
+		c.cfg.logger.warn(ev, "an in-order reply did not arrive in time; closing the connection")
 	} else {
-		c.cfg.logger.warn(eventConnectionLost, "the cache connection was lost", slog.String("error", lost.Error()))
+		// One drop is routine (a proxy deployment); 1303 warns when reconnecting keeps failing.
+		c.cfg.logger.info(ev, "the cache connection was lost", slog.String("error", lost.Error()))
 	}
 	if c.onLost != nil {
 		c.onLost(lost)
@@ -202,7 +203,7 @@ func closeSocket(nc net.Conn) error {
 // must not be called from onLost.
 func (c *connection) close() {
 	c.closing.Store(true)
-	c.die(&ConnectionLostError{Msg: "the connection was closed"}, nil, nil)
+	c.die(eventConnectionLost, &ConnectionLostError{Msg: "the connection was closed"}, nil, nil)
 	if c.started.Load() {
 		<-c.readerDone
 	}
@@ -211,7 +212,7 @@ func (c *connection) close() {
 // drop closes a live connection the session no longer trusts; onLost runs as for any death.
 // It reports whether this call ended the connection.
 func (c *connection) drop(reason string) bool {
-	return c.die(&ConnectionLostError{Msg: reason}, nil, nil)
+	return c.die(eventConnectionLost, &ConnectionLostError{Msg: reason}, nil, nil)
 }
 
 // alive reports whether the connection has not died or been closed.
@@ -233,11 +234,15 @@ func (c *connection) err() error {
 }
 
 // checkDeadlines is the tracker's timer callback: an in-order entry past its deadline closes
-// the connection, whether or not its caller still waits.
+// the connection, whether or not its caller still waits. expire has failed every entry by then.
 func (c *connection) checkDeadlines() {
-	if fatal := c.pending.expire(time.Now(), c.timeoutError); fatal != nil {
-		c.die(&ConnectionLostError{Msg: "an earlier request on the connection timed out"}, fatal, c.timeoutError())
+	if fatal := c.pending.expire(time.Now(), c.timeoutError, errEarlierTimedOut); fatal != nil {
+		c.die(eventInOrderTimeout, errEarlierTimedOut(), nil, nil)
 	}
+}
+
+func errEarlierTimedOut() error {
+	return &ConnectionLostError{Msg: "an earlier request on the connection timed out"}
 }
 
 func (c *connection) timeoutError() error {
@@ -355,7 +360,7 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 		c.pending.slots.release()
 		return nil, errNoTurn()
 	}
-	e, err := c.pending.register(deferrable, deadline)
+	e, err := c.pending.register(deferrable)
 	if err != nil {
 		c.pending.slots.release()
 		return nil, err
@@ -367,10 +372,10 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 	if err != nil {
 		// Part of the frame may be on the wire, so the stream is out of step.
 		if isTimeout(err) {
-			c.die(&ConnectionLostError{Msg: "a request write timed out"}, e,
+			c.die(eventConnectionLost, &ConnectionLostError{Msg: "a request write timed out"}, e,
 				&TimeoutError{Msg: "the request write timed out", Err: err})
 		} else {
-			c.die(&ConnectionLostError{Msg: "socket write failed", Err: err}, nil, nil)
+			c.die(eventConnectionLost, &ConnectionLostError{Msg: "socket write failed", Err: err}, nil, nil)
 		}
 		<-e.done
 		if e.err == nil {
@@ -378,7 +383,8 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 		}
 		return nil, e.err
 	}
-	c.pending.extend(e, time.Now().Add(c.cfg.cacheRequestTimeout/4))
+	// The reply gets what is left of the budget, and at least a quarter of it.
+	c.pending.setDeadline(e, laterOf(deadline, time.Now().Add(c.cfg.cacheRequestTimeout/4)))
 	return e, nil
 }
 

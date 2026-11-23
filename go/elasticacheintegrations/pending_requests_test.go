@@ -159,11 +159,12 @@ func track(t *testing.T, p *pendingRequests, deferrable bool, deadline time.Time
 	if err := p.slots.acquire(context.Background(), budget(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	e, err := p.register(deferrable, deadline)
+	e, err := p.register(deferrable)
 	if err != nil {
 		p.slots.release()
 		t.Fatal(err)
 	}
+	p.setDeadline(e, deadline)
 	return e
 }
 
@@ -311,7 +312,9 @@ func TestPendingExpire(t *testing.T) {
 	p.deferHead("2")
 	inOrder := track(t, p, false, now.Add(2*time.Second))
 
-	if fatal := p.expire(now.Add(time.Second), timeout); fatal != nil {
+	lost := &ConnectionLostError{Msg: "gone"}
+	lostErr := func() error { return lost }
+	if fatal := p.expire(now.Add(time.Second), timeout, lostErr); fatal != nil {
 		t.Fatalf("fatal %v at 1s", fatal)
 	}
 	if _, err := finishedWith(t, deferredLate); !errors.As(err, new(*TimeoutError)) {
@@ -323,16 +326,21 @@ func TestPendingExpire(t *testing.T) {
 	if p.resolveDeferred("1", resp.IntValue(1)) {
 		t.Fatal("a late push resolved a timed-out entry")
 	}
-	if fatal := p.expire(now.Add(2*time.Second), timeout); fatal != inOrder {
-		t.Fatalf("fatal %v at 2s, want the in-order entry", fatal)
-	}
-	select {
-	case <-deferredOK.done:
-		t.Fatal("an entry inside its deadline finished")
-	default:
-	}
 	if free, _ := p.slots.state(); free != 3 {
 		t.Fatalf("free %d", free)
+	}
+	if fatal := p.expire(now.Add(2*time.Second), timeout, lostErr); fatal != inOrder {
+		t.Fatalf("fatal %v at 2s, want the in-order entry", fatal)
+	}
+	// The late in-order entry fails every other entry in the same critical section.
+	if _, err := finishedWith(t, inOrder); !errors.As(err, new(*TimeoutError)) {
+		t.Fatalf("in-order entry: %v", err)
+	}
+	if _, err := finishedWith(t, deferredOK); err != lost {
+		t.Fatalf("entry inside its deadline: %v, want the lost connection", err)
+	}
+	if !p.resolveHead(resp.IntValue(1)) {
+		t.Fatal("a reply after the timeout was not discarded")
 	}
 }
 
@@ -354,14 +362,20 @@ func TestPendingFailAll(t *testing.T) {
 	if _, err := finishedWith(t, c); err != lost {
 		t.Fatalf("c: %v", err)
 	}
-	if _, err := p.register(true, later()); !errors.As(err, new(*ConnectionLostError)) {
+	if _, err := p.register(true); !errors.As(err, new(*ConnectionLostError)) {
 		t.Fatalf("register after failAll: %v", err)
 	}
 	if err := p.slots.acquire(context.Background(), budget(time.Second)); !errors.As(err, new(*ConnectionLostError)) {
 		t.Fatalf("acquire after failAll: %v", err)
 	}
-	if p.resolveHead(resp.IntValue(1)) || p.resolveDeferred("1", resp.IntValue(1)) || p.expire(time.Now(), nil) != nil {
+	if p.resolveDeferred("1", resp.IntValue(1)) || p.expire(time.Now(), nil, nil) != nil {
 		t.Fatal("a closed tracker resolved something")
+	}
+	if !p.resolveHead(resp.IntValue(1)) {
+		t.Fatal("a closed tracker did not discard a reply")
+	}
+	if moved, err := p.deferHead("9"); !moved || err != nil {
+		t.Fatalf("a closed tracker did not discard a deferred id: %v, %v", moved, err)
 	}
 	p.failAll(lost, nil, nil)
 }
@@ -392,10 +406,9 @@ func TestPendingExpireFailsLateDeferredBeforeFatal(t *testing.T) {
 	p.deferHead("1")
 	inOrder := track(t, p, false, now.Add(time.Second))
 	timeout := &TimeoutError{Msg: "late"}
-	if fatal := p.expire(now.Add(time.Second), func() error { return timeout }); fatal != inOrder {
+	if fatal := p.expire(now.Add(time.Second), func() error { return timeout }, errEarlierTimedOut); fatal != inOrder {
 		t.Fatalf("fatal %v, want the in-order entry", fatal)
 	}
-	p.failAll(&ConnectionLostError{Msg: "gone"}, inOrder, timeout)
 	if _, err := finishedWith(t, deferred); err != timeout {
 		t.Fatalf("late deferred entry: %v, want its timeout", err)
 	}

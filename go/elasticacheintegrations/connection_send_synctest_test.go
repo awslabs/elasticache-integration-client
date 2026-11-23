@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -505,5 +506,68 @@ func TestReauthTimeoutClosesConnection(t *testing.T) {
 			t.Fatal("a re-AUTH timeout kept the connection")
 		}
 		testutil.AssertNoSecrets(t, err.Error(), testutil.TokenSecrets(testToken)...)
+	})
+}
+
+// A reply that lands at the instant the in-order deadline fires either serves its caller with
+// the connection kept, or times out with the connection closed; the deadline is decided under
+// the tracker's lock, so a served reply never closes the connection.
+func TestInOrderDeadlineAndReplyAtOnce(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, c := pipeMock(t, mockcache.Config{})
+		c.cacheRequestTimeout = time.Second
+		s.SetOnRequest(func(mockcache.Command) mockcache.Reply {
+			return mockcache.After(time.Second, mockcache.Served(200, nil, []byte("{}")))
+		})
+		for range 100 {
+			conn, _ := openPipe(t, s, c)
+			_, err := conn.request(context.Background(), getItem("edge"))
+			synctest.Wait()
+			switch {
+			case err == nil && !conn.alive():
+				t.Fatalf("the caller was served and the connection closed: %v", conn.err())
+			case err != nil && !errors.As(err, new(*TimeoutError)):
+				t.Fatalf("request: %v", err)
+			case err != nil && conn.alive():
+				t.Fatal("the caller timed out and the connection stayed open")
+			}
+			conn.close()
+		}
+	})
+}
+
+// A write that never completes fails as a write timeout, logged as a lost connection (1201,
+// Info), never as a missing in-order reply (1202): the reply deadline starts after the write.
+func TestBlockedWriteIsAWriteTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for range 20 {
+			conn, _, _ := rawConnection(t) // nobody reads the far end, so a write blocks
+			logs, l := testutil.NewLogCapture()
+			conn.cfg.logger = newLogger(l)
+			o := <-send(context.Background(), conn, "u", time.Now())
+			var te *TimeoutError
+			if !errors.As(o.err, &te) || te.Msg != "the request write timed out" || o.at != 5*time.Second {
+				t.Fatalf("%v at %v", o.err, o.at)
+			}
+			recs := eventRecords(logs, eventConnectionLost)
+			if len(recs) != 1 || recs[0].Level != slog.LevelInfo || len(eventRecords(logs, eventInOrderTimeout)) != 0 {
+				t.Fatalf("records:\n%s", logs.Text())
+			}
+		}
+	})
+}
+
+// One drop logs 1201 at Info; reconnect failures are what warn (1303).
+func TestDropLogsConnectionLostAtInfo(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn, server, lost := rawConnection(t)
+		logs, l := testutil.NewLogCapture()
+		conn.cfg.logger = newLogger(l)
+		_ = server.Close()
+		lost.wait(t)
+		recs := eventRecords(logs, eventConnectionLost)
+		if len(recs) != 1 || recs[0].Level != slog.LevelInfo {
+			t.Fatalf("records:\n%s", logs.Text())
+		}
 	})
 }

@@ -379,7 +379,7 @@ A failure that repeats logs at Warn the first time and every 100th time, so an o
 | 1101 | A re-AUTH or config refresh failed | Warn on the first and every 100th failure, else Debug |
 | 1102 | A re-AUTH or config refresh succeeded after failures | Info |
 | 1103 | The cache replied `AUTH_ERROR`; reconnecting | Warn, once per dropped connection |
-| 1201 | The connection was lost | Warn |
+| 1201 | The connection was lost | Info |
 | 1202 | An in-order reply did not arrive in time; the connection is closed | Warn |
 | 1203 | A reply arrived for a request that no longer waits for it | Debug |
 | 1301 | A config was applied | Debug |
