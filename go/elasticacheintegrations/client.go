@@ -5,6 +5,8 @@ package elasticacheintegrations
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -72,7 +74,8 @@ func start(ctx context.Context, cfg *config, build func(...func(*dynamodb.Option
 	return ddb, c, nil
 }
 
-// install wraps the HTTP client the SDK resolved, after every caller option function.
+// install wraps the HTTP client and the credentials provider the SDK resolved, after every
+// caller option function.
 func (c *Client) install(o *dynamodb.Options) {
 	if _, ok := o.HTTPClient.(*httpClient); ok {
 		c.installErr = &ConfigError{Option: "HTTPClient", Msg: "is already an ElastiCache Integrations client"}
@@ -83,6 +86,8 @@ func (c *Client) install(o *dynamodb.Options) {
 		origin = awshttp.NewBuildableClient()
 	}
 	o.HTTPClient = &httpClient{client: c, origin: origin}
+	o.Credentials = newSignerProvider(o.Credentials)
+	o.APIOptions = append(o.APIOptions[:len(o.APIOptions):len(o.APIOptions)], addSignerSlot)
 }
 
 // open checks the built client's region and credentials and opens the session with them.
@@ -90,7 +95,7 @@ func (c *Client) open(ctx context.Context, o dynamodb.Options) error {
 	if err := resolveIdentity(ctx, o.Region, o.Credentials); err != nil {
 		return err
 	}
-	c.identity = identity{region: o.Region, provider: o.Credentials}
+	c.identity = identity{region: o.Region}
 	s, err := openSession(ctx, c.cfg, newTokenManager(c.cfg, o.Region, o.Credentials))
 	if err != nil {
 		return err // openSession closed the token manager
@@ -98,6 +103,14 @@ func (c *Client) open(ctx context.Context, o dynamodb.Options) error {
 	c.session = s
 	return nil
 }
+
+const clientString = "elasticacheintegrations.Client"
+
+// String, GoString and Format print only the type name: the Client holds the DynamoDB
+// client's credentials provider, which may hold secrets in exported fields.
+func (c *Client) String() string             { return clientString }
+func (c *Client) GoString() string           { return clientString }
+func (c *Client) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, clientString) }
 
 // Close closes the cache connection, fails the requests still in flight on it, and waits for
 // every goroutine the client started. It never waits for the cache. Later calls on the

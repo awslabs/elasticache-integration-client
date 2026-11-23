@@ -205,29 +205,47 @@ func TestResolveIdentityCancelled(t *testing.T) {
 }
 
 func TestMatchesIdentity(t *testing.T) {
-	ctx := context.Background()
 	key := "AKIDCURRENT"
-	current := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+	provider := newSignerProvider(aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
 		return aws.Credentials{AccessKeyID: key, SecretAccessKey: "s"}, nil
-	})
-	if !matchesIdentity(ctx, current, "us-east-1", "AKIDCURRENT", "us-east-1") {
+	}))
+	// call is one SDK operation: a slot, then the signer's Retrieve.
+	call := func() context.Context {
+		ctx := context.WithValue(context.Background(), signerSlotKey{}, &signerSlot{})
+		if _, err := provider.Retrieve(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return ctx
+	}
+	ctx := call()
+	if !matchesIdentity(ctx, "us-east-1", "AKIDCURRENT", "us-east-1") {
 		t.Error("same key and region do not match")
 	}
-	if matchesIdentity(ctx, current, "us-east-1", "AKIDCURRENT", "eu-west-1") {
+	if matchesIdentity(ctx, "us-east-1", "AKIDCURRENT", "eu-west-1") {
 		t.Error("another region matches")
 	}
-	if matchesIdentity(ctx, current, "us-east-1", "AKIDOTHER", "us-east-1") {
+	if matchesIdentity(ctx, "us-east-1", "AKIDOTHER", "us-east-1") {
 		t.Error("another key matches")
 	}
-	if matchesIdentity(ctx, current, "us-east-1", "", "us-east-1") {
+	if matchesIdentity(ctx, "us-east-1", "", "us-east-1") {
 		t.Error("an empty key matches")
 	}
-	if matchesIdentity(ctx, credsFunc(aws.Credentials{AccessKeyID: "AKIDCURRENT"}, errors.New("x")), "us-east-1", "AKIDCURRENT", "us-east-1") {
+	if matchesIdentity(context.Background(), "us-east-1", "AKIDCURRENT", "us-east-1") {
+		t.Error("a call the client's provider did not sign matches")
+	}
+	failing := newSignerProvider(credsFunc(aws.Credentials{AccessKeyID: "AKIDCURRENT"}, errors.New("x")))
+	failed := context.WithValue(context.Background(), signerSlotKey{}, &signerSlot{})
+	_, _ = failing.Retrieve(failed)
+	if matchesIdentity(failed, "us-east-1", "AKIDCURRENT", "us-east-1") {
 		t.Error("a provider error matches")
 	}
 	key = "AKIDROTATED"
-	if !matchesIdentity(ctx, current, "us-east-1", "AKIDROTATED", "us-east-1") {
-		t.Error("the rotated key does not match")
+	rotated := call()
+	if !matchesIdentity(rotated, "us-east-1", "AKIDROTATED", "us-east-1") || matchesIdentity(rotated, "us-east-1", "AKIDCURRENT", "us-east-1") {
+		t.Error("a call matches a key other than the one its signer retrieved")
+	}
+	if !matchesIdentity(ctx, "us-east-1", "AKIDCURRENT", "us-east-1") {
+		t.Error("an earlier call no longer matches the key it was signed with")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"io"
 	"log/slog"
@@ -14,9 +15,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +27,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/aws/smithy-go/middleware"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/mockcache"
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
@@ -550,6 +554,114 @@ func (a *attempts) Do(req *http.Request) (*http.Response, error) {
 func (a *attempts) option(o *dynamodb.Options) {
 	a.next = o.HTTPClient
 	o.HTTPClient = a
+}
+
+// TestMintingProviderRoutes: a provider that mints a new key on every Retrieve, assigned
+// straight to aws.Config.Credentials, still routes: each call is checked against the key its
+// own signer retrieved. The SDK still retrieves once per call, as without the cache.
+func TestMintingProviderRoutes(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	var minted atomic.Int64
+	minting := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+		return aws.Credentials{AccessKeyID: fmt.Sprintf("ASIAMINTED%010d", minted.Add(1)),
+			SecretAccessKey: testutil.SecretAccessKey, SessionToken: testutil.SessionToken}, nil
+	})
+	origin := &fakeOrigin{}
+	ddb, _ := startSDKWith(t, aws.Config{Region: testRegion, Credentials: minting}, sdkConfig(t, s, addr), origin)
+	before := minted.Load()
+	for range 3 {
+		if _, err := getMusic(context.Background(), ddb); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if origin.count() != 0 || len(s.Requests()) != 3 {
+		t.Fatalf("origin calls %d, cache requests %d; want 0, 3", origin.count(), len(s.Requests()))
+	}
+	if n := minted.Load() - before; n != 3 {
+		t.Errorf("Retrieve ran %d times for three calls, want 3", n)
+	}
+}
+
+// sourcedProvider reports a credential source, as the SDK's own providers do.
+type sourcedProvider struct{ aws.CredentialsProvider }
+
+func (sourcedProvider) ProviderSources() []aws.CredentialSource {
+	return []aws.CredentialSource{aws.CredentialSourceSTSAssumeRole}
+}
+
+func TestInstallWrapsCredentials(t *testing.T) {
+	static := testutil.StaticCredentials()
+	cache := aws.NewCredentialsCache(static)
+	sourced := sourcedProvider{static}
+	wraps := func(inner aws.CredentialsProvider) func(aws.CredentialsProvider) bool {
+		return func(p aws.CredentialsProvider) bool {
+			w, ok := p.(*signerProvider)
+			return ok && aws.IsCredentialsProvider(w.provider, inner) && aws.IsCredentialsProvider(p, inner)
+		}
+	}
+	cases := []struct {
+		name string
+		in   aws.CredentialsProvider
+		want func(aws.CredentialsProvider) bool
+	}{
+		{"plain provider", static, wraps(static)},
+		{"cache", cache, func(p aws.CredentialsProvider) bool {
+			w, ok := p.(*signerProvider)
+			return ok && w.provider == aws.CredentialsProvider(cache)
+		}},
+		{"provider sources", sourced, func(p aws.CredentialsProvider) bool {
+			s, ok := p.(aws.CredentialProviderSource)
+			return wraps(sourced)(p) && ok && slices.Equal(s.ProviderSources(), sourced.ProviderSources())
+		}},
+		{"anonymous is kept", aws.AnonymousCredentials{}, func(p aws.CredentialsProvider) bool { return p == aws.AnonymousCredentials{} }},
+		{"nil is kept", nil, func(p aws.CredentialsProvider) bool { return p == nil }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := dynamodb.Options{Credentials: tc.in}
+			(&Client{}).install(&o)
+			if !tc.want(o.Credentials) {
+				t.Errorf("Credentials = %T", o.Credentials)
+			}
+		})
+	}
+	t.Run("caller's APIOptions array", func(t *testing.T) {
+		callers := make([]func(*middleware.Stack) error, 1, 2)
+		o := dynamodb.Options{Credentials: static, APIOptions: callers}
+		(&Client{}).install(&o)
+		if len(o.APIOptions) != 2 || callers[:2][1] != nil {
+			t.Error("install wrote into the caller's APIOptions array")
+		}
+	})
+}
+
+// valueProvider is a provider of the shape of credentials.StaticCredentialsProvider: a value
+// that holds the secrets in exported fields.
+type valueProvider struct{ Value aws.Credentials }
+
+func (p valueProvider) Retrieve(context.Context) (aws.Credentials, error) { return p.Value, nil }
+
+// TestClientPrintsNoCredentials: fmt and slog of a Client never print the secrets of a
+// value-type provider such as credentials.StaticCredentialsProvider.
+func TestClientPrintsNoCredentials(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	creds := aws.Credentials{AccessKeyID: testutil.AccessKeyID, SecretAccessKey: testutil.SecretAccessKey, SessionToken: testutil.SessionToken}
+	ddb, cache := startSDKWith(t, aws.Config{Region: testRegion, Credentials: valueProvider{creds}}, sdkConfig(t, s, addr), &fakeOrigin{})
+	if _, err := getMusic(context.Background(), ddb); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d"} {
+		fmt.Fprintf(&out, verb+"\n", cache)
+	}
+	slog.New(slog.NewTextHandler(&out, nil)).Info("client", "client", cache)
+	slog.New(slog.NewJSONHandler(&out, nil)).Info("client", "client", cache)
+	testutil.AssertNoSecrets(t, out.String(), testutil.SecretAccessKey, testutil.SessionToken)
+	if !strings.Contains(out.String(), clientString) {
+		t.Errorf("a Client prints as %q", out.String())
+	}
 }
 
 func TestClose(t *testing.T) {

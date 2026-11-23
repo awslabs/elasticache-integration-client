@@ -23,14 +23,15 @@ import (
 const testRegion = "us-east-1"
 
 func testIdentity() identity {
-	return identity{region: testRegion, provider: testutil.StaticCredentials()}
+	return identity{region: testRegion}
 }
 
 // signedRequest is a DynamoDB request as the SDK hands it to its HTTP client: operation name
-// in the context, SigV4-signed with creds in region.
+// in the context, the client's own key recorded by its provider, SigV4-signed with creds in
+// region.
 func signedRequest(t testing.TB, operation, body string, creds aws.Credentials, region string) *http.Request {
 	t.Helper()
-	ctx := awsmiddleware.SetOperationName(context.Background(), operation)
+	ctx := awsmiddleware.SetOperationName(signerContext(), operation)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://dynamodb."+region+".amazonaws.com/", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -46,6 +47,11 @@ func signedRequest(t testing.TB, operation, body string, creds aws.Credentials, 
 		t.Fatal(err)
 	}
 	return req
+}
+
+// signerContext is a context in which the client's provider returned the client's own key.
+func signerContext() context.Context {
+	return context.WithValue(context.Background(), signerSlotKey{}, &signerSlot{keyID: testutil.AccessKeyID})
 }
 
 func testCredentials(t testing.TB) aws.Credentials {
@@ -158,7 +164,7 @@ func TestAdaptRequestEmptyBody(t *testing.T) {
 
 func TestAdaptRequestOperationFromTarget(t *testing.T) {
 	req := getItemRequest(t)
-	req = req.WithContext(context.Background())
+	req = req.WithContext(signerContext())
 	req.Header.Set("X-Amz-Target", "DynamoDB_20120810.Query ")
 	r, ok, err := adaptRequest(req, testIdentity())
 	if err != nil || !ok || r.metadata.operation != "Query" {
@@ -169,9 +175,6 @@ func TestAdaptRequestOperationFromTarget(t *testing.T) {
 func TestAdaptRequestNotRoutable(t *testing.T) {
 	other := testCredentials(t)
 	other.AccessKeyID = "AKIDOTHER"
-	failing := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
-		return aws.Credentials{}, errors.New("no credentials")
-	})
 	cases := []struct {
 		name string
 		req  func() *http.Request
@@ -182,17 +185,17 @@ func TestAdaptRequestNotRoutable(t *testing.T) {
 		{"over 16 MiB", func() *http.Request { r := getItemRequest(t); r.ContentLength = maxRequestBody + 1; return r }, testIdentity()},
 		{"no operation", func() *http.Request {
 			r := getItemRequest(t)
-			r = r.WithContext(context.Background())
+			r = r.WithContext(signerContext())
 			r.Header.Del("X-Amz-Target")
 			return r
 		}, testIdentity()},
 		{"two targets", func() *http.Request {
-			r := getItemRequest(t).WithContext(context.Background())
+			r := getItemRequest(t).WithContext(signerContext())
 			r.Header.Add("X-Amz-Target", "DynamoDB_20120810.Query")
 			return r
 		}, testIdentity()},
 		{"empty target operation", func() *http.Request {
-			r := getItemRequest(t).WithContext(context.Background())
+			r := getItemRequest(t).WithContext(signerContext())
 			r.Header.Set("X-Amz-Target", "DynamoDB_20120810.")
 			return r
 		}, testIdentity()},
@@ -229,7 +232,10 @@ func TestAdaptRequestNotRoutable(t *testing.T) {
 		{"per-call region", func() *http.Request {
 			return signedRequest(t, "GetItem", `{}`, testCredentials(t), "us-west-2")
 		}, testIdentity()},
-		{"provider fails", func() *http.Request { return getItemRequest(t) }, identity{region: testRegion, provider: failing}},
+		{"not signed by the client's provider", func() *http.Request {
+			r := getItemRequest(t)
+			return r.WithContext(awsmiddleware.SetOperationName(context.Background(), "GetItem"))
+		}, testIdentity()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

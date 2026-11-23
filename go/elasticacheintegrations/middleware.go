@@ -25,10 +25,9 @@ const (
 	sigV4Request = "aws4_request"
 )
 
-// identity is the region and credentials provider the cache connection authenticates with.
+// identity is the region the cache connection authenticates in.
 type identity struct {
-	region   string
-	provider aws.CredentialsProvider
+	region string
 }
 
 // requestBodyError reports that the body of an SDK request could not be read.
@@ -55,7 +54,7 @@ func adaptRequest(req *http.Request, id identity) (r *request, routable bool, er
 		return nil, false, nil
 	}
 	keyID, region, ok := signedScope(req.Header)
-	if !ok || !matchesIdentity(req.Context(), id.provider, id.region, keyID, region) {
+	if !ok || !matchesIdentity(req.Context(), id.region, keyID, region) {
 		return nil, false, nil // a per-call identity or region, or not SigV4-signed
 	}
 	body, err := readBody(req.Body, n)

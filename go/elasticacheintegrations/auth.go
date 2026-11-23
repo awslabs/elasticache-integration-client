@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/smithy-go/middleware"
 )
 
 const (
@@ -81,14 +82,68 @@ func resolveIdentity(ctx context.Context, region string, provider aws.Credential
 }
 
 // matchesIdentity reports whether a request signed with signedKeyID in signedRegion may use
-// the client's cache connection: the region is the client's and the key id is the one the
-// client's provider returns now.
-func matchesIdentity(ctx context.Context, provider aws.CredentialsProvider, region, signedKeyID, signedRegion string) bool {
+// the client's cache connection: the region is the client's and the SDK signed it with the key
+// the client's own provider returned for this call.
+func matchesIdentity(ctx context.Context, region, signedKeyID, signedRegion string) bool {
 	if signedRegion != region || signedKeyID == "" {
 		return false
 	}
-	creds, err := provider.Retrieve(ctx)
-	return err == nil && creds.AccessKeyID == signedKeyID
+	slot, ok := ctx.Value(signerSlotKey{}).(*signerSlot)
+	return ok && slot.keyID == signedKeyID
+}
+
+// signerProvider is the DynamoDB client's credentials provider as the caller gave it, retrieved
+// on every call as before. It records the access key id it returns in the call's signerSlot.
+// A per-call Credentials override replaces it, so that call records nothing.
+type signerProvider struct {
+	provider aws.CredentialsProvider
+}
+
+// newSignerProvider wraps p; a nil or anonymous provider is left for resolveIdentity to refuse.
+func newSignerProvider(p aws.CredentialsProvider) aws.CredentialsProvider {
+	if p == nil || aws.IsCredentialsProvider(p, aws.AnonymousCredentials{}) {
+		return p
+	}
+	return &signerProvider{provider: p}
+}
+
+func (p *signerProvider) Retrieve(ctx context.Context) (aws.Credentials, error) {
+	creds, err := p.provider.Retrieve(ctx)
+	if slot, ok := ctx.Value(signerSlotKey{}).(*signerSlot); ok && err == nil {
+		slot.keyID = creds.AccessKeyID
+	}
+	return creds, err
+}
+
+// IsCredentialsProvider lets aws.IsCredentialsProvider see the wrapped provider.
+func (p *signerProvider) IsCredentialsProvider(target aws.CredentialsProvider) bool {
+	return aws.IsCredentialsProvider(p.provider, target)
+}
+
+// ProviderSources reports the wrapped provider's sources for the SDK's user agent.
+func (p *signerProvider) ProviderSources() []aws.CredentialSource {
+	if s, ok := p.provider.(aws.CredentialProviderSource); ok {
+		return s.ProviderSources()
+	}
+	return nil
+}
+
+// signerSlot holds the access key id the client's provider returned for one SDK operation.
+type signerSlot struct {
+	keyID string
+}
+
+type signerSlotKey struct{}
+
+var signerSlotMiddleware = middleware.InitializeMiddlewareFunc("ElastiCacheIntegrationsSignerSlot",
+	func(ctx context.Context, in middleware.InitializeInput, next middleware.InitializeHandler) (
+		middleware.InitializeOutput, middleware.Metadata, error) {
+		return next.HandleInitialize(context.WithValue(ctx, signerSlotKey{}, &signerSlot{}), in)
+	})
+
+// addSignerSlot gives every operation a signerSlot before the SDK resolves its credentials.
+func addSignerSlot(s *middleware.Stack) error {
+	return s.Initialize.Add(signerSlotMiddleware, middleware.Before)
 }
 
 // authCredentials is the user and token for HELLO 3 AUTH and AUTH.

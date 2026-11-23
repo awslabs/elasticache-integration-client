@@ -325,8 +325,15 @@ func TestPerCallCredentialsGoToOrigin(t *testing.T) {
 	if _, err := ddb.GetItem(ctx, in, func(o *dynamodb.Options) { o.Region = "us-west-2" }); err != nil {
 		t.Fatal(err)
 	}
-	if origin.count() != 2 || len(s.Requests()) != 0 {
-		t.Fatalf("origin calls %d, cache requests %d; want 2, 0", origin.count(), len(s.Requests()))
+	// An override with the client's own key is still another provider.
+	same := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+		return aws.Credentials{AccessKeyID: key.Load().(string), SecretAccessKey: testutil.SecretAccessKey, SessionToken: testutil.SessionToken}, nil
+	})
+	if _, err := ddb.GetItem(ctx, in, func(o *dynamodb.Options) { o.Credentials = same }); err != nil {
+		t.Fatal(err)
+	}
+	if origin.count() != 3 || len(s.Requests()) != 0 {
+		t.Fatalf("origin calls %d, cache requests %d; want 3, 0", origin.count(), len(s.Requests()))
 	}
 	if !strings.Contains(origin.calls[0].header.Get("Authorization"), "Credential=AKIDOTHERPRINCIPAL01/") ||
 		!strings.Contains(origin.calls[1].header.Get("Authorization"), "/us-west-2/dynamodb/") {
@@ -337,8 +344,39 @@ func TestPerCallCredentialsGoToOrigin(t *testing.T) {
 	if _, err := ddb.GetItem(ctx, in); err != nil {
 		t.Fatal(err)
 	}
-	if origin.count() != 2 || len(s.Requests()) != 1 {
+	if origin.count() != 3 || len(s.Requests()) != 1 {
 		t.Errorf("a rotated key of the client's own provider did not route: origin %d, cache %d", origin.count(), len(s.Requests()))
+	}
+}
+
+// TestRotatedKeyReachesOrigin: a provider whose credentials never expire but rotate is
+// retrieved for every call, as the plain SDK does, so DynamoDB gets the rotated key.
+func TestRotatedKeyReachesOrigin(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	var key atomic.Value
+	key.Store(testutil.AccessKeyID)
+	rotating := aws.CredentialsProviderFunc(func(context.Context) (aws.Credentials, error) {
+		return aws.Credentials{AccessKeyID: key.Load().(string), SecretAccessKey: testutil.SecretAccessKey, SessionToken: testutil.SessionToken}, nil
+	})
+	origin := &fakeOrigin{}
+	ddb, _ := startSDKWith(t, aws.Config{Region: testRegion, Credentials: rotating}, sdkConfig(t, s, addr), origin)
+	ctx := context.Background()
+	if _, err := getMusic(ctx, ddb); err != nil {
+		t.Fatal(err)
+	}
+	key.Store("AKIDROTATEDKEY000001")
+	if _, err := ddb.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String("Music")}); err != nil {
+		t.Fatal(err)
+	}
+	if origin.count() != 1 || !strings.Contains(origin.calls[0].header.Get("Authorization"), "Credential=AKIDROTATEDKEY000001/") {
+		t.Fatalf("DynamoDB did not get the rotated key: %d calls", origin.count())
+	}
+	if _, err := getMusic(ctx, ddb); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.Requests()) != 2 {
+		t.Errorf("a call signed with the rotated key did not route: cache requests %d, want 2", len(s.Requests()))
 	}
 }
 
