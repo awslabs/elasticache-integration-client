@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go/middleware"
@@ -706,6 +705,8 @@ func TestClose(t *testing.T) {
 	}
 }
 
+// TestCloseStrict: after Close a strict client's calls go to DynamoDB, routed or not, as the
+// Python client's do once close() removes its handler.
 func TestCloseStrict(t *testing.T) {
 	testutil.ClearAWSEnv(t)
 	s, addr := sdkMock(t)
@@ -718,17 +719,14 @@ func TestCloseStrict(t *testing.T) {
 	get, desc := &attempts{}, &attempts{}
 	_, getErr := ddb.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()}, get.option)
 	_, descErr := ddb.DescribeTable(ctx, &dynamodb.DescribeTableInput{TableName: aws.String("Music")}, desc.option)
-	for i, err := range []error{getErr, descErr} {
-		var cu *CacheUnavailableError
-		if !errors.As(err, &cu) || errors.As(err, new(*retry.MaxAttemptsError)) {
-			t.Errorf("call %d: err = %v; want a CacheUnavailableError, not retried", i, err)
-		}
+	if getErr != nil || descErr != nil {
+		t.Fatalf("calls after Close = %v, %v; want DynamoDB's answers", getErr, descErr)
 	}
 	if get.n != 1 || desc.n != 1 {
 		t.Errorf("attempts = %d, %d; want 1, 1", get.n, desc.n)
 	}
-	if origin.count() != 0 || len(s.Requests()) != 0 {
-		t.Errorf("origin calls %d, cache requests %d; want 0, 0", origin.count(), len(s.Requests()))
+	if origin.count() != 2 || len(s.Requests()) != 0 {
+		t.Errorf("origin calls %d, cache requests %d; want 2, 0", origin.count(), len(s.Requests()))
 	}
 }
 

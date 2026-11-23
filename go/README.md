@@ -146,7 +146,7 @@ ddb, cache, err := elasticacheintegrations.New(ctx, dynamodb.Options{
 
 ### Strict mode
 
-With `FallbackDuration: aws.Duration(0)` a request the cache would serve never goes to DynamoDB. While the cache is unreachable it fails with a retryable `*CacheUnavailableError`:
+With `FallbackDuration: aws.Duration(0)` a request the cache would serve never goes to DynamoDB while the client is open. While the cache is unreachable it fails with a retryable `*CacheUnavailableError`:
 
 ```go
 ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticacheintegrations.Options{
@@ -301,7 +301,7 @@ The cache sends the client its routing rules as CEL predicates with each config.
 
 A predicate sees the request's `service`, `operation`, `method`, `url`, `headers` (lowercase names, without `authorization`, `x-amz-date`, `x-amz-security-token`, `amz-sdk-request` and `x-amz-request-id`) and its JSON `body`, plus the predicate's own `vars`. The body is parsed only for the predicates that read it, so a body that is not a JSON object fails those predicates and no others. A config with no predicates routes nothing. A config whose predicates are malformed or do not compile, a `vars` that is not an object included, is not used: at startup it is a `*ConfigUnevaluableError`, and on a refresh the client keeps the config it has.
 
-These requests always go to DynamoDB, untouched, whatever the predicates say, also in [strict mode](#strict-mode). After `Close` in strict mode only the call with its own `HTTPClient` still does; the others fail like every other call ([Closing the client](#closing-the-client)):
+These requests always go to DynamoDB, untouched, whatever the predicates say, also in [strict mode](#strict-mode):
 
 - **A call with per-call options that change who signs it.** The cache connection is authenticated as the DynamoDB client's own identity. A call whose option function sets other `Credentials` or another `Region` is signed differently, so serving it from that connection would answer for the wrong principal. The client compares the access key id and region in the signed request with the region of the DynamoDB client and the key its own provider returned while the SDK signed the call, and sends any mismatch to DynamoDB. A rotated key of that provider still matches; a per-call provider never does, even one that returns the same key.
 - **A call whose option function replaces `HTTPClient`.** It no longer goes through the client at all.
@@ -321,7 +321,7 @@ Each of the [connections](#connections) reconnects on its own, and calls go to t
 
 **After the wait.** If the connection is still down, the request goes to DynamoDB for as long as [`FallbackDuration`](#configuration) allows, counted from the end of the wait. The default has no limit, a positive value allows that long, and `aws.Duration(0)` never allows it. Once the window ends, the request fails with a retryable `*CacheUnavailableError` for the SDK to handle. A write sent to DynamoDB this way can leave a stale entry in the cache until its [TTL](#cache-policy-overrides) expires.
 
-**Strict mode** (`FallbackDuration: aws.Duration(0)`). A request the cache would serve never goes to DynamoDB: not during an outage, not when the connection is too busy to take it, not when the cache replies `AUTH_ERROR`, and not after [`Close`](#closing-the-client). Requests the predicates send to DynamoDB still go there, and so do the calls that [always go there](#request-routing), such as a per-call `Credentials` or `Region`, until `Close`. After `Close` only a call with its own `HTTPClient` reaches DynamoDB.
+**Strict mode** (`FallbackDuration: aws.Duration(0)`). While the client is open, a request the cache would serve never goes to DynamoDB: not during an outage, not when the connection is too busy to take it, and not when the cache replies `AUTH_ERROR`. Requests the predicates send to DynamoDB still go there, and so do the calls that [always go there](#request-routing), such as a per-call `Credentials` or `Region`. After [`Close`](#closing-the-client) every call goes to DynamoDB, as in the Python client.
 
 **Too many requests at once.** One connection carries up to 100 requests in flight, and the cache serves one connection at about 35,000 requests per second. For more, raise [`Connections`](#connections). A request that finds no room within 75% of `CacheRequestTimeout` is not sent to the cache and goes to DynamoDB, or fails with a retryable `*CacheUnavailableError` in strict mode.
 
@@ -333,14 +333,15 @@ Each of the [connections](#connections) reconnects on its own, and calls go to t
 
 `cache.Close()` closes the connections, fails the requests still waiting on them, and waits for every goroutine the client started. It never waits for the cache to answer, but it does wait for a credentials `Retrieve` in flight, so a provider that ignores its context can hold it up. It is safe to call more than once and from any goroutine, and always returns `nil`.
 
-- A request in flight when you call `Close` fails with a retryable `*ConnectionLostError`. The SDK's retry then goes to DynamoDB. In strict mode it is not retryable.
-- After `Close`, every call on the DynamoDB client goes straight to DynamoDB. In strict mode every call fails instead, routed or not, with a `*CacheUnavailableError` that is not retryable. Only a call whose option function sets its own `HTTPClient` still reaches DynamoDB, because it no longer goes through the client.
+- A request in flight when you call `Close` fails with a `*ConnectionLostError` that is not retried: the client is shutting down.
+- A request waiting for a lost connection to come back goes to DynamoDB. In strict mode it fails with a retryable `*CacheUnavailableError`, and the SDK's retry goes to DynamoDB.
+- After `Close`, every call on the DynamoDB client goes straight to DynamoDB, strict mode included.
 
 The DynamoDB client itself has no `Close`; stop using it when you are done.
 
 ## Errors and retries
 
-Retries work as they do without the cache: your SDK retry settings decide whether, and how many times, a request is retried. A request that times out or fails because the cache could not complete it can be retried, for any operation. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
+Retries work as they do without the cache: your SDK retry settings decide whether, and how many times, a request is retried. The client decides which failures are retryable as the Python client does. A request that times out, loses its connection, or fails because the cache could not complete it can be retried, for any operation. Nothing the client fails during `Close` is retried, except a `*CacheUnavailableError`, whose retry goes to DynamoDB. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
 Your application handles these failures as it does without the cache: once the SDK's retries run out, the call returns the SDK's `*smithy.OperationError`. The client's error is inside it, so `errors.As` reaches it:
 
@@ -361,20 +362,19 @@ Every error the client creates matches `elasticacheintegrations.ErrIntegrations`
 | `*AuthError` | The cache rejected the IAM token (`WRONGPASS`, `invalid-iam-credentials`). At startup. | — |
 | `*OverridesRejectedError` | The cache rejected `CachePolicyOverrides` (`CONFIG_INVALID`). At startup. | — |
 | `*ConfigUnevaluableError` | The cache sent routing rules the client cannot compile. At startup. | — |
-| `*TimeoutError` | The cache did not answer within `CacheRequestTimeout`. `Timeout()` is true. | yes |
-| `*ConnectionLostError` | The connection closed while the request was in flight, also when `Close` closed it. The cache answering `MOVED` or `NOAUTH`, a reply stream the client cannot decode, and a reply over 16 MiB also close the connection; the last two wrap a `*ProtocolError`. | yes; strict mode after `Close`: no |
-| `*OriginError` | The cache could not complete its call to DynamoDB (`ORIGIN_ERROR`, `INTERNAL_ERROR`). | yes |
-| `*CacheUnavailableError` | No connection and the fallback window is spent, or strict mode. `Reason` says which. In strict mode it may wrap a `*RequestNotSentError`: the connection had no room for the request in time. | yes; after `Close` in strict mode: no |
-| `*RejectedError` | The cache refused the request (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH` or an unknown code). `Code` holds the code. It never goes to DynamoDB. | no |
+| `*TimeoutError` | The cache did not answer within `CacheRequestTimeout`. `Timeout()` is true. | yes; failed by `Close`: no |
+| `*ConnectionLostError` | The connection closed while the request was in flight. The cache answering `MOVED` or `NOAUTH`, a reply stream the client cannot decode, and a reply over 16 MiB also close the connection; the last two wrap a `*ProtocolError`. `Close` fails its requests in flight with it too. | yes; failed by `Close`: no |
+| `*OriginError` | The cache could not complete its call to DynamoDB (`ORIGIN_ERROR`, `INTERNAL_ERROR`) and the connection is up. If the connection was down by the time the reply was handled, or `Close` was running, the call fails with a `*RejectedError` with that code instead. | yes |
+| `*CacheUnavailableError` | No connection and the fallback window is spent, or strict mode. `Reason` says which. In strict mode it may wrap a `*RequestNotSentError`: the connection had no room for the request in time. | yes |
+| `*RejectedError` | The cache refused the request (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH` or an unknown code), or answered `ORIGIN_ERROR` or `INTERNAL_ERROR` on a connection that was down by then or while `Close` ran. `Code` holds the code. It never goes to DynamoDB. | no |
+| `*RequestNotSentError` | The connection had no room for the request in time while `Close` ran. Nothing reached the cache. Outside `Close` such a request goes to DynamoDB, or in strict mode fails with a `*CacheUnavailableError`. | no |
 | `*ProtocolError` | The cache sent a reply of the wrong shape, such as a header block over 64 KiB or 1024 lines. The connection stays open. | no |
-
-In strict mode, every error after `Close` is not retryable.
 
 A `*ProtocolError` can also sit inside a retryable `*ConnectionLostError`, when the stream cannot be decoded at all. Check for `*ConnectionLostError` first when the difference matters.
 
 A cancelled or expired `ctx` ends the call with a `*smithy.CanceledError` that wraps `ctx.Err()`, as the SDK returns it, so `errors.Is(err, context.Canceled)` or `context.DeadlineExceeded` holds. It is never retried.
 
-**How the SDK learns what to retry.** Each error the client hands the SDK has a `RetryableError() bool` method with the decision in the table above. The SDK's standard retryer (`retry.NewStandard`, the default) and the adaptive retryer (`retry.NewAdaptiveMode`) check it right after the cancellation check, before their other rules. If you replace the retryer, yours must honour `RetryableError` too. One that ignores it treats every cache error as a connection error and retries even a `*RejectedError` or the strict-mode error after `Close`.
+**How the SDK learns what to retry.** Each error the client hands the SDK has a `RetryableError() bool` method with the decision in the table above. The SDK's standard retryer (`retry.NewStandard`, the default) and the adaptive retryer (`retry.NewAdaptiveMode`) check it right after the cancellation check, before their other rules. If you replace the retryer, yours must honour `RetryableError` too. One that ignores it treats every cache error as a connection error and retries even a `*RejectedError` or a request `Close` failed.
 
 **The retry quota.** Each retry spends 14 tokens of the standard retryer's 500-token bucket (5 for a throttling error). One connection carries up to 100 requests in flight, so when it drops, every one of them fails at the same moment. The client wraps the DynamoDB client's retryer so that one drop costs the bucket one retry, however many requests it failed, as one dropped HTTP connection costs one retry without the cache: the first of them to retry pays, and the others retry without spending tokens, or are refused if it was. This applies to the retryer the DynamoDB client has after its option functions, the default included; a `Retryer` set on a single call is used as it is. Your retryer still decides whether to retry and how many attempts a request gets. In a long outage with strict mode, or a spent fallback window, every request fails with a retryable `*CacheUnavailableError`, which pays the full cost, so the bucket can empty. While it is empty the SDK does not retry, including throttling errors from DynamoDB. Successful calls refill it slowly.
 

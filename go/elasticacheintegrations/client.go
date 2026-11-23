@@ -39,9 +39,8 @@ type Client struct {
 // The returned client is a plain *dynamodb.Client. Calls the cache serves go to the cache;
 // every other call goes to DynamoDB through the HTTP client the SDK would have used, which
 // optFns may set. The IAM token for the cache is signed with the DynamoDB client's own region
-// and credentials. A call made with a per-call region or credentials override goes to
-// DynamoDB, except after Close in strict mode (see [Client.Close]); a call with its own
-// HTTPClient always does. The client's retryer is wrapped so that the requests one dropped
+// and credentials. A call made with a per-call region, credentials or HTTPClient override
+// goes to DynamoDB. The client's retryer is wrapped so that the requests one dropped
 // cache connection fails cost its retry quota one retry; a Retryer set per call is not.
 func NewFromConfig(ctx context.Context, cfg aws.Config, opts Options,
 	optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
@@ -284,10 +283,10 @@ func (c *Client) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, clientSt
 
 // Close closes the cache connections, fails the requests still in flight on them, and waits
 // for every goroutine the client started. It never waits for the cache, but waits for a
-// credentials Retrieve in flight. Later calls on the DynamoDB client go to DynamoDB, or fail
-// with a non-retryable *CacheUnavailableError when FallbackDuration is 0 (strict); a call whose
-// option function sets its own HTTPClient still goes to DynamoDB. It is safe to call more than
-// once and from any goroutine, and on a nil *Client. It always returns nil.
+// credentials Retrieve in flight. A request it fails is not retried; a request waiting for a
+// reconnect goes to DynamoDB, or in strict mode fails with a retryable *CacheUnavailableError.
+// Later calls on the DynamoDB client go to DynamoDB, strict mode included. It is safe to call
+// more than once and from any goroutine, and on a nil *Client. It always returns nil.
 func (c *Client) Close() error {
 	if c == nil {
 		return nil

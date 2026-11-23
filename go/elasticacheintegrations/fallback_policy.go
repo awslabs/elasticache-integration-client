@@ -29,15 +29,18 @@ func failed(err error, retryable bool) requestOutcome {
 	return requestOutcome{kind: outcomeFailed, err: err, retryable: retryable}
 }
 
-// retryable reports whether the SDK may retry a failed routed request.
-func retryable(err error, strict, closed bool) bool {
+// retryable reports whether the SDK may retry a failed routed request, as the Python client
+// decides it. closed is whether the client was closed when the request failed.
+func retryable(err error, closed bool) bool {
 	switch {
-	case closed && strict:
-		return false // strict mode never reaches DynamoDB, also after Close
-	case errors.As(err, new(*CacheUnavailableError)),
-		errors.As(err, new(*OriginError)),
-		errors.As(err, new(*ConnectionLostError)),
-		errors.As(err, new(*TimeoutError)):
+	case errors.As(err, new(*CacheUnavailableError)):
+		return true // a retry after Close goes to DynamoDB
+	case closed:
+		return false // a request failed by Close is not retried
+	case errors.As(err, new(*OriginError)),
+		errors.As(err, new(*ConnectionLostError)), // includes the MOVED and NOAUTH drop
+		errors.As(err, new(*TimeoutError)),
+		errors.As(err, new(*ConnectionError)):
 		return true
 	default:
 		return false // *RejectedError, *ProtocolError, ctx.Err()
@@ -47,17 +50,23 @@ func retryable(err error, strict, closed bool) bool {
 // noFallback starts every CacheUnavailableError reason, in the words Java, Node and Python use.
 const noFallback = "could not serve the request from the cache, and origin fallback is not allowed: "
 
-// closedOutcome is the outcome of a routed request after Close.
-func closedOutcome(strict bool) requestOutcome {
-	if strict {
-		return failed(unavailable(noFallback+"the client is closed", nil), false)
+// closedOutcome is the outcome of a routed request that finds the session closed. waited is
+// whether it was waiting for a reconnect when Close came: it then goes to DynamoDB, or in
+// strict mode fails with a retryable *CacheUnavailableError, whose retry goes to DynamoDB.
+// Otherwise it raced with Close and fails, not retried, as a request in flight at Close does.
+func closedOutcome(strict, waited bool) requestOutcome {
+	switch {
+	case !waited:
+		return failed(&ConnectionLostError{Msg: "the client is closed"}, false)
+	case strict:
+		return failed(unavailable(noFallback+"the client is closed", nil), true)
 	}
 	return toOrigin()
 }
 
 // failure fails a request with err and the retry decision retryable gives it.
-func failure(err error, strict, closed bool) requestOutcome {
-	return failed(err, retryable(err, strict, closed))
+func failure(err error, closed bool) requestOutcome {
+	return failed(err, retryable(err, closed))
 }
 
 // unavailable is a *CacheUnavailableError. cause must never be a *RejectedError, or
@@ -66,20 +75,25 @@ func unavailable(reason string, cause error) error {
 	return &CacheUnavailableError{Reason: reason, Err: cause}
 }
 
-// replyOutcome maps the reply, or the error, of a request sent on a live connection. drop is
-// why the session must drop that connection, or empty.
-func replyOutcome(reply requestReply, err error, strict, closed bool) (o requestOutcome, drop string) {
+// replyOutcome maps the reply, or the error, of a request sent on a live connection. healthy
+// is whether the session has a live connection now. ORIGIN_ERROR and INTERNAL_ERROR are a
+// retryable *OriginError only when healthy and not closed, else the *RejectedError the cache
+// sent. drop is why the session must drop that connection, or empty.
+func replyOutcome(reply requestReply, err error, strict, closed, healthy bool) (o requestOutcome, drop string) {
 	if err != nil {
 		switch {
 		case errors.As(err, new(*RequestNotSentError)):
-			if strict {
-				return failure(unavailable(noFallback+"the cache connection had no free capacity in time", err), strict, closed), ""
+			switch {
+			case strict:
+				return failure(unavailable(noFallback+"the cache connection had no free capacity in time", err), closed), ""
+			case closed:
+				return failed(err, false), ""
 			}
 			return toOrigin(), ""
 		case !errors.Is(err, ErrIntegrations):
 			return failed(err, false), "" // the caller's ctx ended
 		}
-		return failure(err, strict, closed), ""
+		return failure(err, closed), ""
 	}
 	if !reply.failed {
 		return served(reply.response), ""
@@ -88,13 +102,18 @@ func replyOutcome(reply requestReply, err error, strict, closed bool) (o request
 	case serverAuth:
 		drop = "the cache replied AUTH_ERROR"
 		if strict {
-			return failure(unavailable(noFallback+"the cache replied AUTH_ERROR", nil), strict, closed), drop
+			return failure(unavailable(noFallback+"the cache replied AUTH_ERROR", nil), closed), drop
 		}
 		return toOrigin(), drop
 	case serverDrop:
 		drop = "the cache replied " + reply.server.code
-		return failure(&ConnectionLostError{Msg: drop + "; the request did not run"}, strict, closed), drop
+		return failure(&ConnectionLostError{Msg: drop + "; the request did not run"}, closed), drop
+	case serverOrigin:
+		if healthy && !closed {
+			return failed(reply.server.err(), true), "" // *OriginError
+		}
+		return failed(&RejectedError{Code: reply.server.code, Message: reply.server.message}, false), ""
 	default:
-		return failure(reply.server.err(), strict, closed), "" // *OriginError or *RejectedError
+		return failed(reply.server.err(), false), "" // *RejectedError
 	}
 }

@@ -372,16 +372,15 @@ func TestCloseWithRequestsInFlightAndWaiting(t *testing.T) {
 				inFlight := sendSession(context.Background(), s, time.Now())
 				synctest.Wait()
 				s.close()
+				// A request failed by close is not retried, as in the Python client.
 				o := <-inFlight
-				if o.kind != outcomeFailed || o.retryable == strict || !errors.As(o.err, new(*ConnectionLostError)) {
+				if o.kind != outcomeFailed || o.retryable || !errors.As(o.err, new(*ConnectionLostError)) {
 					t.Fatalf("in flight at close: %+v", o)
 				}
+				// One that reaches the session after close raced with it: the same. The
+				// client sends a call made after Close to DynamoDB before it gets here.
 				after := s.request(context.Background(), getItem("u"))
-				if strict {
-					if after.kind != outcomeFailed || after.retryable || !errors.As(after.err, new(*CacheUnavailableError)) {
-						t.Fatalf("after close: %+v", after)
-					}
-				} else if after.kind != outcomeOrigin {
+				if after.kind != outcomeFailed || after.retryable || !errors.As(after.err, new(*ConnectionLostError)) {
 					t.Fatalf("after close: %+v", after)
 				}
 			})
@@ -389,24 +388,42 @@ func TestCloseWithRequestsInFlightAndWaiting(t *testing.T) {
 	}
 }
 
+// TestCloseWakesOutageWaiters: Close wakes a request waiting for the reconnect. It goes to
+// DynamoDB, or in strict mode fails with a retryable *CacheUnavailableError, whose retry the
+// client sends to DynamoDB (Python: the waiter falls back, or raises CacheUnavailable).
 func TestCloseWakesOutageWaiters(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		m, c, _ := sessionMock(t, mockcache.Config{})
-		s, err := openSession(context.Background(), c, &sessionAuth{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		intercept(m, "HELLO", mockcache.Hang())
-		start := time.Now()
-		m.DropAll()
-		synctest.Wait()
-		waiting := sendSession(context.Background(), s, start)
-		time.Sleep(time.Second)
-		s.close()
-		if o := <-waiting; o.kind != outcomeOrigin || o.at != time.Second {
-			t.Fatalf("waiter at close: %+v", o)
-		}
-	})
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fallback", true: "strict"}[strict], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, c, _ := sessionMock(t, mockcache.Config{})
+				if strict {
+					strictConfig(c)
+				}
+				s, err := openSession(context.Background(), c, &sessionAuth{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				intercept(m, "HELLO", mockcache.Hang())
+				start := time.Now()
+				m.DropAll()
+				synctest.Wait()
+				waiting := sendSession(context.Background(), s, start)
+				time.Sleep(time.Second)
+				s.close()
+				o := <-waiting
+				if o.at != time.Second {
+					t.Fatalf("waiter woke at %v", o.at)
+				}
+				if strict {
+					if o.kind != outcomeFailed || !o.retryable || !errors.As(o.err, new(*CacheUnavailableError)) {
+						t.Fatalf("strict waiter at close: %+v", o)
+					}
+				} else if o.kind != outcomeOrigin {
+					t.Fatalf("waiter at close: %+v", o)
+				}
+			})
+		})
+	}
 }
 
 // TestStrictNeverReachesOrigin: in strict mode no routed request goes to DynamoDB, under

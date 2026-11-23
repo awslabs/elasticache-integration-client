@@ -99,10 +99,13 @@ require the corresponding tests, README, and build checks to change with it.
   region is not the client's, whose body length is unknown or over 16 MiB, or that is
   unsigned goes to the origin untouched.
 - **Retry decision:** errors reach the SDK with `RetryableError() bool` from
-  `fallback_policy.go`. A `*RejectedError` is never retryable and never wrapped inside a
-  retryable error. A `*ProtocolError` is not retryable when the connection stays open; a
-  stream that cannot be decoded fails with a retryable `*ConnectionLostError` that wraps it. In strict mode (`FallbackDuration` 0) a routed request
-  never goes to DynamoDB, also at and after `Close`.
+  `fallback_policy.go`, decided as the Python client decides them. A `*RejectedError` is never
+  retryable and never wrapped inside a retryable error; `ORIGIN_ERROR` and `INTERNAL_ERROR`
+  are a retryable `*OriginError` only while the connection is up. A `*ProtocolError` is not
+  retryable when the connection stays open; a stream that cannot be decoded fails with a
+  retryable `*ConnectionLostError` that wraps it. A request `Close` fails is not retried. In
+  strict mode (`FallbackDuration` 0) a routed request never goes to DynamoDB while the client
+  is open; after `Close` every call goes to DynamoDB.
 - **Wire shape:** `HELLO 3 AUTH`, `aws.config` and `aws.request` with method, URL, normalized
   headers, body and metadata, in that order; `aws.response` pushes. The shared fixtures pin
   the bytes.

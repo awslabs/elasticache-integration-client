@@ -213,6 +213,9 @@ func TestFallbackWindowEnds(t *testing.T) {
 	}
 }
 
+// TestCloseWithRequestsInFlight closes the client with calls in flight: each fails with a
+// *ConnectionLostError that is not retried, SDK retries on or off, as the Python client does
+// for a request failed by close(). A call after Close goes to DynamoDB.
 func TestCloseWithRequestsInFlight(t *testing.T) {
 	t.Parallel()
 	const inFlight = 16
@@ -223,7 +226,7 @@ func TestCloseWithRequestsInFlight(t *testing.T) {
 	}{
 		{"one_closer", 1, false},
 		{"32_closers", 32, false},
-		{"retried_to_dynamo", 1, true},
+		{"sdk_retries_on", 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -266,21 +269,12 @@ func TestCloseWithRequestsInFlight(t *testing.T) {
 			}
 			for range inFlight {
 				err := <-results
-				if tc.retries {
-					if err != nil {
-						t.Errorf("a call in flight at Close = %v; want its retry served by DynamoDB", err)
-					}
-					continue
-				}
 				errorAs[*elasticacheintegrations.ConnectionLostError](t, err)
-				if decided, retry := retryable(err); !decided || !retry {
-					t.Errorf("retryable = %v, %v; want true, true", decided, retry)
+				if decided, retry := retryable(err); !decided || retry {
+					t.Errorf("retryable = %v, %v; want true, false", decided, retry)
 				}
 			}
-			want := 0
-			if tc.retries {
-				want = inFlight
-			}
+			const want = 0
 			if h.dynamo.fromClient() != want {
 				t.Errorf("client calls %d, want %d", h.dynamo.fromClient(), want)
 			}

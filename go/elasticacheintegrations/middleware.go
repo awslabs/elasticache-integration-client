@@ -298,7 +298,7 @@ type httpClient struct {
 func (h *httpClient) Do(req *http.Request) (*http.Response, error) {
 	c := h.client
 	if c.closed() {
-		return h.finish(req, closedOutcome(c.cfg.strict()), nil)
+		return h.origin.Do(req)
 	}
 	creq, routable, err := adaptRequest(req, c.identity)
 	if err != nil {

@@ -129,7 +129,8 @@ func (e *ConfigUnevaluableError) Unwrap() error        { return e.Err }
 func (e *ConfigUnevaluableError) Is(target error) bool { return target == ErrIntegrations }
 
 // RequestNotSentError reports that a request found no pending slot or write turn in time.
-// Nothing was written to the cache.
+// Nothing was written to the cache. Such a request goes to DynamoDB, or in strict mode fails
+// with a [CacheUnavailableError] wrapping it; it is returned as is only while Close runs.
 type RequestNotSentError struct {
 	Msg string
 }
@@ -140,7 +141,7 @@ func (e *RequestNotSentError) Is(target error) bool { return target == ErrIntegr
 // CacheUnavailableError reports that a routed request may not go to DynamoDB and the cache
 // cannot take it: no connection once the fallback window is spent, or, in strict mode, no
 // connection, no room on the connection (wrapping a [RequestNotSentError]), an AUTH_ERROR
-// reply, or a closed client.
+// reply, or Close while the request waited for a reconnect. The SDK may retry it.
 type CacheUnavailableError struct {
 	Reason string
 	Err    error // what made the cache unavailable, if known
@@ -153,8 +154,9 @@ func (e *CacheUnavailableError) Unwrap() error        { return e.Err }
 func (e *CacheUnavailableError) Is(target error) bool { return target == ErrIntegrations }
 
 // OriginError reports that the cache could not complete its call to DynamoDB
-// (-ORIGIN_ERROR or -INTERNAL_ERROR). A direct call to DynamoDB can fail the same way, so
-// the SDK may retry it.
+// (-ORIGIN_ERROR or -INTERNAL_ERROR) on a healthy connection. A direct call to DynamoDB can
+// fail the same way, so the SDK may retry it. If the connection was down when the reply was
+// handled, or Close was running, the reply is returned as a terminal [RejectedError] instead.
 type OriginError struct {
 	Code    string // the bare code: "ORIGIN_ERROR" or "INTERNAL_ERROR"
 	Message string // the rest of the reply

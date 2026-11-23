@@ -440,9 +440,9 @@ func (s *session) request(ctx context.Context, r *request) requestOutcome {
 // false, with no outcome, when the session has no live connection.
 func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (requestOutcome, bool) {
 	strict := s.cfg.strict()
-	for {
+	for waited := false; ; waited = true {
 		if s.closed() {
-			return closedOutcome(strict), true
+			return closedOutcome(strict, waited), true
 		}
 		if err := ctx.Err(); err != nil {
 			return failed(err, false), true
@@ -464,7 +464,7 @@ func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (req
 			continue
 		}
 		reply, err := c.request(ctx, r)
-		o, drop := replyOutcome(reply, err, strict, s.closed())
+		o, drop := replyOutcome(reply, err, strict, s.closed(), s.connected())
 		if drop != "" && c.drop(drop) && reply.server.kind() == serverAuth {
 			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
 		}
@@ -492,7 +492,7 @@ func droppedBy(err error) bool {
 func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOutcome, done bool) {
 	out := s.outage.Load()
 	if out == nil {
-		return closedOutcome(strict), true // no outage and no connection: only after close
+		return closedOutcome(strict, false), true // no outage and no connection: only after close
 	}
 	if wait := time.Until(out.readyAt); wait > 0 {
 		t := time.NewTimer(wait)
@@ -517,5 +517,5 @@ func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOut
 	if out.exhausted.CompareAndSwap(false, true) {
 		s.lg.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
 	}
-	return failure(unavailable(noFallback+"there is no cache connection", nil), strict, false), true
+	return failure(unavailable(noFallback+"there is no cache connection", nil), false), true
 }
