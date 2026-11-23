@@ -53,3 +53,23 @@ updates:
     groups:
       python-minor-and-patch:
         update-types: [minor, patch]
+
+  # This is a library, and Go builds every consumer with at least the versions
+  # go.mod requires, so a raised requirement forces consumers to upgrade. Only
+  # security updates raise them.
+  - package-ecosystem: gomod
+    directory: /go
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 0
+
+  - package-ecosystem: gomod
+    directory: /go/examples
+    schedule:
+      interval: weekly
+    groups:
+      go-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # Replaced by the client in ../.
+      - dependency-name: github.com/awslabs/elasticache-integration-client/go

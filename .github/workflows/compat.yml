@@ -267,3 +267,40 @@ jobs:
           ./gradlew test --console=colored
           -PawsSdkRuntimeVersion=${{ matrix.aws-sdk-version }}
           -Porg.gradle.java.installations.auto-download=false
+
+  # go.mod lists minimum versions, and Go's minimum version selection builds with exactly
+  # those, so go-ci.yml already tests the oldest allowed SDK. This job floats every
+  # dependency to its newest release instead.
+  go-latest:
+    name: go (latest dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    env:
+      GOWORK: "off"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Update every dependency
+        run: |
+          go get -u -t ./...
+          go mod tidy
+          (cd examples && go get -u -t ./... && go mod tidy)
+          git diff -- go.mod examples/go.mod
+          if git diff -U0 -- go.mod examples/go.mod | grep -q '^+go '; then
+            echo "::warning::The newest dependencies need a newer Go than the go.mod floor."
+          fi
+
+      - name: Verify
+        run: scripts/verify.sh

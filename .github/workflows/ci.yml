@@ -25,6 +25,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       java: ${{ steps.filter.outputs.java }}
       node: ${{ steps.filter.outputs.node }}
+      go: ${{ steps.filter.outputs.go }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,7 +40,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
         run: |
           if [ "$EVENT_NAME" != "pull_request" ]; then
-            for client in python java node; do
+            for client in python java node go; do
               echo "$client=true" >> "$GITHUB_OUTPUT"
             done
             exit 0
@@ -51,7 +52,7 @@ jobs:
           # Shared contracts, this workflow, and the alignment workflow affect
           # every client.
           shared='^(shared/|\.github/workflows/(ci|alignment-ci)\.yml$)'
-          for client in python java node; do
+          for client in python java node go; do
             if echo "$changed" | grep -Eq \
               "$shared|^$client/|^\.github/workflows/$client-(ci|release)\.yml$"; then
               echo "$client=true" >> "$GITHUB_OUTPUT"
@@ -114,6 +115,11 @@ jobs:
     if: needs.changes.outputs.node == 'true'
     uses: ./.github/workflows/node-ci.yml
 
+  go:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    uses: ./.github/workflows/go-ci.yml
+
   # Cross-client alignment tests, one job per changed client. The client
   # workflows above exclude them.
   alignment:
@@ -121,12 +127,14 @@ jobs:
     if: >-
       needs.changes.outputs.python == 'true' ||
       needs.changes.outputs.java == 'true' ||
-      needs.changes.outputs.node == 'true'
+      needs.changes.outputs.node == 'true' ||
+      needs.changes.outputs.go == 'true'
     uses: ./.github/workflows/alignment-ci.yml
     with:
       python: ${{ needs.changes.outputs.python == 'true' }}
       java: ${{ needs.changes.outputs.java == 'true' }}
       node: ${{ needs.changes.outputs.node == 'true' }}
+      go: ${{ needs.changes.outputs.go == 'true' }}
 
   # GitHub can't read Gradle dependencies from build.gradle.kts, so submit the
   # resolved graph. Dependabot alerts use the graph from main, and dependency
@@ -178,7 +186,7 @@ jobs:
   # Stable aggregate check for branch protection.
   ci:
     if: always()
-    needs: [changes, license-headers, python, java, node, alignment, java-dependency-graph, dependency-review]
+    needs: [changes, license-headers, python, java, node, go, alignment, java-dependency-graph, dependency-review]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
