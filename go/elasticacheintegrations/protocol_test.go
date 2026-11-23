@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/textproto"
 	"reflect"
@@ -364,7 +365,11 @@ func TestAppendConfigPayload(t *testing.T) {
 		{"numbers", map[string]any{
 			"i": int64(-9223372036854775808), "u": uint64(18446744073709551615), "f": 0.1, "g": 1e21, "h": 1e-7, "k": float64(60),
 			"f32": float32(0.1), "n": json.Number("9007199254740993"), "z": float64(0),
-		}, `{"version":"1.0","f":0.1,"f32":0.1,"g":1e+21,"h":1e-07,"i":-9223372036854775808,"k":60,"n":9007199254740993,"u":18446744073709551615,"z":0}`},
+		}, `{"version":"1.0","f":0.1,"f32":0.1,"g":1e+21,"h":1e-7,"i":-9223372036854775808,"k":60,"n":9007199254740993,"u":18446744073709551615,"z":0}`},
+		{"whole floats from 1e6 as integers", map[string]any{
+			"a": float64(1e6), "b": float64(999999999), "c": float64(86400000), "d": 1e20, "e": float64(-1e6), "f": 1e-6,
+			"g": float32(1e6), "h": float32(16777216), "i": float32(1e21), "j": float32(1e-7), "k": float32(-1.5e7),
+		}, `{"version":"1.0","a":1000000,"b":999999999,"c":86400000,"d":100000000000000000000,"e":-1000000,"f":0.000001,"g":1000000,"h":16777216,"i":1e+21,"j":1e-7,"k":-15000000}`},
 		{"empty containers", map[string]any{"a": []any{}, "m": map[string]any{}}, `{"version":"1.0","a":[],"m":{}}`},
 		{"nil containers", map[string]any{"a": []any(nil), "m": map[string]any(nil)}, `{"version":"1.0","a":[],"m":{}}`},
 	}
@@ -438,6 +443,63 @@ func TestAppendConfigAcceptsValidatedOverrides(t *testing.T) {
 	want := `{"version":"1.0","b":true,"f":1.5,"f32":2.5,"i":7,"i8":-8,"l":["a"],"m":{"k":1},"n":1e3,"nil":null,"s":"x","u16":16}`
 	if got != want {
 		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestAppendConfigWritesDecodedJSONIntegers(t *testing.T) {
+	// encoding/json decodes every number into map[string]any as float64.
+	var in map[string]any
+	if err := json.Unmarshal([]byte(`{"item_ttl":999999999,"query_ttl":86400000}`), &in); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Options{Endpoint: "h:1", CacheName: "c", CachePolicyOverrides: in}.validate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := configPayload(t, cfg.cachePolicyOverrides), `{"version":"1.0","item_ttl":999999999,"query_ttl":86400000}`; got != want {
+		t.Errorf("got  %s\nwant %s", got, want)
+	}
+}
+
+func TestAppendJSONFloatMatchesEncodingJSON(t *testing.T) {
+	check := func(v any) {
+		t.Helper()
+		if f32, ok := v.(float32); ok && math.IsInf(float64(f32), 0) {
+			return // float32 of a value beyond its range; copyOverrides refuses it
+		}
+		want, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := appendJSONValue(nil, v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%T %v: got %s, want %s", v, v, got, want)
+		}
+	}
+	edges := []float64{
+		0, math.Copysign(0, -1), 1, -1, 0.1, 1.5, 60, 1e6, 999999999, 86400000, 1<<53 + 1,
+		1e-6, math.Nextafter(1e-6, 0), 1e-7, 1e-9, 1e-10, 1.5e-300,
+		1e21, math.Nextafter(1e21, 0), 1e20, 1e22, 1.2345e100,
+		math.MaxFloat64, math.SmallestNonzeroFloat64, math.MaxFloat32, math.SmallestNonzeroFloat32,
+	}
+	for _, f := range edges {
+		check(f)
+		check(-f)
+		check(float32(f))
+		check(-float32(f))
+	}
+	r := rand.New(rand.NewPCG(1, 2))
+	for range 100000 {
+		if f := math.Float64frombits(r.Uint64()); !math.IsNaN(f) && !math.IsInf(f, 0) {
+			check(f)
+		}
+		if f := math.Float32frombits(r.Uint32()); !math.IsNaN(float64(f)) && !math.IsInf(float64(f), 0) {
+			check(f)
+		}
+		check(float64(r.Int64N(1 << 53)))
 	}
 }
 

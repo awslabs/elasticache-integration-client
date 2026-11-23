@@ -258,9 +258,9 @@ func appendJSONValue(dst []byte, v any) ([]byte, error) {
 	case uint64:
 		return strconv.AppendUint(dst, v, 10), nil
 	case float64:
-		return strconv.AppendFloat(dst, v, 'g', -1, 64), nil
+		return appendJSONFloat(dst, v, 64), nil
 	case float32:
-		return strconv.AppendFloat(dst, float64(v), 'g', -1, 32), nil
+		return appendJSONFloat(dst, float64(v), 32), nil
 	case json.Number:
 		return append(dst, v...), nil
 	case []any:
@@ -281,6 +281,27 @@ func appendJSONValue(dst []byte, v any) ([]byte, error) {
 	default:
 		return nil, &ProtocolError{Msg: fmt.Sprintf("cannot write a %T override as JSON", v)}
 	}
+}
+
+// appendJSONFloat writes a finite float as encoding/json does: plain decimal, so a whole number
+// below 1e21 is an integer, and exponent form only below 1e-6 or from 1e21.
+func appendJSONFloat(dst []byte, f float64, bits int) []byte {
+	format := byte('f')
+	if abs := math.Abs(f); abs != 0 {
+		if bits == 64 && (abs < 1e-6 || abs >= 1e21) ||
+			bits == 32 && (float32(abs) < 1e-6 || float32(abs) >= 1e21) {
+			format = 'e'
+		}
+	}
+	dst = strconv.AppendFloat(dst, f, format, -1, bits)
+	if format == 'e' {
+		// e-09 to e-9
+		if n := len(dst); n >= 4 && dst[n-4] == 'e' && dst[n-3] == '-' && dst[n-2] == '0' {
+			dst[n-2] = dst[n-1]
+			dst = dst[:n-1]
+		}
+	}
+	return dst
 }
 
 func appendJSONObject(dst []byte, fields jsonObject) ([]byte, error) {
