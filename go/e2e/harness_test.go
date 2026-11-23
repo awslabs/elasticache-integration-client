@@ -6,10 +6,12 @@ package e2e
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,6 +59,7 @@ type harnessConfig struct {
 	startMayFail bool
 	systemRoots  bool
 	sdkOptions   []func(*dynamodb.Options)
+	relayMode    mockcache.RelayMode
 }
 
 // withRetries gives the SDK n attempts per call; 1 turns retries off.
@@ -64,6 +67,17 @@ func withRetries(n int) func(*harnessConfig) { return func(hc *harnessConfig) { 
 
 // withRelay puts a relay between the client and the cache.
 func withRelay() func(*harnessConfig) { return func(hc *harnessConfig) { hc.relay = true } }
+
+// withRelayMode puts a relay in front of the cache in mode m from the start.
+func withRelayMode(m mockcache.RelayMode) func(*harnessConfig) {
+	return func(hc *harnessConfig) { hc.relay, hc.relayMode = true, m }
+}
+
+func withCredentials(p aws.CredentialsProvider) func(*harnessConfig) {
+	return func(hc *harnessConfig) { hc.credentials = p }
+}
+
+func withRegion(r string) func(*harnessConfig) { return func(hc *harnessConfig) { hc.region = r } }
 
 func withOptions(f func(*elasticacheintegrations.Options)) func(*harnessConfig) {
 	return func(hc *harnessConfig) { f(&hc.options) }
@@ -141,6 +155,7 @@ func newHarness(t *testing.T, setup ...func(*harnessConfig)) *harness {
 		if h.relay, err = mockcache.NewRelay(h.addr); err != nil {
 			t.Fatal(err)
 		}
+		h.relay.SetMode(hc.relayMode)
 		endpoint = h.relay.Addr()
 	}
 	capture, logger := testutil.NewLogCapture()
@@ -282,3 +297,45 @@ func retryable(err error) (decided, retry bool) {
 
 // once makes one call with SDK retries off.
 func once(o *dynamodb.Options) { sdkRetries(1)(o) }
+
+// hellos returns the token of every HELLO the cache received, in order.
+func (h *harness) hellos() []string {
+	var out []string
+	for _, cmd := range h.cache.Commands() {
+		if cmd.Name() == "HELLO" && len(cmd.Args) == 5 {
+			out = append(out, cmd.Arg(4))
+		}
+	}
+	return out
+}
+
+// keyID is the access key id a token was signed with.
+func keyID(token string) string {
+	_, rest, _ := strings.Cut(token, "X-Amz-Credential=")
+	id, _, _ := strings.Cut(rest, "%2F")
+	return id
+}
+
+// rotating is a credentials provider whose key id is AKIDROTATING<generation>. It counts the
+// calls; each call moves to the next generation when perCall is set, otherwise only next does.
+type rotating struct {
+	perCall    bool
+	calls      atomic.Int64
+	generation atomic.Int64
+}
+
+func (r *rotating) Retrieve(context.Context) (aws.Credentials, error) {
+	r.calls.Add(1)
+	g := r.generation.Load()
+	if r.perCall {
+		g = r.generation.Add(1)
+	}
+	return aws.Credentials{AccessKeyID: fmt.Sprintf("AKIDROTATING%d", g), SecretAccessKey: testutil.SecretAccessKey,
+		Source: "rotating"}, nil
+}
+
+// next moves to the next generation and returns its key id.
+func (r *rotating) next() string { return fmt.Sprintf("AKIDROTATING%d", r.generation.Add(1)) }
+
+// errUnexpected is the error for a call that succeeded with the wrong output.
+func errUnexpected(out any) error { return fmt.Errorf("unexpected output %v", out) }
