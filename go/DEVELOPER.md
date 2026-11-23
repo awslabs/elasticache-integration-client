@@ -54,6 +54,10 @@ It loads the repository-root `.env` (variables already set in the environment wi
 
 The Go client dials the cache host itself and checks its certificate against that name, so the example cannot redirect it to an SSH tunnel the way the Java and Node examples do. To use a tunnel, add `<tunnel address> <cache host>` to `/etc/hosts` and set `ELASTICACHE_TUNNEL_HOST` to the tunnel address; the example checks the mapping before it starts.
 
+## Live validation example
+
+`go run ./live-validation ops` (from `go/examples/`) checks the client against a real cache with the DynamoDB integration and a table with a string partition key `id`. It runs the ten routed operations and compares each result with a consistent read by a plain DynamoDB client, proves a hit with a stale read, checks that every write through the cache invalidates the cached item, checks that `DescribeTable` goes to DynamoDB, and checks the resolved config from the client's log. It counts the calls the client sends to DynamoDB itself through the `HTTPClient` it wraps. Settings come from the environment, with the names `local-e2e` uses: `ELASTICACHE_CACHE_HOST`, `ELASTICACHE_CACHE_PORT`, `ELASTICACHE_CACHE_NAME`, `ELASTICACHE_CACHE_USER_ID`, `ELASTICACHE_TABLE_NAME`, `AWS_REGION` and the AWS credentials of the standard chain. It prints one line per check, exits 0 only when every check passes, and deletes its `go-live-<run>-*` items at the end, also after a failure or a signal.
+
 ## Releasing
 
 Go modules are published by git tag; there is no artifact to build or upload. The module lives in `go/`, so its release tags are `go/vMAJOR.MINOR.PATCH` (or `go/vMAJOR.MINOR.PATCH-rc.N`), the Go convention for a module in a subdirectory.

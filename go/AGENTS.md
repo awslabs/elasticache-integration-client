@@ -31,8 +31,9 @@
   `go test ./...` like the unit tests.
 - `internal/testutil/`: test helpers: static credentials, `AWS_*` isolation, the shared
   fixture reader, a log capture, the no-secrets assertion.
-- `examples/`: its own module (`replace` to `../`) with `local-e2e`, the live example. It
-  needs a cache and AWS credentials, so it never runs in the tests; the gate vets it.
+- `examples/`: its own module (`replace` to `../`) with the live examples `local-e2e` and
+  `live-validation`. They need a cache and AWS credentials, so they never run against one in the
+  tests; the gate vets them and runs their hermetic unit tests.
 - `scripts/verify.sh`: the complete local gate; CI runs it.
 - `.github/workflows/go-ci.yml` (repository root): called by `ci.yml` on every push to `main`
   and when a pull request touches `go/`, `shared/`, `ci.yml`, `alignment-ci.yml` or a `go-ci`
