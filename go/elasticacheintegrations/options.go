@@ -29,9 +29,9 @@ type Options struct {
 	// CacheRequestTimeout bounds one cache request once it has a connection.
 	// Default 5s. Whole milliseconds, from 1ms to 2^31-1 ms.
 	CacheRequestTimeout time.Duration
-	// ConnectionTimeout bounds start-up, each connection bring-up, and how long a request
-	// waits for a reconnect during an outage. Default 5s. Whole milliseconds, from 1ms to
-	// 2^31-1 ms.
+	// ConnectionTimeout bounds start-up and how long a request waits for a reconnect during
+	// an outage. Each background reconnect attempt has its own fixed 5s budget. Default 5s.
+	// Whole milliseconds, from 1ms to 2^31-1 ms.
 	ConnectionTimeout time.Duration
 
 	// FallbackDuration bounds how long requests go to DynamoDB while the cache is down,
