@@ -6,6 +6,7 @@
 package elasticacheintegrations
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -130,16 +131,29 @@ func TestSessionRequestServerCodes(t *testing.T) {
 }
 
 func TestSessionRequestWrongShapeKeepsConnection(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		m, c, _ := sessionMock(t, mockcache.Config{})
-		replyWith(m, mockcache.Now(resp.IntValue(7)))
-		s := openTestSession(t, c, &sessionAuth{})
-		conn := s.live.Load()
-		o := s.request(context.Background(), getItem("u"))
-		if o.kind != outcomeFailed || o.retryable || !errors.As(o.err, new(*ProtocolError)) || !conn.alive() {
-			t.Fatalf("outcome %+v, alive %v", o, conn.alive())
-		}
-	})
+	for name, reply := range map[string]resp.Value{
+		"integer": resp.IntValue(7),
+		"header lines over the limit": resp.ArrayValue(resp.IntValue(200),
+			resp.BulkValue(bytes.Repeat([]byte("\n"), maxHeaderLines)), resp.BulkStringValue("{}")),
+		"header bytes over the limit": resp.ArrayValue(resp.IntValue(200),
+			resp.BulkValue(append([]byte("a:"), bytes.Repeat([]byte("v"), maxHeaderBytes)...)), resp.BulkStringValue("{}")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, c, _ := sessionMock(t, mockcache.Config{})
+				m.SetOnRequest(replySequence(mockcache.Now(reply), mockcache.Now(mockcache.Served(200, nil, nil))))
+				s := openTestSession(t, c, &sessionAuth{})
+				conn := s.live.Load()
+				o := s.request(context.Background(), getItem("u"))
+				if o.kind != outcomeFailed || o.retryable || !errors.As(o.err, new(*ProtocolError)) || !conn.alive() {
+					t.Fatalf("outcome %+v, alive %v", o, conn.alive())
+				}
+				if o := s.request(context.Background(), getItem("u")); o.kind != outcomeServed || s.live.Load() != conn {
+					t.Fatalf("next outcome %+v", o)
+				}
+			})
+		})
+	}
 }
 
 func TestSessionRequestInOrderTimeout(t *testing.T) {

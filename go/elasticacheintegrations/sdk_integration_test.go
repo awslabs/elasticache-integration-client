@@ -4,6 +4,7 @@
 package elasticacheintegrations
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,6 +116,31 @@ func TestSDKDoesNotRetryTerminalOutcome(t *testing.T) {
 	}
 	if n := len(s.Requests()); n != 1 || origin.count() != 0 {
 		t.Errorf("cache requests %d, origin calls %d; want 1, 0", n, origin.count())
+	}
+}
+
+func TestSDKBrokenHeadersNeverReachOrigin(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	broken := resp.ArrayValue(resp.IntValue(200), resp.BulkValue(bytes.Repeat([]byte("a:1\n"), maxHeaderLines)),
+		resp.BulkStringValue(musicItem))
+	s.SetOnRequest(replySequence(mockcache.Now(broken), servedJSON(200, musicItem)))
+	origin := &fakeOrigin{}
+	ddb, _ := startSDK(t, sdkConfig(t, s, addr), origin, withRetries(3))
+	if _, err := getMusic(context.Background(), ddb); !errors.As(err, new(*ProtocolError)) {
+		t.Fatalf("err = %v", err)
+	}
+	if out, err := getMusic(context.Background(), ddb); err != nil || attrS(t, out.Item, "Artist") != "Acme" {
+		t.Fatalf("next GetItem = %v, %v", out, err)
+	}
+	hellos := 0
+	for _, cmd := range s.Commands() {
+		if cmd.Name() == "HELLO" {
+			hellos++
+		}
+	}
+	if n := len(s.Requests()); n != 2 || origin.count() != 0 || hellos != 1 {
+		t.Errorf("cache requests %d, origin calls %d, connections %d; want 2, 0, 1", n, origin.count(), hellos)
 	}
 }
 

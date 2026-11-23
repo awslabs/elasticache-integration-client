@@ -102,8 +102,8 @@ func signedScope(h http.Header) (keyID, region string, ok bool) {
 	keyID, scope, _ = strings.Cut(scope, "/")
 	_, scope, _ = strings.Cut(scope, "/") // date
 	region, scope, _ = strings.Cut(scope, "/")
-	_, scope, _ = strings.Cut(scope, "/") // service
-	if keyID == "" || region == "" || scope != sigV4Request {
+	service, scope, _ := strings.Cut(scope, "/")
+	if keyID == "" || region == "" || service != sdkService || scope != sigV4Request {
 		return "", "", false
 	}
 	return keyID, region, true

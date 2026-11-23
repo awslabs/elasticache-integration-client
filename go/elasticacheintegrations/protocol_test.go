@@ -761,8 +761,38 @@ func TestParseResponseHeaders(t *testing.T) {
 	}
 }
 
+func TestParseResponseHeadersLimits(t *testing.T) {
+	refused := map[string][]byte{
+		"too long":       append(bytes.Repeat([]byte("a"), maxHeaderBytes), ":1"...),
+		"too many lines": bytes.Repeat([]byte("\n"), maxHeaderLines),
+		"1.25 MiB":       bytes.Repeat([]byte("\n\ngarbage\n"), 1<<17),
+	}
+	for name, in := range refused {
+		if h, err := parseResponseHeaders(in); !errors.As(err, new(*ProtocolError)) {
+			t.Errorf("%s: headers %d, err %v; want a ProtocolError", name, len(h), err)
+		}
+	}
+	// At both limits: 1024 lines in under 64 KiB.
+	var b strings.Builder
+	for i := range maxHeaderLines - 1 {
+		fmt.Fprintf(&b, "h%d:%s\n", i, strings.Repeat("v", 40))
+	}
+	b.WriteString("x-amz-crc32:1")
+	if b.Len() > maxHeaderBytes {
+		t.Fatalf("test block is %d bytes", b.Len())
+	}
+	h, err := parseResponseHeaders([]byte(b.String()))
+	if err != nil || len(h) != maxHeaderLines+1 {
+		t.Fatalf("headers %d, err %v", len(h), err)
+	}
+	exact := append([]byte("a:"), bytes.Repeat([]byte("v"), maxHeaderBytes-2)...)
+	if h, err := parseResponseHeaders(exact); err != nil || len(h.Get("A")) != maxHeaderBytes-2 {
+		t.Fatalf("a %d-byte block: headers %d, err %v", len(exact), len(h), err)
+	}
+}
+
 func TestParseResponseHeadersMemoryIsBounded(t *testing.T) {
-	in := bytes.Repeat([]byte("\n\ngarbage\n"), 1<<17) // 1.25 MiB, no header
+	in := bytes.Repeat([]byte("\n"), maxHeaderLines-1) // empty lines, no header
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
@@ -771,8 +801,8 @@ func TestParseResponseHeadersMemoryIsBounded(t *testing.T) {
 	if err != nil || len(h) != 1 {
 		t.Fatalf("headers %v, err %v", h, err)
 	}
-	// The header string plus small change; a size hint from the line count takes over 30 MiB.
-	if n := after.TotalAlloc - before.TotalAlloc; n > 2*uint64(len(in)) {
+	// The header string plus small change; a size hint from the line count would take more.
+	if n := after.TotalAlloc - before.TotalAlloc; n > 8*uint64(len(in))+4096 {
 		t.Errorf("allocated %d bytes for %d bytes of headers", n, len(in))
 	}
 }
@@ -1026,6 +1056,9 @@ func FuzzParseRequestReply(f *testing.F) {
 				t.Fatalf("a %s reply failed", v.Kind)
 			}
 			return
+		}
+		if h := v.Elems[1].Bytes; len(h) > maxHeaderBytes || bytes.Count(h, []byte{'\n'}) >= maxHeaderLines {
+			t.Fatalf("a %d-byte header block parsed", len(h))
 		}
 		r := got.response
 		if r.statusCode < 100 || r.statusCode > 599 {

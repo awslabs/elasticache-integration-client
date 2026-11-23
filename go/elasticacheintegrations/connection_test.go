@@ -154,6 +154,8 @@ func TestOpenConnectionHelloReplies(t *testing.T) {
 		{"invalid-iam-credentials", resp.ErrorValue("invalid-iam-credentials", "expired"), "invalid-iam-credentials"},
 		{"ERR", resp.ErrorValue("ERR", "unknown"), ""},
 		{"NOPROTO", resp.ErrorValue("NOPROTO", "unsupported"), ""},
+		{"token as the code", resp.ErrorValue(testToken, ""), ""},
+		{"overlong code", resp.ErrorValue(strings.Repeat("E", maxAuthErrorCode+1), ""), ""},
 		{"not a map", resp.SimpleValue("OK"), ""},
 		{"proto 2", resp.MapValue(resp.BulkStringValue("proto"), resp.IntValue(2)), ""},
 		{"no proto", resp.MapValue(resp.BulkStringValue("server"), resp.BulkStringValue("valkey")), ""},
@@ -276,4 +278,22 @@ func TestOpenConnectionNoSecretsInLogs(t *testing.T) {
 	conn.close()
 	text := logs.Text() + err.Error() + lostErr.Error()
 	testutil.AssertNoSecrets(t, text, testutil.TokenSecrets(testToken)...)
+}
+
+func TestAuthErrorCode(t *testing.T) {
+	for in, want := range map[string]string{
+		"WRONGPASS":                             "WRONGPASS",
+		"WRONGPASS invalid pair":                "WRONGPASS",
+		"invalid-iam-credentials expired":       "invalid-iam-credentials",
+		"ERR_1.x":                               "ERR_1.x",
+		testToken:                               "(unrecognized error code)",
+		"":                                      "(unrecognized error code)",
+		strings.Repeat("E", maxAuthErrorCode+1): "(unrecognized error code)",
+		strings.Repeat("E", maxAuthErrorCode):   strings.Repeat("E", maxAuthErrorCode),
+		strings.Repeat("0123456789abcdef", 4):   "(unrecognized error code)", // a SigV4 signature
+	} {
+		if got := authErrorCode(resp.Value{Kind: resp.KindError, Bytes: []byte(in)}); got != want {
+			t.Errorf("authErrorCode(%q) = %q, want %q", in, got, want)
+		}
+	}
 }

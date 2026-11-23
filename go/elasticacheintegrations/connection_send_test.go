@@ -15,6 +15,7 @@ import (
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/mockcache"
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
+	"github.com/awslabs/elasticache-integration-client/go/internal/testutil"
 )
 
 func getItem(url string) *request {
@@ -145,6 +146,11 @@ func TestReauth(t *testing.T) {
 	if err := conn.reauth(context.Background(), creds); !errors.As(err, &ae) || ae.Code != "WRONGPASS" || !conn.alive() {
 		t.Fatalf("WRONGPASS: %v, alive %v", err, conn.alive())
 	}
+	set(resp.ErrorValue("NEW-"+testToken, ""))
+	if err := conn.reauth(context.Background(), creds); !errors.As(err, &ae) || ae.Code != "(unrecognized error code)" || !conn.alive() {
+		t.Fatalf("token as the code: %v, alive %v", err, conn.alive())
+	}
+	testutil.AssertNoSecrets(t, ae.Error(), testutil.TokenSecrets("NEW-"+testToken)...)
 	set(resp.IntValue(1))
 	if err := conn.reauth(context.Background(), creds); !errors.As(err, &ae) || ae.Code != "" {
 		t.Fatalf(":1: %v", err)

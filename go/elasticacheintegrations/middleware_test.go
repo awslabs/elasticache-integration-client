@@ -213,6 +213,16 @@ func TestAdaptRequestNotRoutable(t *testing.T) {
 			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1/aws4_request, Signature=00")
 			return r
 		}, testIdentity()},
+		{"other service", func() *http.Request {
+			r := getItemRequest(t)
+			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1/s3/aws4_request, Signature=00")
+			return r
+		}, testIdentity()},
+		{"no service", func() *http.Request {
+			r := getItemRequest(t)
+			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1//aws4_request, Signature=00")
+			return r
+		}, testIdentity()},
 		{"per-call credentials", func() *http.Request {
 			return signedRequest(t, "GetItem", `{}`, other, testRegion)
 		}, testIdentity()},

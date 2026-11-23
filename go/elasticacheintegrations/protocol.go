@@ -457,11 +457,18 @@ func parseStatus(v resp.Value) (int, error) {
 // and Age: 0 unless the cache sent a non-empty Age, so the SDK learns no clock skew from a
 // replayed Date.
 func parseResponseHeaders(b []byte) (http.Header, error) {
+	if len(b) > maxHeaderBytes {
+		return nil, &ProtocolError{Msg: "the response headers are longer than " + strconv.Itoa(maxHeaderBytes) + " bytes"}
+	}
+	lines := bytes.Count(b, []byte{'\n'}) + 1
+	if lines > maxHeaderLines {
+		return nil, &ProtocolError{Msg: "the response headers have more than " + strconv.Itoa(maxHeaderLines) + " lines"}
+	}
 	if !utf8.Valid(b) {
 		return nil, &ProtocolError{Msg: "invalid UTF-8 in the response headers"}
 	}
 	// Bounded, so empty or colon-free lines cost no memory.
-	hint := min(bytes.Count(b, []byte{'\n'})+1, maxHeaderHint) + 1
+	hint := min(lines, maxHeaderHint) + 1
 	h := make(http.Header, hint)
 	values := make([]string, 0, hint) // backs every value, so a header costs no allocation of its own
 	set := func(name, value string) {
@@ -488,8 +495,15 @@ func parseResponseHeaders(b []byte) (http.Header, error) {
 	return h, nil
 }
 
-// maxHeaderHint bounds the header count parseResponseHeaders sizes its map for.
-const maxHeaderHint = 64
+const (
+	// maxHeaderHint bounds the header count parseResponseHeaders sizes its map for.
+	maxHeaderHint = 64
+	// maxHeaderBytes and maxHeaderLines bound the header block of a served response. A
+	// DynamoDB response has about ten headers; a block past either limit is a broken reply,
+	// which would otherwise cost many times its size in memory.
+	maxHeaderBytes = 64 << 10
+	maxHeaderLines = 1024
+)
 
 // dynamoDBHeaders are DynamoDB response headers textproto does not intern, by the lowercase
 // name the cache sends.

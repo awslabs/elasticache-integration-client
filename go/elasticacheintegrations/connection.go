@@ -20,6 +20,27 @@ import (
 // authRejectionCodes are the HELLO error codes that mean the cache refused the credentials.
 var authRejectionCodes = map[string]bool{"WRONGPASS": true, "invalid-iam-credentials": true}
 
+// maxAuthErrorCode is the longest HELLO or AUTH error code kept in an error.
+const maxAuthErrorCode = 32
+
+// authErrorCode is the code of an error reply to HELLO or AUTH, when it looks like one: 1 to
+// 32 letters, digits, '_', '-' or '.'. Those commands carry the IAM token, so a broken cache
+// that echoes it, or its 64-digit signature, cannot put it into an error or a log record.
+func authErrorCode(v resp.Value) string {
+	code := v.ErrorCode()
+	if len(code) == 0 || len(code) > maxAuthErrorCode {
+		return "(unrecognized error code)"
+	}
+	for i := 0; i < len(code); i++ {
+		switch b := code[i]; {
+		case 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z', '0' <= b && b <= '9', b == '_', b == '-', b == '.':
+		default:
+			return "(unrecognized error code)"
+		}
+	}
+	return code
+}
+
 // connection is one cache connection: one socket, one reader goroutine and one request
 // tracker. It never reconnects; the session opens a new one.
 type connection struct {
@@ -149,10 +170,11 @@ func (c *connection) exchange(ctx context.Context, frame []byte, step string) (r
 func checkHello(v resp.Value) error {
 	switch v.Kind {
 	case resp.KindError:
-		if code := v.ErrorCode(); authRejectionCodes[code] {
+		code := authErrorCode(v)
+		if authRejectionCodes[code] {
 			return &AuthError{Code: code, Msg: "HELLO 3 rejected"}
 		}
-		return &ConnectionError{Msg: "HELLO 3 rejected: " + v.ErrorCode()}
+		return &ConnectionError{Msg: "HELLO 3 rejected: " + code}
 	case resp.KindMap:
 		if p, ok := v.MapGet("proto"); ok && p.Kind == resp.KindInteger && p.Int == 3 {
 			return nil
@@ -282,7 +304,7 @@ func (c *connection) reauth(ctx context.Context, creds authCredentials) error {
 	}
 	switch {
 	case v.Kind == resp.KindError:
-		return &AuthError{Code: v.ErrorCode(), Msg: "AUTH rejected"}
+		return &AuthError{Code: authErrorCode(v), Msg: "AUTH rejected"}
 	case v.Kind == resp.KindSimpleString && string(v.Bytes) == okReply:
 		return nil
 	}
