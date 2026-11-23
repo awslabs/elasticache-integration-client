@@ -272,12 +272,13 @@ func (p *pendingRequests) setDeadline(e *pendingEntry, at time.Time) {
 	}
 }
 
-// expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. A
-// FIFO entry past its deadline fails with timeoutErr() and every other entry with lost(), as
-// failAll does, in the same critical section, so no reply can resolve it in between; expire
-// then returns it, and the connection must close. Otherwise it arms the timer for the next
-// deadline.
-func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error) *pendingEntry {
+// expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. For
+// a FIFO entry past its deadline it calls dying(lost()), then fails that entry with timeoutErr()
+// and every other entry with the error dying returns, as failAll does, all in one critical
+// section, so no reply can resolve it in between; expire then returns it, and the connection
+// must close. Otherwise it arms the timer for the next deadline. A nil dying fails them with
+// lost().
+func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error, dying func(error) error) *pendingEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -301,7 +302,11 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error) *
 			continue
 		}
 		if !e.deadline.After(now) {
-			p.failAllLocked(lost(), e, timeoutErr())
+			err := lost()
+			if dying != nil {
+				err = dying(err)
+			}
+			p.failAllLocked(err, e, timeoutErr())
 			return e
 		}
 		next = earlier(next, e.deadline)

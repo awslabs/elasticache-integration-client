@@ -571,3 +571,82 @@ func TestDropLogsConnectionLostAtInfo(t *testing.T) {
 		}
 	})
 }
+
+// A caller whose in-order request timed out finds the connection dead at once, so a refresh or
+// a request never takes the timeout for a failure on a live connection.
+func TestInOrderTimeoutCallerFindsConnectionDead(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, c := pipeMock(t, mockcache.Config{})
+		c.cacheRequestTimeout = time.Second
+		s.SetOnRequest(func(mockcache.Command) mockcache.Reply { return mockcache.Hang() })
+		for range 2000 {
+			conn, _ := openPipe(t, s, c)
+			_, err := conn.request(context.Background(), getItem("u"))
+			if !errors.As(err, new(*TimeoutError)) || conn.alive() {
+				t.Fatalf("request: %v; connection alive %v", err, conn.alive())
+			}
+			conn.close()
+		}
+	})
+}
+
+// The owner closing a connection that already died, as the reconnect does with the dead one,
+// does not hide the death: it is still logged and reported once.
+func TestCloseAfterDeathStillReportsIt(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn, _, lost := rawConnection(t)
+		logs, l := testutil.NewLogCapture()
+		conn.cfg.logger = newLogger(l)
+		cause := errEarlierTimedOut()
+		if !conn.markDead(cause) {
+			t.Fatal("markDead did not mark a live connection")
+		}
+		closed := make(chan struct{})
+		go func() { conn.close(); close(closed) }()
+		synctest.Wait() // close waits for the reader goroutine
+		_ = closeSocket(conn.conn)
+		conn.reportDeath(true, eventInOrderTimeout, cause)
+		<-closed
+		if err := lost.wait(t); err != cause || lost.count() != 1 {
+			t.Fatalf("onLost %v, %d calls", err, lost.count())
+		}
+		if recs := eventRecords(logs, eventInOrderTimeout); len(recs) != 1 || recs[0].Level != slog.LevelWarn {
+			t.Fatalf("records:\n%s", logs.Text())
+		}
+	})
+}
+
+// An in-order timeout on a connection another call already marked dead neither logs nor
+// reports: the call that marked it does, once. The entries fail with its cause.
+func TestInOrderTimeoutAfterDeathLeavesTheReportToTheFirst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn, _, lost := rawConnection(t)
+		logs, l := testutil.NewLogCapture()
+		conn.cfg.logger = newLogger(l)
+		cause := &ConnectionLostError{Msg: "socket read failed"}
+		conn.markDead(cause)
+		late, err := conn.pending.register(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		other, err := conn.pending.register(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn.pending.setDeadline(other, time.Now().Add(time.Hour))
+		conn.pending.setDeadline(late, time.Now())
+		<-late.done // the tracker's timer runs checkDeadlines
+		<-other.done
+		if !errors.As(late.err, new(*TimeoutError)) || other.err != cause {
+			t.Fatalf("late %v, other %v", late.err, other.err)
+		}
+		if lost.count() != 0 || len(eventRecords(logs, eventInOrderTimeout)) != 0 {
+			t.Fatalf("onLost %d calls, records:\n%s", lost.count(), logs.Text())
+		}
+		_ = closeSocket(conn.conn)
+		conn.reportDeath(true, eventConnectionLost, cause)
+		if err := lost.wait(t); err != cause || lost.count() != 1 {
+			t.Fatalf("onLost %v, %d calls", err, lost.count())
+		}
+	})
+}

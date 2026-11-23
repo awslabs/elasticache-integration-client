@@ -55,6 +55,7 @@ type connection struct {
 	dieOnce    sync.Once
 	cause      error // why it died; set before dead is closed
 	closing    atomic.Bool
+	ownerEnded bool // closing was set when the connection died; set before dead is closed
 	started    atomic.Bool
 	readerDone chan struct{}
 }
@@ -186,18 +187,34 @@ func checkHello(v resp.Value) error {
 }
 
 // die ends the connection once: it closes the socket, fails every pending entry with lost
-// (timedOut with timeoutErr), and, unless its owner closed it, logs ev and calls onLost. It
-// reports whether this call ended it.
+// (timedOut with timeoutErr), and, unless its owner closed it first, logs ev and calls onLost.
+// It reports whether this call ended it.
 func (c *connection) die(ev eventID, lost error, timedOut *pendingEntry, timeoutErr error) bool {
+	first := c.markDead(lost)
+	if first {
+		_ = closeSocket(c.conn)
+		c.pending.failAll(lost, timedOut, timeoutErr)
+	}
+	return c.reportDeath(first, ev, lost)
+}
+
+// markDead marks the connection dead once, before any entry fails, so a caller that gets its
+// error also finds the connection dead. It reports whether this call marked it.
+func (c *connection) markDead(lost error) bool {
 	first := false
 	c.dieOnce.Do(func() {
 		first = true
 		c.cause = lost
+		c.ownerEnded = c.closing.Load()
 		close(c.dead)
-		_ = closeSocket(c.conn)
-		c.pending.failAll(lost, timedOut, timeoutErr)
 	})
-	if !first || c.closing.Load() {
+	return first
+}
+
+// reportDeath logs ev and calls onLost for the call that ended the connection, unless its
+// owner closed it before it died, and returns first.
+func (c *connection) reportDeath(first bool, ev eventID, lost error) bool {
+	if !first || c.ownerEnded {
 		return first
 	}
 	if ev == eventInOrderTimeout {
@@ -256,10 +273,17 @@ func (c *connection) err() error {
 }
 
 // checkDeadlines is the tracker's timer callback: an in-order entry past its deadline closes
-// the connection, whether or not its caller still waits. expire has failed every entry by then.
+// the connection, whether or not its caller still waits. expire marks the connection dead and
+// fails every entry with its cause in one critical section.
 func (c *connection) checkDeadlines() {
-	if fatal := c.pending.expire(time.Now(), c.timeoutError, errEarlierTimedOut); fatal != nil {
-		c.die(eventInOrderTimeout, errEarlierTimedOut(), nil, nil)
+	first := false
+	fatal := c.pending.expire(time.Now(), c.timeoutError, errEarlierTimedOut, func(lost error) error {
+		first = c.markDead(lost)
+		return c.cause
+	})
+	if fatal != nil && first {
+		_ = closeSocket(c.conn)
+		c.reportDeath(true, eventInOrderTimeout, c.cause)
 	}
 }
 
