@@ -32,7 +32,7 @@
   answers the mock cache's `aws.request` handler and is also the client's origin. It has no build
   tag and runs in both `go test ./...` passes of `verify.sh`; it has no statements, so it does not
   count toward the coverage floor. Every test calls `t.Parallel()` on real time, so do not run it
-  with `GOMAXPROCS=1` or `-cpu=1` under `-race` (B135).
+  with `GOMAXPROCS=1` or `-cpu=1` under `-race`: its timing budgets assume more than one CPU.
 - `internal/testutil/`: test helpers: static credentials, `AWS_*` isolation, the shared
   fixture reader, a log capture, the no-secrets assertion.
 - `examples/`: its own module (`replace` to `../`) with the live examples `local-e2e` and

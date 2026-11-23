@@ -180,7 +180,7 @@ Timeouts are `time.Duration` values, but they must be whole milliseconds and the
 
 ### Connections
 
-By default the client opens four connections to the cache. The other clients open one. The cache serves each connection on one proxy core, about 35,000 requests per second, whatever the client does, so one connection limits a busy client. Measured from one c7g.4xlarge in us-east-1 with 256 calls in flight and 1 KiB hits (VPC endpoint):
+By default the client opens four connections to the cache. The other clients open one. The cache serves each connection at about 35,000 requests per second, whatever the client does, so one connection limits a busy client. Measured from one c7g.4xlarge in us-east-1 with 256 calls in flight and 1 KiB hits (VPC endpoint):
 
 | `Connections` | Requests per second | p50 / p99 |
 |---|---|---|

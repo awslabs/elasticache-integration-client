@@ -20,7 +20,7 @@ const (
 	exprTableName     = "service == 'dynamodb' && operation in ops && has(body.TableName) && body.TableName in allowed"
 	exprRequestItems  = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, t in allowed)"
 	exprTransactItems = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, has(i[k].TableName) && i[k].TableName in allowed))"
-	// The proxy's transaction form (ElastiCacheProxyRust config.rs EXPR_TRANSACT_ITEMS).
+	// The proxy's transaction expression.
 	exprTransactItemsProxy = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, \"TableName\" in i[k] && i[k].TableName in allowed))"
 	exprTableNameDeny      = "service == 'dynamodb' && operation in ops && has(body.TableName) && !(body.TableName in excluded)"
 	exprRequestItemsDeny   = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, !(t in excluded))"
