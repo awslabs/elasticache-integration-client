@@ -518,3 +518,59 @@ func TestAuthErrorBurstLogsOnce(t *testing.T) {
 		}
 	})
 }
+
+// 1308 logs the first request of each overload burst: a reply on the connection resets the
+// count, so a burst after healthy traffic logs again.
+func TestPendingLimitLogResetsAfterAReply(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, logs := sessionMock(t, mockcache.Config{})
+		c.maxPending = 1
+		hold := make(chan resp.Value)
+		replyWith(m, mockcache.DeferredFrom(hold))
+		s := openTestSession(t, c, &sessionAuth{})
+		burst := func() {
+			busy := sendSession(context.Background(), s, time.Now())
+			synctest.Wait()
+			if o := s.request(context.Background(), getItem("u")); o.kind != outcomeOrigin {
+				t.Fatalf("outcome %v", o.kind)
+			}
+			hold <- mockcache.Served(200, nil, nil)
+			if b := <-busy; b.kind != outcomeServed {
+				t.Fatalf("held request: %v", b.kind)
+			}
+		}
+		burst()
+		time.Sleep(time.Hour)
+		burst()
+		if n := len(eventRecords(logs, eventPendingLimitReached)); n != 2 {
+			t.Fatalf("%d 1308 records, want one per burst", n)
+		}
+	})
+}
+
+// Under sustained overload replies keep arriving between the requests that find no capacity;
+// they do not end the burst, so 1308 does not log once per reply.
+func TestPendingLimitLogOncePerSustainedBurst(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, logs := sessionMock(t, mockcache.Config{})
+		c.maxPending = 1
+		c.cacheRequestTimeout = 400 * time.Millisecond
+		hold := make(chan resp.Value)
+		replyWith(m, mockcache.DeferredFrom(hold))
+		s := openTestSession(t, c, &sessionAuth{})
+		for range 5 {
+			busy := sendSession(context.Background(), s, time.Now())
+			synctest.Wait()
+			if o := s.request(context.Background(), getItem("u")); o.kind != outcomeOrigin {
+				t.Fatalf("outcome %v", o.kind)
+			}
+			hold <- mockcache.Served(200, nil, nil)
+			if b := <-busy; b.kind != outcomeServed {
+				t.Fatalf("held request: %v", b.kind)
+			}
+		}
+		if n := len(eventRecords(logs, eventPendingLimitReached)); n != 1 {
+			t.Fatalf("%d 1308 records, want one for the burst", n)
+		}
+	})
+}

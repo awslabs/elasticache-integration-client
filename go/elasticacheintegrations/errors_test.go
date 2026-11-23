@@ -95,7 +95,7 @@ func TestErrorsMatchErrIntegrationsAndAs(t *testing.T) {
 			"elasticacheintegrations: cache unavailable: strict mode",
 			func(e error) bool { var v *CacheUnavailableError; return errors.As(e, &v) }},
 		{&OriginError{Code: "ORIGIN_ERROR", Message: "timeout"},
-			"elasticacheintegrations: the cache could not complete the DynamoDB call: ORIGIN_ERROR timeout",
+			"elasticacheintegrations: could not complete the origin request: ORIGIN_ERROR timeout",
 			func(e error) bool { var v *OriginError; return errors.As(e, &v) && v.Code == "ORIGIN_ERROR" }},
 	}
 	for _, tc := range cases {
@@ -142,7 +142,7 @@ func TestErrorMessagesWithEmptyParts(t *testing.T) {
 	}{
 		{&RejectedError{Code: "PARSE_ERROR"}, "elasticacheintegrations: request rejected by the cache: PARSE_ERROR"},
 		{&RejectedError{Message: "bad"}, "elasticacheintegrations: request rejected by the cache: bad"},
-		{&OriginError{Code: "INTERNAL_ERROR"}, "elasticacheintegrations: the cache could not complete the DynamoDB call: INTERNAL_ERROR"},
+		{&OriginError{Code: "INTERNAL_ERROR"}, "elasticacheintegrations: could not complete the origin request: INTERNAL_ERROR"},
 		{&CacheUnavailableError{Reason: "fallback window spent", Err: errCause}, "elasticacheintegrations: cache unavailable: fallback window spent: cause"},
 		{&ConfigError{Option: "Endpoint"}, "elasticacheintegrations: Endpoint"},
 		{&ConfigError{Msg: "no credentials"}, "elasticacheintegrations: no credentials"},

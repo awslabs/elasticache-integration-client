@@ -148,23 +148,20 @@ func TestPeriodicRunnerLogsFirstAndEveryHundredthFailure(t *testing.T) {
 	})
 }
 
-func TestPeriodicRunnerSkipKeepsFailuresAndBackoff(t *testing.T) {
+// A skipped tick resets the failure count with no log, as Java's Refresher counts it a
+// success: the tick after it waits the interval, not the backoff.
+func TestPeriodicRunnerSkipResetsFailures(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		delay := func(int) time.Duration { return 100 * time.Millisecond }
 		sr, _ := startScripted(t, time.Minute, delay,
-			tickResult{err: errTick}, tickResult{}, tickResult{}, tickResult{ran: true})
-		time.Sleep(time.Minute + 301*time.Millisecond)
-		want := []time.Duration{time.Minute, time.Minute + 100*time.Millisecond,
-			time.Minute + 200*time.Millisecond, time.Minute + 300*time.Millisecond}
+			tickResult{err: errTick}, tickResult{}, tickResult{ran: true})
+		time.Sleep(2*time.Minute + 101*time.Millisecond)
+		want := []time.Duration{time.Minute, time.Minute + 100*time.Millisecond, 2*time.Minute + 100*time.Millisecond}
 		if got := sr.times(); !equalDurations(got, want) {
-			t.Fatalf("ticks at %v, want %v: a skip must keep the backoff", got, want)
+			t.Fatalf("ticks at %v, want %v: a skip must reset the backoff", got, want)
 		}
-		rec := eventRecords(sr.logs, eventPeriodicRecovered)
-		if len(rec) != 1 || len(eventRecords(sr.logs, eventPeriodicFailed)) != 1 {
+		if len(eventRecords(sr.logs, eventPeriodicRecovered)) != 0 || len(eventRecords(sr.logs, eventPeriodicFailed)) != 1 {
 			t.Fatalf("records:\n%s", sr.logs.Text())
-		}
-		if v, _ := testutil.Attr(rec[0], "failures"); v.Int64() != 1 {
-			t.Fatalf("recovered after %v failures, want 1", v)
 		}
 	})
 }

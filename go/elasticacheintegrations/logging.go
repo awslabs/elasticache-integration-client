@@ -151,6 +151,23 @@ func (f *failureLog) recovered() uint64 {
 	return f.n.Swap(0)
 }
 
+// burstGap ends a burst: an event after this long with none starts a new one (.NET
+// PendingBurstGap).
+const burstGap = time.Second
+
+// burstLog logs the first event of each burst of a recurring condition. Only the event path
+// touches it.
+type burstLog struct {
+	last atomic.Int64 // UnixNano of the latest event, 0 before the first
+}
+
+// hit records an event at now and reports whether it starts a burst.
+func (b *burstLog) hit(now time.Time) bool {
+	t := now.UnixNano()
+	last := b.last.Swap(t)
+	return last == 0 || t-last >= int64(burstGap)
+}
+
 // secret holds a credential, token or signature. Every way of printing it writes
 // "[REDACTED]"; reveal returns the value for the wire. The value sits behind a pointer, so
 // fmt printing a struct that holds a secret in an unexported field, where Format is not

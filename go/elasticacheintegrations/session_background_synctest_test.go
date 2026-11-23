@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -176,6 +177,55 @@ func TestReauthSkippedWithoutConnection(t *testing.T) {
 		}
 		if n := len(eventRecords(logs, eventPeriodicFailed)); n != 0 {
 			t.Fatalf("a skipped run failed:\n%s", logs.Text())
+		}
+	})
+}
+
+// A re-AUTH that times out closes the connection. The retry finds no connection while the
+// reconnect still fails, and that skip resets the failure count, as Java's Refresher does: the
+// next AUTH comes a full interval later, not right after the reconnect's own HELLO 3 AUTH.
+func TestReauthAfterOutageWaitsFullInterval(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		start := time.Now()
+		s := openTestSession(t, c, &sessionAuth{})
+		conn := s.live.Load()
+		var mu sync.Mutex
+		var auths []time.Duration
+		failHellos := 5 // the reconnect lands after 0.1+0.2+0.4+0.8+1.6 s of backoff
+		m.SetIntercept(func(cmd mockcache.Command) *mockcache.Reply {
+			mu.Lock()
+			defer mu.Unlock()
+			switch cmd.Name() {
+			case "AUTH":
+				auths = append(auths, time.Since(start))
+				if len(auths) == 1 {
+					r := mockcache.Hang()
+					return &r
+				}
+			case "HELLO":
+				if failHellos > 0 {
+					failHellos--
+					return reply(resp.ErrorValue("ERR", "down"))
+				}
+			}
+			return nil
+		})
+		time.Sleep(c.reauthInterval + c.cacheRequestTimeout + time.Second)
+		waitLive(t, s, conn)
+		// The skip is at 905.1 s, so the next AUTH is due at 1805.1 s.
+		time.Sleep(time.Until(start.Add(2*c.reauthInterval + c.cacheRequestTimeout - time.Second)))
+		mu.Lock()
+		got := slices.Clone(auths)
+		mu.Unlock()
+		if len(got) != 1 {
+			t.Fatalf("AUTH at %v; want only the AUTH that timed out until a full interval after the skip", got)
+		}
+		time.Sleep(2 * time.Second)
+		mu.Lock()
+		defer mu.Unlock()
+		if len(auths) != 2 {
+			t.Fatalf("AUTH at %v; want the next one a full interval after the skip", auths)
 		}
 	})
 }

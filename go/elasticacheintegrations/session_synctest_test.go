@@ -298,8 +298,8 @@ func TestReconnectAfterDrop(t *testing.T) {
 		default:
 			t.Fatal("the outage did not end")
 		}
-		if recs := eventRecords(logs, eventReconnected); len(recs) != 1 {
-			t.Fatalf("1304 records: %v", recs)
+		if recs := eventRecords(logs, eventReconnected); len(recs) != 1 || recs[0].Level != slog.LevelDebug {
+			t.Fatalf("1304 records: %v; want one at Debug, the first attempt worked", recs)
 		}
 		m.DropAll() // a second outage
 		if third := waitLive(t, s, second); third == second {
@@ -334,7 +334,7 @@ func TestReconnectBackoffUnbounded(t *testing.T) {
 			t.Fatalf("1303: %d warnings, %d debug; want 2 (1st, 100th) and 118", warns, debugs)
 		}
 		rec := eventRecords(logs, eventReconnected)
-		if len(rec) != 1 {
+		if len(rec) != 1 || rec[0].Level != slog.LevelInfo {
 			t.Fatalf("1304: %v", rec)
 		}
 		if v, _ := testutil.Attr(rec[0], "failed_attempts"); v.Uint64() != 120 {

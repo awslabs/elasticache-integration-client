@@ -155,7 +155,7 @@ type OriginError struct {
 }
 
 func (e *OriginError) Error() string {
-	return format("the cache could not complete the DynamoDB call", spaced(e.Code, e.Message), nil)
+	return format("could not complete the origin request", spaced(e.Code, e.Message), nil)
 }
 func (e *OriginError) Is(target error) bool { return target == ErrIntegrations }
 

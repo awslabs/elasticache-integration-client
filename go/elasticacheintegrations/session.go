@@ -67,7 +67,7 @@ type session struct {
 	refresh      *periodicRunner
 
 	reconnectFailures failureLog
-	notSent           failureLog
+	notSent           burstLog
 }
 
 // openSession opens the first connection, retrying until ConnectionTimeout has passed, and
@@ -346,7 +346,11 @@ func (s *session) reconnectLoop() {
 		conn, snap, err := s.attempt(s.ctx, time.Now().Add(s.cfg.reconnectAttemptTimeout))
 		if err == nil {
 			if n, ok := s.publish(conn, snap); ok {
-				s.lg.info(eventReconnected, "reconnected to the cache", slog.Uint64("failed_attempts", n))
+				level := slog.LevelInfo
+				if n == 0 {
+					level = slog.LevelDebug // the first attempt worked; 1201 already said why
+				}
+				s.lg.log(level, eventReconnected, "reconnected to the cache", slog.Uint64("failed_attempts", n))
 				return
 			}
 			if s.closed() {
@@ -444,9 +448,8 @@ func (s *session) request(ctx context.Context, r *request) requestOutcome {
 			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
 		}
 		if err != nil && errors.As(err, new(*RequestNotSentError)) {
-			if n, log := s.notSent.failed(); log {
-				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time",
-					slog.Uint64("count", n))
+			if s.notSent.hit(time.Now()) {
+				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
 			}
 		}
 		return o
@@ -483,5 +486,5 @@ func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOut
 	if out.exhausted.CompareAndSwap(false, true) {
 		s.lg.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
 	}
-	return failure(unavailable("there is no cache connection, and fallback to DynamoDB is not allowed now", nil), strict, false), true
+	return failure(unavailable(noFallback+"there is no cache connection", nil), strict, false), true
 }

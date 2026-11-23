@@ -31,7 +31,9 @@ func jittered(d time.Duration, j float64) time.Duration {
 
 // periodicRunner calls tick every interval ±jitter until its context ends. A failed tick
 // waits failureDelay(failures), or the interval when failureDelay is nil. A tick that did
-// not run (ran false) is skipped: it neither fails nor recovers.
+// not run (ran false), because there was no live connection, resets the failure count with
+// no log, as Java's Refresher counts it a success: a new connection authenticates and fetches
+// the config itself.
 type periodicRunner struct {
 	name         string
 	interval     atomic.Int64 // time.Duration
@@ -80,8 +82,8 @@ func (r *periodicRunner) run(ctx context.Context) {
 			}
 			r.logger.log(level, eventPeriodicFailed, r.name+" failed; retrying",
 				slog.Int("failures", failures), slog.String("error", err.Error()))
-		case ran:
-			if failures > 0 {
+		default:
+			if ran && failures > 0 {
 				r.logger.info(eventPeriodicRecovered, r.name+" succeeded after failures",
 					slog.Int("failures", failures))
 			}

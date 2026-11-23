@@ -43,10 +43,13 @@ func retryable(err error, strict, closed bool) bool {
 	}
 }
 
+// noFallback starts every CacheUnavailableError reason, in the words Java, Node and Python use.
+const noFallback = "could not serve the request from the cache, and origin fallback is not allowed: "
+
 // closedOutcome is the outcome of a routed request after Close.
 func closedOutcome(strict bool) requestOutcome {
 	if strict {
-		return failed(unavailable("the client is closed, and fallback to DynamoDB is off", nil), false)
+		return failed(unavailable(noFallback+"the client is closed", nil), false)
 	}
 	return toOrigin()
 }
@@ -69,7 +72,7 @@ func replyOutcome(reply requestReply, err error, strict, closed bool) (o request
 		switch {
 		case errors.As(err, new(*RequestNotSentError)):
 			if strict {
-				return failure(unavailable("the cache connection had no capacity in time, and fallback to DynamoDB is off", err), strict, closed), ""
+				return failure(unavailable(noFallback+"the cache connection had no free capacity in time", err), strict, closed), ""
 			}
 			return toOrigin(), ""
 		case !errors.Is(err, ErrIntegrations):
@@ -84,7 +87,7 @@ func replyOutcome(reply requestReply, err error, strict, closed bool) (o request
 	case serverAuth:
 		drop = "the cache replied AUTH_ERROR"
 		if strict {
-			return failure(unavailable("the cache replied AUTH_ERROR, and fallback to DynamoDB is off", nil), strict, closed), drop
+			return failure(unavailable(noFallback+"the cache replied AUTH_ERROR", nil), strict, closed), drop
 		}
 		return toOrigin(), drop
 	case serverDrop:

@@ -180,3 +180,20 @@ func TestReplyOutcomeAfterClose(t *testing.T) {
 		}
 	}
 }
+
+// CacheUnavailableError reasons use the words the Java, Node and Python clients share.
+func TestCacheUnavailableReasons(t *testing.T) {
+	const java = "could not serve the request from the cache, and origin fallback is not allowed: "
+	authErr, _ := replyOutcome(rejected("AUTH_ERROR"), nil, true, false)
+	notSent, _ := replyOutcome(requestReply{}, &RequestNotSentError{Msg: "x"}, true, false)
+	for want, o := range map[string]requestOutcome{
+		java + "the cache replied AUTH_ERROR":                      authErr,
+		java + "the cache connection had no free capacity in time": notSent,
+		java + "the client is closed":                              closedOutcome(true),
+	} {
+		var cu *CacheUnavailableError
+		if !errors.As(o.err, &cu) || cu.Reason != want {
+			t.Errorf("reason %+v, want %q", o.err, want)
+		}
+	}
+}

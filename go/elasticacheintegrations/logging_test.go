@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/testutil"
 )
@@ -193,6 +194,25 @@ func TestFailureLogFirstAndEveryHundredth(t *testing.T) {
 	}
 	if n, ok := f.failed(); n != 1 || !ok {
 		t.Fatalf("after recovery: %d %v", n, ok)
+	}
+}
+
+// A burst ends only after burstGap with no event; events closer together, however many, are one
+// burst, logged once.
+func TestBurstLogFirstOfEachBurst(t *testing.T) {
+	var b burstLog
+	t0 := time.Unix(1000, 0)
+	var starts []int
+	for i := range 250 {
+		if b.hit(t0.Add(time.Duration(i) * (burstGap - time.Millisecond))) {
+			starts = append(starts, i)
+		}
+	}
+	if fmt.Sprint(starts) != "[0]" {
+		t.Fatalf("bursts start at %v", starts)
+	}
+	if !b.hit(t0.Add(249*(burstGap-time.Millisecond) + burstGap)) {
+		t.Fatal("an event a gap later does not start a burst")
 	}
 }
 
