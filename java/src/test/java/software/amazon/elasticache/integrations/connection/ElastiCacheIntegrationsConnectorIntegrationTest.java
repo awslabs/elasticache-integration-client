@@ -855,10 +855,16 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             Future<ElastiCacheIntegrationsResponse> slow =
                     executor.submit(() -> conn.request(testRequest("slow")));
             assertTrue(firstReceived.await(2, TimeUnit.SECONDS));
+            PendingRequests pending = getField(conn, "pending", PendingRequests.class);
+            CompletableFuture<Boolean> deadWhenDraining = new CompletableFuture<>();
+            // The removal callback runs inline as the queue drains, before the future fails.
+            CompletableFuture<RespValue> unused =
+                    pending.registerNewRequest(true, () -> deadWhenDraining.complete(conn.isDead()));
+
             Thread.sleep(150);
             Future<ElastiCacheIntegrationsResponse> waiting =
                     executor.submit(() -> conn.request(testRequest("waiting")));
-            awaitFifoSize(conn, 2);
+            awaitFifoSize(conn, 3);
 
             ExecutionException slowFailure =
                     assertThrows(ExecutionException.class, () -> slow.get(2, TimeUnit.SECONDS));
@@ -867,8 +873,9 @@ class ElastiCacheIntegrationsConnectorIntegrationTest {
             ExecutionException waitingFailure =
                     assertThrows(ExecutionException.class, () -> waiting.get(2, TimeUnit.SECONDS));
             assertTrue(waitingFailure.getCause() instanceof ElastiCacheIntegrationsConnectionLost);
-            assertFalse(waitingFailure.getCause() instanceof ElastiCacheIntegrationsTimeoutError);
-            assertTrue(conn.isDead());
+            assertTrue(
+                    deadWhenDraining.get(2, TimeUnit.SECONDS),
+                    "The connection must be dead before failing queued requests");
         } finally {
             releaseFirstReply.countDown();
             executor.shutdownNow();
