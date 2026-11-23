@@ -4,10 +4,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
 func TestDotEnvValue(t *testing.T) {
@@ -98,5 +103,39 @@ func TestResolvesOnlyTo(t *testing.T) {
 		if got := resolvesOnlyTo(c.host, c.tunnel); got != c.want {
 			t.Errorf("resolvesOnlyTo(%q, %q) = %v, want %v", c.host, c.tunnel, got, c.want)
 		}
+	}
+}
+
+func TestSettleStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	started := time.Now()
+	if err := (&e2e{}).settle(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("settle = %v, want context.Canceled", err)
+	}
+	if elapsed := time.Since(started); elapsed >= settleTime/2 {
+		t.Errorf("settle took %s after cancel", elapsed)
+	}
+}
+
+func TestAssertLargeItem(t *testing.T) {
+	want := map[string]types.AttributeValue{
+		"id":      str("large"),
+		"payload": &types.AttributeValueMemberB{Value: []byte{1, 2, 3}},
+		"text":    str("t"),
+	}
+	if err := assertLargeItem(want, want); err != nil {
+		t.Errorf("matching item: %v", err)
+	}
+	if err := assertLargeItem(nil, want); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("missing item: %v, want an error that says the item is missing", err)
+	}
+	other := map[string]types.AttributeValue{
+		"id":      str("large"),
+		"payload": &types.AttributeValueMemberB{Value: []byte{1, 2, 4}},
+		"text":    str("t"),
+	}
+	if err := assertLargeItem(other, want); err == nil || strings.Contains(err.Error(), "missing") {
+		t.Errorf("mismatched item: %v, want a mismatch error", err)
 	}
 }

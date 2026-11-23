@@ -140,6 +140,9 @@ func (t *e2e) cacheHit(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := t.settle(ctx); err != nil {
+		return err
+	}
 	first, err := t.timedGet(ctx, t.getInput(t.s.table, id), "GetItem #1")
 	if err != nil {
 		return err
@@ -170,6 +173,9 @@ func (t *e2e) concurrentReads(ctx context.Context) error {
 			return err
 		}
 		items[i] = item
+	}
+	if err := t.settle(ctx); err != nil {
+		return err
 	}
 	readAll := func(label string) error {
 		started := time.Now()
@@ -221,6 +227,9 @@ func (t *e2e) query(ctx context.Context) error {
 	id := t.s.runID + "-query"
 	item, err := t.seed(ctx, id, false)
 	if err != nil {
+		return err
+	}
+	if err := t.settle(ctx); err != nil {
 		return err
 	}
 	out, err := t.integrations.Query(ctx, &dynamodb.QueryInput{
@@ -293,6 +302,9 @@ func (t *e2e) largeBinaryItem(ctx context.Context) error {
 		return err
 	}
 	t.track(id)
+	if err := t.settle(ctx); err != nil {
+		return err
+	}
 	for i, label := range []string{"GetItem #1", "GetItem #2 (after DynamoDB delete)"} {
 		if i == 1 {
 			if err := t.deleteFromOrigin(ctx, id, false); err != nil {
@@ -322,6 +334,9 @@ func (t *e2e) batchReadsAndScan(ctx context.Context) error {
 			return err
 		}
 		items[i], keys[i] = item, map[string]types.AttributeValue{"id": item["id"]}
+	}
+	if err := t.settle(ctx); err != nil {
+		return err
 	}
 	batch, err := t.integrations.BatchGetItem(ctx, &dynamodb.BatchGetItemInput{
 		RequestItems: map[string]types.KeysAndAttributes{t.s.table: {Keys: keys}},
@@ -390,6 +405,24 @@ func (t *e2e) deletePassThrough(ctx context.Context) error {
 	}
 	fmt.Println("PASS: consistent DynamoDB reads reflected the deletes and the put written through ElastiCache Integrations.")
 	return nil
+}
+
+// settleTime is how long a scenario waits after seeding before it reads the seeded items
+// through the cache: a miss reads DynamoDB with an eventually consistent read.
+const settleTime = time.Second
+
+// settle waits settleTime, or until ctx is done, to give the seeded writes time to reach
+// every DynamoDB replica.
+func (t *e2e) settle(ctx context.Context) error {
+	fmt.Printf("Waiting %s for DynamoDB to settle...\n", settleTime)
+	timer := time.NewTimer(settleTime)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (t *e2e) timedGet(ctx context.Context, in *dynamodb.GetItemInput, label string) (*dynamodb.GetItemOutput, error) {
@@ -519,6 +552,9 @@ func assertItem(got, want map[string]types.AttributeValue) error {
 }
 
 func assertLargeItem(got, want map[string]types.AttributeValue) error {
+	if got == nil {
+		return fmt.Errorf("large item %s is missing", idOf(want))
+	}
 	g, ok := got["payload"].(*types.AttributeValueMemberB)
 	w := want["payload"].(*types.AttributeValueMemberB)
 	gt, _ := strAttr(got, "text")
