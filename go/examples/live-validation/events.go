@@ -54,6 +54,31 @@ func (l *eventLog) since(mark, id int, prefix string) int {
 	return n
 }
 
+// wait blocks until n events with the id and prefix are recorded after mark, or ctx ends. It
+// returns the nth.
+func (l *eventLog) wait(ctx context.Context, mark, id int, prefix string, n int) (event, bool) {
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		l.mu.Lock()
+		seen := 0
+		for _, e := range l.events[mark:] {
+			if e.id == id && strings.HasPrefix(e.msg, prefix) {
+				if seen++; seen == n {
+					l.mu.Unlock()
+					return e, true
+				}
+			}
+		}
+		l.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return event{}, false
+		case <-tick.C:
+		}
+	}
+}
+
 func (l *eventLog) add(e event) {
 	l.mu.Lock()
 	l.events = append(l.events, e)

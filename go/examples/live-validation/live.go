@@ -28,8 +28,8 @@ import (
 )
 
 type settings struct {
-	host, cacheName, userID, region, table string
-	port                                   int
+	host, cacheName, userID, region, table, relayTarget string
+	port                                                int
 }
 
 func loadSettings(getenv func(string) string) (settings, error) {
@@ -40,11 +40,12 @@ func loadSettings(getenv func(string) string) (settings, error) {
 		return def
 	}
 	s := settings{
-		host:      getenv("ELASTICACHE_CACHE_HOST"),
-		cacheName: getenv("ELASTICACHE_CACHE_NAME"),
-		userID:    getenv("ELASTICACHE_CACHE_USER_ID"),
-		region:    env("AWS_REGION", "us-east-1"),
-		table:     getenv("ELASTICACHE_TABLE_NAME"),
+		host:        getenv("ELASTICACHE_CACHE_HOST"),
+		cacheName:   getenv("ELASTICACHE_CACHE_NAME"),
+		userID:      getenv("ELASTICACHE_CACHE_USER_ID"),
+		region:      env("AWS_REGION", "us-east-1"),
+		table:       getenv("ELASTICACHE_TABLE_NAME"),
+		relayTarget: getenv("LIVE_RELAY_TARGET"),
 	}
 	for name, v := range map[string]string{
 		"ELASTICACHE_CACHE_HOST": s.host, "ELASTICACHE_CACHE_NAME": s.cacheName, "ELASTICACHE_TABLE_NAME": s.table,

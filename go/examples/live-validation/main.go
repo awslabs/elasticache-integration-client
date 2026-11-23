@@ -2,12 +2,16 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Command live-validation checks the ElastiCache Integrations client against a real cache with
-// the DynamoDB integration. Mode ops runs the ten routed operations, a pass-through call, a hit,
-// a miss and invalidating writes, and checks the resolved config.
+// the DynamoDB integration, in one of four modes:
+//
+//	ops       the ten routed operations, pass-through, hit, miss, invalidating writes, config
+//	auth      a refused periodic re-AUTH keeps the connection serving, then recovers
+//	push      a hit overtakes an earlier miss on the same connection (async replies)
+//	fallback  start-up, outage, strict mode, recovery and a hung cache through a local relay
 //
 // Settings come from the environment: ELASTICACHE_CACHE_HOST, ELASTICACHE_CACHE_PORT,
-// ELASTICACHE_CACHE_NAME, ELASTICACHE_CACHE_USER_ID, ELASTICACHE_TABLE_NAME and AWS_REGION. It
-// exits 0 only when every check passes.
+// ELASTICACHE_CACHE_NAME, ELASTICACHE_CACHE_USER_ID, ELASTICACHE_TABLE_NAME, AWS_REGION, and
+// LIVE_RELAY_TARGET for fallback. It exits 0 only when every check passes.
 package main
 
 import (
@@ -19,12 +23,15 @@ import (
 )
 
 var modes = map[string]func(context.Context, *live) error{
-	"ops": runOperations,
+	"ops":      runOperations,
+	"auth":     runAuth,
+	"push":     runPush,
+	"fallback": runFallback,
 }
 
 func main() {
 	if len(os.Args) != 2 || modes[os.Args[1]] == nil {
-		fmt.Fprintln(os.Stderr, "usage: live-validation ops")
+		fmt.Fprintln(os.Stderr, "usage: live-validation ops|auth|push|fallback")
 		os.Exit(2)
 	}
 	os.Exit(run(os.Args[1]))
