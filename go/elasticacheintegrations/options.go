@@ -51,6 +51,12 @@ type Options struct {
 	// replacement in the background. Default 300s. Whole seconds, from 1s to 879s.
 	IAMTokenRefreshDelay time.Duration
 
+	// Connections is how many cache connections the client opens. Each has its own AUTH,
+	// re-AUTH, config refresh, reconnect and fallback, and calls are spread over the ones that
+	// are up. One connection serves about 35,000 calls per second; use 4 for more, or for 64
+	// or more calls in flight. Default 1, at most 16.
+	Connections int
+
 	// Logger receives the client's log records. Default: Info and above, as text, to stderr.
 	// Use slog.New(slog.DiscardHandler) to silence it.
 	Logger *slog.Logger
@@ -65,6 +71,9 @@ const (
 
 	maxTimeout              = (1<<31 - 1) * time.Millisecond
 	maxIAMTokenRefreshDelay = 879 * time.Second
+
+	defaultConnections = 1
+	maxConnections     = 16
 
 	defaultMaxPending       = 100
 	defaultMaxResponseSize  = 16 << 20
@@ -91,6 +100,8 @@ type config struct {
 
 	cacheRequestTimeout time.Duration
 	connectionTimeout   time.Duration
+
+	connections int
 
 	fallbackUnlimited bool
 	fallbackDuration  time.Duration // used only when fallbackUnlimited is false; 0 is strict

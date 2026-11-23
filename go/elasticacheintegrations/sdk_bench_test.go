@@ -10,8 +10,10 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -22,9 +24,19 @@ import (
 )
 
 // cannedCache answers every aws.request with one pre-encoded reply and allocates nothing per
-// request, so a benchmark's allocations are the client's.
+// request, so a benchmark's allocations are the client's. With perRequest set, each
+// connection serves its requests one after another, perRequest each from its arrival or the
+// end of the one before, and writes each reply as soon as it is served, as the proxy serves
+// one connection on one core.
 type cannedCache struct {
 	hello, config, ok, reply []byte
+	perRequest               time.Duration
+}
+
+// cannedReply is a reply and the time its service ends.
+type cannedReply struct {
+	b   []byte
+	due time.Time
 }
 
 func newCannedCache(tb testing.TB, served resp.Value) *cannedCache {
@@ -52,7 +64,15 @@ func (cc *cannedCache) dial(context.Context, string, string) (net.Conn, error) {
 
 func (cc *cannedCache) serve(conn net.Conn) {
 	defer conn.Close()
+	var replies chan cannedReply
+	if cc.perRequest > 0 {
+		replies = make(chan cannedReply, 1024)
+		done := make(chan struct{})
+		go func() { defer close(done); writeWhenDue(conn, replies) }()
+		defer func() { close(replies); <-done }()
+	}
 	buf := make([]byte, 0, 1<<20)
+	var busy time.Time // when the requests already read are served
 	for {
 		if len(buf) == cap(buf) {
 			buf = append(buf, make([]byte, cap(buf))...)[:len(buf)]
@@ -67,21 +87,46 @@ func (cc *cannedCache) serve(conn net.Conn) {
 			if size == 0 {
 				break
 			}
-			var out []byte
+			var reply []byte
+			request := false
 			switch {
 			case bytes.EqualFold(name, []byte("hello")):
-				out = cc.hello
+				reply = cc.hello
 			case bytes.EqualFold(name, []byte("aws.config")):
-				out = cc.config
+				reply = cc.config
 			case bytes.EqualFold(name, []byte("aws.request")):
-				out = cc.reply
+				reply, request = cc.reply, true
 			default:
-				out = cc.ok
-			}
-			if _, err := conn.Write(out); err != nil {
-				return
+				reply = cc.ok
 			}
 			buf = buf[:copy(buf, buf[size:])]
+			if replies == nil {
+				if _, err := conn.Write(reply); err != nil {
+					return
+				}
+				continue
+			}
+			busy = laterOf(busy, time.Now())
+			if request {
+				busy = busy.Add(cc.perRequest)
+			}
+			replies <- cannedReply{b: reply, due: busy}
+		}
+	}
+}
+
+// writeWhenDue writes each reply once its service has ended, in order. After a failed write
+// it only drains replies.
+func writeWhenDue(conn net.Conn, replies <-chan cannedReply) {
+	failed := false
+	for r := range replies {
+		if failed {
+			continue
+		}
+		for time.Now().Before(r.due) {
+		}
+		if _, err := conn.Write(r.b); err != nil {
+			failed = true
 		}
 	}
 }
@@ -241,5 +286,39 @@ func benchSDKPutItem(b *testing.B, ddb *dynamodb.Client, size int) {
 		if _, err := ddb.PutItem(ctx, in); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// BenchmarkGetItemHitConnections runs 1 KiB hits from 256 goroutines against a cache that
+// serves each connection at most one request per 25µs (40,000 per second), for 1, 2 and 4
+// connections. ns/op is wall time per call.
+func BenchmarkGetItemHitConnections(b *testing.B) {
+	for _, n := range []int{1, 2, 4} {
+		b.Run(fmt.Sprintf("conns=%d", n), func(b *testing.B) {
+			body := itemBody(1 << 10)
+			cc := newCannedCache(b, mockcache.Served(200, map[string]string{
+				"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(body),
+			}, []byte(body)))
+			cc.perRequest = 25 * time.Microsecond
+			c, err := Options{Endpoint: "localhost:6379", CacheName: "my-cache", Connections: n}.validate()
+			if err != nil {
+				b.Fatal(err)
+			}
+			c.plaintext, c.dial = true, cc.dial
+			ddb, _ := startSDK(b, c, &fakeOrigin{})
+			in := &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()}
+			b.SetParallelism(max(1, 256/runtime.GOMAXPROCS(0)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			b.RunParallel(func(pb *testing.PB) {
+				for pb.Next() {
+					out, err := ddb.GetItem(context.Background(), in)
+					if err != nil || len(out.Item) != 2 {
+						b.Error(out, err)
+						return
+					}
+				}
+			})
+		})
 	}
 }

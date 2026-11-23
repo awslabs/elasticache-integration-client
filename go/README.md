@@ -173,9 +173,22 @@ ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticachein
 | `CachePolicyOverrides` | none | What to cache and for how long. See [Cache policy overrides](#cache-policy-overrides). |
 | `CachePolicyTimeout` | 1h | How long the client keeps using a cache policy the cache has not confirmed. Whole seconds. See [Cache policy timeout](#cache-policy-timeout). |
 | `IAMTokenRefreshDelay` | 300s | How long after a token is signed a replacement is signed in the background. Whole seconds, 1s to 879s. See [Authentication](#authentication). |
+| `Connections` | 1 | How many cache connections the client opens, 1 to 16. See [Connections](#connections). |
 | `Logger` | Info and above, as text, to stderr | Where the client logs. See [Logging](#logging). |
 
 Timeouts are `time.Duration` values, but they must be whole milliseconds and the longer periods whole seconds, so every value is one the other clients can express too.
+
+### Connections
+
+By default the client opens one connection to the cache, as the other clients do. The cache serves each connection on one proxy core, about 35,000 requests per second, whatever the client does. A client with 64 or more calls in flight, or more than about 20,000 calls per second, gains from more connections. Measured from one c7g.4xlarge in us-east-1 with 256 calls in flight and 1 KiB hits (VPC endpoint):
+
+| `Connections` | Requests per second | p50 / p99 |
+|---|---|---|
+| 1 | 33,200 | 7.7 / 8.9 ms |
+| 2 | 60,200 | 4.1 / 8.6 ms |
+| 4 | 85,200 | 2.7 / 7.2 ms |
+
+Each connection is opened, authenticated and re-authenticated, refreshes its cache policy, and reconnects on its own; they share one IAM token. Calls go in turn to the connections that are up, and never wait for one that is reconnecting while another is up. Only when every connection is down does a call wait and fall back as described in [Reconnection and fallback](#reconnection-and-fallback), counted from when the last connection dropped, and strict mode applies the same way. `NewFromConfig` returns when every connection is up, and fails if one cannot connect. `Close` closes them all. Each connection counts toward the cache's connection limit and sends its own `AUTH` and `aws.config`.
 
 ### Cache policy overrides
 
@@ -285,7 +298,7 @@ The client confirms its cache policy with the cache on the interval the cache se
 
 **Strict mode** (`FallbackDuration: aws.Duration(0)`). A request the cache would serve never goes to DynamoDB: not during an outage, not when the connection is too busy to take it, not when the cache replies `AUTH_ERROR`, and not after [`Close`](#closing-the-client). Requests the predicates send to DynamoDB still go there, and so do the calls that [always go there](#request-routing), such as a per-call `Credentials` or `Region`, until `Close`. After `Close` only a call with its own `HTTPClient` reaches DynamoDB.
 
-**Too many requests at once.** One connection carries up to 100 requests in flight. A request that finds no room within 75% of `CacheRequestTimeout` is not sent to the cache and goes to DynamoDB, or fails with a retryable `*CacheUnavailableError` in strict mode.
+**Too many requests at once.** One connection carries up to 100 requests in flight, and the cache serves one connection at about 35,000 requests per second. For more, raise [`Connections`](#connections). A request that finds no room within 75% of `CacheRequestTimeout` is not sent to the cache and goes to DynamoDB, or fails with a retryable `*CacheUnavailableError` in strict mode.
 
 **A request already sent when the connection drops.** It fails with a retryable `*ConnectionLostError`, whatever its operation, the same as when the connection to DynamoDB drops without the cache. Your SDK retry settings decide whether it is sent again, and the retry goes through the same wait and fallback window as any other request. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
@@ -293,7 +306,7 @@ The client confirms its cache policy with the cache on the interval the cache se
 
 ## Closing the client
 
-`cache.Close()` closes the connection, fails the requests still waiting on it, and waits for every goroutine the client started. It never waits for the cache to answer, but it does wait for a credentials `Retrieve` in flight, so a provider that ignores its context can hold it up. It is safe to call more than once and from any goroutine, and always returns `nil`.
+`cache.Close()` closes the connections, fails the requests still waiting on them, and waits for every goroutine the client started. It never waits for the cache to answer, but it does wait for a credentials `Retrieve` in flight, so a provider that ignores its context can hold it up. It is safe to call more than once and from any goroutine, and always returns `nil`.
 
 - A request in flight when you call `Close` fails with a retryable `*ConnectionLostError`. The SDK's retry then goes to DynamoDB. In strict mode it is not retryable.
 - After `Close`, every call on the DynamoDB client goes straight to DynamoDB. In strict mode every call fails instead, routed or not, with a `*CacheUnavailableError` that is not retryable. Only a call whose option function sets its own `HTTPClient` still reaches DynamoDB, because it no longer goes through the client.

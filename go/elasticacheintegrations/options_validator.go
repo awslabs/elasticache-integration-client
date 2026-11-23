@@ -59,6 +59,14 @@ func (o Options) validate() (*config, error) {
 	if c.connectionTimeout, err = wholeMillis("ConnectionTimeout", o.ConnectionTimeout, defaultConnectionTimeout); err != nil {
 		return nil, err
 	}
+	switch {
+	case o.Connections == 0:
+		c.connections = defaultConnections
+	case o.Connections < 0 || o.Connections > maxConnections:
+		return nil, &ConfigError{Option: "Connections", Msg: fmt.Sprintf("must be from 1 to %d (0 for the default), got %d", maxConnections, o.Connections)}
+	default:
+		c.connections = o.Connections
+	}
 	if o.FallbackDuration == nil {
 		c.fallbackUnlimited = true
 	} else {

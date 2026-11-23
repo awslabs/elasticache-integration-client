@@ -71,7 +71,8 @@ type session struct {
 }
 
 // openSession opens the first connection, retrying until ConnectionTimeout has passed, and
-// starts re-AUTH and config refresh. It owns auth from now on, and closes it on failure.
+// starts re-AUTH and config refresh. It closes auth on failure and on close; a client passes
+// a sharedAuth, whose close does nothing.
 func openSession(ctx context.Context, c *config, auth authProvider) (*session, error) {
 	s := newSession(c, auth)
 	if err := s.open(ctx); err != nil {
@@ -374,6 +375,12 @@ func (s *session) reconnectLoop() {
 	}
 }
 
+// connected reports whether the session has a live connection.
+func (s *session) connected() bool {
+	c := s.live.Load()
+	return c != nil && c.alive()
+}
+
 // closed reports whether close has been called.
 func (s *session) closed() bool { return s.isClosed.Load() }
 
@@ -421,24 +428,34 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 
 // request sends r through the cache and returns its one outcome (Java Session.request).
 func (s *session) request(ctx context.Context, r *request) requestOutcome {
+	o, _ := s.tryRequest(ctx, r, true)
+	return o
+}
+
+// tryRequest is request. With mayWait false it does not wait for a reconnect: it reports
+// false, with no outcome, when the session has no live connection.
+func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (requestOutcome, bool) {
 	strict := s.cfg.strict()
 	for {
 		if s.closed() {
-			return closedOutcome(strict)
+			return closedOutcome(strict), true
 		}
 		if err := ctx.Err(); err != nil {
-			return failed(err, false)
+			return failed(err, false), true
 		}
 		if snap := s.snap.Load(); snap == nil || !snap.predicates.shouldRoute(r) {
-			return toOrigin()
+			return toOrigin(), true
 		}
 		c := s.live.Load()
 		if c == nil || !c.alive() {
 			if c != nil {
 				s.lost(c)
 			}
+			if !mayWait {
+				return requestOutcome{}, false
+			}
 			if o, done := s.awaitReconnect(ctx, strict); done {
-				return o
+				return o, true
 			}
 			continue
 		}
@@ -452,7 +469,7 @@ func (s *session) request(ctx context.Context, r *request) requestOutcome {
 				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
 			}
 		}
-		return o
+		return o, true
 	}
 }
 

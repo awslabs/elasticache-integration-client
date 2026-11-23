@@ -8,20 +8,25 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 )
 
-// Client owns the cache connection of one DynamoDB client. Call Close when the DynamoDB client
-// is no longer used.
+// Client owns the cache connections of one DynamoDB client. Call Close when the DynamoDB
+// client is no longer used.
 type Client struct {
 	cfg      *config
 	identity identity
-	session  *session
+	sessions []*session   // one per connection; each reconnects and falls back on its own
+	auth     authProvider // shared by every session; closed after them
+	next     atomic.Uint64
 
 	installErr error
+	isClosed   atomic.Bool
 	closeOnce  sync.Once
 }
 
@@ -97,13 +102,132 @@ func (c *Client) open(ctx context.Context, o dynamodb.Options) error {
 		return err
 	}
 	c.identity = identity{region: o.Region}
-	s, err := openSession(ctx, c.cfg, newTokenManager(c.cfg, o.Region, o.Credentials))
+	auth := newTokenManager(c.cfg, o.Region, o.Credentials)
+	sessions, err := openSessions(ctx, c.cfg, auth)
 	if err != nil {
-		return err // openSession closed the token manager
+		auth.close()
+		return err
 	}
-	c.session = s
+	c.sessions, c.auth = sessions, auth
 	return nil
 }
+
+// sharedAuth lends one auth provider to a session. The client closes it after every session.
+type sharedAuth struct{ authProvider }
+
+func (sharedAuth) close() {}
+
+// openSessions opens cfg.connections sessions at once. The first failure stops the others
+// and is returned; nothing it started keeps running.
+func openSessions(ctx context.Context, cfg *config, auth authProvider) ([]*session, error) {
+	if cfg.connections == 1 {
+		s, err := openSession(ctx, cfg, sharedAuth{auth})
+		if err != nil {
+			return nil, err
+		}
+		return []*session{s}, nil
+	}
+	octx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	sessions := make([]*session, cfg.connections)
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		first error
+	)
+	for i := range sessions {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s, err := openSession(octx, cfg, sharedAuth{auth})
+			if err != nil {
+				mu.Lock()
+				if first == nil {
+					first = err
+					cancel()
+				}
+				mu.Unlock()
+				return
+			}
+			sessions[i] = s
+		}()
+	}
+	wg.Wait()
+	if first != nil {
+		closeSessions(sessions)
+		return nil, first
+	}
+	return sessions, nil
+}
+
+// closeSessions closes every non-nil session at once and waits for all of them.
+func closeSessions(sessions []*session) {
+	if len(sessions) == 1 {
+		if sessions[0] != nil {
+			sessions[0].close()
+		}
+		return
+	}
+	var wg sync.WaitGroup
+	for _, s := range sessions {
+		if s != nil {
+			wg.Add(1)
+			go func() { defer wg.Done(); s.close() }()
+		}
+	}
+	wg.Wait()
+}
+
+// pick returns the next session in turn that has a live connection, or nil when none has.
+func (c *Client) pick() *session {
+	n := uint64(len(c.sessions))
+	i := c.next.Add(1)
+	for k := range n {
+		if s := c.sessions[(i+k)%n]; s.connected() {
+			return s
+		}
+	}
+	return nil
+}
+
+// lastDown returns the session that lost its connection last, or one that has a connection
+// again. Its outage started when the client lost its last connection, so it waits and falls
+// back as one connection would.
+func (c *Client) lastDown() *session {
+	last := c.sessions[0]
+	var readyAt time.Time
+	for _, s := range c.sessions {
+		if s.live.Load() != nil {
+			return s // up again, or its drop is not yet seen and starts the newest outage
+		}
+		if o := s.outage.Load(); o != nil && o.readyAt.After(readyAt) {
+			last, readyAt = s, o.readyAt
+		}
+	}
+	return last
+}
+
+// request sends r through a connected session, never waiting on one that is reconnecting
+// while another is up. When none is connected, the session that lost its connection last
+// decides, as one connection would.
+func (c *Client) request(ctx context.Context, r *request) requestOutcome {
+	if len(c.sessions) == 1 {
+		return c.sessions[0].request(ctx, r)
+	}
+	for range len(c.sessions) {
+		s := c.pick()
+		if s == nil {
+			break
+		}
+		if o, ok := s.tryRequest(ctx, r, false); ok {
+			return o
+		}
+	}
+	return c.lastDown().request(ctx, r)
+}
+
+// closed reports whether Close has been called.
+func (c *Client) closed() bool { return c.isClosed.Load() }
 
 const clientString = "elasticacheintegrations.Client"
 
@@ -113,8 +237,8 @@ func (c *Client) String() string             { return clientString }
 func (c *Client) GoString() string           { return clientString }
 func (c *Client) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, clientString) }
 
-// Close closes the cache connection, fails the requests still in flight on it, and waits for
-// every goroutine the client started. It never waits for the cache, but waits for a
+// Close closes the cache connections, fails the requests still in flight on them, and waits
+// for every goroutine the client started. It never waits for the cache, but waits for a
 // credentials Retrieve in flight. Later calls on the DynamoDB client go to DynamoDB, or fail
 // with a non-retryable *CacheUnavailableError when FallbackDuration is 0 (strict); a call whose
 // option function sets its own HTTPClient still goes to DynamoDB. It is safe to call more than
@@ -124,8 +248,10 @@ func (c *Client) Close() error {
 		return nil
 	}
 	c.closeOnce.Do(func() {
-		if c.session != nil {
-			c.session.close()
+		c.isClosed.Store(true)
+		closeSessions(c.sessions)
+		if c.auth != nil {
+			c.auth.close()
 		}
 	})
 	return nil

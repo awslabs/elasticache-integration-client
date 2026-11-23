@@ -56,6 +56,7 @@ func TestValidateDefaults(t *testing.T) {
 		userID:                  "default.iam-user",
 		cacheRequestTimeout:     5 * time.Second,
 		connectionTimeout:       5 * time.Second,
+		connections:             1,
 		fallbackUnlimited:       true,
 		cachePolicyTimeout:      time.Hour,
 		iamTokenRefreshDelay:    300 * time.Second,
@@ -267,6 +268,23 @@ func TestValidateDurations(t *testing.T) {
 		o.FallbackDuration = durationPtr(d)
 		_, err := o.validate()
 		mustConfigError(t, err, "FallbackDuration", "whole number of seconds")
+	}
+}
+
+func TestValidateConnections(t *testing.T) {
+	for _, n := range []int{-1, 17} {
+		o := validOptions()
+		o.Connections = n
+		_, err := o.validate()
+		mustConfigError(t, err, "Connections", "from 1 to 16")
+	}
+	for give, want := range map[int]int{0: 1, 1: 1, 4: 4, 16: 16} {
+		o := validOptions()
+		o.Connections = give
+		c, err := o.validate()
+		if err != nil || c.connections != want {
+			t.Fatalf("Connections %d: %v, %v; want %d", give, c, err, want)
+		}
 	}
 }
 

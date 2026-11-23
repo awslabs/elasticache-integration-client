@@ -685,7 +685,7 @@ func TestClose(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if !cache.session.closed() {
+	if !cache.sessions[0].closed() {
 		t.Fatal("session not closed")
 	}
 	if _, err := ddb.GetItem(ctx, in); err != nil {

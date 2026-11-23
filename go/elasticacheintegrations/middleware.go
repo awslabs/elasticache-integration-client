@@ -287,7 +287,7 @@ func newBodyReader(b []byte) *bodyReader {
 func (*bodyReader) Close() error { return nil }
 
 // httpClient is the dynamodb.Options.HTTPClient of a client built by NewFromConfig or New:
-// routed calls go through the cache session, everything else to origin.
+// routed calls go through a cache session, everything else to origin.
 type httpClient struct {
 	client *Client
 	origin aws.HTTPClient // the HTTP client the SDK would have used
@@ -297,7 +297,7 @@ type httpClient struct {
 // sees the session's retry decision.
 func (h *httpClient) Do(req *http.Request) (*http.Response, error) {
 	c := h.client
-	if c.session.closed() {
+	if c.closed() {
 		return h.finish(req, closedOutcome(c.cfg.strict()), nil)
 	}
 	creq, routable, err := adaptRequest(req, c.identity)
@@ -307,7 +307,7 @@ func (h *httpClient) Do(req *http.Request) (*http.Response, error) {
 	if !routable {
 		return h.origin.Do(req)
 	}
-	return h.finish(req, c.session.request(req.Context(), creq), creq.body)
+	return h.finish(req, c.request(req.Context(), creq), creq.body)
 }
 
 // finish acts on the outcome of a routed request whose body, already read, is body.
