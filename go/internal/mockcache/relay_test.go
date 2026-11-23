@@ -238,3 +238,43 @@ func TestRelayPortNotShared(t *testing.T) {
 		t.Fatal("a second listener bound the relay's address")
 	}
 }
+
+func TestRelayPauseHoldsBytes(t *testing.T) {
+	_, r := newRelay(t)
+	c := dialTCP(t, r.Addr())
+	c.ready()
+	r.Pause()
+	r.Pause() // a second Pause changes nothing
+	c.send("aws.request", "POST", "http://dynamodb/", "content-type:application/x-amz-json-1.0", "{}", "service=dynamodb&op=GetItem")
+	expectNoBytes(t, c.conn, 100*time.Millisecond)
+	r.Resume()
+	r.Resume() // a second Resume changes nothing
+	if v := c.next(); v.Kind != resp.KindArray {
+		t.Fatalf("aws.request reply after Resume %v", v)
+	}
+}
+
+func TestRelayPauseThenDisconnectAndClose(t *testing.T) {
+	_, r := newRelay(t)
+	c := dialTCP(t, r.Addr())
+	c.ready()
+	r.Pause()
+	c.send("aws.request", "POST", "http://dynamodb/", "content-type:application/x-amz-json-1.0", "{}", "service=dynamodb&op=GetItem")
+	expectNoBytes(t, c.conn, 50*time.Millisecond)
+	r.Disconnect()
+	expectReset(t, c.conn)
+	held := dialTCP(t, r.Addr())
+	held.send("HELLO", "3", "AUTH", "default.iam-user", "token")
+	expectNoBytes(t, held.conn, 50*time.Millisecond)
+	done := make(chan error, 1)
+	go func() { done <- r.Close() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return while paused")
+	}
+	expectReset(t, held.conn)
+}

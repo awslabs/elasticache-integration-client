@@ -59,6 +59,12 @@ type harnessConfig struct {
 	sdkOptions   []func(*dynamodb.Options)
 }
 
+// withRetries gives the SDK n attempts per call; 1 turns retries off.
+func withRetries(n int) func(*harnessConfig) { return func(hc *harnessConfig) { hc.retries = n } }
+
+// withRelay puts a relay between the client and the cache.
+func withRelay() func(*harnessConfig) { return func(hc *harnessConfig) { hc.relay = true } }
+
 func withOptions(f func(*elasticacheintegrations.Options)) func(*harnessConfig) {
 	return func(hc *harnessConfig) { f(&hc.options) }
 }
@@ -264,3 +270,15 @@ func errorAs[T error](t *testing.T, err error) T {
 	}
 	return target
 }
+
+// retryable reports the decision the SDK's retryer reads from err.
+func retryable(err error) (decided, retry bool) {
+	var r interface{ RetryableError() bool }
+	if errors.As(err, &r) {
+		return true, r.RetryableError()
+	}
+	return false, false
+}
+
+// once makes one call with SDK retries off.
+func once(o *dynamodb.Options) { sdkRetries(1)(o) }

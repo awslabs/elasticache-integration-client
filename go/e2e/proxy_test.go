@@ -44,6 +44,14 @@ type proxy struct {
 
 func newProxy(d *dynamo) *proxy { return &proxy{dynamo: d, kept: map[string]kept{}} }
 
+// setWrap makes w choose the reply to each aws.request; answer gives the proxy's own reply.
+// nil restores in-band replies.
+func (p *proxy) setWrap(w func(cmd mockcache.Command, answer func() resp.Value) mockcache.Reply) {
+	p.mu.Lock()
+	p.wrap = w
+	p.mu.Unlock()
+}
+
 func (p *proxy) handle(cmd mockcache.Command) mockcache.Reply {
 	p.mu.Lock()
 	w := p.wrap

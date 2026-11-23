@@ -306,6 +306,14 @@ func (s *Server) Connections() int {
 	return s.configured
 }
 
+// Open counts the connections the server has not finished serving: once one leaves the
+// count, every byte it received was read and recorded.
+func (s *Server) Open() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
+}
+
 // CertPool trusts the server's certificate; nil without TLS.
 func (s *Server) CertPool() *x509.CertPool { return s.pool }
 

@@ -640,3 +640,27 @@ func TestDropAllWithStuckWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestOpenCountsConnectionsBeingServed(t *testing.T) {
+	s := newServer(t, Config{})
+	addr := listen(t, s)
+	a, b := dialTCP(t, addr), dialTCP(t, addr)
+	a.ready()
+	b.ready()
+	if s.Open() != 2 {
+		t.Fatalf("Open() = %d, want 2", s.Open())
+	}
+	frame := resp.AppendCommandStrings(nil, "aws.request", "POST", "http://dynamodb/",
+		"content-type:application/x-amz-json-1.0", "{}", "service=dynamodb&op=GetItem")
+	if _, err := a.conn.Write(frame[:len(frame)-3]); err != nil {
+		t.Fatal(err)
+	}
+	_ = a.conn.Close()
+	waitFor(t, "the cut connection to end", func() bool { return s.Open() == 1 })
+	if n := len(s.Requests()); n != 0 {
+		t.Fatalf("a cut aws.request was recorded: %d requests", n)
+	}
+	b.request("http://dynamodb/")
+	_ = b.conn.Close()
+	waitFor(t, "the second connection to end", func() bool { return s.Open() == 0 })
+}

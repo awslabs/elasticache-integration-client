@@ -39,6 +39,8 @@ type Relay struct {
 	accepted int
 	open     map[net.Conn]struct{}
 	closed   bool
+	flowing  chan struct{} // closed while bytes flow; open while paused
+	changed  chan struct{} // closed and replaced when a connection is reset or forgotten
 }
 
 // NewRelay listens on a loopback port and forwards each connection to target ("host:port").
@@ -56,7 +58,10 @@ func newRelayWithDial(target string, dial func(ctx context.Context, addr string)
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &Relay{target: target, listener: l, dial: dial, ctx: ctx, cancel: cancel, open: map[net.Conn]struct{}{}}
+	flowing := make(chan struct{})
+	close(flowing)
+	r := &Relay{target: target, listener: l, dial: dial, ctx: ctx, cancel: cancel, open: map[net.Conn]struct{}{},
+		flowing: flowing, changed: make(chan struct{})}
 	r.wg.Add(1)
 	go r.acceptLoop()
 	return r, nil
@@ -73,6 +78,30 @@ func (r *Relay) SetMode(m RelayMode) {
 	r.mu.Unlock()
 }
 
+// Pause stops copying bytes on every forwarded connection, open or new, until Resume. The
+// sockets stay open, so a writer blocks once the socket buffers are full, as on a link that
+// stopped delivering.
+func (r *Relay) Pause() {
+	r.mu.Lock()
+	select {
+	case <-r.flowing:
+		r.flowing = make(chan struct{})
+	default:
+	}
+	r.mu.Unlock()
+}
+
+// Resume undoes Pause.
+func (r *Relay) Resume() {
+	r.mu.Lock()
+	select {
+	case <-r.flowing:
+	default:
+		close(r.flowing)
+	}
+	r.mu.Unlock()
+}
+
 // Accepted counts the connections the relay accepted, in any mode.
 func (r *Relay) Accepted() int {
 	r.mu.Lock()
@@ -86,17 +115,16 @@ func (r *Relay) Disconnect() {
 	r.mu.Lock()
 	conns := make([]net.Conn, 0, len(r.open))
 	for c := range r.open {
-		conns = append(conns, c)
-		delete(r.open, c)
-	}
-	r.mu.Unlock()
-	// Every socket gets linger 0 before any is closed: closing one side ends the copy loop,
-	// which closes the other side, and that close must reset too.
-	for _, c := range conns {
+		// Linger 0 is set before the socket leaves the set: a copy that then finds it gone
+		// closes its pair, and that close must reset too.
 		if tcp, ok := c.(*net.TCPConn); ok {
 			_ = tcp.SetLinger(0)
 		}
+		conns = append(conns, c)
+		delete(r.open, c)
 	}
+	r.wakeLocked()
+	r.mu.Unlock()
 	for _, c := range conns {
 		_ = c.Close()
 	}
@@ -169,7 +197,7 @@ func (r *Relay) serve(client net.Conn, mode RelayMode) {
 	}
 	done := make(chan struct{}, 2)
 	pipe := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
+		r.copy(dst, src)
 		done <- struct{}{}
 	}
 	go pipe(upstream, client)
@@ -177,6 +205,51 @@ func (r *Relay) serve(client net.Conn, mode RelayMode) {
 	<-done
 	r.untrack(client, upstream)
 	<-done
+}
+
+// copy copies src to dst until either fails, holding each chunk while the relay is paused.
+func (r *Relay) copy(dst, src net.Conn) {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := src.Read(buf)
+		if n > 0 {
+			if !r.waitFlowing(src) {
+				return
+			}
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+// waitFlowing blocks while the relay is paused. It reports false once conn is no longer open.
+func (r *Relay) waitFlowing(conn net.Conn) bool {
+	for {
+		r.mu.Lock()
+		_, open := r.open[conn]
+		flowing, changed := r.flowing, r.changed
+		r.mu.Unlock()
+		if !open {
+			return false
+		}
+		select {
+		case <-flowing:
+			return true
+		case <-changed:
+		case <-r.ctx.Done():
+			return false
+		}
+	}
+}
+
+// wakeLocked wakes every waitFlowing to check its connection again. r.mu is held.
+func (r *Relay) wakeLocked() {
+	close(r.changed)
+	r.changed = make(chan struct{})
 }
 
 // trackUpstream records upstream as open with client. It reports false when client was reset
@@ -197,6 +270,7 @@ func (r *Relay) untrack(conns ...net.Conn) {
 	for _, c := range conns {
 		delete(r.open, c)
 	}
+	r.wakeLocked()
 	r.mu.Unlock()
 	for _, c := range conns {
 		_ = c.Close()
