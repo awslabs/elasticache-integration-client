@@ -196,10 +196,34 @@ func TestConnectionsInFlightCountsOnlyLiveCalls(t *testing.T) {
 	}
 }
 
-func TestConnectionsDefaultIsOne(t *testing.T) {
+func TestConnectionsDefaultIsFour(t *testing.T) {
 	s, ddb, cache, _ := connectionsSDK(t, 0, nil)
 	getHit(t, ddb)
-	if s.Connections() != 1 || len(cache.sessions) != 1 {
+	if s.Connections() != 4 || len(cache.sessions) != 4 {
+		t.Fatalf("connections = %d, sessions = %d", s.Connections(), len(cache.sessions))
+	}
+	for _, name := range []string{"HELLO", "AWS.CONFIG"} {
+		if got := perConn(s, name); len(got) != 4 {
+			t.Fatalf("%s per connection = %v, want one on each of 4", name, got)
+		}
+	}
+}
+
+// Start-up opens the default four connections at once: each HELLO takes 400 ms, so four in a
+// row would take longer than the 1 s ConnectionTimeout.
+func TestConnectionsDefaultOpenAtOnce(t *testing.T) {
+	s, addr := sdkMock(t)
+	s.SetOnRequest(func(mockcache.Command) mockcache.Reply { return servedJSON(200, hitBody) })
+	intercept(s, "HELLO", mockcache.After(400*time.Millisecond, mockcache.Hello()))
+	c := sdkConfig(t, s, addr)
+	c.connectionTimeout = time.Second
+	begin := time.Now()
+	ddb, cache := startSDK(t, c, &fakeOrigin{})
+	if took := time.Since(begin); took >= c.connectionTimeout {
+		t.Fatalf("start-up took %v, want under ConnectionTimeout", took)
+	}
+	getHit(t, ddb)
+	if s.Connections() != 4 || len(cache.sessions) != 4 {
 		t.Fatalf("connections = %d, sessions = %d", s.Connections(), len(cache.sessions))
 	}
 }

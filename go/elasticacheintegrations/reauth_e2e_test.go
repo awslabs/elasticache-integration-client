@@ -68,6 +68,7 @@ func TestReauthThroughSDK(t *testing.T) {
 			c.reauthInterval, c.jitter = 200*time.Millisecond, 0
 			c.iamTokenRefreshDelay = time.Second
 			c.cacheRequestTimeout = 300 * time.Millisecond
+			c.connections = 1 // one connection, so its replacement is counted
 			origin := &fakeOrigin{}
 			ddb, _ := startSDK(t, c, origin, withRetries(1))
 			ctx := context.Background()

@@ -65,6 +65,11 @@ type harnessConfig struct {
 // withRetries gives the SDK n attempts per call; 1 turns retries off.
 func withRetries(n int) func(*harnessConfig) { return func(hc *harnessConfig) { hc.retries = n } }
 
+// withDefaultConnections builds the client with the default number of connections.
+func withDefaultConnections() func(*harnessConfig) {
+	return func(hc *harnessConfig) { hc.options.Connections = 0 }
+}
+
 // withRelay puts a relay between the client and the cache.
 func withRelay() func(*harnessConfig) { return func(hc *harnessConfig) { hc.relay = true } }
 
@@ -128,7 +133,10 @@ type harness struct {
 // HTTP client talking to the same fake.
 func newHarness(t *testing.T, setup ...func(*harnessConfig)) *harness {
 	t.Helper()
-	hc := harnessConfig{retries: 3, region: "us-east-1", credentials: testutil.StaticCredentials()}
+	// One connection, so a fault test sees every command on it; withDefaultConnections uses
+	// the client's default.
+	hc := harnessConfig{retries: 3, region: "us-east-1", credentials: testutil.StaticCredentials(),
+		options: elasticacheintegrations.Options{Connections: 1}}
 	for _, f := range setup {
 		f(&hc)
 	}

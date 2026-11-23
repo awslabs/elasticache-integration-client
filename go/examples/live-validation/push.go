@@ -15,6 +15,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/aws/smithy-go/middleware"
+
+	"github.com/awslabs/elasticache-integration-client/go/elasticacheintegrations"
 )
 
 const (
@@ -31,7 +33,7 @@ const (
 // runPush runs check 8: on one connection the reply to a hit started after a miss arrives
 // first, which only async (pushed) replies allow.
 func runPush(ctx context.Context, l *live) error {
-	c, err := l.open(ctx, nil, nil)
+	c, err := l.open(ctx, nil, func(o *elasticacheintegrations.Options) { o.Connections = 1 })
 	if err != nil {
 		return fmt.Errorf("start-up: %w", err)
 	}

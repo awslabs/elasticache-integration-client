@@ -106,7 +106,7 @@ The only change to your application is building the client with `elasticacheinte
 ## How it works
 
 - **You choose what is cached.** Requests for the tables and operations you choose go through the cache; everything else goes to DynamoDB as it would without ElastiCache Integrations. See [Request routing](#request-routing).
-- **The cache going down does not take your application down.** If the connection to the cache is lost, the client reconnects in the background, and meanwhile requests go to DynamoDB as they would without ElastiCache Integrations in the middle. Once the connection is back, so is the caching layer. See [Reconnection and fallback](#reconnection-and-fallback) for the full details, and [Configuration](#configuration) to change how long requests wait and fall back.
+- **The cache going down does not take your application down.** If a connection to the cache is lost, the client reconnects it in the background, and calls use the other connections. If every connection is lost, requests go to DynamoDB as they would without ElastiCache Integrations in the middle. Once a connection is back, so is the caching layer. See [Reconnection and fallback](#reconnection-and-fallback) for the full details, and [Configuration](#configuration) to change how long requests wait and fall back.
 - **`cache.Close()` disconnects the cache.** The DynamoDB client keeps working without it. See [Closing the client](#closing-the-client).
 
 The client installs itself as the DynamoDB client's `HTTPClient`. It sees each request after the SDK has built and signed it, inside the SDK's retry loop, so the SDK's retries, unmarshalling, checksum check and errors work as before.
@@ -173,14 +173,14 @@ ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticachein
 | `CachePolicyOverrides` | none | What to cache and for how long. See [Cache policy overrides](#cache-policy-overrides). |
 | `CachePolicyTimeout` | 1h | How long the client keeps using a cache policy the cache has not confirmed. Whole seconds. See [Cache policy timeout](#cache-policy-timeout). |
 | `IAMTokenRefreshDelay` | 300s | How long after a token is signed a replacement is signed in the background. Whole seconds, 1s to 879s. See [Authentication](#authentication). |
-| `Connections` | 1 | How many cache connections the client opens, 1 to 16. See [Connections](#connections). |
+| `Connections` | 4 | How many cache connections the client opens, 1 to 16. See [Connections](#connections). |
 | `Logger` | Info and above, as text, to stderr | Where the client logs. See [Logging](#logging). |
 
 Timeouts are `time.Duration` values, but they must be whole milliseconds and the longer periods whole seconds, so every value is one the other clients can express too.
 
 ### Connections
 
-By default the client opens one connection to the cache, as the other clients do. The cache serves each connection on one proxy core, about 35,000 requests per second, whatever the client does. A client with 64 or more calls in flight, or more than about 20,000 calls per second, gains from more connections. Measured from one c7g.4xlarge in us-east-1 with 256 calls in flight and 1 KiB hits (VPC endpoint):
+By default the client opens four connections to the cache. The other clients open one. The cache serves each connection on one proxy core, about 35,000 requests per second, whatever the client does, so one connection limits a busy client. Measured from one c7g.4xlarge in us-east-1 with 256 calls in flight and 1 KiB hits (VPC endpoint):
 
 | `Connections` | Requests per second | p50 / p99 |
 |---|---|---|
@@ -198,7 +198,20 @@ Large items need more connections. One connection carries about 200 MB of replie
 
 The Go SDK straight to DynamoDB served 2,786 req/s (5.3 / 11.8 ms) at 16 in flight and 4,311 at 64 (12.8 / 34.7 ms, 13 calls throttled) on the same instance type.
 
-Each connection is opened, authenticated and re-authenticated, refreshes its cache policy, and reconnects on its own; they share one IAM token. Each call goes to the connection that is up with the fewest calls in flight, passing over for one second a connection where a call just failed, and never waits for one that is reconnecting while another is up. Only when every connection is down does a call wait and fall back as described in [Reconnection and fallback](#reconnection-and-fallback), counted from when the last connection dropped, and strict mode applies the same way. `NewFromConfig` returns when every connection is up, and fails if one cannot connect. `Close` closes them all. Each connection counts toward the cache's connection limit and sends its own `AUTH` and `aws.config`.
+With four connections and 64 calls in flight the same host served 40,000 requests per second against 27,000 with one, and one call at a time was no slower.
+
+When to change it:
+
+- **16** for items of 100 KiB or more with 16 or more calls in flight (see the table above).
+- **1** when start-up time and connection count matter more than throughput, for example an AWS Lambda function that serves one call at a time: each connection adds a TLS handshake, `HELLO 3 AUTH` and `aws.config` to `NewFromConfig`, although they run at once.
+
+Every connection costs:
+
+- one connection toward the cache's connection limit, for as long as the client is open;
+- its own `HELLO 3 AUTH` and `aws.config` when it opens and each time it reconnects;
+- an `AUTH` about every 15 minutes and an `aws.config` refresh at the interval the cache sets.
+
+Each connection is opened, authenticated and re-authenticated, refreshes its cache policy, and reconnects on its own; they share one IAM token. Each call goes to the connection that is up with the fewest calls in flight, passing over for one second a connection where a call just failed, and never waits for one that is reconnecting while another is up. Only when every connection is down does a call wait and fall back as described in [Reconnection and fallback](#reconnection-and-fallback), counted from when the last connection dropped, and strict mode applies the same way. `NewFromConfig` opens them at once, within one `ConnectionTimeout`, returns when every connection is up, and fails if one cannot connect. `Close` closes them all.
 
 ### Cache policy overrides
 
@@ -299,6 +312,8 @@ These requests always go to DynamoDB, untouched, whatever the predicates say, al
 The client confirms its cache policy with the cache on the interval the cache sends with it (`refresh_interval`). If those confirmations fail, the client keeps using the last policy the cache confirmed. [`CachePolicyTimeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
 
 ## Reconnection and fallback
+
+Each of the [connections](#connections) reconnects on its own, and calls go to the others while one is down. The rules below are for one connection; a call waits and falls back only when every connection is down.
 
 **When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Each attempt has 5 s to complete, whatever `ConnectionTimeout` is, so a short `ConnectionTimeout` still lets a slow network reconnect. Attempts back off from 100 ms to 3.2 s and continue until one succeeds or the client is closed.
 
@@ -423,7 +438,7 @@ A failure that repeats logs at Warn the first time and every 100th time, so an o
 - **Reply size.** A reply over 16 MiB closes the connection, so every request in flight on it fails with a retryable `*ConnectionLostError`. A retry of the same request meets the same reply. DynamoDB caps a `Query` or `Scan` page at 1 MB and a `BatchGetItem` response at 16 MB, so only a `BatchGetItem` close to its limit can reach this.
 - **Reply headers.** A served reply whose header block is over 64 KiB or 1024 lines fails that request with a `*ProtocolError`. A DynamoDB response has about ten headers.
 - **Requests in flight.** 100 per connection; see [Too many requests at once](#reconnection-and-fallback).
-- **One connection per client.** Each `NewFromConfig` opens one connection. Requests share it, and replies may arrive out of order, so a slow request does not hold up the ones behind it.
+- **Connections per client.** Each `NewFromConfig` opens `Connections` connections, 4 by default and at most 16. Requests share them, and replies may arrive out of order, so a slow request does not hold up the ones behind it.
 - **RESP3 only.** The cache must answer `HELLO 3`.
 - **Only the DynamoDB client** is supported.
 

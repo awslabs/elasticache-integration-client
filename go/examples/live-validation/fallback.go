@@ -34,8 +34,10 @@ func runFallback(ctx context.Context, l *live) error {
 		return err
 	}
 	defer r.close()
+	// One connection, so each relay fault reaches the connection a call uses.
 	timeouts := func(o *elasticacheintegrations.Options) {
 		o.ConnectionTimeout, o.CacheRequestTimeout = faultTimeout, faultTimeout
+		o.Connections = 1
 	}
 
 	r.set(relayReset)

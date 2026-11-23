@@ -67,36 +67,46 @@ func TestSDKRetriesRetryableOutcome(t *testing.T) {
 		"MOVED":          mockcache.Now(resp.ErrorValue("MOVED", "1 10.0.0.1:6379")),
 		"dropped":        mockcache.Drop(),
 	}
-	for name, reply := range first {
-		t.Run(name, func(t *testing.T) {
-			s, addr := sdkMock(t)
-			s.SetOnRequest(replySequence(reply, servedJSON(200, musicItem)))
-			origin := &fakeOrigin{}
-			ddb, _ := startSDK(t, sdkConfig(t, s, addr), origin, withRetries(3))
-			out, err := getMusic(context.Background(), ddb)
-			if err != nil || attrS(t, out.Item, "Artist") != "Acme" {
-				t.Fatalf("GetItem = %v, %v", out, err)
-			}
-			if n := len(s.Requests()); n != 2 || origin.count() != 0 {
-				t.Errorf("cache requests %d, origin calls %d; want 2, 0", n, origin.count())
-			}
-		})
+	// On one connection the retry waits for the reconnect; on the default four it goes to another.
+	for _, conns := range []int{1, defaultConnections} {
+		for name, reply := range first {
+			t.Run(fmt.Sprintf("connections=%d/%s", conns, name), func(t *testing.T) {
+				s, addr := sdkMock(t)
+				s.SetOnRequest(replySequence(reply, servedJSON(200, musicItem)))
+				origin := &fakeOrigin{}
+				c := sdkConfig(t, s, addr)
+				c.connections = conns
+				ddb, _ := startSDK(t, c, origin, withRetries(3))
+				out, err := getMusic(context.Background(), ddb)
+				if err != nil || attrS(t, out.Item, "Artist") != "Acme" {
+					t.Fatalf("GetItem = %v, %v", out, err)
+				}
+				if n := len(s.Requests()); n != 2 || origin.count() != 0 {
+					t.Errorf("cache requests %d, origin calls %d; want 2, 0", n, origin.count())
+				}
+			})
+		}
 	}
 }
 
 func TestSDKRetriesTimeout(t *testing.T) {
 	testutil.ClearAWSEnv(t)
-	s, addr := sdkMock(t)
-	s.SetOnRequest(replySequence(mockcache.Hang(), servedJSON(200, musicItem)))
-	c := sdkConfig(t, s, addr)
-	c.cacheRequestTimeout = 200 * time.Millisecond
-	ddb, _ := startSDK(t, c, &fakeOrigin{}, withRetries(2))
-	out, err := getMusic(context.Background(), ddb)
-	if err != nil || attrS(t, out.Item, "Artist") != "Acme" {
-		t.Fatalf("GetItem = %v, %v", out, err)
-	}
-	if n := len(s.Requests()); n != 2 {
-		t.Errorf("cache requests = %d, want 2", n)
+	for _, conns := range []int{1, defaultConnections} {
+		t.Run(fmt.Sprintf("connections=%d", conns), func(t *testing.T) {
+			s, addr := sdkMock(t)
+			s.SetOnRequest(replySequence(mockcache.Hang(), servedJSON(200, musicItem)))
+			c := sdkConfig(t, s, addr)
+			c.cacheRequestTimeout = 200 * time.Millisecond
+			c.connections = conns
+			ddb, _ := startSDK(t, c, &fakeOrigin{}, withRetries(2))
+			out, err := getMusic(context.Background(), ddb)
+			if err != nil || attrS(t, out.Item, "Artist") != "Acme" {
+				t.Fatalf("GetItem = %v, %v", out, err)
+			}
+			if n := len(s.Requests()); n != 2 {
+				t.Errorf("cache requests = %d, want 2", n)
+			}
+		})
 	}
 }
 
@@ -126,7 +136,9 @@ func TestSDKBrokenHeadersNeverReachOrigin(t *testing.T) {
 		resp.BulkStringValue(musicItem))
 	s.SetOnRequest(replySequence(mockcache.Now(broken), servedJSON(200, musicItem)))
 	origin := &fakeOrigin{}
-	ddb, _ := startSDK(t, sdkConfig(t, s, addr), origin, withRetries(3))
+	c := sdkConfig(t, s, addr)
+	c.connections = 1 // one connection, so a dropped one would show as a second HELLO
+	ddb, _ := startSDK(t, c, origin, withRetries(3))
 	if _, err := getMusic(context.Background(), ddb); !errors.As(err, new(*ProtocolError)) {
 		t.Fatalf("err = %v", err)
 	}
@@ -570,7 +582,9 @@ func dropInFlight(t *testing.T, calls int, optFns ...func(*dynamodb.Options)) []
 	}
 	replies[calls] = servedJSON(200, musicItem)
 	s.SetOnRequest(replySequence(replies...))
-	ddb, _ := startSDK(t, sdkConfig(t, s, addr), &fakeOrigin{}, optFns...)
+	c := sdkConfig(t, s, addr)
+	c.connections = 1 // every call on the one connection DropAll drops
+	ddb, _ := startSDK(t, c, &fakeOrigin{}, optFns...)
 	errs := make(chan error, calls)
 	for range calls {
 		go func() { _, err := getMusic(context.Background(), ddb); errs <- err }()

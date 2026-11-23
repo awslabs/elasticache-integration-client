@@ -26,12 +26,37 @@ import (
 // each goroutine wrote, so a reply that reaches the wrong caller fails it.
 func TestConcurrentLoad(t *testing.T) {
 	t.Parallel()
+	h := concurrentLoad(t)
+	if h.cache.Connections() != 1 || h.dynamo.fromClient() != 0 {
+		t.Errorf("connections %d, client calls %d; want 1 and 0", h.cache.Connections(), h.dynamo.fromClient())
+	}
+}
+
+// TestConcurrentLoadDefaultConnections is TestConcurrentLoad over the default four
+// connections: every connection carries calls, and none goes to DynamoDB.
+func TestConcurrentLoadDefaultConnections(t *testing.T) {
+	t.Parallel()
+	h := concurrentLoad(t, withDefaultConnections())
+	perConn := map[int]int{}
+	for _, cmd := range h.cache.Requests() {
+		perConn[cmd.Conn]++
+	}
+	if h.cache.Connections() != 4 || len(perConn) != 4 || h.dynamo.fromClient() != 0 {
+		t.Errorf("connections %d, requests per connection %v, client calls %d; want 4, 4 entries, 0",
+			h.cache.Connections(), perConn, h.dynamo.fromClient())
+	}
+}
+
+// concurrentLoad runs the load of TestConcurrentLoad on a harness built with setup and
+// returns it.
+func concurrentLoad(t *testing.T, setup ...func(*harnessConfig)) *harness {
+	t.Helper()
 	const (
 		workers = 64
 		calls   = 40
 		songs   = 4
 	)
-	h := newHarness(t)
+	h := newHarness(t, setup...)
 	const seedYear = "1000"
 	for w := range workers {
 		for i := range songs {
@@ -87,9 +112,7 @@ func TestConcurrentLoad(t *testing.T) {
 			t.Errorf("metadata %q with x-amz-target %q", cmd.Arg(5), target)
 		}
 	}
-	if h.cache.Connections() != 1 || h.dynamo.fromClient() != 0 {
-		t.Errorf("connections %d, client calls %d; want 1 and 0", h.cache.Connections(), h.dynamo.fromClient())
-	}
+	return h
 }
 
 // loadCall makes one call of kind on artist's items and checks it against model. Every item

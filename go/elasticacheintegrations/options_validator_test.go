@@ -56,7 +56,7 @@ func TestValidateDefaults(t *testing.T) {
 		userID:                  "default.iam-user",
 		cacheRequestTimeout:     5 * time.Second,
 		connectionTimeout:       5 * time.Second,
-		connections:             1,
+		connections:             4,
 		fallbackUnlimited:       true,
 		cachePolicyTimeout:      time.Hour,
 		iamTokenRefreshDelay:    300 * time.Second,
@@ -278,7 +278,7 @@ func TestValidateConnections(t *testing.T) {
 		_, err := o.validate()
 		mustConfigError(t, err, "Connections", "from 1 to 16")
 	}
-	for give, want := range map[int]int{0: 1, 1: 1, 4: 4, 16: 16} {
+	for give, want := range map[int]int{0: 4, 1: 1, 2: 2, 4: 4, 16: 16} {
 		o := validOptions()
 		o.Connections = give
 		c, err := o.validate()
