@@ -556,3 +556,73 @@ func TestSDKNoSecretsInLogsOrErrors(t *testing.T) {
 	}
 	testutil.AssertNoSecrets(t, text.String(), secrets...)
 }
+
+// dropInFlight drops the connection with calls GetItems in flight, the cache serving every
+// retry, and returns the errors the calls end with.
+func dropInFlight(t *testing.T, calls int, optFns ...func(*dynamodb.Options)) []error {
+	t.Helper()
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	hold := make(chan resp.Value) // never answered: the drop fails every call
+	replies := make([]mockcache.Reply, calls+1)
+	for i := range calls {
+		replies[i] = mockcache.DeferredFrom(hold)
+	}
+	replies[calls] = servedJSON(200, musicItem)
+	s.SetOnRequest(replySequence(replies...))
+	ddb, _ := startSDK(t, sdkConfig(t, s, addr), &fakeOrigin{}, optFns...)
+	errs := make(chan error, calls)
+	for range calls {
+		go func() { _, err := getMusic(context.Background(), ddb); errs <- err }()
+	}
+	for deadline := time.Now().Add(10 * time.Second); len(s.Requests()) < calls; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d calls in flight", len(s.Requests()))
+		}
+	}
+	s.DropAll()
+	var failed []error
+	for range calls {
+		if err := <-errs; err != nil {
+			failed = append(failed, err)
+		}
+	}
+	return failed
+}
+
+// One drop with 100 calls in flight costs the default retryer one retry of quota, so every
+// call is retried and served, as one dropped HTTP connection costs one retry without the cache.
+func TestSDKOneDropRetriesEveryCallInFlight(t *testing.T) {
+	if failed := dropInFlight(t, 100); len(failed) != 0 {
+		t.Fatalf("%d of 100 calls failed: %v", len(failed), failed[0])
+	}
+}
+
+// The wrap holds for the adaptive retryer, and under the SDK's RetryMaxAttempts wrapper, which
+// the DynamoDB client applies after every option function.
+func TestSDKOneDropRetriesEveryCallInFlightOtherRetryers(t *testing.T) {
+	cases := map[string]func(*dynamodb.Options){
+		"adaptive":         func(o *dynamodb.Options) { o.Retryer = retry.NewAdaptiveMode() },
+		"RetryMaxAttempts": func(o *dynamodb.Options) { o.RetryMaxAttempts = 2 },
+	}
+	for name, optFn := range cases {
+		t.Run(name, func(t *testing.T) {
+			if failed := dropInFlight(t, 100, optFn); len(failed) != 0 {
+				t.Fatalf("%d of 100 calls failed: %v", len(failed), failed[0])
+			}
+		})
+	}
+}
+
+// The application's retryer still decides how many attempts a call gets.
+func TestSDKOneDropKeepsMaxAttempts(t *testing.T) {
+	failed := dropInFlight(t, 10, withRetries(1))
+	if len(failed) != 10 {
+		t.Fatalf("%d of 10 calls failed, want all: one attempt", len(failed))
+	}
+	for _, err := range failed {
+		if !errors.As(err, new(*ConnectionLostError)) || strings.Contains(err.Error(), "quota") {
+			t.Fatalf("err = %v", err)
+		}
+	}
+}

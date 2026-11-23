@@ -464,6 +464,9 @@ func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (req
 		if drop != "" && c.drop(drop) && reply.server.kind() == serverAuth {
 			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
 		}
+		if o.retryable && !c.alive() && droppedBy(o.err) {
+			o.charge = c.charge
+		}
 		if err != nil && errors.As(err, new(*RequestNotSentError)) {
 			if s.notSent.hit(time.Now()) {
 				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
@@ -471,6 +474,13 @@ func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (req
 		}
 		return o, true
 	}
+}
+
+// droppedBy reports whether err is how a dying connection fails its requests. A deferred
+// timeout is not, even when the connection dies on the same tick.
+func droppedBy(err error) bool {
+	var te *TimeoutError
+	return errors.As(err, new(*ConnectionLostError)) || errors.As(err, &te) && te.closedConn
 }
 
 // awaitReconnect waits for the current outage's reconnect until its ready deadline. done is

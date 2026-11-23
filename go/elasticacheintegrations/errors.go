@@ -70,6 +70,8 @@ func (e *ProtocolError) Is(target error) bool { return target == ErrIntegrations
 type TimeoutError struct {
 	Msg string
 	Err error // the I/O deadline error, if any
+
+	closedConn bool // the timeout closed its connection
 }
 
 func (e *TimeoutError) Error() string        { return format("timed out", e.Msg, e.Err) }
@@ -168,6 +170,7 @@ func (e *OriginError) Is(target error) bool { return target == ErrIntegrations }
 type sdkError struct {
 	err       error
 	retryable bool
+	charge    *dropCharge // the drop that failed it, if a drop did
 }
 
 func (e *sdkError) Error() string        { return e.err.Error() }

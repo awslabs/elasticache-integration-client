@@ -318,7 +318,8 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error, d
 }
 
 // failAll finishes every entry with lost, and timedOut with timeoutErr, and refuses later
-// registrations and slot waits.
+// registrations and slot waits. A *TimeoutError timeoutErr is marked as one that closed its
+// connection.
 func (p *pendingRequests) failAll(lost error, timedOut *pendingEntry, timeoutErr error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -331,6 +332,9 @@ func (p *pendingRequests) failAllLocked(lost error, timedOut *pendingEntry, time
 	}
 	p.closed = true
 	p.slots.close()
+	if te, ok := timeoutErr.(*TimeoutError); ok && timedOut != nil {
+		te.closedConn = true
+	}
 	fail := func(e *pendingEntry) {
 		err := lost
 		if e == timedOut {

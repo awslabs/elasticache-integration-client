@@ -316,7 +316,7 @@ func (h *httpClient) finish(req *http.Request, o requestOutcome, body []byte) (*
 	case outcomeServed:
 		return adaptResponse(req, o.response), nil
 	case outcomeFailed:
-		return nil, &sdkError{err: o.err, retryable: o.retryable}
+		return nil, &sdkError{err: o.err, retryable: o.retryable, charge: o.charge}
 	default:
 		if body != nil {
 			restoreBody(req, body)

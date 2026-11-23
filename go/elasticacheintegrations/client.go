@@ -39,7 +39,8 @@ type Client struct {
 // optFns may set. The IAM token for the cache is signed with the DynamoDB client's own region
 // and credentials. A call made with a per-call region or credentials override goes to
 // DynamoDB, except after Close in strict mode (see [Client.Close]); a call with its own
-// HTTPClient always does.
+// HTTPClient always does. The client's retryer is wrapped so that the requests one dropped
+// cache connection fails cost its retry quota one retry; a Retryer set per call is not.
 func NewFromConfig(ctx context.Context, cfg aws.Config, opts Options,
 	optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
 	c, err := opts.validate()
@@ -80,8 +81,8 @@ func start(ctx context.Context, cfg *config, build func(...func(*dynamodb.Option
 	return ddb, c, nil
 }
 
-// install wraps the HTTP client and the credentials provider the SDK resolved, after every
-// caller option function.
+// install wraps the HTTP client, the retryer and the credentials provider the SDK resolved,
+// after every caller option function.
 func (c *Client) install(o *dynamodb.Options) {
 	if _, ok := o.HTTPClient.(*httpClient); ok {
 		c.installErr = &ConfigError{Option: "HTTPClient", Msg: "is already an ElastiCache Integrations client"}
@@ -92,6 +93,7 @@ func (c *Client) install(o *dynamodb.Options) {
 		origin = awshttp.NewBuildableClient()
 	}
 	o.HTTPClient = &httpClient{client: c, origin: origin}
+	o.Retryer = wrapRetryer(o.Retryer)
 	o.Credentials = newSignerProvider(o.Credentials)
 	o.APIOptions = append(o.APIOptions[:len(o.APIOptions):len(o.APIOptions)], addSignerSlot)
 }

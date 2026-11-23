@@ -58,6 +58,7 @@ type connection struct {
 	ownerEnded bool // closing was set when the connection died; set before dead is closed
 	started    atomic.Bool
 	readerDone chan struct{}
+	charge     *dropCharge // shared by the requests its death fails
 }
 
 func newConnection(c *config, nc net.Conn, onLost func(error)) *connection {
@@ -69,6 +70,7 @@ func newConnection(c *config, nc net.Conn, onLost func(error)) *connection {
 		onLost:     onLost,
 		dead:       make(chan struct{}),
 		readerDone: make(chan struct{}),
+		charge:     &dropCharge{},
 	}
 	conn.pending = newPendingRequests(c.maxPending, conn.checkDeadlines)
 	return conn

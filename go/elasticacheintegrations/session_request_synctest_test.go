@@ -653,3 +653,108 @@ func TestStrictOutageAndFullConnectionFail(t *testing.T) {
 		})
 	})
 }
+
+// sendHung sends n requests the mock never answers and waits until all are in flight.
+func sendHung(s *session, n int) []<-chan sessionResult {
+	res := make([]<-chan sessionResult, n)
+	for i := range res {
+		res[i] = sendSession(context.Background(), s, time.Now())
+	}
+	synctest.Wait()
+	return res
+}
+
+// charges waits for every result and returns the drop charge of each.
+func charges(t *testing.T, res []<-chan sessionResult) []*dropCharge {
+	t.Helper()
+	out := make([]*dropCharge, len(res))
+	for i, ch := range res {
+		o := <-ch
+		if o.kind != outcomeFailed || !o.retryable {
+			t.Fatalf("outcome %d: %+v", i, o.requestOutcome)
+		}
+		out[i] = o.charge
+	}
+	return out
+}
+
+func TestSessionDropSharesOneCharge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		replyWith(m, mockcache.Hang())
+		s := openTestSession(t, c, &sessionAuth{})
+		res := sendHung(s, 3)
+		m.DropAll()
+		first := charges(t, res)
+		time.Sleep(time.Second) // reconnected
+		res = sendHung(s, 2)
+		m.DropAll()
+		second := charges(t, res)
+		if first[0] == nil || first[1] != first[0] || first[2] != first[0] || second[0] == nil ||
+			second[1] != second[0] || second[0] == first[0] {
+			t.Fatalf("charges %p, %p", first, second)
+		}
+	})
+}
+
+func TestSessionInOrderTimeoutSharesOneCharge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		replyWith(m, mockcache.Hang())
+		s := openTestSession(t, c, &sessionAuth{})
+		got := charges(t, sendHung(s, 2))
+		if got[0] == nil || got[1] != got[0] {
+			t.Fatalf("charges %p", got)
+		}
+	})
+}
+
+func TestSessionFailureWithoutDropHasNoCharge(t *testing.T) {
+	cases := map[string]func() mockcache.Reply{
+		"deferred timeout": func() mockcache.Reply { return mockcache.DeferredFrom(make(chan resp.Value)) },
+		"ORIGIN_ERROR":     func() mockcache.Reply { return mockcache.Now(resp.ErrorValue("ORIGIN_ERROR", "try again")) },
+	}
+	for name, reply := range cases {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, c, _ := sessionMock(t, mockcache.Config{})
+				replyWith(m, reply())
+				s := openTestSession(t, c, &sessionAuth{})
+				if got := charges(t, sendHung(s, 1)); got[0] != nil || !s.connected() {
+					t.Fatalf("charge %p, connected %v", got[0], s.connected())
+				}
+			})
+		})
+	}
+}
+
+func TestSessionMovedReplyCarriesCharge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		replyWith(m, mockcache.Now(resp.ErrorValue("MOVED", "1 10.0.0.1:6379")))
+		s := openTestSession(t, c, &sessionAuth{})
+		o := s.request(context.Background(), getItem("u"))
+		if o.charge == nil || !errors.As(o.err, new(*ConnectionLostError)) {
+			t.Fatalf("outcome %+v", o)
+		}
+	})
+}
+
+// A deferred timeout that expires on the tick that closes the connection is not the drop's.
+func TestSessionDeferredTimeoutBesideInOrderTimeoutHasNoCharge(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		n := 0
+		m.SetOnRequest(func(mockcache.Command) mockcache.Reply {
+			if n++; n == 1 {
+				return mockcache.DeferredFrom(make(chan resp.Value))
+			}
+			return mockcache.Hang()
+		})
+		s := openTestSession(t, c, &sessionAuth{})
+		got := charges(t, sendHung(s, 2)) // both expire on the same tick
+		if (got[0] == nil) == (got[1] == nil) {
+			t.Fatalf("charges %p: want only the in-order timeout's", got)
+		}
+	})
+}

@@ -17,9 +17,10 @@ const (
 // requestOutcome is the one result of a request through the session.
 type requestOutcome struct {
 	kind      outcomeKind
-	response  response // outcomeServed
-	err       error    // outcomeFailed
-	retryable bool     // outcomeFailed
+	response  response    // outcomeServed
+	err       error       // outcomeFailed
+	retryable bool        // outcomeFailed
+	charge    *dropCharge // outcomeFailed by a connection drop
 }
 
 func toOrigin() requestOutcome         { return requestOutcome{kind: outcomeOrigin} }
