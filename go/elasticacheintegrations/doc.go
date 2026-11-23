@@ -5,8 +5,8 @@
 // Go v2 from an ElastiCache Serverless cache.
 //
 // NewFromConfig builds a [github.com/aws/aws-sdk-go-v2/service/dynamodb.Client] whose HTTP
-// client sends the operations the cache supports to the cache and every other call to
-// DynamoDB. Call sites, paginators and waiters stay unchanged:
+// client sends the calls the cache's routing rules select to the cache and every other call
+// to DynamoDB. Call sites, paginators and waiters stay unchanged:
 //
 //	ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticacheintegrations.Options{
 //		Endpoint:  "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
@@ -17,6 +17,7 @@
 //	}
 //	defer cache.Close()
 //
-// Every error the package returns matches [ErrIntegrations] with [errors.Is]; use
-// [errors.As] to reach a specific type such as [*ConfigError] or [*CacheUnavailableError].
+// Every error the package creates matches [ErrIntegrations] with [errors.Is]; a done ctx is
+// returned as ctx.Err(). Use [errors.As] to reach a specific type such as [*ConfigError] or
+// [*CacheUnavailableError].
 package elasticacheintegrations

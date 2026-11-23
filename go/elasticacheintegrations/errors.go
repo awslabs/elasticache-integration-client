@@ -5,13 +5,14 @@ package elasticacheintegrations
 
 import "errors"
 
-// ErrIntegrations matches every error this package returns, with [errors.Is].
+// ErrIntegrations matches every error this package creates, with [errors.Is]. A caller's done
+// ctx is returned as ctx.Err().
 var ErrIntegrations = errors.New("elasticache integrations")
 
 const errPrefix = "elasticacheintegrations: "
 
 // ConfigError reports an option, region, credentials or CA file that cannot be used.
-// It is returned before any network I/O.
+// It is returned before the cache is contacted.
 type ConfigError struct {
 	Option string // the option or input at fault, such as "Endpoint" or "Region"
 	Msg    string // what is wrong, read after Option: "is required", "must be ..."
@@ -78,7 +79,8 @@ func (e *TimeoutError) Is(target error) bool { return target == ErrIntegrations 
 // Timeout reports true, like the net package's timeout errors.
 func (e *TimeoutError) Timeout() bool { return true }
 
-// RejectedError reports a -CODE error reply to aws.request that ends the request.
+// RejectedError reports a -CODE error reply that ends a request: to aws.request, or at
+// start-up to aws.config (other than CONFIG_INVALID), where a [ConnectionError] wraps it.
 type RejectedError struct {
 	Code    string // the bare code, without "-", such as "PARSE_ERROR" or "UNSUPPORTED"
 	Message string // the rest of the reply
@@ -133,8 +135,10 @@ type RequestNotSentError struct {
 func (e *RequestNotSentError) Error() string        { return format("request not sent", e.Msg, nil) }
 func (e *RequestNotSentError) Is(target error) bool { return target == ErrIntegrations }
 
-// CacheUnavailableError reports that the cache is down and the request may not go to
-// DynamoDB: strict mode, or the fallback window is spent.
+// CacheUnavailableError reports that a routed request may not go to DynamoDB and the cache
+// cannot take it: no connection once the fallback window is spent, or, in strict mode, no
+// connection, no room on the connection (wrapping a [RequestNotSentError]), an AUTH_ERROR
+// reply, or a closed client.
 type CacheUnavailableError struct {
 	Reason string
 	Err    error // what made the cache unavailable, if known

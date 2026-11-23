@@ -21,14 +21,18 @@
   decision), `auth.go`, `predicates.go`, `predicate_body.go`, `predicate_fastpath.go`,
   `middleware.go` (the `aws.HTTPClient` wrapper and the request and response adapters),
   `client.go` (`NewFromConfig`, `New`, `Close`), `errors.go`, `models.go`, `options.go`,
-  `options_validator.go`, `logging.go`. Unit tests sit next to the code, in the same package.
+  `options_validator.go`, `logging.go`, and `doc.go` (the package doc). Unit tests sit next to
+  the code, in the same package.
 - `internal/resp/`: the RESP3 codec and the buffered frame reader. No dependency on the rest.
 - `internal/mockcache/`: the in-process mock cache (TLS and plaintext, RESP3, deferred
   replies, hangs, drops, error codes) and a TCP relay that refuses, swallows or resets
   connections, for tests.
-- `e2e/`: the end-to-end suite. It builds a real `dynamodb.Client` with `NewFromConfig`
-  against the mock cache over TLS, with a fake DynamoDB behind it, and runs in
-  `go test ./...` like the unit tests.
+- `e2e/`: the end-to-end suite, package `e2e`, tests only. Each test builds a real
+  `dynamodb.Client` with `NewFromConfig` against `internal/mockcache` over TLS. A fake DynamoDB
+  answers the mock cache's `aws.request` handler and is also the client's origin. It has no build
+  tag and runs in both `go test ./...` passes of `verify.sh`; it has no statements, so it does not
+  count toward the coverage floor. Every test calls `t.Parallel()` on real time, so do not run it
+  with `GOMAXPROCS=1` or `-cpu=1` under `-race` (B135).
 - `internal/testutil/`: test helpers: static credentials, `AWS_*` isolation, the shared
   fixture reader, a log capture, the no-secrets assertion.
 - `examples/`: its own module (`replace` to `../`) with the live examples `local-e2e` and
@@ -36,8 +40,9 @@
   tests; the gate vets them and runs their hermetic unit tests.
 - `scripts/verify.sh`: the complete local gate; CI runs it.
 - `.github/workflows/go-ci.yml` (repository root): called by `ci.yml` on every push to `main`
-  and when a pull request touches `go/`, `shared/`, `ci.yml`, `alignment-ci.yml` or a `go-ci`
-  workflow. The `verify` job runs `scripts/verify.sh --skip-alignment` on Go 1.24 (the floor),
+  or a `release-*` branch, on a manual run, and when a pull request touches `go/`, `shared/`,
+  `ci.yml`, `alignment-ci.yml`, `go-ci.yml` or `go-release.yml`. The `verify` job runs
+  `scripts/verify.sh --skip-alignment` on Go 1.24 (the floor),
   `oldstable` and `stable`; the `vulncheck` job runs `govulncheck` on both modules.
   `alignment-ci.yml` runs the alignment tests; `compat.yml` (`go-latest`) runs the gate weekly
   with every dependency at its newest release.
@@ -107,7 +112,7 @@ require the corresponding tests, README, and build checks to change with it.
   100 pending requests; a waiter that gives up never loses a slot.
 - **Lifecycle:** every goroutine is owned by the session and stopped by `Close`, which is
   idempotent and never waits on the cache. No package-level mutable state except the
-  once-per-process insecure-TLS warning.
+  once-per-process insecure-TLS warning and the `sync.Pool` buffers.
 - **Authentication and transport:** credentials come from the built DynamoDB client's
   provider for every token; a rejected AUTH forces a new token; TLS 1.2 or later with
   certificate and host name checks by default. Tokens, signatures, credentials and bodies never

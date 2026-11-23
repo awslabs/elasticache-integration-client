@@ -237,7 +237,8 @@ func main() {
 	case errors.As(err, &configErr):
 		log.Fatal(err) // a bad option, or no region or credentials: fix the configuration
 	case errors.Is(err, elasticacheintegrations.ErrIntegrations):
-		// The cache could not be reached or rejected the credentials. Run without it.
+		// The cache could not be reached, rejected the credentials or the overrides, or sent
+		// rules the client cannot use. Run without it.
 		log.Print("starting without the cache: ", err)
 		ddb = dynamodb.NewFromConfig(cfg)
 	case err != nil:
@@ -262,35 +263,37 @@ Requests for the tables and operations you choose in [`CachePolicyOverrides`](#c
 
 The cache sends the client its routing rules as CEL predicates with each config. A request goes to the cache when any predicate is true; an evaluation error counts as no match. The cache supports ten operations: `GetItem`, `Query`, `Scan`, `PutItem`, `UpdateItem`, `DeleteItem`, `BatchGetItem`, `BatchWriteItem`, `TransactGetItems` and `TransactWriteItems`. Everything else, such as `DescribeTable`, goes to DynamoDB. A DynamoDB error in a reply from the cache, such as `ResourceNotFoundException` or `ConditionalCheckFailedException`, is returned by the SDK exactly as for a direct call.
 
-These requests always go to DynamoDB, untouched, whatever the predicates say:
+A predicate sees the request's `service`, `operation`, `method`, `url`, `headers` (lowercase names, without `authorization`, `x-amz-date`, `x-amz-security-token`, `amz-sdk-request` and `x-amz-request-id`) and its JSON `body`, plus the predicate's own `vars`. The body is parsed only for the predicates that read it, so a body that is not a JSON object fails those predicates and no others. A config with no predicates routes nothing. A config whose predicates are malformed or do not compile, a `vars` that is not an object included, is not used: at startup it is a `*ConfigUnevaluableError`, and on a refresh the client keeps the config it has.
 
-- **A call with per-call options that change who signs it.** The cache connection is authenticated as the DynamoDB client's own identity. A call whose option function sets other `Credentials` or another `Region` is signed differently, so serving it from that connection would answer for the wrong principal. The client compares the access key id and region in the signed request with its own and sends any mismatch to DynamoDB. A rotated key of the same credentials provider still matches.
+These requests always go to DynamoDB, untouched, whatever the predicates say, also in [strict mode](#strict-mode). After `Close` in strict mode only the call with its own `HTTPClient` still does; the others fail like every other call ([Closing the client](#closing-the-client)):
+
+- **A call with per-call options that change who signs it.** The cache connection is authenticated as the DynamoDB client's own identity. A call whose option function sets other `Credentials` or another `Region` is signed differently, so serving it from that connection would answer for the wrong principal. The client compares the access key id and region in the signed request with the region of the DynamoDB client and the key its own provider returned while the SDK signed the call, and sends any mismatch to DynamoDB. A rotated key of that provider still matches; a per-call provider never does, even one that returns the same key.
 - **A call whose option function replaces `HTTPClient`.** It no longer goes through the client at all.
 - A request body of unknown length or over 16 MiB, and a request without a SigV4 signature.
 
 ## Cache policy timeout
 
-The client confirms its cache policy with the cache periodically. If those confirmations fail, the client keeps using the last policy the cache confirmed. [`CachePolicyTimeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
+The client confirms its cache policy with the cache on the interval the cache sends with it (`refresh_interval`). If those confirmations fail, the client keeps using the last policy the cache confirmed. [`CachePolicyTimeout`](#configuration) limits how long: once a refresh fails after that much time without a confirmation, the client drops the connection and reconnects, which fetches a fresh policy. Meanwhile requests follow [Reconnection and fallback](#reconnection-and-fallback). A successful refresh restarts the window, so a healthy connection is never dropped.
 
 ## Reconnection and fallback
 
-**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Attempts back off from 100 ms to 3.2 s and continue until one succeeds or the client is closed.
+**When the connection is lost.** The client starts reconnecting at once, in the background, even if the application is idle. Each attempt opens a new TLS connection, signs in with the current [IAM token](#authentication) and gets the current [cache policy](#request-routing). Each attempt has 5 s to complete, whatever `ConnectionTimeout` is, so a short `ConnectionTimeout` still lets a slow network reconnect. Attempts back off from 100 ms to 3.2 s and continue until one succeeds or the client is closed.
 
 **Requests during an outage.** A request the cache would serve first waits for the connection to come back, up to [`ConnectionTimeout`](#configuration). This wait is per outage, not per request: a request that arrives later in the same outage waits only for what is left of it. If the connection comes back in time, the request is served from the cache, with its whole `CacheRequestTimeout`.
 
 **After the wait.** If the connection is still down, the request goes to DynamoDB for as long as [`FallbackDuration`](#configuration) allows, counted from the end of the wait. The default has no limit, a positive value allows that long, and `aws.Duration(0)` never allows it. Once the window ends, the request fails with a retryable `*CacheUnavailableError` for the SDK to handle. A write sent to DynamoDB this way can leave a stale entry in the cache until its [TTL](#cache-policy-overrides) expires.
 
-**Strict mode** (`FallbackDuration: aws.Duration(0)`). A request the cache would serve never goes to DynamoDB: not during an outage, not when the connection is too busy to take it, not when the cache replies `AUTH_ERROR`, and not after [`Close`](#closing-the-client). Requests the predicates send to DynamoDB still go there.
+**Strict mode** (`FallbackDuration: aws.Duration(0)`). A request the cache would serve never goes to DynamoDB: not during an outage, not when the connection is too busy to take it, not when the cache replies `AUTH_ERROR`, and not after [`Close`](#closing-the-client). Requests the predicates send to DynamoDB still go there, and so do the calls that [always go there](#request-routing), such as a per-call `Credentials` or `Region`, until `Close`. After `Close` only a call with its own `HTTPClient` reaches DynamoDB.
 
 **Too many requests at once.** One connection carries up to 100 requests in flight. A request that finds no room within 75% of `CacheRequestTimeout` is not sent to the cache and goes to DynamoDB, or fails with a retryable `*CacheUnavailableError` in strict mode.
 
 **A request already sent when the connection drops.** It fails with a retryable `*ConnectionLostError`, whatever its operation, the same as when the connection to DynamoDB drops without the cache. Your SDK retry settings decide whether it is sent again, and the retry goes through the same wait and fallback window as any other request. As without the cache, a retried write may be applied twice if the first attempt reached DynamoDB.
 
-**At startup.** `NewFromConfig` keeps trying to connect until [`ConnectionTimeout`](#configuration) has passed, then returns the last attempt's failure: a `*ConnectionError` if it could not connect, or an `*AuthError` if the cache rejected its credentials. It stops at once with an `*OverridesRejectedError` when the cache rejects the [cache policy overrides](#cache-policy-overrides), and with a `*ConfigUnevaluableError` when the cache sends routing rules the client cannot compile, because a retry would get the same answer. It never returns a client that is not connected to the cache.
+**At startup.** `NewFromConfig` keeps trying to connect until [`ConnectionTimeout`](#configuration) has passed, then returns the last attempt's failure: a `*ConnectionError` if it could not connect, or an `*AuthError` if the cache rejected its credentials. It stops at once with an `*OverridesRejectedError` when the cache rejects the [cache policy overrides](#cache-policy-overrides), and with a `*ConfigUnevaluableError` when the cache sends routing rules the client cannot compile, because a retry would get the same answer. It never returns a client that is not connected to the cache. Only the last attempt's failure is returned, as in the other clients, so a last attempt that `ConnectionTimeout` cuts short reports a `*ConnectionError` even when the earlier attempts got an `*AuthError`; Debug logging shows each attempt's failure (event 1302).
 
 ## Closing the client
 
-`cache.Close()` closes the connection, fails the requests still waiting on it, and waits for every goroutine the client started. It never waits for the cache to answer. It is safe to call more than once and from any goroutine, and always returns `nil`.
+`cache.Close()` closes the connection, fails the requests still waiting on it, and waits for every goroutine the client started. It never waits for the cache to answer, but it does wait for a credentials `Retrieve` in flight, so a provider that ignores its context can hold it up. It is safe to call more than once and from any goroutine, and always returns `nil`.
 
 - A request in flight when you call `Close` fails with a retryable `*ConnectionLostError`. The SDK's retry then goes to DynamoDB. In strict mode it is not retryable.
 - After `Close`, every call on the DynamoDB client goes straight to DynamoDB. In strict mode every call fails instead, routed or not, with a `*CacheUnavailableError` that is not retryable. Only a call whose option function sets its own `HTTPClient` still reaches DynamoDB, because it no longer goes through the client.
@@ -325,7 +328,7 @@ Every error the client creates matches `elasticacheintegrations.ErrIntegrations`
 | `*OriginError` | The cache could not complete its call to DynamoDB (`ORIGIN_ERROR`, `INTERNAL_ERROR`). | yes |
 | `*CacheUnavailableError` | No connection and the fallback window is spent, or strict mode. `Reason` says which. In strict mode it may wrap a `*RequestNotSentError`: the connection had no room for the request in time. | yes; after `Close` in strict mode: no |
 | `*RejectedError` | The cache refused the request (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH` or an unknown code). `Code` holds the code. It never goes to DynamoDB. | no |
-| `*ProtocolError` | The cache sent a reply of the wrong shape. The connection stays open. | no |
+| `*ProtocolError` | The cache sent a reply of the wrong shape, such as a header block over 64 KiB or 1024 lines. The connection stays open. | no |
 
 In strict mode, every error after `Close` is not retryable.
 
@@ -341,9 +344,9 @@ A cancelled or expired `ctx` ends the call with a `*smithy.CanceledError` that w
 
 The client signs in to the cache with an IAM authentication token, using the region and the `Credentials` provider of the DynamoDB client it builds. The cache is accessed as the same identity as your DynamoDB requests, and credential rotation (SSO, assumed roles, container and instance credentials) keeps working. `NewFromConfig` retrieves the credentials once, so a provider that cannot resolve fails at startup with a `*ConfigError`.
 
-Use a cached credentials provider. `config.LoadDefaultConfig` gives you one. With a plain provider passed in `aws.Config.Credentials` or `dynamodb.Options.Credentials`, `Retrieve` runs once more for every routed attempt, because the client checks each request's signing key against the provider's current one ([Request routing](#request-routing)). Wrap it with `aws.NewCredentialsCache`.
+The client routes a call only when the SDK signed it with a key from the DynamoDB client's own provider ([Request routing](#request-routing)): it records the access key id that provider returns while the SDK signs each attempt, and compares it with the signed request. So a provider that returns a new key on every call still routes, and no extra `Retrieve` runs. The client does not add a credentials cache: use the provider you would use without it (`config.LoadDefaultConfig` gives you a cached one).
 
-Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and again early when the credentials it signed with expire within a minute. About every 15 minutes, it also authenticates the live connection again with the current token. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`IAMTokenRefreshDelay`](#configuration) to change when the replacement is signed.
+Tokens are valid for 15 minutes. The client signs a replacement in the background before the current one expires, and signs a new one before its next use when the credentials it signed with expire within a minute. About every 15 minutes, it also authenticates the live connection again with the current token. If the cache rejects the new token, the connection stays open with its current authentication, and the client signs another token and tries again, with backoff. If the cache does not answer the `AUTH` in time, or replies with neither `OK` nor an error, the client drops the connection and [reconnects](#reconnection-and-fallback). Set [`IAMTokenRefreshDelay`](#configuration) to change when the replacement is signed.
 
 When the cache answers a request `AUTH_ERROR`, it holds no valid AWS credentials for that connection. The client drops the connection and reconnects with a fresh token, and that request goes to DynamoDB, whatever the fallback window; in strict mode it fails with a retryable `*CacheUnavailableError`.
 
@@ -379,22 +382,23 @@ A failure that repeats logs at Warn the first time and every 100th time, so an o
 | 1101 | A re-AUTH or config refresh failed | Warn on the first and every 100th failure, else Debug |
 | 1102 | A re-AUTH or config refresh succeeded after failures | Info |
 | 1103 | The cache replied `AUTH_ERROR`; reconnecting | Warn, once per dropped connection |
-| 1201 | The connection was lost | Info |
+| 1201 | The connection was lost | Info; 1303 warns when reconnecting keeps failing |
 | 1202 | An in-order reply did not arrive in time; the connection is closed | Warn |
 | 1203 | A reply arrived for a request that no longer waits for it | Debug |
 | 1301 | A config was applied | Debug |
 | 1302 | A startup attempt failed; retrying | Debug |
 | 1303 | A reconnect attempt failed | Warn on the first and every 100th failure, else Debug |
-| 1304 | Reconnected | Info |
+| 1304 | Reconnected | Info, or Debug when the first attempt worked |
 | 1305 | The cache is unreachable and requests may not go to DynamoDB | Warn, once per outage |
 | 1306 | The config was not confirmed within `CachePolicyTimeout`; reconnecting | Warn |
 | 1307 | The cache rejected the overrides, or sent a config the client cannot use | Error |
-| 1308 | A request found no room on the connection in time | Warn on the first and every 100th time |
+| 1308 | A request found no room on the connection in time | Warn once per burst; a burst ends after 1 s with none |
 
 ## Limits
 
 - **Request body.** A request body over 16 MiB, or of unknown length, goes to DynamoDB.
 - **Reply size.** A reply over 16 MiB closes the connection, so every request in flight on it fails with a retryable `*ConnectionLostError`. A retry of the same request meets the same reply. DynamoDB caps a `Query` or `Scan` page at 1 MB and a `BatchGetItem` response at 16 MB, so only a `BatchGetItem` close to its limit can reach this.
+- **Reply headers.** A served reply whose header block is over 64 KiB or 1024 lines fails that request with a `*ProtocolError`. A DynamoDB response has about ten headers.
 - **Requests in flight.** 100 per connection; see [Too many requests at once](#reconnection-and-fallback).
 - **One connection per client.** Each `NewFromConfig` opens one connection. Requests share it, and replies may arrive out of order, so a slow request does not hold up the ones behind it.
 - **RESP3 only.** The cache must answer `HELLO 3`.
