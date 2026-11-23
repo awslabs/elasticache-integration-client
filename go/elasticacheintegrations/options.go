@@ -52,9 +52,11 @@ type Options struct {
 	IAMTokenRefreshDelay time.Duration
 
 	// Connections is how many cache connections the client opens. Each has its own AUTH,
-	// re-AUTH, config refresh, reconnect and fallback, and calls are spread over the ones that
-	// are up. One connection serves about 35,000 calls per second; use 4 for more, or for 64
-	// or more calls in flight. Default 1, at most 16.
+	// re-AUTH, config refresh, reconnect and fallback. Each call goes to the one that is up
+	// with the fewest calls in flight, passing over for one second one where a call failed.
+	// One connection serves about 35,000 calls or 200 MB of replies per second; use 4 for
+	// more, or for 64 or more calls in flight, and 16 for items of 100 KiB or more. Default 1,
+	// at most 16.
 	Connections int
 
 	// Logger receives the client's log records. Default: Info and above, as text, to stderr.

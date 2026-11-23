@@ -188,7 +188,17 @@ By default the client opens one connection to the cache, as the other clients do
 | 2 | 60,200 | 4.1 / 8.6 ms |
 | 4 | 85,200 | 2.7 / 7.2 ms |
 
-Each connection is opened, authenticated and re-authenticated, refreshes its cache policy, and reconnects on its own; they share one IAM token. Calls go in turn to the connections that are up, and never wait for one that is reconnecting while another is up. Only when every connection is down does a call wait and fall back as described in [Reconnection and fallback](#reconnection-and-fallback), counted from when the last connection dropped, and strict mode applies the same way. `NewFromConfig` returns when every connection is up, and fails if one cannot connect. `Close` closes them all. Each connection counts toward the cache's connection limit and sends its own `AUTH` and `aws.config`.
+Large items need more connections. One connection carries about 200 MB of replies per second, so with 390 KiB items it serves about 500 hits per second whatever the concurrency. With items of 100 KiB or more and 16 or more calls in flight, use 16. Measured from a c7g.4xlarge in us-east-1 with 390 KiB hits (VPC endpoint), requests per second and p50 / p99, one run each except 16 connections at 64 in flight, the median of 3:
+
+| `Connections` | 16 in flight | 64 in flight |
+|---|---|---|
+| 1 | 527, 30.1 / 40.0 ms | 470, 134.5 / 169.1 ms |
+| 4 | 1,377, 9.2 / 26.2 ms | 1,957, 32.3 / 44.2 ms |
+| 16 | 2,967, 4.9 / 11.0 ms | 3,592, 15.3 / 45.9 ms |
+
+The Go SDK straight to DynamoDB served 2,786 req/s (5.3 / 11.8 ms) at 16 in flight and 4,311 at 64 (12.8 / 34.7 ms, 13 calls throttled) on the same instance type.
+
+Each connection is opened, authenticated and re-authenticated, refreshes its cache policy, and reconnects on its own; they share one IAM token. Each call goes to the connection that is up with the fewest calls in flight, passing over for one second a connection where a call just failed, and never waits for one that is reconnecting while another is up. Only when every connection is down does a call wait and fall back as described in [Reconnection and fallback](#reconnection-and-fallback), counted from when the last connection dropped, and strict mode applies the same way. `NewFromConfig` returns when every connection is up, and fails if one cannot connect. `Close` closes them all. Each connection counts toward the cache's connection limit and sends its own `AUTH` and `aws.config`.
 
 ### Cache policy overrides
 

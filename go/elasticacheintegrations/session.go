@@ -53,9 +53,13 @@ type session struct {
 	wg        sync.WaitGroup
 	closeDone chan struct{} // closed when close has finished
 
-	live   atomic.Pointer[connection] // nil while there is no connection
-	snap   atomic.Pointer[snapshot]
-	outage atomic.Pointer[outage] // the latest outage; set before live is cleared
+	live atomic.Pointer[connection] // nil while there is no connection
+	// inflight counts the calls the client has routed here that have not returned.
+	inflight atomic.Int64
+	// failedAt is when a call routed here last failed, in Client.sinceStart nanoseconds; 0 if never.
+	failedAt atomic.Int64
+	snap     atomic.Pointer[snapshot]
+	outage   atomic.Pointer[outage] // the latest outage; set before live is cleared
 
 	isClosed atomic.Bool // set under mu when the state becomes closed
 

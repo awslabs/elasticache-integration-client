@@ -5,6 +5,7 @@ package elasticacheintegrations
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -24,6 +25,7 @@ type Client struct {
 	sessions []*session   // one per connection; each reconnects and falls back on its own
 	auth     authProvider // shared by every session; closed after them
 	next     atomic.Uint64
+	start    time.Time // when the client was created; the base of session.failedAt
 
 	installErr error
 	isClosed   atomic.Bool
@@ -69,7 +71,7 @@ func New(ctx context.Context, options dynamodb.Options, opts Options,
 // session. On failure nothing it started keeps running.
 func start(ctx context.Context, cfg *config, build func(...func(*dynamodb.Options)) *dynamodb.Client,
 	optFns []func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
-	c := &Client{cfg: cfg}
+	c := &Client{cfg: cfg, start: time.Now()}
 	// The three-index slice keeps append from writing into the caller's array.
 	ddb := build(append(optFns[:len(optFns):len(optFns)], c.install)...)
 	if c.installErr != nil {
@@ -180,17 +182,43 @@ func closeSessions(sessions []*session) {
 	wg.Wait()
 }
 
-// pick returns the next session in turn that has a live connection, or nil when none has.
-func (c *Client) pick() *session {
+// failedAvoid is how long pick passes over a connection where a call failed, while another
+// connection is up: one that fails fast has the fewest calls in flight and would take them all.
+const failedAvoid = time.Second
+
+// pick returns the index of the connected session with the fewest calls in flight, skipping
+// the sessions in tried, or -1 when there is none. A session where a call failed within
+// failedAvoid comes after every other. The scan starts at the next session in turn, so ties
+// are spread. Large replies make one connection's backlog slow to drain, so a call does not
+// join it while another connection is idler.
+func (c *Client) pick(tried uint32) int {
 	n := uint64(len(c.sessions))
 	i := c.next.Add(1)
+	best, least, bestFailed := -1, int64(0), false
+	var now int64
 	for k := range n {
-		if s := c.sessions[(i+k)%n]; s.connected() {
-			return s
+		j := (i + k) % n
+		s := c.sessions[j]
+		if tried&(1<<j) != 0 || !s.connected() {
+			continue
+		}
+		failed := false
+		if at := s.failedAt.Load(); at != 0 {
+			if now == 0 {
+				now = c.sinceStart()
+			}
+			failed = now-at < int64(failedAvoid)
+		}
+		f := s.inflight.Load()
+		if best < 0 || bestFailed && !failed || failed == bestFailed && f < least {
+			best, least, bestFailed = int(j), f, failed
 		}
 	}
-	return nil
+	return best
 }
+
+// sinceStart is the monotonic time since the client was created, in nanoseconds, at least 1.
+func (c *Client) sinceStart() int64 { return max(1, int64(time.Since(c.start))) }
 
 // lastDown returns the session that lost its connection last, or one that has a connection
 // again. Its outage started when the client lost its last connection, so it waits and falls
@@ -216,16 +244,31 @@ func (c *Client) request(ctx context.Context, r *request) requestOutcome {
 	if len(c.sessions) == 1 {
 		return c.sessions[0].request(ctx, r)
 	}
+	var tried uint32
 	for range len(c.sessions) {
-		s := c.pick()
-		if s == nil {
+		j := c.pick(tried)
+		if j < 0 {
 			break
 		}
-		if o, ok := s.tryRequest(ctx, r, false); ok {
+		s := c.sessions[j]
+		if o, ok := c.tryOn(ctx, s, r); ok {
 			return o
 		}
+		tried |= 1 << j
 	}
 	return c.lastDown().request(ctx, r)
+}
+
+// tryOn is s.tryRequest without waiting, counted in s.inflight while it runs. A call that
+// fails with the package's own error, not the caller's, marks s as failed.
+func (c *Client) tryOn(ctx context.Context, s *session, r *request) (requestOutcome, bool) {
+	s.inflight.Add(1)
+	defer s.inflight.Add(-1)
+	o, ok := s.tryRequest(ctx, r, false)
+	if ok && o.kind == outcomeFailed && errors.Is(o.err, ErrIntegrations) {
+		s.failedAt.Store(c.sinceStart())
+	}
+	return o, ok
 }
 
 // closed reports whether Close has been called.

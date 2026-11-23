@@ -15,6 +15,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/mockcache"
+	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
 )
 
 const hitBody = `{"Item":{"Artist":{"S":"Acme"}}}`
@@ -84,6 +85,114 @@ func TestConnectionsOpensEachAndSpreadsCalls(t *testing.T) {
 	}
 	if origin.count() != 0 {
 		t.Fatalf("origin calls = %d", origin.count())
+	}
+}
+
+// A call goes to the connection with the fewest calls in flight: while one call waits on a
+// connection, the next calls all go to the other.
+func TestConnectionsPickFewestInFlight(t *testing.T) {
+	s, ddb, _, origin := connectionsSDK(t, 2, nil)
+	held := make(chan resp.Value, 1)
+	var heldConn atomic.Int64
+	heldConn.Store(-1)
+	s.SetOnRequest(func(cmd mockcache.Command) mockcache.Reply {
+		if heldConn.CompareAndSwap(-1, int64(cmd.Conn)) {
+			return mockcache.DeferredFrom(held)
+		}
+		return servedJSON(200, hitBody)
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); getHit(t, ddb) }()
+	waitFor(t, "the first call to be in flight", func() bool { return heldConn.Load() >= 0 })
+	for range 4 {
+		getHit(t, ddb)
+	}
+	got := perConn(s, "AWS.REQUEST")
+	if got[int(heldConn.Load())] != 1 || len(got) != 2 {
+		t.Fatalf("requests per connection = %v, want 1 on the held connection %d", got, heldConn.Load())
+	}
+	held <- mockcache.Served(200, map[string]string{"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(hitBody)}, []byte(hitBody))
+	<-done
+	if origin.count() != 0 {
+		t.Fatalf("origin calls = %d", origin.count())
+	}
+}
+
+// A connection that fails every call at once has the fewest calls in flight. Calls must not
+// all go to it: after a call fails there, the next ones go to the other connection, and the
+// SDK's retry of the failed call succeeds there.
+func TestConnectionsAvoidConnectionThatJustFailed(t *testing.T) {
+	s, ddb, cache, origin := connectionsSDK(t, 2, nil)
+	held := make(chan resp.Value, 1)
+	var heldConn atomic.Int64
+	heldConn.Store(-1)
+	s.SetOnRequest(func(cmd mockcache.Command) mockcache.Reply {
+		if heldConn.CompareAndSwap(-1, int64(cmd.Conn)) {
+			return mockcache.DeferredFrom(held)
+		}
+		if int64(cmd.Conn) != heldConn.Load() {
+			return mockcache.Now(errorReply("INTERNAL_ERROR", "broken"))
+		}
+		return servedJSON(200, hitBody)
+	})
+	done := make(chan struct{})
+	go func() { defer close(done); getHit(t, ddb) }()
+	waitFor(t, "the first call to be in flight", func() bool { return heldConn.Load() >= 0 })
+	h := ddb.Options().HTTPClient.(*httpClient)
+	failures := 0
+	for range 6 {
+		res, err := h.Do(getItemRequest(t))
+		if err != nil {
+			failures++
+			continue
+		}
+		_ = res.Body.Close()
+	}
+	got := perConn(s, "AWS.REQUEST")
+	if failures != 1 || got[int(heldConn.Load())] != 6 {
+		t.Fatalf("failures = %d, requests per connection = %v, want 1 failure and 5 more on the held connection %d",
+			failures, got, heldConn.Load())
+	}
+	getHit(t, ddb)
+	for _, ss := range cache.sessions {
+		if at := ss.failedAt.Load(); at != 0 {
+			ss.failedAt.Store(at - int64(failedAvoid)) // the failure is older than failedAvoid
+		}
+	}
+	if _, err := h.Do(getItemRequest(t)); err == nil {
+		t.Fatal("a call after failedAvoid did not go back to the idle connection")
+	}
+	held <- mockcache.Served(200, map[string]string{"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(hitBody)}, []byte(hitBody))
+	<-done
+	if origin.count() != 0 {
+		t.Fatalf("origin calls = %d", origin.count())
+	}
+	for i, ss := range cache.sessions {
+		if n := ss.inflight.Load(); n != 0 {
+			t.Errorf("session %d has %d calls in flight after every call returned", i, n)
+		}
+	}
+}
+
+// A call whose context ends while it waits on a connection no longer counts there.
+func TestConnectionsInFlightCountsOnlyLiveCalls(t *testing.T) {
+	s, ddb, cache, _ := connectionsSDK(t, 2, nil)
+	s.SetOnRequest(func(mockcache.Command) mockcache.Reply { return mockcache.Hang() })
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := ddb.GetItem(ctx, &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()})
+		done <- err
+	}()
+	waitFor(t, "the call to be in flight", func() bool { return len(perConn(s, "AWS.REQUEST")) == 1 })
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetItem = %v, want context.Canceled", err)
+	}
+	for i, ss := range cache.sessions {
+		if n := ss.inflight.Load(); n != 0 {
+			t.Errorf("session %d has %d calls in flight after the call returned", i, n)
+		}
 	}
 }
 

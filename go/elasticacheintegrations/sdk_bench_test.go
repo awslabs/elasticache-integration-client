@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,10 +28,14 @@ import (
 // request, so a benchmark's allocations are the client's. With perRequest set, each
 // connection serves its requests one after another, perRequest each from its arrival or the
 // end of the one before, and writes each reply as soon as it is served, as the proxy serves
-// one connection on one core.
+// one connection on one core. The first slowConns connections dialed take slowPerRequest
+// instead, as connections that share a proxy core do.
 type cannedCache struct {
 	hello, config, ok, reply []byte
 	perRequest               time.Duration
+	slowConns                int32
+	slowPerRequest           time.Duration
+	dials                    atomic.Int32
 }
 
 // cannedReply is a reply and the time its service ends.
@@ -58,14 +63,18 @@ func newCannedCache(tb testing.TB, served resp.Value) *cannedCache {
 // dial gives the client one end of a net.Pipe and serves the other.
 func (cc *cannedCache) dial(context.Context, string, string) (net.Conn, error) {
 	client, server := net.Pipe()
-	go cc.serve(server)
+	per := cc.perRequest
+	if cc.dials.Add(1) <= cc.slowConns {
+		per = cc.slowPerRequest
+	}
+	go cc.serve(server, per)
 	return client, nil
 }
 
-func (cc *cannedCache) serve(conn net.Conn) {
+func (cc *cannedCache) serve(conn net.Conn, perRequest time.Duration) {
 	defer conn.Close()
 	var replies chan cannedReply
-	if cc.perRequest > 0 {
+	if perRequest > 0 {
 		replies = make(chan cannedReply, 1024)
 		done := make(chan struct{})
 		go func() { defer close(done); writeWhenDue(conn, replies) }()
@@ -108,7 +117,7 @@ func (cc *cannedCache) serve(conn net.Conn) {
 			}
 			busy = laterOf(busy, time.Now())
 			if request {
-				busy = busy.Add(cc.perRequest)
+				busy = busy.Add(perRequest)
 			}
 			replies <- cannedReply{b: reply, due: busy}
 		}
@@ -321,4 +330,35 @@ func BenchmarkGetItemHitConnections(b *testing.B) {
 			})
 		})
 	}
+}
+
+// BenchmarkGetItemHitUnevenConnections runs 1 KiB hits from 64 goroutines over 4 connections
+// when one connection is served 4 times slower than the others (100µs against 400µs per
+// request), as when two connections share a proxy core or large replies back one up. ns/op
+// is wall time per call.
+func BenchmarkGetItemHitUnevenConnections(b *testing.B) {
+	body := itemBody(1 << 10)
+	cc := newCannedCache(b, mockcache.Served(200, map[string]string{
+		"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(body),
+	}, []byte(body)))
+	cc.perRequest, cc.slowConns, cc.slowPerRequest = 100*time.Microsecond, 1, 400*time.Microsecond
+	c, err := Options{Endpoint: "localhost:6379", CacheName: "my-cache", Connections: 4}.validate()
+	if err != nil {
+		b.Fatal(err)
+	}
+	c.plaintext, c.dial = true, cc.dial
+	ddb, _ := startSDK(b, c, &fakeOrigin{})
+	in := &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()}
+	b.SetParallelism(max(1, 64/runtime.GOMAXPROCS(0)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			out, err := ddb.GetItem(context.Background(), in)
+			if err != nil || len(out.Item) != 2 {
+				b.Error(out, err)
+				return
+			}
+		}
+	})
 }
