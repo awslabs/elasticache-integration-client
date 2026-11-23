@@ -410,7 +410,8 @@ func TestCloseWakesOutageWaiters(t *testing.T) {
 }
 
 // TestStrictNeverReachesOrigin: in strict mode no routed request goes to DynamoDB, under
-// load, an outage, AUTH_ERROR, a full connection, and after Close.
+// load with drops, AUTH_ERROR, and after Close. TestStrictOutageAndFullConnectionFail covers
+// an outage past its wait and a full connection; e2e/strict_test.go covers the whole client.
 func TestStrictNeverReachesOrigin(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, c, _ := sessionMock(t, mockcache.Config{})
@@ -586,5 +587,69 @@ func TestPendingLimitLogOncePerSustainedBurst(t *testing.T) {
 		if n := len(eventRecords(logs, eventPendingLimitReached)); n != 1 {
 			t.Fatalf("%d 1308 records, want one for the burst", n)
 		}
+	})
+}
+
+// The first request of an outage that arrives late waits only for what is left of the wait,
+// counted from the drop.
+func TestOutageWaitStartsAtTheDrop(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		s := openTestSession(t, c, &sessionAuth{})
+		intercept(m, "HELLO", mockcache.Hang())
+		start := time.Now()
+		m.DropAll()
+		synctest.Wait()
+		time.Sleep(3 * time.Second)
+		if o := <-sendSession(context.Background(), s, start); o.kind != outcomeOrigin || o.at != c.connectionTimeout {
+			t.Fatalf("first request 3s into the outage: %v at %v; want origin %v after the drop", o.kind, o.at, c.connectionTimeout)
+		}
+	})
+}
+
+// In strict mode a request fails with a retryable *CacheUnavailableError, never goes to
+// DynamoDB, when the outage outlasts its wait and when the connection has no free slot.
+func TestStrictOutageAndFullConnectionFail(t *testing.T) {
+	unavailable := func(t *testing.T, o requestOutcome, notSent bool) {
+		t.Helper()
+		if o.kind != outcomeFailed || !o.retryable || !errors.As(o.err, new(*CacheUnavailableError)) {
+			t.Fatalf("outcome %v %v (retryable %v); want a retryable CacheUnavailableError", o.kind, o.err, o.retryable)
+		}
+		if notSent != errors.As(o.err, new(*RequestNotSentError)) {
+			t.Fatalf("%v: wraps a RequestNotSentError = %v, want %v", o.err, !notSent, notSent)
+		}
+	}
+	t.Run("outage", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m, c, _ := sessionMock(t, mockcache.Config{})
+			strictConfig(c)
+			s := openTestSession(t, c, &sessionAuth{})
+			intercept(m, "HELLO", mockcache.Hang())
+			start := time.Now()
+			m.DropAll()
+			synctest.Wait()
+			o := <-sendSession(context.Background(), s, start)
+			unavailable(t, o.requestOutcome, false)
+			if o.at != c.connectionTimeout {
+				t.Fatalf("failed at %v; want after the %v wait", o.at, c.connectionTimeout)
+			}
+		})
+	})
+	t.Run("full connection", func(t *testing.T) {
+		synctest.Test(t, func(t *testing.T) {
+			m, c, _ := sessionMock(t, mockcache.Config{})
+			strictConfig(c)
+			c.maxPending = 1
+			hold := make(chan resp.Value)
+			replyWith(m, mockcache.DeferredFrom(hold))
+			s := openTestSession(t, c, &sessionAuth{})
+			busy := sendSession(context.Background(), s, time.Now())
+			synctest.Wait()
+			unavailable(t, s.request(context.Background(), getItem("u")), true)
+			hold <- mockcache.Served(200, nil, nil)
+			if b := <-busy; b.kind != outcomeServed {
+				t.Fatalf("held request: %v", b.kind)
+			}
+		})
 	})
 }

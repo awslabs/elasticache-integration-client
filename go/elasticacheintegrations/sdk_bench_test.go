@@ -26,11 +26,11 @@ type cannedCache struct {
 	hello, config, ok, reply []byte
 }
 
-func newCannedCache(b *testing.B, served resp.Value) *cannedCache {
+func newCannedCache(tb testing.TB, served resp.Value) *cannedCache {
 	enc := func(v resp.Value) []byte {
 		out, err := resp.AppendValue(nil, v)
 		if err != nil {
-			b.Fatal(err)
+			tb.Fatal(err)
 		}
 		return out
 	}

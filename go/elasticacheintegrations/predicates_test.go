@@ -510,3 +510,19 @@ func TestPredicatesConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A request that a body-free predicate routes is never scanned. The body has more containers
+// than a pooled scan keeps, so a scan always allocates its index.
+func TestBodyFreeMatchSkipsTheBodyScan(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector changes allocation counts")
+	}
+	r := predReq("GetItem", "dynamodb", `{"a":[`+strings.Repeat(`[],`, maxPooledContainers)+`[]]}`)
+	free := mustCompilePredicates(t, predConfig(predEntry("operation == 'GetItem'", nil)))
+	reads := mustCompilePredicates(t, predConfig(predEntry("has(body.a) && operation == 'GetItem'", nil)))
+	freeB := bytesPerRun(20, func() { free.shouldRoute(r) })
+	readsB := bytesPerRun(20, func() { reads.shouldRoute(r) })
+	if !free.shouldRoute(r) || !reads.shouldRoute(r) || freeB > 4<<10 || readsB < 64<<10 {
+		t.Fatalf("a body-free match allocates %d bytes, a body match %d", freeB, readsB)
+	}
+}

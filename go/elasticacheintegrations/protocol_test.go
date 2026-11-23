@@ -1196,3 +1196,13 @@ func TestCanonicalHeaderKeyMatchesTextproto(t *testing.T) {
 		}
 	}
 }
+
+// refresh_interval must be an integral number; 60.0 and 6E1 are refused, as Java refuses them.
+func TestRefreshIntervalRealRefused(t *testing.T) {
+	for _, body := range []string{`{"refresh_interval":60.0}`, `{"refresh_interval":60.5}`, `{"refresh_interval":6E1}`} {
+		if _, err := parseConfigReply(resp.BulkStringValue(body), true); !errors.As(err, new(*ProtocolError)) ||
+			!strings.Contains(err.Error(), "not an integer") {
+			t.Errorf("%s: %v", body, err)
+		}
+	}
+}

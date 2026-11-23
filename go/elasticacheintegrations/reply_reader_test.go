@@ -5,6 +5,7 @@ package elasticacheintegrations
 
 import (
 	"errors"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -258,5 +259,31 @@ func TestReaderTLSDropIsEndOfStream(t *testing.T) {
 	var cl *ConnectionLostError
 	if err := lost.wait(t); !errors.As(err, &cl) || cl.Msg != "the cache closed the connection" {
 		t.Fatalf("onLost(%v)", err)
+	}
+}
+
+// +OK at the head of an aws.request is that request's reply, not a deferred id.
+func TestOKAtRequestHeadResolvesHead(t *testing.T) {
+	r := newReaderRig(t)
+	a := r.expect(true)
+	r.write("+OK\r\n")
+	v, err := result(t, a)
+	if err != nil || string(v.Bytes) != "OK" || r.conn.pending.deferredCount() != 0 || !r.conn.alive() {
+		t.Fatalf("value %v err %v deferred %d alive %v", v, err, r.conn.pending.deferredCount(), r.conn.alive())
+	}
+}
+
+// A push for an id nobody waits for is dropped, logged at Debug, and the reader goes on.
+func TestUnknownPushIDDroppedAtDebug(t *testing.T) {
+	r := newReaderRig(t)
+	r.push("99", resp.IntValue(1))
+	waitFor(t, "the record", func() bool { return len(eventRecords(r.logs, eventLatePushDropped)) == 1 })
+	if rec := eventRecords(r.logs, eventLatePushDropped)[0]; rec.Level != slog.LevelDebug {
+		t.Fatalf("level %v", rec.Level)
+	}
+	a := r.expect(true)
+	r.write("+OK\r\n")
+	if _, err := result(t, a); err != nil || !r.conn.alive() {
+		t.Fatalf("the next reply: %v, alive %v", err, r.conn.alive())
 	}
 }
