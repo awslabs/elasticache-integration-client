@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -205,14 +206,19 @@ func (p *predicates) shouldRoute(req *request) bool {
 	if p == nil || len(p.list) == 0 {
 		return false
 	}
-	pr := predicateRequest{req: req}
-	defer pr.release()
+	pr := predicateRequestPool.Get().(*predicateRequest)
+	pr.req = req
+	defer func() {
+		pr.release()
+		*pr = predicateRequest{}
+		predicateRequestPool.Put(pr)
+	}()
 	for _, pred := range p.list {
 		// A body that predicates cannot read matches none that read it, and only those are left.
 		if pred.readsBody && !pr.loadBody() {
 			return false
 		}
-		if pred.matches(&pr) {
+		if pred.matches(pr) {
 			return true
 		}
 	}
@@ -233,6 +239,8 @@ func (pred *predicate) matches(pr *predicateRequest) bool {
 	return err == nil && out == types.True
 }
 
+var predicateRequestPool = sync.Pool{New: func() any { return new(predicateRequest) }}
+
 // predicateRequest is one request as the predicates see it. The body is scanned, and the
 // headers and the cel-go body are built, on first need. Not safe for concurrent use: one per
 // evaluation.
@@ -251,7 +259,7 @@ type predicateRequest struct {
 // headers returns the request headers predicates see, built once.
 func (pr *predicateRequest) headers() map[string]string {
 	if pr.hdrs == nil {
-		pr.hdrs = predicateHeaders(pr.req.headers)
+		pr.hdrs = predicateHeaders(pr.req.headerMap())
 	}
 	return pr.hdrs
 }

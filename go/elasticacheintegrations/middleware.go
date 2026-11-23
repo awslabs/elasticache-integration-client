@@ -57,17 +57,34 @@ func adaptRequest(req *http.Request, id identity) (r *request, routable bool, er
 	if !ok || !matchesIdentity(req.Context(), id.region, keyID, region) {
 		return nil, false, nil // a per-call identity or region, or not SigV4-signed
 	}
-	body, err := readBody(req.Body, n)
+	body, room, err := readBody(req.Body, n)
 	if err != nil {
 		return nil, false, err
 	}
-	return &request{
-		method:   req.Method,
-		url:      req.URL.String(),
-		headers:  requestHeaders(req.Header, n),
-		body:     body,
-		metadata: requestMetadata{service: sdkService, operation: operation},
-	}, true, nil
+	r = &request{
+		method:        req.Method,
+		url:           req.URL.String(),
+		header:        req.Header,
+		contentLength: n,
+		body:          body,
+		room:          room,
+		metadata:      requestMetadata{service: sdkService, operation: operation},
+	}
+	if !trimmedNames(req.Header) {
+		r.headers = requestHeaders(req.Header, n)
+	}
+	return r, true, nil
+}
+
+// trimmedNames reports whether no header name has leading or trailing bytes <= ' ', so the
+// header block can be written from h without building the header map.
+func trimmedNames(h http.Header) bool {
+	for name := range h {
+		if trimJava(name) != name {
+			return false
+		}
+	}
+	return true
 }
 
 // operationName is the SDK operation of req, from its context or else from X-Amz-Target.
@@ -108,28 +125,37 @@ func signedScope(h http.Header) (keyID, region string, ok bool) {
 	return keyID, region, true
 }
 
-// readBody reads exactly n bytes, and fails if body holds fewer or more.
-func readBody(body io.Reader, n int64) ([]byte, error) {
+// readBody reads exactly n bytes, and fails if body holds fewer or more. From directBodyMin,
+// room is the buffer b was read into, with space for the frame around it.
+func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 	if n == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if body == nil {
-		return nil, &requestBodyError{Err: io.ErrUnexpectedEOF}
+		return nil, nil, &requestBodyError{Err: io.ErrUnexpectedEOF}
 	}
-	buf := make([]byte, n+1) // the extra byte detects a body longer than n
-	if _, err := io.ReadFull(body, buf[:n]); err != nil {
+	before, after := int64(0), int64(1) // the extra byte detects a body longer than n
+	if n >= directBodyMin {
+		before, after = frameRoom, tailRoom
+	}
+	buf := make([]byte, before+n+after)
+	b = buf[before : before+n : before+n]
+	if _, err := io.ReadFull(body, b); err != nil {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF // n bytes were promised
 		}
-		return nil, &requestBodyError{Err: err}
+		return nil, nil, &requestBodyError{Err: err}
 	}
-	switch _, err := io.ReadFull(body, buf[n:]); err {
+	switch _, err := io.ReadFull(body, buf[before+n:before+n+1]); err {
 	case io.EOF:
-		return buf[:n:n], nil
+		if before > 0 {
+			room = buf
+		}
+		return b, room, nil
 	case nil:
-		return nil, &requestBodyError{Err: errBodyTooLong}
+		return nil, nil, &requestBodyError{Err: errBodyTooLong}
 	default:
-		return nil, &requestBodyError{Err: err}
+		return nil, nil, &requestBodyError{Err: err}
 	}
 }
 
@@ -214,17 +240,26 @@ func adaptResponse(req *http.Request, r response) *http.Response {
 	if header == nil {
 		header = http.Header{}
 	}
-	return &http.Response{
+	s := &servedResponse{}
+	s.body.Reset(r.body)
+	s.Response = http.Response{
 		Status:        statusLine(r.statusCode),
 		StatusCode:    r.statusCode,
 		Proto:         "HTTP/1.1",
 		ProtoMajor:    1,
 		ProtoMinor:    1,
 		Header:        header,
-		Body:          newBodyReader(r.body),
+		Body:          &s.body,
 		ContentLength: int64(len(r.body)),
 		Request:       req,
 	}
+	return &s.Response
+}
+
+// servedResponse is a served response and its body in one allocation.
+type servedResponse struct {
+	http.Response
+	body bodyReader
 }
 
 // statusLine is the Status text net/http gives a response: "200 OK", or the bare code.

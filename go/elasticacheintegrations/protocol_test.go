@@ -91,7 +91,7 @@ func TestAlignmentProtocolEncode(t *testing.T) {
 				c := newSerializedCommand()
 				defer c.release()
 				c.appendRequest(r)
-				got = c.frame
+				got = c.wire
 			case string(v.Overrides) == "null":
 				got = appendConfigRefresh(nil)
 			case len(v.Overrides) > 0:
@@ -185,7 +185,7 @@ func encodeRequest(t *testing.T, r *request) string {
 	c := newSerializedCommand()
 	defer c.release()
 	c.appendRequest(r)
-	return string(c.frame)
+	return string(c.wire)
 }
 
 func headerBlock(h map[string]string) string {
@@ -257,7 +257,7 @@ func TestSerializedCommandReuse(t *testing.T) {
 	c := newSerializedCommand()
 	c.appendRequest(big)
 	c.appendRequest(small)
-	if got, want := string(c.frame), encodeRequest(t, small); got != want {
+	if got, want := string(c.wire), encodeRequest(t, small); got != want {
 		t.Errorf("reused command\n got %q\nwant %q", got, want)
 	}
 	c.appendRequest(big)
@@ -557,6 +557,103 @@ func normalizeHeadersOracle(h map[string]string) string {
 		lines[i] = p.name + ":" + p.value
 	}
 	return strings.Join(lines, "\n")
+}
+
+// TestAppendRequestLargeBody checks that a body from directBodyMin up is not copied when the
+// frame fits its room, and that the command is the same bytes as one RESP command either way.
+func TestAppendRequestLargeBody(t *testing.T) {
+	big := sdkHeaders()
+	big["x-big"] = strings.Repeat("v", frameRoom)
+	cases := []struct {
+		n       int
+		headers map[string]string
+		op      string
+		inPlace bool
+	}{
+		{directBodyMin - 1, sdkHeaders(), "PutItem", false},
+		{directBodyMin, sdkHeaders(), "PutItem", true},
+		{directBodyMin + 1, sdkHeaders(), "PutItem", true},
+		{390 << 10, sdkHeaders(), "PutItem", true},
+		{directBodyMin, big, "PutItem", false},                              // the frame is over frameRoom
+		{directBodyMin, sdkHeaders(), strings.Repeat("o", tailRoom), false}, // the tail is over tailRoom
+	}
+	for _, tc := range cases {
+		body, room, err := readBody(bytes.NewReader(bytes.Repeat([]byte{'x'}, tc.n)), int64(tc.n))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := &request{
+			method:   "POST",
+			url:      "https://dynamodb.us-east-1.amazonaws.com/",
+			headers:  tc.headers,
+			body:     body,
+			room:     room,
+			metadata: newRequestMetadata("dynamodb", tc.op),
+		}
+		want := string(resp.AppendCommandStrings(nil, requestCommand, r.method, r.url,
+			headerBlock(r.headers), string(r.body), "service=dynamodb&op="+tc.op))
+		c := newSerializedCommand()
+		for attempt := range 2 { // a retry encodes the same request again
+			c.appendRequest(r)
+			if got := string(c.wire); got != want {
+				t.Fatalf("%d bytes, attempt %d: the command differs from one RESP command", tc.n, attempt)
+			}
+		}
+		r.body[0] = 'y'
+		if inPlace := strings.Contains(string(c.wire), "\r\ny"); inPlace != tc.inPlace {
+			t.Errorf("%d bytes, op %.10s: written around the body = %v", tc.n, tc.op, inPlace)
+		}
+		c.release()
+	}
+}
+
+// TestNormalizeHTTPHeaders checks that the header block written from an http.Header is the
+// one written from requestHeaders.
+func TestNormalizeHTTPHeaders(t *testing.T) {
+	cases := []http.Header{
+		nil,
+		{},
+		{"Content-Type": {"application/x-amz-json-1.0"}, "Authorization": {"s"}, "X-Amz-Date": {"d"}},
+		{"X-A": {"2", " 1"}, "x-a": {"1"}, "X-a": {"0 "}},
+		{"Content-Length": {"99"}, "content-length": {"7"}},
+		{"X-E": {}, "X-F": {""}, "X-G": {"\x01v\t"}},
+		{"X-Ünï": {"v"}, "b": {"a"}, "a-b": {"z"}, "a": {"z"}},
+	}
+	for i, h := range cases {
+		for _, n := range []int64{0, 21} {
+			if got, want := httpHeaderBlock(h, n), headerBlock(requestHeaders(h, n)); got != want {
+				t.Errorf("case %d, length %d: got %q, want %q", i, n, got, want)
+			}
+		}
+	}
+}
+
+func httpHeaderBlock(h http.Header, n int64) string {
+	c := newSerializedCommand()
+	defer c.release()
+	c.normalizeHTTPHeaders(h, n)
+	return string(c.scratch)
+}
+
+func FuzzNormalizeHTTPHeaders(f *testing.F) {
+	f.Add("X-A", "1", "x-a", "2", "Authorization", "s", "x-Ünï", "\x01v", int64(3))
+	f.Add("", "", "Content-Length", " ", "AMZ-SDK-REQUEST", "a", "b", "\U00010000", int64(0))
+	f.Fuzz(func(t *testing.T, n1, v1, n2, v2, n3, v3, n4, v4 string, n int64) {
+		h := http.Header{}
+		for _, kv := range [][2]string{{n1, v1}, {n2, v2}, {n3, v3}, {n4, v4}} {
+			h[kv[0]] = append(h[kv[0]], kv[1])
+		}
+		if !trimmedNames(h) {
+			t.Skip("adaptRequest builds the map for these names")
+		}
+		c := newSerializedCommand()
+		defer c.release()
+		c.normalizeHTTPHeaders(http.Header{"X-Prev-" + n4: {v1 + v2}}, 1)
+		c.normalizeHTTPHeaders(h, n)
+		if got, want := string(c.scratch), headerBlock(requestHeaders(h, n)); got != want {
+			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
 }
 
 func FuzzNormalizeHeaders(f *testing.F) {

@@ -22,11 +22,14 @@ func newRequestMetadata(service, operation string) requestMetadata {
 
 // request is a signed SDK request to send to the cache.
 type request struct {
-	method   string
-	url      string
-	headers  map[string]string // lowercase names; multiple values already joined with ", "
-	body     []byte
-	metadata requestMetadata
+	method        string
+	url           string
+	headers       map[string]string // lowercase names; multiple values already joined with ", "
+	header        http.Header       // when headers is nil: the SDK request header, with contentLength
+	contentLength int64
+	body          []byte
+	room          []byte // when set, body is room[frameRoom:], with tailRoom bytes after it
+	metadata      requestMetadata
 }
 
 // LogValue, String and GoString never include headers or the body: they carry the
@@ -92,4 +95,12 @@ func logString(v slog.LogValuer) string {
 	}
 	b.WriteByte('}')
 	return b.String()
+}
+
+// headerMap is headers, built from header on first use.
+func (r *request) headerMap() map[string]string {
+	if r.headers == nil && r.header != nil {
+		r.headers = requestHeaders(r.header, r.contentLength)
+	}
+	return r.headers
 }

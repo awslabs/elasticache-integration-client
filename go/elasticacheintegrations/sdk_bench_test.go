@@ -15,6 +15,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/mockcache"
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
@@ -168,6 +169,49 @@ func BenchmarkGetItemPlain(b *testing.B) {
 	}
 }
 
+// BenchmarkPutItemHit is a PutItem the cache answers 200 {}: the request body travels to the
+// socket, the reply is small.
+func BenchmarkPutItemHit(b *testing.B) {
+	for _, size := range benchSizes {
+		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
+			cc := newCannedCache(b, mockcache.Served(200, map[string]string{
+				"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc("{}"),
+			}, []byte("{}")))
+			c, err := Options{Endpoint: "localhost:6379", CacheName: "my-cache"}.validate()
+			if err != nil {
+				b.Fatal(err)
+			}
+			c.plaintext, c.dial = true, cc.dial
+			ddb, _ := startSDK(b, c, &fakeOrigin{})
+			benchSDKPutItem(b, ddb, size)
+		})
+	}
+}
+
+// BenchmarkPutItemPlain is the same PutItem on a plain SDK client answering from memory.
+func BenchmarkPutItemPlain(b *testing.B) {
+	for _, size := range benchSizes {
+		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
+			sum := crc("{}")
+			ddb := dynamodb.NewFromConfig(awsConfig(), func(o *dynamodb.Options) {
+				o.HTTPClient = httpDoFunc(func(req *http.Request) (*http.Response, error) {
+					if req.Body != nil {
+						_, _ = io.Copy(io.Discard, req.Body)
+					}
+					return &http.Response{
+						StatusCode: 200, Status: "200 OK", Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+						Header:        http.Header{"Content-Type": {"application/x-amz-json-1.0"}, "X-Amz-Crc32": {sum}},
+						Body:          io.NopCloser(strings.NewReader("{}")),
+						ContentLength: 2,
+						Request:       req,
+					}, nil
+				})
+			})
+			benchSDKPutItem(b, ddb, size)
+		})
+	}
+}
+
 type httpDoFunc func(*http.Request) (*http.Response, error)
 
 func (f httpDoFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
@@ -181,6 +225,21 @@ func benchSDKGetItem(b *testing.B, ddb *dynamodb.Client) {
 		out, err := ddb.GetItem(ctx, in)
 		if err != nil || len(out.Item) != 2 {
 			b.Fatal(out, err)
+		}
+	}
+}
+
+func benchSDKPutItem(b *testing.B, ddb *dynamodb.Client, size int) {
+	ctx := context.Background()
+	in := &dynamodb.PutItemInput{TableName: aws.String("Music"), Item: map[string]types.AttributeValue{
+		"Artist": &types.AttributeValueMemberS{Value: "Acme"},
+		"Data":   &types.AttributeValueMemberS{Value: strings.Repeat("x", size)},
+	}}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := ddb.PutItem(ctx, in); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

@@ -93,15 +93,15 @@ func TestAdaptRequest(t *testing.T) {
 		"x-amz-date":           req.Header.Get("X-Amz-Date"),
 		"x-amz-security-token": testutil.SessionToken,
 	}
-	if len(r.headers) != len(want) {
-		t.Errorf("headers = %v, want %v", r.headers, want)
+	if len(r.headerMap()) != len(want) {
+		t.Errorf("headers = %v, want %v", r.headerMap(), want)
 	}
 	for k, v := range want {
-		if r.headers[k] != v {
-			t.Errorf("header %q = %q, want %q", k, r.headers[k], v)
+		if r.headerMap()[k] != v {
+			t.Errorf("header %q = %q, want %q", k, r.headerMap()[k], v)
 		}
 	}
-	if _, ok := r.headers["host"]; ok {
+	if _, ok := r.headerMap()["host"]; ok {
 		t.Error("host header added")
 	}
 }
@@ -126,12 +126,40 @@ func TestAdaptRequestHeaders(t *testing.T) {
 		"content-length": "21", // from req.ContentLength
 	}
 	for k, v := range checks {
-		if r.headers[k] != v {
-			t.Errorf("header %q = %q, want %q", k, r.headers[k], v)
+		if r.headerMap()[k] != v {
+			t.Errorf("header %q = %q, want %q", k, r.headerMap()[k], v)
 		}
 	}
-	if _, ok := r.headers["x-empty"]; ok {
+	if _, ok := r.headerMap()["x-empty"]; ok {
 		t.Error("a header with no values was kept")
+	}
+}
+
+// TestAdaptRequestHeaderBlock checks that the header block sent for an SDK request is the one
+// requestHeaders gives, whether it is written from the http.Header or from the map.
+func TestAdaptRequestHeaderBlock(t *testing.T) {
+	for _, pad := range []bool{false, true} {
+		req := getItemRequest(t)
+		req.Header["X-Dup"] = []string{"b", " a"}
+		req.Header["x-dup"] = []string{"c"}
+		if pad {
+			req.Header[" X-Dup"] = []string{"d"}
+		}
+		want := headerBlock(requestHeaders(req.Header, req.ContentLength))
+		r, ok, err := adaptRequest(req, testIdentity())
+		if err != nil || !ok {
+			t.Fatalf("adaptRequest = %v, %v", ok, err)
+		}
+		if built := r.headers != nil; built != pad {
+			t.Errorf("padded name %v: header map built = %v", pad, built)
+		}
+		c := newSerializedCommand()
+		c.appendRequest(r)
+		got := string(c.scratch[:len(want)])
+		c.release()
+		if got != want {
+			t.Errorf("padded name %v: got %q, want %q", pad, got, want)
+		}
 	}
 }
 
@@ -145,7 +173,7 @@ func TestAdaptRequestHeadersSameLowercaseNameIsDeterministic(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("adaptRequest = %v, %v", ok, err)
 		}
-		if got := r.headers["x-d"]; got != "aa, mm, zz" {
+		if got := r.headerMap()["x-d"]; got != "aa, mm, zz" {
 			t.Fatalf("x-d = %q, want %q", got, "aa, mm, zz")
 		}
 	}
@@ -156,7 +184,7 @@ func TestAdaptRequestEmptyBody(t *testing.T) {
 		req := signedRequest(t, "ListTables", "", testCredentials(t), testRegion)
 		req.Body, req.ContentLength = body, 0
 		r, ok, err := adaptRequest(req, testIdentity())
-		if err != nil || !ok || len(r.body) != 0 || r.headers["content-length"] != "0" {
+		if err != nil || !ok || len(r.body) != 0 || r.headerMap()["content-length"] != "0" {
 			t.Fatalf("body %v: adaptRequest = %+v, %v, %v", body, r, ok, err)
 		}
 	}

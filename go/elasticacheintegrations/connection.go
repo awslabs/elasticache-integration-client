@@ -301,7 +301,7 @@ func (c *connection) timeoutError() error {
 func (c *connection) request(ctx context.Context, r *request) (requestReply, error) {
 	cmd := newSerializedCommand()
 	cmd.appendRequest(r)
-	e, err := c.start(ctx, cmd.frame, true)
+	e, err := c.start(ctx, cmd.wire, true)
 	cmd.release()
 	if err != nil {
 		return requestReply{}, err

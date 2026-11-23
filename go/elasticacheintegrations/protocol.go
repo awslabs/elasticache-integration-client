@@ -36,6 +36,7 @@ const maxPooledCommand = 1 << 20
 // serializedCommand is a command frame ready for one Write. A request frame reuses every
 // buffer, so encoding a request allocates nothing.
 type serializedCommand struct {
+	wire    []byte // the command to write: frame, or the request's room around its body
 	frame   []byte
 	pairs   []headerPair // normalizeHeaders scratch
 	names   []byte       // lowercased header names
@@ -54,6 +55,7 @@ func newSerializedCommand() *serializedCommand { return commandPool.Get().(*seri
 // release returns c to the pool. c and its frame must not be used afterwards.
 func (c *serializedCommand) release() {
 	clear(c.pairs[:cap(c.pairs)]) // the values point at request strings
+	c.wire = nil
 	c.frame = keep(c.frame)
 	c.pairs = c.pairs[:0]
 	c.names = keep(c.names)
@@ -68,14 +70,21 @@ func keep(b []byte) []byte {
 	return b[:0]
 }
 
-// appendRequest writes the aws.request frame for r into c.frame:
+// appendRequest writes the aws.request command for r into c.wire:
 // [method, url, normalized headers, body, metadata].
 func (c *serializedCommand) appendRequest(r *request) {
-	c.normalizeHeaders(r.headers)
+	if r.headers == nil && r.header != nil {
+		c.normalizeHTTPHeaders(r.header, r.contentLength)
+	} else {
+		c.normalizeHeaders(r.headers)
+	}
 	headers := len(c.scratch)
 	c.scratch = appendMetadata(c.scratch, r.metadata)
 	hdr, meta := c.scratch[:headers], c.scratch[headers:]
 
+	if r.room != nil && c.appendAround(r, hdr, meta) {
+		return
+	}
 	n := resp.CommandLen(len(requestCommand), len(r.method), len(r.url), len(hdr), len(r.body), len(meta))
 	f := slices.Grow(c.frame[:0], n)
 	f = resp.AppendArrayHeader(f, 6)
@@ -85,7 +94,45 @@ func (c *serializedCommand) appendRequest(r *request) {
 	f = resp.AppendBulk(f, hdr)
 	f = resp.AppendBulk(f, r.body)
 	c.frame = resp.AppendBulk(f, meta)
+	c.wire = c.frame
 }
+
+// appendAround writes the frame around r.body in r.room, so the body is not copied and the
+// command is still one Write. It reports false when the frame does not fit.
+func (c *serializedCommand) appendAround(r *request, hdr, meta []byte) bool {
+	if len(r.body) == 0 || len(r.room) < frameRoom+len(r.body) || &r.room[frameRoom] != &r.body[0] {
+		return false
+	}
+	n := resp.CommandLen(len(requestCommand), len(r.method), len(r.url), len(hdr), 0, len(meta))
+	f := slices.Grow(c.frame[:0], n+16) // the body length takes up to 16 more digits
+	f = resp.AppendArrayHeader(f, 6)
+	f = resp.AppendBulkString(f, requestCommand)
+	f = resp.AppendBulkString(f, r.method)
+	f = resp.AppendBulkString(f, r.url)
+	f = resp.AppendBulk(f, hdr)
+	f = append(f, '$')
+	f = strconv.AppendInt(f, int64(len(r.body)), 10)
+	f = append(f, "\r\n"...)
+	head := len(f)
+	f = append(f, "\r\n"...)
+	c.frame = resp.AppendBulk(f, meta)
+	start, end := frameRoom-head, frameRoom+len(r.body)
+	if start < 0 || end+len(c.frame)-head > len(r.room) {
+		return false
+	}
+	copy(r.room[start:], c.frame[:head])
+	end += copy(r.room[end:], c.frame[head:])
+	c.wire = r.room[start:end:end]
+	return true
+}
+
+// directBodyMin is the body size from which the body is read into a room with space for the
+// frame around it. frameRoom and tailRoom are that space, before and after the body.
+const (
+	directBodyMin = 32 << 10
+	frameRoom     = 1 << 10
+	tailRoom      = 64
+)
 
 // normalizeHeaders writes the header block into c.scratch: names lowercased and trimmed,
 // excluded names dropped, values trimmed, sorted by name then value in byte order, which is
@@ -123,6 +170,73 @@ func (c *serializedCommand) normalizeHeaders(h map[string]string) {
 		c.scratch = append(c.scratch, ':')
 		c.scratch = append(c.scratch, p.value...)
 	}
+}
+
+// normalizeHTTPHeaders writes what normalizeHeaders writes for requestHeaders(h, n), without
+// building the map: pairs with the same lowercased name become one line, values in byte order.
+func (c *serializedCommand) normalizeHTTPHeaders(h http.Header, n int64) {
+	c.scratch = c.scratch[:0]
+	size := len("content-length")
+	for name := range h {
+		size += lowerLen(trimJava(name))
+	}
+	c.names = slices.Grow(c.names[:0], size)
+	c.pairs = slices.Grow(c.pairs[:0], len(h)+1)
+	for name, values := range h {
+		if len(values) == 0 {
+			continue
+		}
+		start := len(c.names)
+		c.names = appendLower(c.names, trimJava(name))
+		lower := c.names[start:len(c.names):len(c.names)]
+		if excludedHeaders[string(lower)] || string(lower) == "content-length" {
+			c.names = c.names[:start]
+			continue
+		}
+		v := values[0]
+		if len(values) > 1 {
+			v = strings.Join(values, ", ")
+		}
+		c.pairs = append(c.pairs, headerPair{name: lower, value: trimJava(v)})
+	}
+	start := len(c.names)
+	c.names = append(c.names, "content-length"...)
+	c.pairs = append(c.pairs, headerPair{name: c.names[start:len(c.names):len(c.names)], value: strconv.FormatInt(n, 10)})
+	total := 0
+	for _, p := range c.pairs {
+		total += len(p.name) + len(p.value) + 2
+	}
+	c.scratch = slices.Grow(c.scratch, total+64) // the metadata follows
+	slices.SortFunc(c.pairs, func(a, b headerPair) int {
+		if n := bytes.Compare(a.name, b.name); n != 0 {
+			return n
+		}
+		return strings.Compare(a.value, b.value)
+	})
+	value := 0 // where the current line's value starts
+	for i, p := range c.pairs {
+		if i > 0 && bytes.Equal(p.name, c.pairs[i-1].name) {
+			c.scratch = append(c.scratch, ", "...)
+		} else {
+			if i > 0 {
+				c.scratch = append(trimRight(c.scratch, value), '\n')
+			}
+			c.scratch = append(c.scratch, p.name...)
+			c.scratch = append(c.scratch, ':')
+			value = len(c.scratch)
+		}
+		c.scratch = append(c.scratch, p.value...)
+	}
+	c.scratch = trimRight(c.scratch, value)
+}
+
+// trimRight drops the bytes <= ' ' at the end of b, down to b[from], as trimJava does to a
+// joined value.
+func trimRight(b []byte, from int) []byte {
+	for len(b) > from && b[len(b)-1] <= ' ' {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 // trimJava trims every leading and trailing byte <= ' ', as Java's String.trim.

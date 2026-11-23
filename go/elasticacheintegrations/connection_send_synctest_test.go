@@ -6,6 +6,7 @@
 package elasticacheintegrations
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -274,6 +275,7 @@ type faultConn struct {
 	stall     bool  // Write blocks until Close
 	failLate  error // Write sends the bytes, waits a second, then returns it
 	deadlines []time.Time
+	writes    int
 	closed    chan struct{}
 	closeOnce sync.Once
 }
@@ -283,6 +285,7 @@ func newFaultConn(nc net.Conn) *faultConn { return &faultConn{Conn: nc, closed: 
 func (f *faultConn) Write(b []byte) (int, error) {
 	f.mu.Lock()
 	fail, stall, failLate := f.fail, f.stall, f.failLate
+	f.writes++
 	f.mu.Unlock()
 	switch {
 	case failLate != nil:
@@ -424,6 +427,37 @@ func TestWriteDeadlineClearedAfterWrite(t *testing.T) {
 		fc.mu.Unlock()
 		if len(d) != 2 || !d[0].Equal(start.Add(5*time.Second)) || !d[1].IsZero() {
 			t.Fatalf("write deadlines %v", d)
+		}
+	})
+}
+
+// A request with a large body, like any other, is one Write.
+func TestLargeRequestIsOneWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, c, fault := faultMock(t, mockcache.Config{})
+		s.SetOnRequest(func(mockcache.Command) mockcache.Reply {
+			return mockcache.Now(mockcache.Served(200, nil, []byte("ok")))
+		})
+		conn, _ := openPipe(t, s, c)
+		fc := fault()
+		for _, n := range []int{directBodyMin - 1, directBodyMin, 390 << 10} {
+			r := getItem("u")
+			var err error
+			if r.body, r.room, err = readBody(bytes.NewReader(make([]byte, n)), int64(n)); err != nil {
+				t.Fatal(err)
+			}
+			fc.mu.Lock()
+			before := fc.writes
+			fc.mu.Unlock()
+			if _, err := conn.request(context.Background(), r); err != nil {
+				t.Fatal(err)
+			}
+			fc.mu.Lock()
+			writes := fc.writes - before
+			fc.mu.Unlock()
+			if writes != 1 {
+				t.Errorf("%d bytes: %d writes", n, writes)
+			}
 		}
 	})
 }

@@ -4,9 +4,11 @@
 package elasticacheintegrations
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"sync"
@@ -228,6 +230,49 @@ func TestWriteAfterAdmissionEndNotSent(t *testing.T) {
 	}
 }
 
+// TestRequestLargeBodyRoundTrip sends bodies written in place in their room, over TLS, beside
+// small ones, and checks the cache receives every body and command intact.
+func TestRequestLargeBodyRoundTrip(t *testing.T) {
+	s, addr := startMock(t, mockcache.Config{TLS: true})
+	s.SetOnRequest(func(cmd mockcache.Command) mockcache.Reply {
+		return mockcache.Now(mockcache.Served(200, nil, []byte(cmd.Arg(4))))
+	})
+	conn, _, _, err := openMock(t, s, mockConfig(t, s, addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 6 {
+				r := getItem("https://dynamodb.us-east-1.amazonaws.com/")
+				n := (g%2)*(directBodyMin+i*1000) + i
+				var err error
+				r.body, r.room, err = readBody(bytes.NewReader(bytes.Repeat([]byte{byte('a' + g)}, n)), int64(n))
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				reply, err := conn.request(context.Background(), r)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				if reply.failed || !bytes.Equal(reply.response.body, r.body) {
+					t.Errorf("goroutine %d request %d: %d bytes back, sent %d", g, i, len(reply.response.body), len(r.body))
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	if !conn.alive() || conn.pending.pending() != 0 {
+		t.Fatalf("alive %v, pending %d", conn.alive(), conn.pending.pending())
+	}
+}
+
 func BenchmarkRequestHit(b *testing.B) {
 	for _, size := range []int{1 << 10, 64 << 10} {
 		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
@@ -253,6 +298,47 @@ func BenchmarkRequestHit(b *testing.B) {
 			r := getItem("https://dynamodb.us-east-1.amazonaws.com/")
 			b.ReportAllocs()
 			b.ResetTimer()
+			for b.Loop() {
+				if _, err := conn.request(context.Background(), r); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkRequestLargeBody sends request bodies over TLS, the transport the cache uses.
+func BenchmarkRequestLargeBody(b *testing.B) {
+	for _, size := range []int{1 << 10, 64 << 10, 390 << 10} {
+		b.Run(fmt.Sprintf("%dKiB", size>>10), func(b *testing.B) {
+			s, err := mockcache.New(mockcache.Config{TLS: true})
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer s.Close()
+			addr, err := s.Listen()
+			if err != nil {
+				b.Fatal(err)
+			}
+			s.SetOnRequest(func(mockcache.Command) mockcache.Reply {
+				return mockcache.Now(mockcache.Served(200, map[string]string{"x-amz-crc32": "1"}, []byte("{}")))
+			})
+			c, err := Options{Endpoint: addr, CacheName: "my-cache", Logger: slog.New(slog.DiscardHandler)}.validate()
+			if err != nil {
+				b.Fatal(err)
+			}
+			c.rootCAs = s.CertPool()
+			conn, _, err := openConnection(context.Background(), c, &staticAuth{}, time.Now().Add(5*time.Second), nil)
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer conn.close()
+			r := getItem("https://dynamodb.us-east-1.amazonaws.com/")
+			if r.body, r.room, err = readBody(bytes.NewReader(make([]byte, size)), int64(size)); err != nil {
+				b.Fatal(err)
+			}
+			b.SetBytes(int64(size))
+			b.ReportAllocs()
 			for b.Loop() {
 				if _, err := conn.request(context.Background(), r); err != nil {
 					b.Fatal(err)
