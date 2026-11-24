@@ -185,18 +185,25 @@ class PendingRequestsTest {
     }
 
     @Test
-    void timeoutDisposition_whenTimeoutWins_closesPendingAndPreventsPromotion() {
+    void timeoutDisposition_whenTimeoutWins_onlyTimesOutThatRequest() {
         PendingRequests pending = new PendingRequests();
-        CompletableFuture<RespValue> future = pending.registerNewRequest();
+        CompletableFuture<RespValue> timedOut = pending.registerNewRequest();
+        CompletableFuture<RespValue> waiting = pending.registerNewRequest();
         ElastiCacheIntegrationsTimeoutError timeout =
                 new ElastiCacheIntegrationsTimeoutError("timed out");
 
-        assertEquals(PendingRequests.TimeoutDisposition.FATAL, pending.onTimeout(future, timeout));
+        assertEquals(PendingRequests.TimeoutDisposition.FATAL, pending.onTimeout(timedOut, timeout));
+
+        assertFalse(pending.isClosed());
+        assertEquals(timeout, assertThrows(ExecutionException.class, timedOut::get).getCause());
+        assertFalse(waiting.isDone());
+
+        ElastiCacheIntegrationsConnectionLost connectionLost =
+                new ElastiCacheIntegrationsConnectionLost("connection closed");
+        pending.failAll(connectionLost);
 
         assertTrue(pending.isClosed());
-        assertEquals(timeout, assertThrows(ExecutionException.class, future::get).getCause());
-        assertThrows(
-                ElastiCacheIntegrationsProtocolError.class, () -> pending.moveNextToAsyncResponses("42"));
+        assertEquals(connectionLost, assertThrows(ExecutionException.class, waiting::get).getCause());
     }
 
     @Test

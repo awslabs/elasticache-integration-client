@@ -958,6 +958,7 @@ public class ElastiCacheIntegrationsConnector implements Closeable {
                     }
                 case FATAL:
                     markDead();
+                    pending.failAll(new ElastiCacheIntegrationsConnectionLost("connection closed"));
                     throw timeout;
                 default:
                     throw new IllegalStateException("Unknown timeout disposition: " + disposition);
