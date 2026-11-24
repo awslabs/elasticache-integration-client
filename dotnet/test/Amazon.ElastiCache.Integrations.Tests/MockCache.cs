@@ -55,6 +55,8 @@ internal sealed class MockCache : IAsyncDisposable
 
     public string Endpoint => $"127.0.0.1:{Port}";
 
+    public bool HasPendingConnection => _listener.Pending();
+
     private static CancellationToken Token => TestContext.Current.CancellationToken;
 
     public async Task AcceptAsync()

@@ -20,6 +20,9 @@ Run from this directory.
 - `dotnet build -warnaserror`
 - `dotnet test`
 
+GitHub Actions runs the client and alignment suites separately for changes to
+`dotnet/`, the shared fixtures, or their CI workflows.
+
 ## Engineering rules
 
 - Preserve the original signed `HttpRequestMessage` when an interceptor passes a request through to the SDK's origin handler.

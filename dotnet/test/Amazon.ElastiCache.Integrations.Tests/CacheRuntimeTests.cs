@@ -1,6 +1,7 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+using System.Diagnostics;
 using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -251,11 +252,152 @@ public class CacheRuntimeTests
         Assert.Null(cache.CurrentConfig);
     }
 
+    [Theory(Timeout = 15000)]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ReplacesStaleConfigAfterAFailedRefresh(bool unusableConfig)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, cachePolicyTimeoutSeconds: unusableConfig ? 3 : 1);
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, new RotatingCredentials(), cancellationToken);
+        await HandshakeAsync(server, config: """{"version":"1.0","refresh_interval":1}""");
+        await using var cache = await startup;
+
+        Assert.Equal(["aws.config"], await server.ReadCommandAsync());
+        if (unusableConfig)
+        {
+            await server.SendAsync(MockCache.Bulk("""{"version":"2.0","refresh_interval":1}"""));
+            // An unchanged reply after the rejection cannot confirm the older config.
+            for (var refresh = 0; refresh < 2; refresh++)
+            {
+                Assert.Equal(["aws.config"], await server.ReadCommandAsync());
+                Assert.Equal("1.0", cache.CurrentConfig!.Value.GetProperty("version").GetString());
+                await server.SendAsync("_\r\n");
+            }
+        }
+        else
+        {
+            await server.SendAsync("-ERR refresh unavailable\r\n");
+        }
+
+        await server.WaitForCloseAsync();
+        Assert.Null(cache.CurrentConfig);
+        await HandshakeAsync(server, config: """{"version":"1.1","refresh_interval":60}""");
+        var request = cache.SendAsync(Request, cancellationToken);
+        Assert.Equal("aws.request", (await server.ReadCommandAsync())[0]);
+        await server.SendAsync(MockCache.Served("replacement"));
+        Assert.Equal(200, (await request).StatusCode);
+        Assert.Equal("1.1", cache.CurrentConfig!.Value.GetProperty("version").GetString());
+    }
+
+    [Theory(Timeout = 15000)]
+    [InlineData(0)]
+    [InlineData(250)]
+    public async Task SendDuringReconnectHonorsConfiguredWait(int reconnectWaitMs)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, reconnectWaitMs: reconnectWaitMs);
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, new RotatingCredentials(), cancellationToken);
+        await HandshakeAsync(server);
+        await using var cache = await startup;
+
+        server.Drop();
+        await server.AcceptAsync();
+        Assert.Equal("AUTH", (await server.ReadCommandAsync())[0]);
+        // Delay the AUTH reply so the replacement cannot become available during the wait.
+        var started = Stopwatch.GetTimestamp();
+        var send = cache.SendAsync(Request, cancellationToken);
+        if (reconnectWaitMs == 0)
+        {
+            Assert.True(send.IsCompleted);
+        }
+
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsCacheUnavailableException>(() => send);
+        Assert.True(Stopwatch.GetElapsedTime(started) >= TimeSpan.FromMilliseconds(reconnectWaitMs * 0.8));
+        await FinishHandshakeAsync(server);
+    }
+
+    [Theory(Timeout = 15000)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task StartupAttemptTimeoutClosesTheSocketAndHonorsRetryLimit(int connectAttempts)
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, reconnect: new() { ConnectAttempts = connectAttempts, AttemptTimeoutMs = 1500 });
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, new RotatingCredentials(), cancellationToken);
+        await server.AcceptAsync();
+        Assert.Equal("AUTH", (await server.ReadCommandAsync())[0]);
+        await server.WaitForCloseAsync();
+
+        if (connectAttempts == 1)
+        {
+            var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionException>(() => startup);
+            Assert.Equal("The cache connection attempt timed out.", error.Message);
+            Assert.False(server.HasPendingConnection);
+            return;
+        }
+
+        var retryToken = await HandshakeAsync(server);
+        await using var cache = await startup;
+        Assert.Contains("X-Amz-Credential=TEST2%2F", retryToken);
+        Assert.NotNull(cache.CurrentConfig);
+    }
+
+    [Fact(Timeout = 15000)]
+    public async Task CancelingOpenDuringAuthClosesTheSocket()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var cancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, reconnect: new() { ConnectAttempts = 2 });
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, new RotatingCredentials(), cancel.Token);
+        await server.AcceptAsync();
+        Assert.Equal("AUTH", (await server.ReadCommandAsync())[0]);
+
+        cancel.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => startup);
+        await server.WaitForCloseAsync();
+        Assert.False(server.HasPendingConnection);
+    }
+
+    [Fact(Timeout = 15000)]
+    public async Task RejectedReauthenticationClosesTheConnectionAndReconnects()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, reauthSeconds: 1);
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, new RotatingCredentials(), cancellationToken);
+        await HandshakeAsync(server);
+        await using var cache = await startup;
+
+        var auth = await server.ReadCommandAsync();
+        Assert.Equal("AUTH", auth[0]);
+        Assert.Contains("X-Amz-Credential=TEST2%2F", auth[2]);
+        await server.SendAsync("-ERR reauthentication refused\r\n");
+        await server.WaitForCloseAsync();
+        Assert.Null(cache.CurrentConfig);
+        Assert.Contains("X-Amz-Credential=TEST3%2F", await HandshakeAsync(server));
+
+        var request = cache.SendAsync(Request, cancellationToken);
+        Assert.Equal("aws.request", (await server.ReadCommandAsync())[0]);
+        await server.SendAsync(MockCache.Served("reauthenticated"));
+        Assert.Equal(200, (await request).StatusCode);
+    }
+
     private static Task<ElastiCacheIntegrationsCache> OpenAsync(MockCache server, X509Certificate2 root, CancellationToken cancellationToken) =>
         ElastiCacheIntegrationsCache.OpenAsync(Options(server, root), new RotatingCredentials(), cancellationToken);
 
     private static ElastiCacheIntegrationsClientOptions Options(MockCache server, X509Certificate2? root, string? tlsName = null,
-        int maxPending = 100, int maxResponseSize = 4096, int requestTimeoutMs = 3000, int reauthSeconds = 1800) => new()
+        int maxPending = 100, int maxResponseSize = 4096, int requestTimeoutMs = 3000, int reauthSeconds = 1800,
+        int reconnectWaitMs = 3000, int cachePolicyTimeoutSeconds = 3600, ElastiCacheIntegrationsReconnectPolicy? reconnect = null) => new()
         {
             Endpoint = server.Endpoint,
             CacheName = "test-cache",
@@ -267,9 +409,10 @@ public class CacheRuntimeTests
             RequestTimeoutMs = requestTimeoutMs,
             ConfigTimeoutMs = 3000,
             ConnectTimeoutMs = 3000,
-            ReconnectWaitMs = 3000,
+            ReconnectWaitMs = reconnectWaitMs,
+            CachePolicyTimeoutSeconds = cachePolicyTimeoutSeconds,
             ReauthIntervalSeconds = reauthSeconds,
-            Reconnect = new() { ConnectAttempts = 1 },
+            Reconnect = reconnect ?? new() { ConnectAttempts = 1 },
         };
 
     private static async Task<string> HandshakeAsync(MockCache server, bool resp3 = true, string config = Config)
@@ -280,12 +423,17 @@ public class CacheRuntimeTests
         Assert.Equal("AUTH", auth[0]);
         Assert.Equal("default.iam-user", auth[1]);
         Assert.StartsWith("test-cache/?Action=connect&User=default.iam-user&ResourceType=ServerlessCache", auth[2]);
+        await FinishHandshakeAsync(server, resp3, config);
+        return auth[2];
+    }
+
+    private static async Task FinishHandshakeAsync(MockCache server, bool resp3 = true, string config = Config)
+    {
         await server.SendAsync("+OK\r\n");
         Assert.Equal(["HELLO", "3"], await server.ReadCommandAsync());
         await server.SendAsync(resp3 ? "%1\r\n+proto\r\n:3\r\n" : "-NOPROTO RESP2 only\r\n");
         Assert.Equal(["aws.config", """{"version":"1.0"}"""], await server.ReadCommandAsync());
         await server.SendAsync(MockCache.Bulk(config));
-        return auth[2];
     }
 
     private sealed class RotatingCredentials : AWSCredentials
