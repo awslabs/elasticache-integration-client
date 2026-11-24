@@ -390,6 +390,23 @@ logging provider cannot stop the client. Event ids:
 | 1307 | `ConfigUnusable` | Error, once until a usable config is applied |
 | 1308 | `PendingLimitReached` | Warning, once per burst: again after 1 s with no call over the limit |
 
+## Performance
+
+One client uses one connection and pipelines every call on it. Under many concurrent calls the
+limit is usually the .NET garbage collector, not the connection: each cached call still runs the
+SDK's request and response pipeline, which allocates. Use server GC for services with many calls
+in flight on one client:
+
+```xml
+<PropertyGroup>
+  <ServerGarbageCollection>true</ServerGarbageCollection>
+</PropertyGroup>
+```
+
+ASP.NET Core apps (`Microsoft.NET.Sdk.Web`) use server GC already; console apps default to
+workstation GC. On a 16 vCPU host with 256 concurrent `GetItem` hits of 1 KiB, one client served
+about 17k calls/s with workstation GC and about 29k with server GC.
+
 ## Limitations
 
 - Only `net8.0` is built. There is no `netstandard2.0` or .NET Framework target.
