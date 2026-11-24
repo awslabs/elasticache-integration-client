@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Net.Sockets;
 using Microsoft.Extensions.Logging;
 
 namespace Amazon.ElastiCache.Integrations;
@@ -27,14 +28,15 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
     private volatile bool _closing;
     private int _dead;
 
-    internal ElastiCacheIntegrationsConnection(Stream stream, ElastiCacheIntegrationsClientOptions options, IElastiCacheIntegrationsAuthProvider auth, ILogger logger, TimeProvider time)
+    internal ElastiCacheIntegrationsConnection(
+        Stream stream, ElastiCacheIntegrationsClientOptions options, IElastiCacheIntegrationsAuthProvider auth, ILogger logger, TimeProvider time, Socket? socket = null)
     {
         _stream = stream;
         _auth = auth;
         _options = options;
         _logger = logger;
         _time = time;
-        _reader = new ReplyReader(stream, options.MaxResponseSize);
+        _reader = new ReplyReader(stream, options.MaxResponseSize, socket is null ? null : new ReceiveLowWater(socket));
         _pending = new PendingRequests(options.MaxPending);
     }
 
@@ -67,8 +69,8 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
         TimeProvider time,
         CancellationToken cancellationToken)
     {
-        var stream = await Transport.ConnectAsync(options, logger, time, cancellationToken).ConfigureAwait(false);
-        var connection = new ElastiCacheIntegrationsConnection(stream, options, auth, logger, time);
+        var (stream, socket) = await Transport.ConnectSocketAsync(options, logger, time, cancellationToken).ConfigureAwait(false);
+        var connection = new ElastiCacheIntegrationsConnection(stream, options, auth, logger, time, socket);
         connection.Start();
         var step = "AUTH";
         try

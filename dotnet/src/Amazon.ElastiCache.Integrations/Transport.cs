@@ -12,6 +12,12 @@ internal static class Transport
     /// <summary>TCP connect and the TLS handshake, together bounded by <see cref="ElastiCacheIntegrationsClientOptions.ConnectTimeout"/>.</summary>
     /// <exception cref="ElastiCacheIntegrationsConnectionException">Connect or handshake failed or timed out.</exception>
     public static async Task<Stream> ConnectAsync(
+        ElastiCacheIntegrationsClientOptions options, ILogger logger, TimeProvider time, CancellationToken cancellationToken) =>
+        (await ConnectSocketAsync(options, logger, time, cancellationToken).ConfigureAwait(false)).Stream;
+
+    /// <inheritdoc cref="ConnectAsync"/>
+    /// <returns>The stream, and the socket under it.</returns>
+    public static async Task<(Stream Stream, Socket Socket)> ConnectSocketAsync(
         ElastiCacheIntegrationsClientOptions options, ILogger logger, TimeProvider time, CancellationToken cancellationToken)
     {
         var (host, port) = OptionsValidator.ParseEndpoint(options.Endpoint);
@@ -32,7 +38,7 @@ internal static class Transport
             }
 
             connected = true;
-            return stream;
+            return (stream, socket);
         }
         catch (OperationCanceledException e) when (timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
@@ -82,5 +88,65 @@ internal static class Transport
         }
 
         return tls;
+    }
+}
+
+/// <summary>
+/// Holds back read wake-ups while a large value arrives, with <c>SO_RCVLOWAT</c>: the socket reports readable
+/// only once that many bytes are queued. The cache can send a large reply as hundreds of small TCP segments,
+/// and each wake-up of an async read costs thread pool work. Not thread safe: the reader task owns it.
+/// </summary>
+internal sealed class ReceiveLowWater(Socket socket)
+{
+    /// <summary>Bytes of the value the TLS layer may already hold, read from the socket but not yet returned: a few records.</summary>
+    internal const int TlsMargin = 64 * 1024;
+
+    /// <summary>The smallest threshold worth setting.</summary>
+    internal const int MinThreshold = 16 * 1024;
+
+    internal const int MaxThreshold = 1024 * 1024;
+
+    private bool _unsupported;
+
+    /// <summary>The threshold in force; 1 is the socket default.</summary>
+    internal int Current { get; private set; } = 1;
+
+    /// <summary>Called before each read with the bytes the value still needs, 0 when unknown.</summary>
+    public void Update(long missing)
+    {
+        var target = Target(missing, Current);
+        if (target == Current || _unsupported)
+        {
+            return;
+        }
+
+        try
+        {
+            socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReceiveLowWater, target);
+            Current = target;
+        }
+        catch (Exception e) when (e is SocketException or PlatformNotSupportedException or ObjectDisposedException)
+        {
+            // Windows has no SO_RCVLOWAT; a closed socket fails the read that follows.
+            _unsupported = true;
+        }
+    }
+
+    /// <summary>
+    /// Never above the bytes still to reach the socket (<paramref name="missing"/> less <see cref="TlsMargin"/>),
+    /// so the read always completes. A new threshold is half of that, so a value takes a few wake-ups
+    /// and a few system calls whatever its size.
+    /// </summary>
+    internal static int Target(long missing, int current)
+    {
+        var allowed = missing - TlsMargin;
+        if (current > 1 && current <= allowed)
+        {
+            return current;
+        }
+
+        return allowed >= 2L * MinThreshold ? (int)Math.Min(allowed / 2, MaxThreshold)
+            : allowed >= MinThreshold ? (int)allowed
+            : 1;
     }
 }
