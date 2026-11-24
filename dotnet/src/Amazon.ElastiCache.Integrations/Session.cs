@@ -293,7 +293,10 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
         }
     }
 
-    /// <summary>The live connection; with none, waits up to <see cref="ElastiCacheIntegrationsClientOptions.ReconnectWait"/> for the reconnect.</summary>
+    /// <summary>
+    /// The live connection; with none, waits for the reconnect until <see cref="ElastiCacheIntegrationsClientOptions.ReconnectWait"/>
+    /// after the drop. The wait is per outage: a request that arrives later in it waits only for what is left.
+    /// </summary>
     private async Task<(ICacheConnection? Connection, Outage? Outage)> GetConnectionAsync(CancellationToken cancellationToken)
     {
         var state = Volatile.Read(ref _state);
@@ -313,14 +316,20 @@ internal sealed class ElastiCacheIntegrationsSession : IDisposable, IAsyncDispos
             }
         }
 
-        if (state.Outage is not { } outage || _options.ReconnectWait <= TimeSpan.Zero)
+        if (state.Outage is not { } outage)
         {
-            return (null, state.Outage);
+            return (null, null);
+        }
+
+        var left = _options.ReconnectWait - _time.GetElapsedTime(outage.DroppedAt);
+        if (left <= TimeSpan.Zero)
+        {
+            return (null, outage);
         }
 
         try
         {
-            return (await outage.Landed.Task.WaitAsync(_options.ReconnectWait, _time, cancellationToken).ConfigureAwait(false), outage);
+            return (await outage.Landed.Task.WaitAsync(left, _time, cancellationToken).ConfigureAwait(false), outage);
         }
         catch (TimeoutException)
         {

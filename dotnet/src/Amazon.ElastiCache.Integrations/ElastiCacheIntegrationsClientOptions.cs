@@ -65,7 +65,7 @@ public sealed class ElastiCacheIntegrationsClientOptions
     /// <summary>How often the live connection re-authenticates. Must be under 12 hours, when ElastiCache closes an IAM connection.</summary>
     public TimeSpan ReauthInterval { get; init; } = TimeSpan.FromMinutes(30);
 
-    /// <summary>How long a request waits for a reconnect in progress.</summary>
+    /// <summary>How long after a drop requests wait for the reconnect. Shared by all requests in one outage.</summary>
     public TimeSpan ReconnectWait { get; init; } = TimeSpan.FromMilliseconds(100);
 
     /// <summary>
