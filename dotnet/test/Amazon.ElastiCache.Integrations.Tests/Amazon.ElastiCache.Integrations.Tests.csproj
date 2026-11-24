@@ -17,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Include="../../../shared/protocol-vectors.json" Link="shared/protocol-vectors.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="../../src/Amazon.ElastiCache.Integrations/Amazon.ElastiCache.Integrations.csproj" />
   </ItemGroup>
 
