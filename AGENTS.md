@@ -6,13 +6,14 @@
 - Keep changes within the relevant client directory unless the change affects
   shared documentation or CI.
 - Read the package-specific `AGENTS.md` and `README.md` before editing code in
-  `node/` or `java/`.
+  `node/`, `java/` or `dotnet/`.
 
 ## Repository map
 
 - `node/`: TypeScript/Node.js ElastiCache Integrations client.
 - `java/`: Java/AWS SDK v2 ElastiCache Integrations client.
 - `python/`: Python/boto3 ElastiCache Integrations client.
+- `dotnet/`: C#/AWS SDK for .NET v4 ElastiCache Integrations client (preview).
 - `shared/`: language-neutral client test fixtures. `protocol-vectors.json` and
   `sdk-request-cases.json` are run by every client's tests and are not
   packaged. A change to the wire format or to how an SDK adapter
@@ -42,6 +43,8 @@ Run commands from the client directory they apply to:
 - Java: use focused Gradle tests when appropriate and `./gradlew build` for the
   complete local gate. Gradle must run on JDK 21. Use `./gradlew spotlessApply`
   to fix formatting.
+- .NET: use `dotnet format --verify-no-changes`, `dotnet build -warnaserror`
+  and `dotnet test` for the complete local gate.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
@@ -53,7 +56,7 @@ Run commands from the client directory they apply to:
   secrets. The job is not in the `ci` aggregate, so a failed run does not block
   merge.
 - Repository: run `scripts/check-license-headers.sh` from any directory. It
-  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, or Python
+  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, C#, or Python
   file has no `SPDX-License-Identifier: Apache-2.0` header in its first 5
   lines. Files under `vendor/`, `node_modules/`, and `shared/` are skipped. CI
   runs it on every pull request, and the `ci` aggregate needs it.

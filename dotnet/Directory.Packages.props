@@ -1,0 +1,9 @@
+<Project>
+  <ItemGroup>
+    <PackageVersion Include="AWSSDK.Core" Version="4.0.102.11" />
+    <PackageVersion Include="AWSSDK.DynamoDBv2" Version="4.0.107.3" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.11.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.2" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="4.0.1" />
+  </ItemGroup>
+</Project>
