@@ -17,10 +17,10 @@ import (
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
 )
 
-// reads are the operations the proxy answers from what it kept.
+// reads are the operations the cache answers from what it kept.
 var reads = map[string]bool{"GetItem": true, "BatchGetItem": true, "Query": true, "Scan": true, "TransactGetItems": true}
 
-// kept is a DynamoDB reply as the proxy holds it.
+// kept is a DynamoDB reply as the cache holds it.
 type kept struct {
 	status  int
 	headers map[string]string
@@ -29,10 +29,10 @@ type kept struct {
 
 func (k kept) value() resp.Value { return mockcache.Served(k.status, k.headers, k.body) }
 
-// proxy is the mock cache's aws.request handler. It answers like the proxy as far as a client
+// server is the mock cache's aws.request handler. It answers like the cache as far as a client
 // can tell: a read is served from what it kept or fetched from DynamoDB and kept; a write goes
 // to DynamoDB and, when it succeeds, drops everything kept.
-type proxy struct {
+type server struct {
 	dynamo *dynamo
 	hits   atomic.Int64
 	misses atomic.Int64
@@ -42,57 +42,57 @@ type proxy struct {
 	wrap func(cmd mockcache.Command, answer func() resp.Value) mockcache.Reply
 }
 
-func newProxy(d *dynamo) *proxy { return &proxy{dynamo: d, kept: map[string]kept{}} }
+func newServer(d *dynamo) *server { return &server{dynamo: d, kept: map[string]kept{}} }
 
-// setWrap makes w choose the reply to each aws.request; answer gives the proxy's own reply.
+// setWrap makes w choose the reply to each aws.request; answer gives the cache's own reply.
 // nil restores in-band replies.
-func (p *proxy) setWrap(w func(cmd mockcache.Command, answer func() resp.Value) mockcache.Reply) {
-	p.mu.Lock()
-	p.wrap = w
-	p.mu.Unlock()
+func (s *server) setWrap(w func(cmd mockcache.Command, answer func() resp.Value) mockcache.Reply) {
+	s.mu.Lock()
+	s.wrap = w
+	s.mu.Unlock()
 }
 
-func (p *proxy) handle(cmd mockcache.Command) mockcache.Reply {
-	p.mu.Lock()
-	w := p.wrap
-	p.mu.Unlock()
-	answer := func() resp.Value { return p.answer(cmd).value() }
+func (s *server) handle(cmd mockcache.Command) mockcache.Reply {
+	s.mu.Lock()
+	w := s.wrap
+	s.mu.Unlock()
+	answer := func() resp.Value { return s.answer(cmd).value() }
 	if w != nil {
 		return w(cmd, answer)
 	}
 	return mockcache.Now(answer())
 }
 
-// answer is the proxy's reply to cmd.
-func (p *proxy) answer(cmd mockcache.Command) kept {
+// answer is the cache's reply to cmd.
+func (s *server) answer(cmd mockcache.Command) kept {
 	op := operation(cmd)
 	key := op + "\x00" + canonical(cmd.Args[4])
 	if reads[op] {
-		p.mu.Lock()
-		k, ok := p.kept[key]
-		p.mu.Unlock()
+		s.mu.Lock()
+		k, ok := s.kept[key]
+		s.mu.Unlock()
 		if ok {
-			p.hits.Add(1)
+			s.hits.Add(1)
 			return k
 		}
-		p.misses.Add(1)
+		s.misses.Add(1)
 	}
-	got := p.forward(cmd)
+	got := s.forward(cmd)
 	if got.status/100 == 2 {
-		p.mu.Lock()
+		s.mu.Lock()
 		if reads[op] {
-			p.kept[key] = got
+			s.kept[key] = got
 		} else {
-			clear(p.kept)
+			clear(s.kept)
 		}
-		p.mu.Unlock()
+		s.mu.Unlock()
 	}
 	return got
 }
 
-// forward sends cmd to the fake DynamoDB, as the proxy calls DynamoDB on a miss or a write.
-func (p *proxy) forward(cmd mockcache.Command) kept {
-	req, err := http.NewRequest(http.MethodPost, p.dynamo.url()+"/", bytes.NewReader(cmd.Args[4]))
+// forward sends cmd to the fake DynamoDB, as the cache calls DynamoDB on a miss or a write.
+func (s *server) forward(cmd mockcache.Command) kept {
+	req, err := http.NewRequest(http.MethodPost, s.dynamo.url()+"/", bytes.NewReader(cmd.Args[4]))
 	if err != nil {
 		return internalError(err)
 	}
@@ -120,7 +120,7 @@ func (p *proxy) forward(cmd mockcache.Command) kept {
 	return kept{status: res.StatusCode, headers: headers, body: body}
 }
 
-// originClient is the proxy's client to DynamoDB; the timeout stops a stuck call from hanging
+// originClient is the cache's client to DynamoDB; the timeout stops a stuck call from hanging
 // the suite.
 var originClient = &http.Client{Timeout: 10 * time.Second}
 

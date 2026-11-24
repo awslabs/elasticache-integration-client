@@ -38,7 +38,7 @@ func TestHungCacheTimesOutAndReconnects(t *testing.T) {
 	seed(t, h.dynamo)
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(failNext(&n, mockcache.Hang))
+	h.server.setWrap(failNext(&n, mockcache.Hang))
 	ctx := context.Background()
 	begin := time.Now()
 	_, err := h.getSong(ctx, "One", once)
@@ -71,7 +71,7 @@ func TestServedServerErrorRetriedThroughCache(t *testing.T) {
 		seed(t, h.dynamo)
 		var n atomic.Int64
 		n.Store(1)
-		h.proxy.setWrap(failNext(&n, served500))
+		h.server.setWrap(failNext(&n, served500))
 		if out, err := h.getSong(ctx, "One"); err != nil || songOf(out) != "One" {
 			t.Fatalf("GetItem = %v, %v", out, err)
 		}
@@ -84,7 +84,7 @@ func TestServedServerErrorRetriedThroughCache(t *testing.T) {
 		h := newHarness(t)
 		var n atomic.Int64
 		n.Store(1 << 30)
-		h.proxy.setWrap(failNext(&n, served500))
+		h.server.setWrap(failNext(&n, served500))
 		_, err := h.getSong(ctx, "One")
 		errorAs[*types.InternalServerError](t, err)
 		if h.requests() != 3 || h.dynamo.fromClient() != 0 {
@@ -126,7 +126,7 @@ func TestCacheErrorCodes(t *testing.T) {
 			h := newHarness(t)
 			seed(t, h.dynamo)
 			var n atomic.Int64
-			h.proxy.setWrap(failNext(&n, tc.reply))
+			h.server.setWrap(failNext(&n, tc.reply))
 			ctx := context.Background()
 			for _, retries := range []bool{false, true} {
 				n.Store(1)
@@ -189,7 +189,7 @@ func TestSlotExhaustionWaitsThenGoesToOrigin(t *testing.T) {
 				withOptions(func(o *elasticacheintegrations.Options) { o.CacheRequestTimeout = 5 * time.Second }))
 			seed(t, h.dynamo)
 			deferred := make(chan *held, slots)
-			h.proxy.setWrap(deferFirst(slots, deferred))
+			h.server.setWrap(deferFirst(slots, deferred))
 			ctx := context.Background()
 			var holders sync.WaitGroup
 			holderErrs := make(chan error, slots)
@@ -264,7 +264,7 @@ func TestOversizeReplyDropsConnection(t *testing.T) {
 	seed(t, h.dynamo)
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(failNext(&n, func() mockcache.Reply {
+	h.server.setWrap(failNext(&n, func() mockcache.Reply {
 		body := `{"Item":{"Artist":{"S":"Acme"},"Song":{"S":"` + strings.Repeat("x", 17<<20) + `"}}}`
 		return mockcache.Now(mockcache.Served(200, map[string]string{"content-type": "application/x-amz-json-1.0"}, []byte(body)))
 	}))
@@ -283,7 +283,7 @@ func TestDeeplyNestedReplyDropsConnection(t *testing.T) {
 	seed(t, h.dynamo)
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(failNext(&n, func() mockcache.Reply {
+	h.server.setWrap(failNext(&n, func() mockcache.Reply {
 		return mockcache.Raw([]byte(strings.Repeat("*1\r\n", 101) + ":1\r\n"))
 	}))
 	ctx := context.Background()
@@ -353,7 +353,7 @@ func TestPanickingLoggerDoesNotStopRecovery(t *testing.T) {
 	seed(t, h.dynamo)
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(failNext(&n, mockcache.Hang))
+	h.server.setWrap(failNext(&n, mockcache.Hang))
 	ctx := context.Background()
 	_, err := h.getSong(ctx, "One", once)
 	errorAs[*elasticacheintegrations.TimeoutError](t, err)

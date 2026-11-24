@@ -64,10 +64,10 @@ func predBenchCases() []predBenchCase {
 		body := benchTransact(n, 0)
 		cases = append(cases,
 			predBenchCase{fmt.Sprintf("TransactItems/x%d", n), exprTransactItems, allow, "TransactWriteItems", body},
-			predBenchCase{fmt.Sprintf("TransactItemsProxy/x%d", n), exprTransactItemsProxy, allow, "TransactWriteItems", body},
+			predBenchCase{fmt.Sprintf("TransactItemsCache/x%d", n), exprTransactItemsCache, allow, "TransactWriteItems", body},
 			predBenchCase{fmt.Sprintf("TransactItemsDeny/x%d", n), exprTransactItemsDeny, deny, "TransactWriteItems", body})
 	}
-	cases = append(cases, predBenchCase{"TransactItemsProxy/x100-4KiB", exprTransactItemsProxy, allow,
+	cases = append(cases, predBenchCase{"TransactItemsCache/x100-4KiB", exprTransactItemsCache, allow,
 		"TransactWriteItems", benchTransact(100, 4<<10)})
 	return cases
 }

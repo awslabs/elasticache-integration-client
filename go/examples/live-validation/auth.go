@@ -21,7 +21,8 @@ const (
 )
 
 // runAuth runs checks 6 and 7: the first periodic re-AUTH is sent with a token the cache must
-// refuse; the connection keeps serving misses with its FAS; good credentials then recover it.
+// refuse; the connection keeps serving misses with its delegated credentials; good credentials
+// then recover it.
 func runAuth(ctx context.Context, l *live) error {
 	sw := &switchableCredentials{next: l.cfg.Credentials}
 	cfg := l.cfg.Copy()
@@ -58,7 +59,7 @@ func runAuth(ctx context.Context, l *live) error {
 			return err
 		}
 	}
-	l.check("7 the connection and its FAS are kept", l.events.since(mark, 1103, "") == 0 && l.events.since(mark, 1201, "") == 0,
+	l.check("7 the connection and its delegated credentials are kept", l.events.since(mark, 1103, "") == 0 && l.events.since(mark, 1201, "") == 0,
 		"1103 seen %d, 1201 seen %d", l.events.since(mark, 1103, ""), l.events.since(mark, 1201, ""))
 	sw.broken.Store(false)
 

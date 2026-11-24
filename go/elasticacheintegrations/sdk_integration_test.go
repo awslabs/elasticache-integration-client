@@ -177,7 +177,7 @@ func TestSDKRetriesExhausted(t *testing.T) {
 func TestSDKAuthErrorGoesToOrigin(t *testing.T) {
 	testutil.ClearAWSEnv(t)
 	s, addr := sdkMock(t)
-	s.SetOnRequest(replySequence(mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no FAS")), servedJSON(200, musicItem)))
+	s.SetOnRequest(replySequence(mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no creds")), servedJSON(200, musicItem)))
 	origin := &fakeOrigin{respond: func(req *http.Request) (*http.Response, error) {
 		return jsonResponse(req, 200, `{"Item":{"Artist":{"S":"FromDynamoDB"}}}`), nil
 	}}
@@ -488,7 +488,7 @@ func TestSDKNoSecretsInLogsOrErrors(t *testing.T) {
 		servedJSON(200, responseItem),
 		mockcache.Now(resp.ErrorValue("PARSE_ERROR", "bad request")),
 		mockcache.Drop(),
-		mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no FAS")),
+		mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no creds")),
 		mockcache.Now(resp.ErrorValue("ORIGIN_ERROR", "throttled")),
 	))
 	c := sdkConfig(t, s, addr)

@@ -222,7 +222,7 @@ func (c *connection) reportDeath(first bool, ev eventID, lost error) bool {
 	if ev == eventInOrderTimeout {
 		c.cfg.logger.warn(ev, "an in-order reply did not arrive in time; closing the connection")
 	} else {
-		// One drop is routine (a proxy deployment); 1303 warns when reconnecting keeps failing.
+		// One drop is routine (a cache software deployment); 1303 warns when reconnecting keeps failing.
 		c.cfg.logger.info(ev, "the cache connection was lost", slog.String("error", lost.Error()))
 	}
 	if c.onLost != nil {

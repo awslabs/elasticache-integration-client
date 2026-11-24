@@ -28,7 +28,7 @@ import (
 	"github.com/aws/smithy-go"
 )
 
-// callerHeader marks the calls the mock proxy makes, so the fake tells them from the client's.
+// callerHeader marks the calls the mock cache makes, so the fake tells them from the client's.
 const callerHeader = "X-E2e-Caller"
 
 // dynamo is a fake DynamoDB: the JSON protocol for the ten advertised operations plus
@@ -100,7 +100,7 @@ func (d *dynamo) remove(t *testing.T, tableName string, key item) {
 // fromClient counts the calls the Go client sent to DynamoDB itself.
 func (d *dynamo) fromClient() int { return d.count(false) }
 
-// fromCache counts the calls the mock proxy made.
+// fromCache counts the calls the mock cache made.
 func (d *dynamo) fromCache() int { return d.count(true) }
 
 func (d *dynamo) count(fromCache bool) int {
@@ -128,7 +128,7 @@ func (d *dynamo) clientCalls() []dynamoCall {
 	return out
 }
 
-// cacheCalls returns the calls the mock proxy made.
+// cacheCalls returns the calls the mock cache made.
 func (d *dynamo) cacheCalls() []dynamoCall {
 	d.mu.Lock()
 	defer d.mu.Unlock()

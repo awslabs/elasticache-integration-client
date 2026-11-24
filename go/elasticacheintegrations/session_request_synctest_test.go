@@ -442,7 +442,7 @@ func TestStrictNeverReachesOrigin(t *testing.T) {
 			n++
 			switch n % 4 {
 			case 0:
-				return mockcache.Deferred(resp.ErrorValue("AUTH_ERROR", "no FAS"))
+				return mockcache.Deferred(resp.ErrorValue("AUTH_ERROR", "no creds"))
 			case 1:
 				return mockcache.DeferredAfter(4*time.Second, mockcache.Served(200, nil, nil))
 			default:
@@ -518,7 +518,7 @@ func TestAuthErrorBurstLogsOnce(t *testing.T) {
 		const n = 32
 		var burst []byte
 		for range n {
-			burst = append(burst, "-AUTH_ERROR no FAS\r\n"...)
+			burst = append(burst, "-AUTH_ERROR no creds\r\n"...)
 		}
 		var mu sync.Mutex
 		seen := 0

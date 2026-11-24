@@ -186,7 +186,7 @@ func TestTenOperationsMatchPlainClient(t *testing.T) {
 	for i, c := range script {
 		sameRequest(t, c.op, reqs[i], sent[i])
 	}
-	if got := h.proxy.hits.Load(); got != int64(len(readCalls)) {
+	if got := h.server.hits.Load(); got != int64(len(readCalls)) {
 		t.Errorf("cache hits = %d, want %d", got, len(readCalls))
 	}
 	if n := h.dynamo.fromClient(); n != 0 {
@@ -216,8 +216,8 @@ func TestReadsMissThenHit(t *testing.T) {
 			if n := h.dynamo.fromCache(); n != 1 {
 				t.Errorf("after the hit DynamoDB got %d calls from the cache, want 1", n)
 			}
-			if h.proxy.hits.Load() != 1 || h.proxy.misses.Load() != 1 {
-				t.Errorf("hits %d, misses %d; want 1 each", h.proxy.hits.Load(), h.proxy.misses.Load())
+			if h.server.hits.Load() != 1 || h.server.misses.Load() != 1 {
+				t.Errorf("hits %d, misses %d; want 1 each", h.server.hits.Load(), h.server.misses.Load())
 			}
 			if !reflect.DeepEqual(first, second) {
 				t.Errorf("the hit differs from the miss:\n%#v\n%#v", first, second)
@@ -453,7 +453,7 @@ func TestIdleConnectionServes(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := h.cache.Requests()
-	hits := h.proxy.hits.Load()
+	hits := h.server.hits.Load()
 	time.Sleep(1500 * time.Millisecond)
 	if _, err := readCalls[0].do(ctx, h.ddb); h.seen(err) != nil {
 		t.Fatal(err)
@@ -467,9 +467,9 @@ func TestIdleConnectionServes(t *testing.T) {
 			last, next, h.logs.Text())
 
 	}
-	if h.proxy.hits.Load() == hits || h.dynamo.fromClient() != 0 {
+	if h.server.hits.Load() == hits || h.dynamo.fromClient() != 0 {
 		t.Errorf("hits %d before and %d after, client calls %d; want a hit and no client call",
-			hits, h.proxy.hits.Load(), h.dynamo.fromClient())
+			hits, h.server.hits.Load(), h.dynamo.fromClient())
 	}
 }
 
@@ -496,8 +496,8 @@ func TestLargeItemsCrossUnchanged(t *testing.T) {
 			t.Fatalf("%s: the item changed on the way", pass)
 		}
 	}
-	if h.proxy.hits.Load() != 1 {
-		t.Errorf("hits = %d, want 1", h.proxy.hits.Load())
+	if h.server.hits.Load() != 1 {
+		t.Errorf("hits = %d, want 1", h.server.hits.Load())
 	}
 	// A Query reply of five 350 KiB items, 2.3 MB of JSON.
 	parts := make([][]byte, 5)
@@ -524,7 +524,7 @@ func TestLargeItemsCrossUnchanged(t *testing.T) {
 			}
 		}
 	}
-	if h.proxy.hits.Load() != 2 {
-		t.Errorf("hits = %d, want 2", h.proxy.hits.Load())
+	if h.server.hits.Load() != 2 {
+		t.Errorf("hits = %d, want 2", h.server.hits.Load())
 	}
 }

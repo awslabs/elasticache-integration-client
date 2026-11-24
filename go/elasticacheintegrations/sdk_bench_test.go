@@ -27,9 +27,9 @@ import (
 // cannedCache answers every aws.request with one pre-encoded reply and allocates nothing per
 // request, so a benchmark's allocations are the client's. With perRequest set, each
 // connection serves its requests one after another, perRequest each from its arrival or the
-// end of the one before, and writes each reply as soon as it is served, as the proxy serves
+// end of the one before, and writes each reply as soon as it is served, as the cache serves
 // one connection on one core. The first slowConns connections dialed take slowPerRequest
-// instead, as connections that share a proxy core do.
+// instead, as connections that share a cache core do.
 type cannedCache struct {
 	hello, config, ok, reply []byte
 	perRequest               time.Duration
@@ -334,7 +334,7 @@ func BenchmarkGetItemHitConnections(b *testing.B) {
 
 // BenchmarkGetItemHitUnevenConnections runs 1 KiB hits from 64 goroutines over 4 connections
 // when one connection is served 4 times slower than the others (100µs against 400µs per
-// request), as when two connections share a proxy core or large replies back one up. ns/op
+// request), as when two connections share a cache core or large replies back one up. ns/op
 // is wall time per call.
 func BenchmarkGetItemHitUnevenConnections(b *testing.B) {
 	body := itemBody(1 << 10)

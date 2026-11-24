@@ -1014,7 +1014,7 @@ func TestServerErrorKinds(t *testing.T) {
 		{"-\r\n", "", "", serverRejected},
 		{"-ORIGIN_ERROR upstream failed\r\n", "ORIGIN_ERROR", "upstream failed", serverOrigin},
 		{"-INTERNAL_ERROR pool\r\n", "INTERNAL_ERROR", "pool", serverOrigin},
-		{"-AUTH_ERROR no FAS\r\n", "AUTH_ERROR", "no FAS", serverAuth},
+		{"-AUTH_ERROR no creds\r\n", "AUTH_ERROR", "no creds", serverAuth},
 		{"-MOVED 3999 127.0.0.1:6381\r\n", "MOVED", "3999 127.0.0.1:6381", serverDrop},
 		{"-NOAUTH Authentication required.\r\n", "NOAUTH", "Authentication required.", serverDrop},
 		{"-origin_error lower\r\n", "origin_error", "lower", serverRejected},

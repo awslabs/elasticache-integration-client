@@ -127,7 +127,7 @@ func strictOutage(t *testing.T, h *harness) {
 // the retry waits for the reconnect and is served by the cache.
 func strictLostInFlight(t *testing.T, h *harness) {
 	deferred := make(chan *held, 1)
-	h.proxy.setWrap(deferFirst(1, deferred))
+	h.server.setWrap(deferFirst(1, deferred))
 	done := make(chan error, 1)
 	go func() {
 		out, err := h.getSong(context.Background(), "Two")
@@ -149,8 +149,8 @@ func strictLostInFlight(t *testing.T, h *harness) {
 func strictAuthError(t *testing.T, h *harness) {
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(failNext(&n, func() mockcache.Reply {
-		return mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no FAS for this connection"))
+	h.server.setWrap(failNext(&n, func() mockcache.Reply {
+		return mockcache.Now(resp.ErrorValue("AUTH_ERROR", "no credentials for this connection"))
 	}))
 	_, err := h.getSong(context.Background(), "Two")
 	wantUnavailable(t, err)
@@ -161,7 +161,7 @@ func strictAuthError(t *testing.T, h *harness) {
 func strictSlotsFull(t *testing.T, h *harness) {
 	const slots = 100
 	deferred := make(chan *held, slots)
-	h.proxy.setWrap(deferFirst(slots, deferred))
+	h.server.setWrap(deferFirst(slots, deferred))
 	var holders sync.WaitGroup
 	for range slots {
 		holders.Add(1)
@@ -230,7 +230,7 @@ func strictLoad(t *testing.T, h *harness) {
 // not, go to DynamoDB.
 func strictClose(t *testing.T, h *harness) {
 	deferred := make(chan *held, 1)
-	h.proxy.setWrap(deferFirst(1, deferred))
+	h.server.setWrap(deferFirst(1, deferred))
 	done := make(chan error, 1)
 	go func() {
 		_, err := h.getSong(context.Background(), "Two")
@@ -318,7 +318,7 @@ func strictCloseDuringOutageRetried(t *testing.T, h *harness) {
 func strictCloseWaitingForSlot(t *testing.T, h *harness) {
 	const slots = 100
 	deferred := make(chan *held, slots)
-	h.proxy.setWrap(deferFirst(slots, deferred))
+	h.server.setWrap(deferFirst(slots, deferred))
 	results := make(chan error, slots)
 	for range slots {
 		go func() {

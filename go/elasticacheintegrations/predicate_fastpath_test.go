@@ -548,7 +548,7 @@ func TestSevenExpressionsGoFast(t *testing.T) {
 		cases = append(cases, struct{ op, body string }{c.operation, string(c.body)})
 	}
 	for _, expr := range []string{exprAllOps, exprTableName, exprRequestItems, exprTransactItems,
-		exprTransactItemsProxy, exprTableNameDeny, exprRequestItemsDeny, exprTransactItemsDeny} {
+		exprTransactItemsCache, exprTableNameDeny, exprRequestItemsDeny, exprTransactItemsDeny} {
 		pred := mustCompilePredicates(t, predConfig(predEntry(expr, vars))).list[0]
 		if pred.fast == nil {
 			t.Fatalf("%s has no fast form", expr)

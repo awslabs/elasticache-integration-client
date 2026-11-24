@@ -70,6 +70,6 @@ Go modules are published by git tag; there is no artifact to build or upload. Th
 
 1. Make sure CI is green on the commit, including the alignment job.
 2. Tag it: `git tag -a go/v0.1.0 -m "Go client v0.1.0"` and push the tag.
-3. Check that the module proxy serves it: `GOPROXY=https://proxy.golang.org go list -m github.com/awslabs/elasticache-integration-client/go@v0.1.0` from a directory outside the repository.
+3. Check that the Go module mirror serves it: run `go list -m github.com/awslabs/elasticache-integration-client/go@v0.1.0` from a directory outside the repository, with Go's default module download settings.
 
-A published version cannot be changed or removed from the module proxy. To withdraw one, release a new version whose `go.mod` has a `retract` directive for it.
+A published version cannot be changed or removed from the Go module mirror. To withdraw one, release a new version whose `go.mod` has a `retract` directive for it.

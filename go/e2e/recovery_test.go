@@ -75,7 +75,7 @@ func TestDropRightAfterReplyReconnects(t *testing.T) {
 	seed(t, h.dynamo)
 	var n atomic.Int64
 	n.Store(1)
-	h.proxy.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
+	h.server.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
 		if n.Add(-1) >= 0 {
 			return mockcache.DropAfter(answer())
 		}
@@ -233,7 +233,7 @@ func TestCloseWithRequestsInFlight(t *testing.T) {
 			h := newHarness(t)
 			seed(t, h.dynamo)
 			deferred := make(chan *held, inFlight)
-			h.proxy.setWrap(deferFirst(inFlight, deferred))
+			h.server.setWrap(deferFirst(inFlight, deferred))
 			ctx := context.Background()
 			results := make(chan error, inFlight)
 			for range inFlight {

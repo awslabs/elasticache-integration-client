@@ -17,7 +17,7 @@ import (
 	"github.com/awslabs/elasticache-integration-client/go/elasticacheintegrations"
 )
 
-// settle is how long a miss waits after a write, because the proxy's miss read is eventually
+// settle is how long a miss waits after a write, because the cache's miss read is eventually
 // consistent.
 const settle = time.Second
 

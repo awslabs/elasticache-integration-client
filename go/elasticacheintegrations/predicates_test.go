@@ -20,8 +20,8 @@ const (
 	exprTableName     = "service == 'dynamodb' && operation in ops && has(body.TableName) && body.TableName in allowed"
 	exprRequestItems  = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, t in allowed)"
 	exprTransactItems = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, has(i[k].TableName) && i[k].TableName in allowed))"
-	// The proxy's transaction expression.
-	exprTransactItemsProxy = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, \"TableName\" in i[k] && i[k].TableName in allowed))"
+	// The cache's transaction expression.
+	exprTransactItemsCache = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, \"TableName\" in i[k] && i[k].TableName in allowed))"
 	exprTableNameDeny      = "service == 'dynamodb' && operation in ops && has(body.TableName) && !(body.TableName in excluded)"
 	exprRequestItemsDeny   = "service == 'dynamodb' && operation in ops && has(body.RequestItems) && size(body.RequestItems) > 0 && body.RequestItems.all(t, !(t in excluded))"
 	exprTransactItemsDeny  = "service == 'dynamodb' && operation in ops && has(body.TransactItems) && size(body.TransactItems) > 0 && body.TransactItems.all(i, i.all(k, has(i[k].TableName) && !(i[k].TableName in excluded)))"
@@ -183,7 +183,7 @@ func TestDefaultConfigRoutesReadsAndWritesButNotUnsupportedOperations(t *testing
 }
 
 func TestTableAllowlistRoutesSingleTableReadsAndWrites(t *testing.T) {
-	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsProxy, "Users"))
+	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsCache, "Users"))
 	for _, op := range singleTableOperations {
 		if !p.shouldRoute(predReq(op, "dynamodb", `{"TableName":"Users"}`)) {
 			t.Errorf("%s Users does not route", op)
@@ -198,7 +198,7 @@ func TestTableAllowlistRoutesSingleTableReadsAndWrites(t *testing.T) {
 }
 
 func TestBatchAllowlistRequiresEveryTableAndRejectsEmptyBatch(t *testing.T) {
-	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsProxy, "Users", "Sessions"))
+	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsCache, "Users", "Sessions"))
 	cases := []struct {
 		op, body string
 		want     bool
@@ -217,7 +217,7 @@ func TestBatchAllowlistRequiresEveryTableAndRejectsEmptyBatch(t *testing.T) {
 }
 
 func TestTransactionAllowlistRequiresEveryTableAndRejectsEmptyTransaction(t *testing.T) {
-	for _, expr := range []string{exprTransactItemsProxy, exprTransactItems} {
+	for _, expr := range []string{exprTransactItemsCache, exprTransactItems} {
 		p := mustCompilePredicates(t, predAllowlistConfig(expr, "Users", "Sessions"))
 		cases := []struct {
 			op, body string
@@ -271,7 +271,7 @@ func TestDenylistRoutesEveryOtherTableAndFailsClosed(t *testing.T) {
 }
 
 func TestUninspectableBodiesDoNotRoute(t *testing.T) {
-	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsProxy, "Users"))
+	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsCache, "Users"))
 	for _, body := range []string{
 		"", "not json", `["TableName"]`, "null", `{"TableName":"Users"} trailing`,
 		`{"TableName":"Users"}{}`, `{"TableName":"Users"`, "\"Users\"",
@@ -284,7 +284,7 @@ func TestUninspectableBodiesDoNotRoute(t *testing.T) {
 }
 
 func TestLargeValidBodiesAreEvaluatedByPredicates(t *testing.T) {
-	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsProxy, "Users"))
+	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsCache, "Users"))
 	body := predBodyOfSize(600 << 10)
 	if len(body) != 600<<10 || !p.shouldRoute(predReq("GetItem", "dynamodb", body)) {
 		t.Fatal("a 600 KiB body does not route")
@@ -480,7 +480,7 @@ func TestBodyByteOrderMarkAndDuplicateKeys(t *testing.T) {
 
 func TestTheSevenExpressionsCompile(t *testing.T) {
 	for _, expr := range []string{exprAllOps, exprTableName, exprRequestItems, exprTransactItems,
-		exprTransactItemsProxy, exprTableNameDeny, exprRequestItemsDeny, exprTransactItemsDeny} {
+		exprTransactItemsCache, exprTableNameDeny, exprRequestItemsDeny, exprTransactItemsDeny} {
 		mustCompilePredicates(t, predConfig(predEntry(expr, map[string]any{"ops": allOperations, "allowed": []string{}, "excluded": []string{}})))
 	}
 }
@@ -493,7 +493,7 @@ func TestEmptyPredicateSetRoutesNothing(t *testing.T) {
 }
 
 func TestPredicatesConcurrent(t *testing.T) {
-	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsProxy, "Users"))
+	p := mustCompilePredicates(t, predAllowlistConfig(exprTransactItemsCache, "Users"))
 	var wg sync.WaitGroup
 	for g := 0; g < 16; g++ {
 		wg.Add(1)

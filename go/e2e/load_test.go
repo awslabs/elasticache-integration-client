@@ -66,7 +66,7 @@ func concurrentLoad(t *testing.T, setup ...func(*harnessConfig)) *harness {
 	}
 	var mu sync.Mutex
 	rng := rand.New(rand.NewPCG(1, 2))
-	h.proxy.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
+	h.server.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
 		mu.Lock()
 		mode, delay := rng.IntN(3), time.Duration(rng.IntN(3))*time.Millisecond
 		mu.Unlock()

@@ -115,7 +115,7 @@ type harness struct {
 	cache    *mockcache.Server
 	addr     string // the cache's own address
 	caFile   string
-	proxy    *proxy
+	server   *server
 	dynamo   *dynamo
 	relay    *mockcache.Relay // nil without withRelay
 	ddb      *dynamodb.Client
@@ -128,7 +128,7 @@ type harness struct {
 	errs []error // every error a test checked, for the no-secrets check
 }
 
-// newHarness starts a TLS mock cache whose aws.request handler is the caching proxy, a fake
+// newHarness starts a TLS mock cache whose aws.request handler is the caching server, a fake
 // DynamoDB behind it, and a client built with NewFromConfig whose origin is the SDK's default
 // HTTP client talking to the same fake.
 func newHarness(t *testing.T, setup ...func(*harnessConfig)) *harness {
@@ -149,8 +149,8 @@ func newHarness(t *testing.T, setup ...func(*harnessConfig)) *harness {
 	if h.addr, err = cache.Listen(); err != nil {
 		t.Fatal(err)
 	}
-	h.proxy = newProxy(h.dynamo)
-	cache.SetOnRequest(h.proxy.handle)
+	h.server = newServer(h.dynamo)
+	cache.SetOnRequest(h.server.handle)
 	if hc.setupCache != nil {
 		hc.setupCache(cache)
 	}

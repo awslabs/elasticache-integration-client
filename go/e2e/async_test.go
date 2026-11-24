@@ -82,7 +82,7 @@ func TestDeferredReplyDoesNotBlockLaterCalls(t *testing.T) {
 	h := newHarness(t)
 	seed(t, h.dynamo)
 	deferred := make(chan *held, 1)
-	h.proxy.setWrap(deferFirst(1, deferred))
+	h.server.setWrap(deferFirst(1, deferred))
 	ctx := context.Background()
 	done := make(chan string, 1)
 	go func() {
@@ -121,7 +121,7 @@ func TestOutOfOrderPushesReachTheirCallers(t *testing.T) {
 		h.dynamo.put(t, "Music", item{"Artist": sj("Acme"), "Song": sj(fmt.Sprintf("S%02d", i))})
 	}
 	deferred := make(chan *held, n)
-	h.proxy.setWrap(deferFirst(n, deferred))
+	h.server.setWrap(deferFirst(n, deferred))
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
@@ -160,7 +160,7 @@ func TestDeferredTimeoutRetriesThroughCache(t *testing.T) {
 	h := newHarness(t, withOptions(func(o *elasticacheintegrations.Options) { o.CacheRequestTimeout = 300 * time.Millisecond }))
 	seed(t, h.dynamo)
 	deferred := make(chan *held, 1)
-	h.proxy.setWrap(deferFirst(1, deferred))
+	h.server.setWrap(deferFirst(1, deferred))
 	ctx := context.Background()
 	out, err := h.getSong(ctx, "One")
 	if err != nil || songOf(out) != "One" {
@@ -185,7 +185,7 @@ func TestPushedErrorFailsOnlyItsCall(t *testing.T) {
 	seed(t, h.dynamo)
 	const id = "9223372036854775807"
 	var first atomic.Bool
-	h.proxy.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
+	h.server.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
 		if first.CompareAndSwap(false, true) {
 			return mockcache.Raw([]byte("+" + id + "\r\n"))
 		}
@@ -231,7 +231,7 @@ func TestCancelledCallLeavesConnectionUsable(t *testing.T) {
 			h := newHarness(t)
 			seed(t, h.dynamo)
 			var first atomic.Bool
-			h.proxy.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
+			h.server.setWrap(func(_ mockcache.Command, answer func() resp.Value) mockcache.Reply {
 				if first.CompareAndSwap(false, true) {
 					return tc.reply(answer())
 				}
@@ -278,7 +278,7 @@ func TestBadPushDropsConnection(t *testing.T) {
 			h := newHarness(t)
 			seed(t, h.dynamo)
 			deferred := make(chan *held, 2)
-			h.proxy.setWrap(deferFirst(2, deferred))
+			h.server.setWrap(deferFirst(2, deferred))
 			ctx := context.Background()
 			for _, retries := range []bool{false, true} {
 				conns := h.cache.Connections()

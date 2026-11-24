@@ -3,7 +3,7 @@
 
 // Package mockcache is an in-process ElastiCache Integrations cache for tests: RESP3 over
 // plaintext or TLS, on loopback or on a connection the test hands it. It checks the order
-// of the client's commands and the shape of aws.request the way the proxy does, records every
+// of the client's commands and the shape of aws.request the way the cache does, records every
 // command, and lets a test choose each reply.
 //
 // Under testing/synctest, make, use and close the server inside the bubble: its channels and
@@ -28,7 +28,7 @@ import (
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
 )
 
-// RouteTenOperations is a config that routes the ten operations the proxy advertises.
+// RouteTenOperations is a config that routes the ten operations the cache advertises.
 const RouteTenOperations = `{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"service == 'dynamodb' && operation in ops","vars":{"ops":["GetItem","BatchGetItem","Query","Scan","PutItem","UpdateItem","DeleteItem","BatchWriteItem","TransactGetItems","TransactWriteItems"]}}]}`
 
 const (
@@ -60,7 +60,7 @@ type Server struct {
 	certPEM []byte
 	pool    *x509.CertPool
 
-	nextID atomic.Uint64 // deferred ids, never reused, as the proxy's push id counter
+	nextID atomic.Uint64 // deferred ids, never reused, as the cache's push id counter
 	stop   chan struct{}
 	wg     sync.WaitGroup
 
@@ -551,7 +551,7 @@ func (s *Server) request(cmd Command) Reply {
 	return f(cmd)
 }
 
-// validVersion reports whether v is "<major>.<minor>" with numeric parts, as the proxy needs.
+// validVersion reports whether v is "<major>.<minor>" with numeric parts, as the cache needs.
 func validVersion(v any) bool {
 	s, ok := v.(string)
 	if !ok {
