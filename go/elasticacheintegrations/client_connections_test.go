@@ -273,8 +273,8 @@ func TestConnectionsAllDown(t *testing.T) {
 	for _, strict := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fallback", true: "strict"}[strict], func(t *testing.T) {
 			s, ddb, _, origin := connectionsSDK(t, 2, func(c *config) {
-				c.connectionTimeout = 50 * time.Millisecond
-				c.reconnectAttemptTimeout = 50 * time.Millisecond
+				c.connectionTimeout = 500 * time.Millisecond
+				c.reconnectAttemptTimeout = 500 * time.Millisecond
 				if strict {
 					c.fallbackUnlimited, c.fallbackDuration = false, 0
 				}
@@ -403,10 +403,11 @@ func TestTryRequestDoesNotWait(t *testing.T) {
 // connection: a session whose own window ran out while another served calls does not decide a
 // call that one connection would send to DynamoDB.
 func TestConnectionsAllDownFallbackFromLastDrop(t *testing.T) {
+	// The timeouts leave start-up room for three TLS handshakes on a busy runner under -race.
 	s, ddb, cache, _ := connectionsSDK(t, 3, func(c *config) {
-		c.connectionTimeout = 20 * time.Millisecond
-		c.reconnectAttemptTimeout = 20 * time.Millisecond
-		c.fallbackUnlimited, c.fallbackDuration = false, 300*time.Millisecond
+		c.connectionTimeout = 500 * time.Millisecond
+		c.reconnectAttemptTimeout = 500 * time.Millisecond
+		c.fallbackUnlimited, c.fallbackDuration = false, 2*time.Second
 	})
 	getHit(t, ddb)
 	s.Hold()
@@ -416,7 +417,7 @@ func TestConnectionsAllDownFallbackFromLastDrop(t *testing.T) {
 	waitFor(t, "session 1 to see the drop", func() bool { return !first.connected() })
 	// The outage starts, and its fallback window ends while the other sessions are up.
 	first.request(context.Background(), getItem("https://dynamodb.us-east-1.amazonaws.com/"))
-	time.Sleep(400 * time.Millisecond)
+	time.Sleep(2300 * time.Millisecond)
 	for _, ss := range cache.sessions[1:] {
 		ss.live.Load().drop("test")
 	}

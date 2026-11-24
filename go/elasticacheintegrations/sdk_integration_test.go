@@ -303,7 +303,7 @@ func TestServedHeadersReachSDK(t *testing.T) {
 			return mockcache.Now(mockcache.Served(400, map[string]string{
 				"content-type":     "application/x-amz-json-1.0",
 				"x-amz-crc32":      crc(body),
-				"x-amzn-errortype": "ResourceNotFoundException:http://internal.amazon.com/coral/com.amazonaws.dynamodb.v20120810/",
+				"x-amzn-errortype": "ResourceNotFoundException:http://example.com/com.amazonaws.dynamodb.v20120810/",
 			}, []byte(body)))
 		})
 		ddb, _ := startSDK(t, sdkConfig(t, s, addr), &fakeOrigin{}, withRetries(1))
@@ -520,15 +520,14 @@ func TestSDKNoSecretsInLogsOrErrors(t *testing.T) {
 		r := mockcache.Now(resp.ErrorValue("WRONGPASS", cmd.Arg(len(cmd.Args)-1)))
 		return &r
 	})
+	// Each connection re-AUTHs on its own, so the mock can see the next AUTH before the
+	// connection that was refused logs it: wait for the record too.
 	auths := authCount(s)
-	for deadline := time.Now().Add(10 * time.Second); authCount(s) < auths+2; {
+	for deadline := time.Now().Add(10 * time.Second); authCount(s) < auths+2 || !strings.Contains(capture.Text(), "re-AUTH"); {
 		if time.Now().After(deadline) {
-			t.Fatalf("re-AUTH did not run: %d AUTH commands", authCount(s))
+			t.Fatalf("re-AUTH did not run or was not logged: %d AUTH commands, log:\n%s", authCount(s), capture.Text())
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-	if !strings.Contains(capture.Text(), "re-AUTH") {
-		t.Errorf("no re-AUTH record:\n%s", capture.Text())
 	}
 
 	// A start-up whose HELLO is refused with the token echoed back. The first backoff outlasts the connection timeout, so
