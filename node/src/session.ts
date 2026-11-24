@@ -835,6 +835,9 @@ export class ElastiCacheIntegrationsSession {
           return;
         }
         const timer = setTimeout(finishResolve, delay);
+        // Startup still needs to settle install(). During recovery, requests waiting for
+        // a connection have their own referenced timers.
+        if (this.state === "open") timer.unref?.();
         const finish = () => {
           clearTimeout(timer);
           signal.removeEventListener("abort", finishReject);

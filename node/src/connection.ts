@@ -441,6 +441,7 @@ export class ElastiCacheIntegrationsConnector {
 
   private socket: ConnectedSocket | undefined;
   private openingSocket: ConnectedSocket | undefined;
+  private inFlightCommands = 0;
   // Kept while the reader is active so close() can still await it after destroy().
   private readerTask: Promise<void> | undefined;
   private readonly pending: PendingRequests;
@@ -507,6 +508,7 @@ export class ElastiCacheIntegrationsConnector {
         );
       }
       this.socket = socket;
+      socket.unref();
       this.openingSocket = undefined;
       this.dead = false;
       const reader = new SocketReader(socket, this.readSize, this.maxResponseSize);
@@ -764,6 +766,7 @@ export class ElastiCacheIntegrationsConnector {
     frame: Buffer,
     pending: PendingRequest,
   ): Promise<RespValue> {
+    if (this.inFlightCommands++ === 0) socket.ref();
     // This is the local write/drain boundary, not an acknowledgement from the server.
     let writeCompleted = false;
     try {
@@ -791,6 +794,8 @@ export class ElastiCacheIntegrationsConnector {
       void pending.promise.catch(() => undefined);
       await this.close();
       throw failure;
+    } finally {
+      if (--this.inFlightCommands === 0) socket.unref();
     }
   }
 

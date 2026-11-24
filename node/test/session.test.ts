@@ -1655,7 +1655,7 @@ describe("ElastiCacheIntegrationsSession", () => {
     initial.fail();
 
     const deadlines = session as unknown as { readyDeadline: number; fallbackDeadline: number };
-    expect(deadlines.fallbackDeadline - deadlines.readyDeadline).toBe(1_000);
+    expect(deadlines.fallbackDeadline).toBe(deadlines.readyDeadline + 1_000);
     await session.close();
   });
 

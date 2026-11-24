@@ -55,7 +55,7 @@ The only change to your application is the `install()` call; see [Configuration]
 
 - **You choose what is cached.** Requests for the tables and operations you choose go through the cache; everything else goes to DynamoDB as it would without ElastiCache Integrations. See [Request routing](#request-routing).
 - **The cache going down does not take your application down.** If the connection to the cache is lost, the client reconnects in the background, and meanwhile requests go to DynamoDB as they would without ElastiCache Integrations in the middle. Once the connection is back, so is the caching layer. See [Reconnection and fallback](#reconnection-and-fallback) for the full details, and [Configuration](#configuration) to change how long requests wait and fall back.
-- **Destroying the client also disconnects the cache.**
+- **Destroying the client also disconnects the cache.** An idle cache connection and background reconnect delays allow Node.js to exit naturally after your script finishes its work. Call `destroy()` to disconnect immediately.
 
 ## Examples
 
