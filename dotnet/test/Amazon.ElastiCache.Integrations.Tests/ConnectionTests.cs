@@ -294,20 +294,56 @@ public class ConnectionTests
     }
 
     [Fact]
-    public async Task MaxPendingRefusesWithoutWriting()
+    public async Task ARequestOverMaxPendingWaitsForASlot()
     {
         await using var rig = await Rig.StartAsync(maxPending: 1);
         var first = rig.Connection.RequestAsync(Request("a"), Token);
         await ReadBodyAsync(rig.Cache);
 
-        await Assert.ThrowsAsync<ElastiCacheIntegrationsPendingLimitException>(() => rig.Connection.RequestAsync(Request("refused"), Token));
+        var queued = rig.Connection.RequestAsync(Request("b"), Token);
+        rig.Time.Advance(RequestTimeout * 0.7);
+        Assert.False(queued.IsCompleted);
         await rig.Cache.SendAsync(MockCache.Served("a"));
-        await first;
-        var next = rig.Connection.RequestAsync(Request("b"), Token);
+        Assert.Equal("a", BodyOf(await first));
 
         Assert.Equal("b", await ReadBodyAsync(rig.Cache));
         await rig.Cache.SendAsync(MockCache.Served("b"));
+        Assert.Equal("b", BodyOf(await queued));
+        Assert.Equal(0, rig.Connection.PendingCount);
+    }
+
+    [Fact]
+    public async Task ARequestWithNoSlotWithinThreeQuartersOfItsTimeoutIsNotSent()
+    {
+        await using var rig = await Rig.StartAsync(maxPending: 1);
+        var first = rig.Connection.RequestAsync(Request("a"), Token);
+        await ReadBodyAsync(rig.Cache);
+
+        var refused = rig.Connection.RequestAsync(Request("refused"), Token);
+        rig.Time.Advance(RequestTimeout * 0.75);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsPendingLimitException>(() => refused);
+        Assert.True(rig.Connection.IsOpen);
+
+        await rig.Cache.SendAsync(MockCache.Served("a"));
+        await first;
+        var next = rig.Connection.RequestAsync(Request("b"), Token);
+        Assert.Equal("b", await ReadBodyAsync(rig.Cache));
+        await rig.Cache.SendAsync(MockCache.Served("b"));
         await next;
+    }
+
+    [Fact]
+    public async Task ARequestWaitingForASlotFailsWithTheConnection()
+    {
+        await using var rig = await Rig.StartAsync(maxPending: 1, requestTimeout: TimeSpan.FromMinutes(1));
+        var first = rig.Connection.RequestAsync(Request("a"), Token);
+        await ReadBodyAsync(rig.Cache);
+        var queued = rig.Connection.RequestAsync(Request("b"), Token);
+
+        rig.Connection.Dispose();
+
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => first);
+        await Assert.ThrowsAsync<ElastiCacheIntegrationsConnectionLostException>(() => queued.WaitAsync(TimeSpan.FromSeconds(5), Token));
     }
 
     [Theory]

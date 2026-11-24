@@ -50,7 +50,7 @@ public sealed class ElastiCacheIntegrationsConnectionLostException : ElastiCache
     }
 }
 
-/// <summary>The connection already had <see cref="ElastiCacheIntegrationsClientOptions.MaxPending"/> calls in flight; this one was not sent.</summary>
+/// <summary>The connection had <see cref="ElastiCacheIntegrationsClientOptions.MaxPending"/> calls in flight for 75% of the timeout; this one was not sent.</summary>
 public sealed class ElastiCacheIntegrationsPendingLimitException : ElastiCacheIntegrationsException
 {
     /// <summary>Creates the exception with a message and an optional cause.</summary>

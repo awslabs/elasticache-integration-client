@@ -83,7 +83,11 @@ public sealed class ElastiCacheIntegrationsClientOptions
     /// <summary>Connect retries and backoff.</summary>
     public ElastiCacheIntegrationsReconnectPolicy Reconnect { get; init; } = new();
 
-    /// <summary>Requests in flight on the connection before new ones go to DynamoDB.</summary>
+    /// <summary>
+    /// Most requests in flight on the connection. A request over the limit waits for a free slot for
+    /// up to 75% of its timeout; if none frees, it is not sent and goes to DynamoDB, or fails with a
+    /// retryable error when <see cref="FallbackDuration"/> is zero.
+    /// </summary>
     public int MaxPending { get; init; } = 100;
 
     /// <summary>Largest reply accepted, in bytes.</summary>
