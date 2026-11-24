@@ -298,6 +298,7 @@ public sealed class IntegrationFoundationTests
 
     private sealed class ConcurrentInterceptor : IElastiCacheIntegrationsRequestInterceptor
     {
+        private readonly TaskCompletionSource _overlap = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _active;
         private int _calls;
         private int _maximum;
@@ -313,9 +314,20 @@ public sealed class IntegrationFoundationTests
             Interlocked.Increment(ref _calls);
             var active = Interlocked.Increment(ref _active);
             SetMaximum(active);
-            await Task.Yield();
-            Interlocked.Decrement(ref _active);
-            return Response("intercepted");
+            if (active > 1)
+            {
+                _overlap.TrySetResult();
+            }
+
+            try
+            {
+                await _overlap.Task.WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+                return Response("intercepted");
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+            }
         }
 
         public void Dispose()

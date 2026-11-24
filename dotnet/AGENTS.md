@@ -2,22 +2,18 @@
 
 ## Scope
 
-- This directory is the C# integration foundation for AWS SDK for .NET v4
-  DynamoDB clients, targeting `net8.0`.
-- The foundation ends at the raw HTTP interception seam. Do not add cache
-  protocol, transport, authentication, routing policy, resilience, packaging,
-  publishing, examples, or customer-facing configuration here.
+- This directory contains the C# ElastiCache Integrations library, targeting `net8.0` and AWS SDK for .NET v4.
+- The SDK integration ends at the raw HTTP interception seam. The standalone cache runtime owns configuration, protocol, TLS, IAM authentication and the connection lifecycle. Routing policy belongs outside the runtime.
 
 ## Layout
 
-- `Amazon.ElastiCache.Integrations.sln`: library and focused test projects.
-- `src/Amazon.ElastiCache.Integrations/`: SDK installation, interception, and
-  lifecycle ownership.
-- `test/Amazon.ElastiCache.Integrations.Tests/`: hermetic foundation tests.
+- `Amazon.ElastiCache.Integrations.sln` contains the library and test projects.
+- `src/Amazon.ElastiCache.Integrations/` contains the SDK integration and cache runtime.
+- `test/Amazon.ElastiCache.Integrations.Tests/` contains hermetic SDK and cache tests. The `Category=alignment` tests read the shared protocol vectors.
 
 ## Validation
 
-Run from this directory:
+Run from this directory.
 
 - `dotnet restore`
 - `dotnet format --verify-no-changes`
@@ -26,10 +22,9 @@ Run from this directory:
 
 ## Engineering rules
 
-- Preserve the original signed `HttpRequestMessage` when an interceptor passes
-  a request through to the SDK's origin handler.
-- Keep the integration thread safe and make ownership of interceptors and
-  origin handlers explicit.
+- Preserve the original signed `HttpRequestMessage` when an interceptor passes a request through to the SDK's origin handler.
+- Keep the integration thread safe and make ownership of interceptors and origin handlers explicit.
 - Reject an `AmazonDynamoDBConfig` that already has an `HttpClientFactory`.
-- Do not classify operations or interpret request bodies in this foundation.
-- Prefer focused, hermetic tests with in-memory handlers.
+- Require TLS and verify the cache certificate and host name before sending IAM credentials.
+- Keep accepted requests and response buffers bounded. Never replay a request after an ambiguous failure.
+- Prefer hermetic tests with in-memory handlers or a loopback mock cache.
