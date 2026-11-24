@@ -3,8 +3,8 @@ name: CI
 on:
   push:
     branches: [main, "release-*"]
+  # Stacked pull requests can target any feature branch.
   pull_request:
-    branches: [main, "release-*", build-the-c-sdk-integration-foundation-2fd62276]
   workflow_dispatch:
 
 permissions:
