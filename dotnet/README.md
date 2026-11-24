@@ -23,6 +23,8 @@ The runtime verifies the cache certificate and host name over TLS. `CaCertificat
 
 Requests above `MaxPending` fail before encoding. Connection loss, an invalid frame, or cancellation or timeout while waiting for an in-band reply can close the connection and fail pending requests. A timed-out deferred request releases its slot and the runtime discards its late push. Reconnect runs in the background with capped exponential backoff. Requests made during reconnect wait up to `ReconnectWaitMs`. The runtime never replays a failed request.
 
+If the cache rejects the configuration overrides during reconnect, the session stops retrying. Waiting and subsequent sends fail with `ElastiCacheIntegrationsCacheUnavailableException` carrying the configuration exception. Open a new session after correcting the configuration.
+
 Use `await using` to stop admitting new requests, drain pending replies up to the configured drain timeout, and join background work. `Dispose()` closes the connection immediately and fails pending requests.
 
 ## Validation

@@ -82,6 +82,9 @@ public sealed class ElastiCacheIntegrationsCache : IDisposable, IAsyncDisposable
     }
 
     /// <summary>Sends one request to the cache. A failed request is never replayed.</summary>
+    /// <exception cref="ElastiCacheIntegrationsCacheUnavailableException">
+    /// The cache could not reconnect within the configured wait, or it rejected the configuration during reconnect.
+    /// </exception>
     public async Task<ElastiCacheIntegrationsResponse> SendAsync(
         ElastiCacheIntegrationsRequest request, CancellationToken cancellationToken = default)
     {
@@ -108,7 +111,7 @@ public sealed class ElastiCacheIntegrationsCache : IDisposable, IAsyncDisposable
         {
             if (available is not null)
             {
-                if (_options.ReconnectWaitMs == 0)
+                if (_options.ReconnectWaitMs == 0 && !available.IsCompleted)
                 {
                     throw new ElastiCacheIntegrationsCacheUnavailableException("The cache is reconnecting.");
                 }
@@ -174,6 +177,17 @@ public sealed class ElastiCacheIntegrationsCache : IDisposable, IAsyncDisposable
                     {
                         connection = await ConnectAsync(_options, _auth, _overrides, stop).ConfigureAwait(false);
                         break;
+                    }
+                    catch (ElastiCacheIntegrationsConfigurationException error)
+                    {
+                        lock (_gate)
+                        {
+                            _available.TrySetException(new ElastiCacheIntegrationsCacheUnavailableException(
+                                "The cache could not reconnect because its configuration was rejected.", error));
+                            _ = _available.Task.Exception;
+                        }
+
+                        return;
                     }
                     catch (ElastiCacheIntegrationsException) when (!stop.IsCancellationRequested)
                     {

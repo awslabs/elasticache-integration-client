@@ -321,6 +321,43 @@ public class CacheRuntimeTests
         await FinishHandshakeAsync(server);
     }
 
+    [Fact(Timeout = 15000)]
+    public async Task RejectedConfigDuringReconnectFailsWaitingAndFutureSends()
+    {
+        var cancellationToken = TestContext.Current.CancellationToken;
+        using var root = TestCertificate.Create();
+        await using var server = new MockCache(root);
+        var options = Options(server, root, reconnect: new() { BaseDelayMs = 1, MaxDelayMs = 1 });
+        var credentials = new RotatingCredentials();
+        var startup = ElastiCacheIntegrationsCache.OpenAsync(options, credentials, cancellationToken);
+        await HandshakeAsync(server);
+        await using var cache = await startup;
+
+        server.Drop();
+        await server.AcceptAsync();
+        Assert.Equal("AUTH", (await server.ReadCommandAsync())[0]);
+        await NegotiateAsync(server, resp3: true);
+
+        var waiting = cache.SendAsync(Request, cancellationToken);
+        Assert.False(waiting.IsCompleted);
+        await server.SendAsync("-CONFIG_INVALID overrides rejected\r\n");
+        await server.WaitForCloseAsync();
+
+        var error = await Assert.ThrowsAsync<ElastiCacheIntegrationsCacheUnavailableException>(() => waiting);
+        var cause = Assert.IsType<ElastiCacheIntegrationsConfigurationException>(error.InnerException);
+        Assert.Equal("CONFIG_INVALID", Assert.IsType<ElastiCacheIntegrationsServerException>(cause.InnerException).Code);
+
+        var subsequent = cache.SendAsync(Request, cancellationToken);
+        Assert.True(subsequent.IsCompleted);
+        var subsequentError = await Assert.ThrowsAsync<ElastiCacheIntegrationsCacheUnavailableException>(() => subsequent);
+        Assert.Same(cause, subsequentError.InnerException);
+        Assert.Null(cache.CurrentConfig);
+
+        await Task.Delay(100, cancellationToken);
+        Assert.False(server.HasPendingConnection);
+        Assert.Equal(2, credentials.Reads);
+    }
+
     [Theory(Timeout = 15000)]
     [InlineData(1)]
     [InlineData(2)]
@@ -429,11 +466,16 @@ public class CacheRuntimeTests
 
     private static async Task FinishHandshakeAsync(MockCache server, bool resp3 = true, string config = Config)
     {
+        await NegotiateAsync(server, resp3);
+        await server.SendAsync(MockCache.Bulk(config));
+    }
+
+    private static async Task NegotiateAsync(MockCache server, bool resp3)
+    {
         await server.SendAsync("+OK\r\n");
         Assert.Equal(["HELLO", "3"], await server.ReadCommandAsync());
         await server.SendAsync(resp3 ? "%1\r\n+proto\r\n:3\r\n" : "-NOPROTO RESP2 only\r\n");
         Assert.Equal(["aws.config", """{"version":"1.0"}"""], await server.ReadCommandAsync());
-        await server.SendAsync(MockCache.Bulk(config));
     }
 
     private sealed class RotatingCredentials : AWSCredentials
