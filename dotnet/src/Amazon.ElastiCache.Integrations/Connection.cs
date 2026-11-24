@@ -174,10 +174,9 @@ internal sealed class ElastiCacheIntegrationsConnection : ICacheConnection
     /// <exception cref="ElastiCacheIntegrationsProtocolException">The reply has the wrong shape; the connection stays up.</exception>
     public async Task<RequestReply> RequestAsync(ElastiCacheIntegrationsRequest request, CancellationToken cancellationToken)
     {
-        var frame = new ArrayBufferWriter<byte>();
-        ElastiCacheIntegrationsProtocol.WriteRequest(frame, request);
+        var frame = ElastiCacheIntegrationsProtocol.EncodeRequest(request);
         var value = await ExecuteAsync(
-            ElastiCacheIntegrationsProtocol.RequestCommand, frame.WrittenMemory, Resp3, _options.RequestTimeout, cancellationToken).ConfigureAwait(false);
+            ElastiCacheIntegrationsProtocol.RequestCommand, frame, Resp3, _options.RequestTimeout, cancellationToken).ConfigureAwait(false);
 
         // A deferred request resolves with the push's inner reply, and +id is not valid there.
         // On RESP2 nothing is deferred, so a +id in band fails this request the same way.

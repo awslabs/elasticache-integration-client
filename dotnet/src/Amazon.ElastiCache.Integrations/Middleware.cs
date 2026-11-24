@@ -36,14 +36,16 @@ internal static class ElastiCacheIntegrationsHttpAdapter
                 return null;
             }
 
-            body = await content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            body = await ReadBodyAsync(content, cancellationToken).ConfigureAwait(false);
         }
 
-        var headers = new Dictionary<string, string>(StringComparer.Ordinal);
-        AddHeaders(headers, request.Headers);
+        // NonValidated reads the values as the SDK set them; the validated view parses every value first.
+        var count = request.Headers.NonValidated.Count + (request.Content?.Headers.NonValidated.Count ?? 0) + 1;
+        var headers = new Dictionary<string, string>(count, StringComparer.Ordinal);
+        AddHeaders(headers, request.Headers.NonValidated);
         if (request.Content is not null)
         {
-            AddHeaders(headers, request.Content.Headers);
+            AddHeaders(headers, request.Content.Headers.NonValidated);
         }
 
         headers.TryAdd("host", uri.Authority);
@@ -74,26 +76,35 @@ internal static class ElastiCacheIntegrationsHttpAdapter
         return message;
     }
 
+    // Copies the body once, without buffering it in the content.
+    private static async ValueTask<ReadOnlyMemory<byte>> ReadBodyAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        using var body = new MemoryStream((int)Math.Min(content.Headers.ContentLength ?? 0, Array.MaxLength));
+        await content.CopyToAsync(body, cancellationToken).ConfigureAwait(false);
+        return body.GetBuffer().AsMemory(0, (int)body.Length);
+    }
+
     // "DynamoDB_20120810.GetItem" -> "GetItem".
     private static string? Operation(HttpRequestHeaders headers)
     {
-        if (!headers.TryGetValues(TargetHeader, out var values) || values.ToArray() is not [var target])
+        if (!headers.NonValidated.TryGetValues(TargetHeader, out var values) || values.Count != 1)
         {
             return null;
         }
 
-        var operation = target[(target.LastIndexOf('.') + 1)..].Trim();
-        return operation.Length == 0 ? null : operation;
+        var target = values.ToString();
+        var operation = target.AsSpan(target.LastIndexOf('.') + 1).Trim();
+        return operation.Length == 0 ? null : operation.ToString();
     }
 
-    private static void AddHeaders(Dictionary<string, string> into, HttpHeaders headers)
+    private static void AddHeaders(Dictionary<string, string> into, HttpHeadersNonValidated headers)
     {
         foreach (var (name, values) in headers)
         {
             var lower = name.ToLowerInvariant();
             if (!SigningHeaders.Contains(lower))
             {
-                into[lower] = string.Join(", ", values);
+                into[lower] = values.ToString();
             }
         }
     }
