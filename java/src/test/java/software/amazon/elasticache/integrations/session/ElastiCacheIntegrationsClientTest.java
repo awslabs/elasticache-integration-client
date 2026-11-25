@@ -154,7 +154,7 @@ class ElastiCacheIntegrationsClientTest {
     }
 
     @Test
-    void requestCredentialsOverrideBypassesCacheAndSignsOriginRequest() {
+    void requestCredentialsOverrideBypassesCacheWithZeroFallback() {
         RecordingOriginClient origin = new RecordingOriginClient(true);
         AwsCredentialsProvider overrideCredentials =
                 StaticCredentialsProvider.create(
@@ -163,6 +163,11 @@ class ElastiCacheIntegrationsClientTest {
         try (DynamoDbClient client =
                 cacheBuilder()
                         .originHttpClient(origin)
+                        .clientConfiguration(
+                                ElastiCacheIntegrationsClientConfiguration.builder()
+                                        .connectionTimeoutMs(10_000)
+                                        .fallbackDurationSeconds(0)
+                                        .build())
                         .install(
                                 appBuilder()
                                         .overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none())))) {

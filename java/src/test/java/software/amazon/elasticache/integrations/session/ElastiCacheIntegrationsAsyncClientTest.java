@@ -5,6 +5,7 @@ package software.amazon.elasticache.integrations.session;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -144,7 +145,7 @@ class ElastiCacheIntegrationsAsyncClientTest {
     }
 
     @Test
-    void asyncRequestCredentialsOverrideBypassesCacheAndSignsOriginRequest() throws Exception {
+    void asyncRequestCredentialsOverrideBypassesCacheWithZeroFallback() throws Exception {
         RecordingAsyncOrigin origin = new RecordingAsyncOrigin(true);
         StaticCredentialsProvider overrideCredentials =
                 StaticCredentialsProvider.create(
@@ -152,7 +153,13 @@ class ElastiCacheIntegrationsAsyncClientTest {
 
         try (DynamoDbAsyncClient client =
                 installAsync(
-                        cacheBuilder().originAsyncHttpClient(origin),
+                        cacheBuilder()
+                                .originAsyncHttpClient(origin)
+                                .clientConfiguration(
+                                        ElastiCacheIntegrationsClientConfiguration.builder()
+                                                .connectionTimeoutMs(10_000)
+                                                .fallbackDurationSeconds(0)
+                                                .build()),
                         builder -> {
                             sdkConfig(builder);
                             builder.overrideConfiguration(override -> override.retryPolicy(RetryPolicy.none()));
@@ -167,7 +174,9 @@ class ElastiCacheIntegrationsAsyncClientTest {
                                                             request.overrideConfiguration(
                                                                     override -> override.credentialsProvider(overrideCredentials)))
                                             .get(5, TimeUnit.SECONDS));
-            assertTrue(causedBy(failure, DynamoDbException.class), failure.toString());
+            DynamoDbException denial = assertInstanceOf(DynamoDbException.class, failure.getCause());
+            assertEquals(400, denial.statusCode());
+            assertEquals("AccessDeniedException", denial.awsErrorDetails().errorCode());
         }
 
         assertTrue(cache.getRequests().isEmpty(), "the cache must not receive the overridden request");
