@@ -7,14 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"sync"
 
 	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/interpreter"
-
-	celast "github.com/google/cel-go/common/ast"
 )
 
 // maxBodyDepth is the deepest nesting a body may have for predicates to read it, as Jackson's
@@ -151,15 +151,7 @@ func compilePredicate(i int, entry any) (*predicate, error) {
 func namesFree(e celast.Expr, name string, bound []string) bool {
 	switch e.Kind() {
 	case celast.IdentKind:
-		if e.AsIdent() != name {
-			return false
-		}
-		for _, b := range bound {
-			if b == name {
-				return false
-			}
-		}
-		return true
+		return e.AsIdent() == name && !slices.Contains(bound, name)
 	case celast.SelectKind:
 		return namesFree(e.AsSelect().Operand(), name, bound)
 	case celast.CallKind:
@@ -339,14 +331,6 @@ func predicateHeaders(h map[string]string) map[string]string {
 		}
 	}
 	return out
-}
-
-// decodeBody returns the body as cel-go input. An empty body is {}. It reports false when the
-// body is not usable by predicates (see scanJSON).
-func decodeBody(body []byte) (map[string]any, bool) {
-	pr := predicateRequest{req: &request{body: body}}
-	defer pr.release()
-	return pr.body()
 }
 
 var errTooDeep = errors.New("nested too deep")

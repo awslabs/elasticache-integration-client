@@ -35,13 +35,16 @@ const maxPooledContainers = 1 << 16
 
 var jsonDocPool = sync.Pool{New: func() any { return new(jsonDoc) }}
 
-var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+const utf8BOM = "\xEF\xBB\xBF"
 
 // scanJSON reports whether body is one JSON object that predicates may read: RFC 8259
 // grammar, valid UTF-8, nested at most maxBodyDepth levels. A leading UTF-8 BOM is skipped.
 // The caller releases an accepted document.
 func scanJSON(body []byte) (*jsonDoc, bool) {
-	b := bytes.TrimPrefix(body, utf8BOM)
+	b := body
+	if len(b) >= len(utf8BOM) && string(b[:len(utf8BOM)]) == utf8BOM {
+		b = b[len(utf8BOM):]
+	}
 	if len(b) >= math.MaxInt32 {
 		return nil, false
 	}

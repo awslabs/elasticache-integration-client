@@ -37,6 +37,7 @@ const (
 var kindNames = [...]string{"Invalid", "SimpleString", "Error", "Integer", "BulkString",
 	"Array", "Map", "Push", "Null"}
 
+// String returns the kind's name, such as "BulkString".
 func (k Kind) String() string {
 	if int(k) < len(kindNames) {
 		return kindNames[k]
@@ -110,7 +111,10 @@ type CorruptError struct {
 	TooLarge bool // the frame is over the reader's cap
 }
 
+// Error returns "resp: corrupt stream: " and the reason.
 func (e *CorruptError) Error() string { return "resp: corrupt stream: " + e.Msg }
+
+// Is matches ErrCorrupt, and ErrFrameTooLarge when the frame is over the reader's cap.
 func (e *CorruptError) Is(target error) bool {
 	return target == ErrCorrupt || (e.TooLarge && target == ErrFrameTooLarge)
 }
@@ -230,9 +234,9 @@ func incomplete(need int64, exact bool, left *[MaxDepth]int64, depth int) Extent
 // maxNeed keeps Need representable in an int on every platform; any frame cap is far below it.
 const maxNeed = min(1<<40, math.MaxInt)
 
-// lineEnd returns the index of the first CRLF at or after from, or -1 and the fewest bytes
-// that could complete the line.
-func lineEnd(b []byte, from int) (int, int) {
+// lineEnd finds the first CRLF at or after from. end is its index and need is 0; without
+// one, end is -1 and need is the fewest bytes that could complete the line.
+func lineEnd(b []byte, from int) (end, need int) {
 	for i := from; i < len(b); {
 		j := bytes.IndexByte(b[i:], '\r')
 		if j < 0 {

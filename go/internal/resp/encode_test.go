@@ -4,7 +4,9 @@
 package resp
 
 import (
+	"bytes"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -64,6 +66,76 @@ func TestAppendCommandGrowsOnce(t *testing.T) {
 	}); n != 0 {
 		t.Fatalf("%v allocations for the header and bulk writers, want 0", n)
 	}
+	strs := []string{"aws.request", "POST", strings.Repeat("h", 300), strings.Repeat("b", 4000)}
+	if n := testing.AllocsPerRun(100, func() { _ = AppendCommandStrings(nil, strs...) }); n != 1 {
+		t.Fatalf("AppendCommandStrings: %v allocations into a nil buffer, want 1", n)
+	}
+	if n := testing.AllocsPerRun(100, func() { buf = AppendCommandStrings(buf[:0], strs...) }); n != 0 {
+		t.Fatalf("AppendCommandStrings: %v allocations into a reused buffer, want 0", n)
+	}
+	line := SimpleValue(strings.Repeat("s", 200))
+	if n := testing.AllocsPerRun(100, func() { buf, _ = AppendValue(buf[:0], line) }); n != 0 {
+		t.Fatalf("AppendValue(simple string): %v allocations into a reused buffer, want 0", n)
+	}
+}
+
+// referenceCommand is the RESP array of bulk strings for args, built without the encoder.
+func referenceCommand(args []string) string {
+	var sb strings.Builder
+	sb.WriteString("*" + strconv.Itoa(len(args)) + "\r\n")
+	for _, a := range args {
+		sb.WriteString("$" + strconv.Itoa(len(a)) + "\r\n" + a + "\r\n")
+	}
+	return sb.String()
+}
+
+// FuzzAppendCommand checks that the byte and string encoders write the same frame as the
+// reference, into an empty and a non-empty buffer, that CommandLen is its length, and that
+// the frame decodes back to the arguments.
+func FuzzAppendCommand(f *testing.F) {
+	f.Add("aws.request", "POST", "", "a\r\nb")
+	f.Add("", "", "", "")
+	f.Add("x", "\x00\xff", "$-1\r\n", strings.Repeat("z", 300))
+	f.Fuzz(func(t *testing.T, a, b, c, d string) {
+		for k := 0; k <= 4; k++ {
+			args := []string{a, b, c, d}[:k]
+			bargs := make([][]byte, k)
+			lens := make([]int, k)
+			for i, s := range args {
+				bargs[i] = []byte(s)
+				lens[i] = len(s)
+			}
+			want := referenceCommand(args)
+			if got := string(AppendCommandStrings(nil, args...)); got != want {
+				t.Fatalf("AppendCommandStrings(%q) = %q, want %q", args, got, want)
+			}
+			if got := string(AppendCommand([]byte("pre"), bargs...)); got != "pre"+want {
+				t.Fatalf("AppendCommand(pre, %q) = %q, want %q", args, got, "pre"+want)
+			}
+			var bulk, bulkStr []byte
+			bulk = AppendArrayHeader(bulk, k)
+			bulkStr = AppendArrayHeader(bulkStr, k)
+			for i := range args {
+				bulk = AppendBulk(bulk, bargs[i])
+				bulkStr = AppendBulkString(bulkStr, args[i])
+			}
+			if string(bulk) != want || string(bulkStr) != want {
+				t.Fatalf("AppendBulk = %q, AppendBulkString = %q, want %q", bulk, bulkStr, want)
+			}
+			if n := CommandLen(lens...); n != len(want) {
+				t.Fatalf("CommandLen(%v) = %d, want %d", lens, n, len(want))
+			}
+			v, n, err := Decode([]byte(want))
+			if err != nil || n != len(want) || v.Kind != KindArray || len(v.Elems) != k {
+				t.Fatalf("Decode(%q) = %+v, %d, %v", want, v, n, err)
+			}
+			for i, e := range v.Elems {
+				if e.Kind != KindBulkString || !bytes.Equal(e.Bytes, bargs[i]) {
+					t.Fatalf("Decode(%q) element %d = %+v, want %q", want, i, e, args[i])
+				}
+			}
+		}
+	})
 }
 
 func TestAppendValue(t *testing.T) {

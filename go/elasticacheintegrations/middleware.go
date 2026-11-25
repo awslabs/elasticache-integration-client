@@ -118,7 +118,7 @@ func signedScope(h http.Header) (keyID, region string, ok bool) {
 
 // readBody reads exactly n bytes, and fails if body holds fewer or more. From directBodyMin,
 // room is the buffer b was read into, with space for the frame around it.
-func readBody(body io.Reader, n int64) (b, room []byte, err error) {
+func readBody(body io.Reader, n int64) ([]byte, []byte, error) {
 	if n == 0 {
 		return nil, nil, nil
 	}
@@ -130,7 +130,7 @@ func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 		before, after = frameRoom, tailRoom
 	}
 	buf := make([]byte, before+n+after)
-	b = buf[before : before+n : before+n]
+	b := buf[before : before+n : before+n]
 	if _, err := io.ReadFull(body, b); err != nil {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF // n bytes were promised
@@ -140,9 +140,9 @@ func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 	switch _, err := io.ReadFull(body, buf[before+n:before+n+1]); err {
 	case io.EOF:
 		if before > 0 {
-			room = buf
+			return b, buf, nil
 		}
-		return b, room, nil
+		return b, nil, nil
 	case nil:
 		return nil, nil, bodyError(errBodyTooLong)
 	default:

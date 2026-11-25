@@ -37,7 +37,8 @@ type Reader struct {
 }
 
 // NewReader returns a Reader that reads up to readSize bytes at a time and refuses a frame
-// over maxFrame bytes with ErrFrameTooLarge.
+// over maxFrame bytes with ErrFrameTooLarge. It panics if readSize or maxFrame is not
+// positive.
 func NewReader(r io.Reader, readSize, maxFrame int) *Reader {
 	if readSize <= 0 || maxFrame <= 0 {
 		panic("resp: NewReader needs a positive read size and frame cap")

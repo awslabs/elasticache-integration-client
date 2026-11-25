@@ -143,7 +143,7 @@ func (c *connection) handshake(ctx context.Context, auth authProvider) (*resolve
 	if err != nil {
 		return nil, err // a *ConfigError: no attempt can send these overrides
 	}
-	if v, err = c.exchange(ctx, frame, "aws.config"); err != nil {
+	if v, err = c.exchange(ctx, frame, configCommand); err != nil {
 		return nil, err
 	}
 	rc, err := parseConfigReply(v, false)
@@ -274,14 +274,6 @@ func (c *connection) alive() bool {
 	default:
 		return true
 	}
-}
-
-// err returns why the connection died, or nil while it is alive.
-func (c *connection) err() error {
-	if c.alive() {
-		return nil
-	}
-	return c.cause
 }
 
 // checkDeadlines is the tracker's timer callback: an in-order entry past its deadline closes

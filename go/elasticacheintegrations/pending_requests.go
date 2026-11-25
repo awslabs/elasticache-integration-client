@@ -378,13 +378,6 @@ func (p *pendingRequests) stopTimerLocked() {
 	p.armedAt = time.Time{}
 }
 
-// pending counts the entries awaiting a reply, in the FIFO and deferred.
-func (p *pendingRequests) pending() int {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return len(p.fifo) - p.head + len(p.deferred)
-}
-
 func (p *pendingRequests) popLocked() *pendingEntry {
 	if p.head == len(p.fifo) {
 		return nil

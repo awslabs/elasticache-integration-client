@@ -171,7 +171,7 @@ func TestReleasedDocDropsTheBody(t *testing.T) {
 
 // scanOracle is what scanJSON must accept, from the standard library.
 func scanOracle(body []byte) bool {
-	b := bytes.TrimPrefix(body, utf8BOM)
+	b := bytes.TrimPrefix(body, []byte(utf8BOM))
 	if !json.Valid(b) || !utf8.Valid(b) {
 		return false
 	}
@@ -240,7 +240,7 @@ func decodeBodyStd(body []byte) (map[string]any, bool) {
 	if len(body) == 0 {
 		return map[string]any{}, true
 	}
-	body = bytes.TrimPrefix(body, utf8BOM)
+	body = bytes.TrimPrefix(body, []byte(utf8BOM))
 	if !utf8.Valid(body) {
 		return nil, false
 	}

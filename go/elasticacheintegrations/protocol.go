@@ -56,14 +56,15 @@ func newSerializedCommand() *serializedCommand { return commandPool.Get().(*seri
 func (c *serializedCommand) release() {
 	clear(c.pairs[:cap(c.pairs)]) // the values point at request strings
 	c.wire = nil
-	c.frame = keep(c.frame)
+	c.frame = keepPooled(c.frame)
 	c.pairs = c.pairs[:0]
-	c.names = keep(c.names)
-	c.scratch = keep(c.scratch)
+	c.names = keepPooled(c.names)
+	c.scratch = keepPooled(c.scratch)
 	commandPool.Put(c)
 }
 
-func keep(b []byte) []byte {
+// keepPooled returns b emptied for reuse, or nil when it is too large to keep in the pool.
+func keepPooled(b []byte) []byte {
 	if cap(b) > maxPooledCommand {
 		return nil
 	}
@@ -78,20 +79,15 @@ func (c *serializedCommand) appendRequest(r *request) {
 	} else {
 		c.normalizeHeaders(r.headers)
 	}
-	headers := len(c.scratch)
+	hdrEnd := len(c.scratch)
 	c.scratch = appendMetadata(c.scratch, r.metadata)
-	hdr, meta := c.scratch[:headers], c.scratch[headers:]
+	hdr, meta := c.scratch[:hdrEnd], c.scratch[hdrEnd:]
 
 	if r.room != nil && c.appendAround(r, hdr, meta) {
 		return
 	}
 	n := resp.CommandLen(len(requestCommand), len(r.method), len(r.url), len(hdr), len(r.body), len(meta))
-	f := slices.Grow(c.frame[:0], n)
-	f = resp.AppendArrayHeader(f, 6)
-	f = resp.AppendBulkString(f, requestCommand)
-	f = resp.AppendBulkString(f, r.method)
-	f = resp.AppendBulkString(f, r.url)
-	f = resp.AppendBulk(f, hdr)
+	f := appendRequestPrefix(slices.Grow(c.frame[:0], n), r, hdr)
 	f = resp.AppendBulk(f, r.body)
 	c.frame = resp.AppendBulk(f, meta)
 	c.wire = c.frame
@@ -104,12 +100,7 @@ func (c *serializedCommand) appendAround(r *request, hdr, meta []byte) bool {
 		return false
 	}
 	n := resp.CommandLen(len(requestCommand), len(r.method), len(r.url), len(hdr), 0, len(meta))
-	f := slices.Grow(c.frame[:0], n+16) // the body length takes up to 16 more digits
-	f = resp.AppendArrayHeader(f, 6)
-	f = resp.AppendBulkString(f, requestCommand)
-	f = resp.AppendBulkString(f, r.method)
-	f = resp.AppendBulkString(f, r.url)
-	f = resp.AppendBulk(f, hdr)
+	f := appendRequestPrefix(slices.Grow(c.frame[:0], n+16), r, hdr) // the body length takes up to 16 more digits
 	f = append(f, '$')
 	f = strconv.AppendInt(f, int64(len(r.body)), 10)
 	f = append(f, "\r\n"...)
@@ -124,6 +115,16 @@ func (c *serializedCommand) appendAround(r *request, hdr, meta []byte) bool {
 	end += copy(r.room[end:], c.frame[head:])
 	c.wire = r.room[start:end:end]
 	return true
+}
+
+// appendRequestPrefix appends the aws.request frame up to the body: the array header, the
+// command, the method, the URL and the header block.
+func appendRequestPrefix(f []byte, r *request, hdr []byte) []byte {
+	f = resp.AppendArrayHeader(f, 6)
+	f = resp.AppendBulkString(f, requestCommand)
+	f = resp.AppendBulkString(f, r.method)
+	f = resp.AppendBulkString(f, r.url)
+	return resp.AppendBulk(f, hdr)
 }
 
 // directBodyMin is the body size from which the body is read into a room with space for the
@@ -156,12 +157,7 @@ func (c *serializedCommand) normalizeHeaders(h map[string]string) {
 		}
 		c.pairs = append(c.pairs, headerPair{name: lower, value: trimJava(value)})
 	}
-	slices.SortFunc(c.pairs, func(a, b headerPair) int {
-		if n := bytes.Compare(a.name, b.name); n != 0 {
-			return n
-		}
-		return strings.Compare(a.value, b.value)
-	})
+	slices.SortFunc(c.pairs, compareHeaderPair)
 	for i, p := range c.pairs {
 		if i > 0 {
 			c.scratch = append(c.scratch, '\n')
@@ -207,12 +203,7 @@ func (c *serializedCommand) normalizeHTTPHeaders(h http.Header, n int64) {
 		total += len(p.name) + len(p.value) + 2
 	}
 	c.scratch = slices.Grow(c.scratch, total+64) // the metadata follows
-	slices.SortFunc(c.pairs, func(a, b headerPair) int {
-		if n := bytes.Compare(a.name, b.name); n != 0 {
-			return n
-		}
-		return strings.Compare(a.value, b.value)
-	})
+	slices.SortFunc(c.pairs, compareHeaderPair)
 	value := 0 // where the current line's value starts
 	for i, p := range c.pairs {
 		if i > 0 && bytes.Equal(p.name, c.pairs[i-1].name) {
@@ -228,6 +219,14 @@ func (c *serializedCommand) normalizeHTTPHeaders(h http.Header, n int64) {
 		c.scratch = append(c.scratch, p.value...)
 	}
 	c.scratch = trimRight(c.scratch, value)
+}
+
+// compareHeaderPair orders header pairs by name, then value, in byte order.
+func compareHeaderPair(a, b headerPair) int {
+	if n := bytes.Compare(a.name, b.name); n != 0 {
+		return n
+	}
+	return strings.Compare(a.value, b.value)
 }
 
 // trimRight drops the bytes <= ' ' at the end of b, down to b[from], as trimJava does to a
@@ -401,15 +400,15 @@ func appendJSONValue(dst []byte, v any) ([]byte, error) {
 // appendJSONFloat writes a finite float as encoding/json does: plain decimal, so a whole number
 // below 1e21 is an integer, and exponent form only below 1e-6 or from 1e21.
 func appendJSONFloat(dst []byte, f float64, bits int) []byte {
-	format := byte('f')
+	fmtByte := byte('f')
 	if abs := math.Abs(f); abs != 0 {
 		if bits == 64 && (abs < 1e-6 || abs >= 1e21) ||
 			bits == 32 && (float32(abs) < 1e-6 || float32(abs) >= 1e21) {
-			format = 'e'
+			fmtByte = 'e'
 		}
 	}
-	dst = strconv.AppendFloat(dst, f, format, -1, bits)
-	if format == 'e' {
+	dst = strconv.AppendFloat(dst, f, fmtByte, -1, bits)
+	if fmtByte == 'e' {
 		// e-09 to e-9
 		if n := len(dst); n >= 4 && dst[n-4] == 'e' && dst[n-3] == '-' && dst[n-2] == '0' {
 			dst[n-2] = dst[n-1]

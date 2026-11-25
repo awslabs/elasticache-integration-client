@@ -8,9 +8,8 @@ import (
 	"slices"
 	"unicode/utf8"
 
-	"github.com/google/cel-go/common/types"
-
 	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
 )
 
 // The fast path evaluates the common predicate expressions over the scanned body without
@@ -52,7 +51,8 @@ type fastValue struct {
 	ref  any
 }
 
-var deferred = fastValue{}
+// fastDeferred is the zero fastValue (fkDefer): the fast path cannot answer. Never modified.
+var fastDeferred = fastValue{}
 
 func jsonSpan(kind fastKind, start, end int) fastValue {
 	return fastValue{kind: kind, n: int64(start) | int64(end)<<32}
@@ -84,7 +84,7 @@ func nativeValue(v any) fastValue {
 	case map[string]any:
 		return fastValue{kind: fkMap, ref: v}
 	}
-	return deferred // float64: the fast path does not compare doubles
+	return fastDeferred // float64: the fast path does not compare doubles
 }
 
 // jsonValue wraps the body value at b[pos:end]. A number defers: the fast path does not
@@ -108,7 +108,7 @@ func jsonValue(d *jsonDoc, pos, end, ci int) fastValue {
 	case 'n':
 		return fastValue{kind: fkNull}
 	}
-	return deferred
+	return fastDeferred
 }
 
 // stringOf returns the text of a string value.
@@ -126,11 +126,11 @@ func rawString(d *jsonDoc, v fastValue) []byte {
 	return d.b[v.start():v.end()]
 }
 
-// equal compares two values of the same CEL type; any other pair defers.
-func equal(pr *predicateRequest, a, b fastValue) fastValue {
+// fastEqual compares two values of the same CEL type; any other pair defers.
+func fastEqual(pr *predicateRequest, a, b fastValue) fastValue {
 	switch {
 	case a.kind == fkDefer || b.kind == fkDefer:
-		return deferred
+		return fastDeferred
 	case a.kind == fkString && b.kind == fkJSONStr:
 		return boolValue(equalString(rawString(pr.doc, b), a.s))
 	case a.kind == fkJSONStr && b.kind == fkString:
@@ -139,24 +139,24 @@ func equal(pr *predicateRequest, a, b fastValue) fastValue {
 		x, ok1 := stringOf(pr, a)
 		y, ok2 := stringOf(pr, b)
 		if !ok1 || !ok2 {
-			return deferred
+			return fastDeferred
 		}
 		return boolValue(x == y)
 	case a.kind != b.kind:
-		return deferred
+		return fastDeferred
 	case a.kind == fkInt || a.kind == fkBool:
 		return boolValue(a.n == b.n)
 	case a.kind == fkNull:
 		return boolValue(true)
 	}
-	return deferred
+	return fastDeferred
 }
 
 func isString(k fastKind) bool { return k == fkString || k == fkJSONStr }
 
-// lookup returns the value of key in a map, headers or JSON object; ok is false when the key
+// fastLookup returns the value of key in a map, headers or JSON object; ok is false when the key
 // is absent. A JSON object keeps the last value of a repeated key, as the decoded view does.
-func lookup(pr *predicateRequest, c fastValue, key string) (v fastValue, ok bool) {
+func fastLookup(pr *predicateRequest, c fastValue, key string) (v fastValue, ok bool) {
 	if c.kind != fkJSONObj {
 		return lookupKey(pr, c, fastValue{kind: fkString, s: key})
 	}
@@ -169,49 +169,60 @@ func lookup(pr *predicateRequest, c fastValue, key string) (v fastValue, ok bool
 	return v, ok
 }
 
-// lookupKey is lookup with a string value as the key, so a key read from the body is not
+// lookupKey is fastLookup with a string value as the key, so a key read from the body is not
 // copied.
-func lookupKey(pr *predicateRequest, c, key fastValue) (v fastValue, ok bool) {
+func lookupKey(pr *predicateRequest, c, key fastValue) (fastValue, bool) {
 	switch c.kind {
 	case fkMap, fkHeaders:
-		var x any
-		if key.kind == fkJSONStr {
-			raw := rawString(pr.doc, key)
-			if bytes.IndexByte(raw, '\\') >= 0 {
-				s, ok := decodeString(raw)
-				if !ok {
-					return deferred, false
-				}
-				key = fastValue{kind: fkString, s: s}
-			} else if c.kind == fkMap {
-				x, ok = c.ref.(map[string]any)[string(raw[1:len(raw)-1])]
-				return valueIf(nativeValue(x), ok)
-			} else {
-				h, ok := c.ref.(map[string]string)[string(raw[1:len(raw)-1])]
-				return valueIf(fastValue{kind: fkString, s: h}, ok)
-			}
+		if key.kind != fkJSONStr {
+			return mapEntry(c, key.s)
 		}
-		if c.kind == fkMap {
-			x, ok = c.ref.(map[string]any)[key.s]
-			return valueIf(nativeValue(x), ok)
+		raw := rawString(pr.doc, key)
+		if bytes.IndexByte(raw, '\\') < 0 {
+			return mapEntryBytes(c, raw[1:len(raw)-1])
 		}
-		h, ok := c.ref.(map[string]string)[key.s]
-		return valueIf(fastValue{kind: fkString, s: h}, ok)
+		k, ok := decodeString(raw)
+		if !ok {
+			return fastDeferred, false
+		}
+		return mapEntry(c, k)
 	case fkJSONObj:
+		var v fastValue
+		found := false
 		it := pr.doc.iterAt(c.start(), int(c.ci))
 		for k, val, more := it.next(); more; k, val, more = it.next() {
 			if keyEquals(pr, k, key) {
-				v, ok = jsonValue(pr.doc, val, it.valEnd, it.valCI), true
+				v, found = jsonValue(pr.doc, val, it.valEnd, it.valCI), true
 			}
 		}
-		return v, ok
+		return v, found
 	}
-	return deferred, false
+	return fastDeferred, false
+}
+
+// mapEntry looks k up in a map or headers value.
+func mapEntry(c fastValue, k string) (fastValue, bool) {
+	if c.kind == fkMap {
+		x, ok := c.ref.(map[string]any)[k]
+		return valueIf(nativeValue(x), ok)
+	}
+	h, ok := c.ref.(map[string]string)[k]
+	return valueIf(fastValue{kind: fkString, s: h}, ok)
+}
+
+// mapEntryBytes is mapEntry for a key in the body, which the lookup does not copy.
+func mapEntryBytes(c fastValue, k []byte) (fastValue, bool) {
+	if c.kind == fkMap {
+		x, ok := c.ref.(map[string]any)[string(k)]
+		return valueIf(nativeValue(x), ok)
+	}
+	h, ok := c.ref.(map[string]string)[string(k)]
+	return valueIf(fastValue{kind: fkString, s: h}, ok)
 }
 
 func valueIf(v fastValue, ok bool) (fastValue, bool) {
 	if !ok {
-		return deferred, false
+		return fastDeferred, false
 	}
 	return v, true
 }
@@ -267,7 +278,7 @@ func (n requestNode) eval(pr *predicateRequest, _ []fastValue) fastValue {
 			return jsonValue(pr.doc, pr.doc.root, int(pr.doc.ends[0]), 0)
 		}
 	}
-	return deferred
+	return fastDeferred
 }
 
 type selectNode struct {
@@ -279,13 +290,13 @@ type selectNode struct {
 func (n selectNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	c := n.operand.eval(pr, locals)
 	if !isMap(c.kind) {
-		return deferred
+		return fastDeferred
 	}
-	v, ok := lookup(pr, c, n.field)
+	v, ok := fastLookup(pr, c, n.field)
 	if n.test {
 		return boolValue(ok)
 	}
-	return v // a missing key is a cel-go error: deferred
+	return v // a missing key is a cel-go error: fastDeferred
 }
 
 type indexNode struct{ container, key fastNode }
@@ -300,7 +311,7 @@ func (n indexNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	case c.kind == fkList && k.kind == fkInt:
 		list := c.ref.([]any)
 		if k.n < 0 || k.n >= int64(len(list)) {
-			return deferred
+			return fastDeferred
 		}
 		return nativeValue(list[k.n])
 	case c.kind == fkJSONArr && k.kind == fkInt:
@@ -308,14 +319,14 @@ func (n indexNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		for i := int64(0); ; i++ {
 			_, val, more := it.next()
 			if !more || k.n < 0 {
-				return deferred
+				return fastDeferred
 			}
 			if i == k.n {
 				return jsonValue(pr.doc, val, it.valEnd, it.valCI)
 			}
 		}
 	}
-	return deferred
+	return fastDeferred
 }
 
 type andNode struct{ left, right fastNode }
@@ -323,7 +334,7 @@ type andNode struct{ left, right fastNode }
 func (n andNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	l := n.left.eval(pr, locals)
 	if l.kind != fkBool {
-		return deferred
+		return fastDeferred
 	}
 	if l.n == 0 {
 		return l
@@ -331,7 +342,7 @@ func (n andNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	if r := n.right.eval(pr, locals); r.kind == fkBool {
 		return r
 	}
-	return deferred
+	return fastDeferred
 }
 
 type orNode struct{ left, right fastNode }
@@ -339,7 +350,7 @@ type orNode struct{ left, right fastNode }
 func (n orNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	l := n.left.eval(pr, locals)
 	if l.kind != fkBool {
-		return deferred
+		return fastDeferred
 	}
 	if l.n == 1 {
 		return l
@@ -347,7 +358,7 @@ func (n orNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	if r := n.right.eval(pr, locals); r.kind == fkBool {
 		return r
 	}
-	return deferred
+	return fastDeferred
 }
 
 type notNode struct{ operand fastNode }
@@ -356,7 +367,7 @@ func (n notNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	if v := n.operand.eval(pr, locals); v.kind == fkBool {
 		return boolValue(v.n == 0)
 	}
-	return deferred
+	return fastDeferred
 }
 
 type condNode struct{ cond, then, otherwise fastNode }
@@ -365,7 +376,7 @@ func (n condNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	c := n.cond.eval(pr, locals)
 	switch {
 	case c.kind != fkBool:
-		return deferred
+		return fastDeferred
 	case c.n == 1:
 		return n.then.eval(pr, locals)
 	default:
@@ -379,7 +390,7 @@ type equalNode struct {
 }
 
 func (n equalNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
-	v := equal(pr, n.left.eval(pr, locals), n.right.eval(pr, locals))
+	v := fastEqual(pr, n.left.eval(pr, locals), n.right.eval(pr, locals))
 	if n.negate && v.kind == fkBool {
 		return boolValue(v.n == 0)
 	}
@@ -401,11 +412,11 @@ func (n compareNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		x, ok1 := stringOf(pr, a)
 		y, ok2 := stringOf(pr, b)
 		if !ok1 || !ok2 {
-			return deferred
+			return fastDeferred
 		}
 		c = cmpString(x, y)
 	default:
-		return deferred
+		return fastDeferred
 	}
 	switch n.op {
 	case "_<_":
@@ -446,12 +457,12 @@ func (n inNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	x := n.needle.eval(pr, locals)
 	c := n.container.eval(pr, locals)
 	if x.kind == fkDefer {
-		return deferred
+		return fastDeferred
 	}
 	switch c.kind {
 	case fkList:
 		for _, el := range c.ref.([]any) {
-			if eq := equal(pr, x, nativeValue(el)); eq.kind != fkBool || eq.n == 1 {
+			if eq := fastEqual(pr, x, nativeValue(el)); eq.kind != fkBool || eq.n == 1 {
 				return eq
 			}
 		}
@@ -459,19 +470,19 @@ func (n inNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	case fkJSONArr:
 		it := pr.doc.iterAt(c.start(), int(c.ci))
 		for _, val, more := it.next(); more; _, val, more = it.next() {
-			if eq := equal(pr, x, jsonValue(pr.doc, val, it.valEnd, it.valCI)); eq.kind != fkBool || eq.n == 1 {
+			if eq := fastEqual(pr, x, jsonValue(pr.doc, val, it.valEnd, it.valCI)); eq.kind != fkBool || eq.n == 1 {
 				return eq
 			}
 		}
 		return boolValue(false)
 	case fkMap, fkHeaders, fkJSONObj:
 		if !isString(x.kind) {
-			return deferred
+			return fastDeferred
 		}
 		_, found := lookupKey(pr, c, x)
 		return boolValue(found)
 	}
-	return deferred
+	return fastDeferred
 }
 
 // setInNode is x in a constant list of strings, answered from a set.
@@ -492,7 +503,7 @@ func (n setInNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		if bytes.IndexByte(raw, '\\') >= 0 {
 			s, ok := decodeString(raw)
 			if !ok {
-				return deferred
+				return fastDeferred
 			}
 			_, found = n.set[s]
 		} else {
@@ -633,11 +644,11 @@ func (c *fastCompiler) call(call celast.CallExpr) (fastNode, bool) {
 	case len(nodes) == 3 && fn == "_?_:_":
 		return condNode{nodes[0], nodes[1], nodes[2]}, true
 	case len(nodes) == 2 && (fn == "_==_" || fn == "_!=_" || fn == "_>_") && isSizeZero(nodes):
-		return emptyNode{nodes[0].(sizeNode).operand, fn == "_==_"}, true
+		return emptyNode{operand: nodes[0].(sizeNode).operand, empty: fn == "_==_"}, true
 	case len(nodes) == 2 && (fn == "_==_" || fn == "_!=_"):
-		return equalNode{nodes[0], nodes[1], fn == "_!=_"}, true
+		return equalNode{left: nodes[0], right: nodes[1], negate: fn == "_!=_"}, true
 	case len(nodes) == 2 && (fn == "_<_" || fn == "_<=_" || fn == "_>_" || fn == "_>=_"):
-		return compareNode{nodes[0], nodes[1], fn}, true
+		return compareNode{left: nodes[0], right: nodes[1], op: fn}, true
 	case len(nodes) == 2 && fn == "@in":
 		general := inNode{nodes[0], nodes[1]}
 		if set, ok := stringSet(nodes[1]); ok {
@@ -717,7 +728,7 @@ func (n sizeNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	case fkString, fkJSONStr:
 		s, ok := stringOf(pr, v)
 		if !ok {
-			return deferred
+			return fastDeferred
 		}
 		return fastValue{kind: fkInt, n: int64(utf8.RuneCountInString(s))} // code points
 	case fkJSONArr:
@@ -730,7 +741,7 @@ func (n sizeNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 	case fkJSONObj:
 		return distinctKeys(pr.doc, v)
 	}
-	return deferred
+	return fastDeferred
 }
 
 // isSizeZero reports whether the operands are size(x) and the literal 0.
@@ -766,7 +777,7 @@ func (n emptyNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		_, _, more := it.next()
 		none = !more
 	default:
-		return deferred
+		return fastDeferred
 	}
 	return boolValue(none == n.empty)
 }
@@ -789,7 +800,7 @@ func distinctKeys(d *jsonDoc, obj fastValue) fastValue {
 		for _, k := range keys {
 			s, ok := decodeString(k)
 			if !ok {
-				return deferred
+				return fastDeferred
 			}
 			seen[s] = struct{}{}
 		}
@@ -818,7 +829,7 @@ func (n allNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 		locals[n.slot] = v
 		r := n.pred.eval(pr, locals)
 		if r.kind != fkBool {
-			return deferred, false
+			return fastDeferred, false
 		}
 		return r, r.n == 1
 	}
@@ -854,7 +865,7 @@ func (n allNode) eval(pr *predicateRequest, locals []fastValue) fastValue {
 			}
 		}
 	default:
-		return deferred
+		return fastDeferred
 	}
 	return boolValue(true)
 }

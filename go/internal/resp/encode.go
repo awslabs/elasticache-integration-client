@@ -15,21 +15,12 @@ var ErrInvalidValue = errors.New("resp: value cannot be encoded")
 
 // AppendCommand appends args as a RESP array of bulk strings, growing dst once. A nil
 // argument is an empty bulk string.
-func AppendCommand(dst []byte, args ...[]byte) []byte {
-	n := headerLen(len(args))
-	for _, a := range args {
-		n += bulkLen(len(a))
-	}
-	dst = slices.Grow(dst, n)
-	dst = AppendArrayHeader(dst, len(args))
-	for _, a := range args {
-		dst = AppendBulk(dst, a)
-	}
-	return dst
-}
+func AppendCommand(dst []byte, args ...[]byte) []byte { return appendCommand(dst, args) }
 
 // AppendCommandStrings is AppendCommand for string arguments.
-func AppendCommandStrings(dst []byte, args ...string) []byte {
+func AppendCommandStrings(dst []byte, args ...string) []byte { return appendCommand(dst, args) }
+
+func appendCommand[T ~string | ~[]byte](dst []byte, args []T) []byte {
 	n := headerLen(len(args))
 	for _, a := range args {
 		n += bulkLen(len(a))
@@ -37,7 +28,7 @@ func AppendCommandStrings(dst []byte, args ...string) []byte {
 	dst = slices.Grow(dst, n)
 	dst = AppendArrayHeader(dst, len(args))
 	for _, a := range args {
-		dst = AppendBulkString(dst, a)
+		dst = appendBulk(dst, a)
 	}
 	return dst
 }
@@ -56,16 +47,14 @@ func CommandLen(argLens ...int) int {
 func AppendArrayHeader(dst []byte, n int) []byte { return appendHeader(dst, '*', int64(n)) }
 
 // AppendBulk appends b as a bulk string.
-func AppendBulk(dst []byte, b []byte) []byte {
-	dst = appendHeader(dst, '$', int64(len(b)))
-	dst = append(dst, b...)
-	return append(dst, '\r', '\n')
-}
+func AppendBulk(dst []byte, b []byte) []byte { return appendBulk(dst, b) }
 
 // AppendBulkString appends s as a bulk string.
-func AppendBulkString(dst []byte, s string) []byte {
-	dst = appendHeader(dst, '$', int64(len(s)))
-	dst = append(dst, s...)
+func AppendBulkString(dst []byte, s string) []byte { return appendBulk(dst, s) }
+
+func appendBulk[T ~string | ~[]byte](dst []byte, b T) []byte {
+	dst = appendHeader(dst, '$', int64(len(b)))
+	dst = append(dst, b...)
 	return append(dst, '\r', '\n')
 }
 
@@ -97,12 +86,10 @@ func AppendValue(dst []byte, v Value) ([]byte, error) {
 	return out, nil
 }
 
-var crlf = []byte("\r\n")
-
 func appendValue(dst []byte, v Value, depth int) ([]byte, error) {
 	switch v.Kind {
 	case KindSimpleString, KindError:
-		if bytes.Contains(v.Bytes, crlf) {
+		if bytes.Contains(v.Bytes, []byte("\r\n")) {
 			return nil, invalid("line contains CRLF")
 		}
 		typ := byte('+')
