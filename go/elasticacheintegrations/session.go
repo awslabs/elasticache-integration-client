@@ -111,7 +111,8 @@ func (s *session) open(ctx context.Context) error {
 		if actx.Err() != nil || s.closed() {
 			return s.openStopped(ctx)
 		}
-		if errors.As(err, new(*OverridesRejectedError)) || errors.As(err, new(*ConfigUnevaluableError)) {
+		if errors.As(err, new(*OverridesRejectedError)) || errors.As(err, new(*ConfigUnevaluableError)) ||
+			errors.As(err, new(*ConfigError)) {
 			return err // a retry sends the same overrides and gets the same answer
 		}
 		last = err
@@ -130,7 +131,7 @@ func (s *session) open(ctx context.Context) error {
 	}
 	if errors.As(last, new(*ConnectionError)) {
 		ms := strconv.FormatInt(s.cfg.connectionTimeout.Milliseconds(), 10)
-		return &ConnectionError{Msg: "opening a connection timed out after " + ms + "ms", Err: last}
+		return &ConnectionError{Msg: "no connection within " + ms + "ms", Err: last}
 	}
 	return last
 }

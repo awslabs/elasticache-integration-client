@@ -72,7 +72,7 @@ func failure(err error, closed bool) requestOutcome {
 // unavailable is a *CacheUnavailableError. cause must never be a *RejectedError, or
 // errors.As would read a retryable error as terminal.
 func unavailable(reason string, cause error) error {
-	return &CacheUnavailableError{Reason: reason, Err: cause}
+	return &CacheUnavailableError{Msg: reason, Err: cause}
 }
 
 // replyOutcome maps the reply, or the error, of a request sent on a live connection. healthy
@@ -112,7 +112,7 @@ func replyOutcome(reply requestReply, err error, strict, closed, healthy bool) (
 		if healthy && !closed {
 			return failed(reply.server.err(), true), "" // *OriginError
 		}
-		return failed(&RejectedError{Code: reply.server.code, Message: reply.server.message}, false), ""
+		return failed(&RejectedError{Code: reply.server.code, ServerMessage: reply.server.message}, false), ""
 	default:
 		return failed(reply.server.err(), false), "" // *RejectedError
 	}

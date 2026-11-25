@@ -71,9 +71,8 @@ func compilePredicates(raw map[string]any) (*predicates, error) {
 	}
 	var head, tail []*predicate
 	for i, entry := range list {
-		pred, err := compilePredicate(entry)
+		pred, err := compilePredicate(i, entry)
 		if err != nil {
-			err.Msg = fmt.Sprintf("predicate %d %s", i, err.Msg)
 			return nil, err
 		}
 		if pred.readsBody {
@@ -85,25 +84,30 @@ func compilePredicates(raw map[string]any) (*predicates, error) {
 	return &predicates{list: append(head, tail...)}, nil
 }
 
-func compilePredicate(entry any) (*predicate, *ConfigUnevaluableError) {
+// compilePredicate compiles entry i of the predicates list. Every error is a
+// *ConfigUnevaluableError naming the entry.
+func compilePredicate(i int, entry any) (*predicate, error) {
+	unusable := func(msg string, err error) error {
+		return &ConfigUnevaluableError{Msg: fmt.Sprintf("predicate %d %s", i, msg), Err: err}
+	}
 	obj, ok := entry.(map[string]any)
 	if !ok {
-		return nil, &ConfigUnevaluableError{Msg: "is " + jsonKind(entry) + ", not an object"}
+		return nil, unusable("is "+jsonKind(entry)+", not an object", nil)
 	}
 	expr, ok := obj["expr"].(string)
 	if !ok {
-		return nil, &ConfigUnevaluableError{Msg: "has no string expr"}
+		return nil, unusable("has no string expr", nil)
 	}
 	vars := map[string]any{}
 	if rawVars, present := obj["vars"]; present {
 		m, ok := rawVars.(map[string]any)
 		if !ok {
-			return nil, &ConfigUnevaluableError{Msg: "has vars that is " + jsonKind(rawVars) + ", not an object"}
+			return nil, unusable("has vars that is "+jsonKind(rawVars)+", not an object", nil)
 		}
 		for name, v := range m {
 			cv, err := celValue(v, 1)
 			if err != nil {
-				return nil, &ConfigUnevaluableError{Msg: "has an unusable vars value", Err: err}
+				return nil, unusable("has an unusable vars value", err)
 			}
 			vars[name] = cv
 		}
@@ -120,21 +124,21 @@ func compilePredicate(entry any) (*predicate, *ConfigUnevaluableError) {
 	}
 	env, err := cel.NewEnv(opts...)
 	if err != nil {
-		return nil, &ConfigUnevaluableError{Msg: "has vars that cannot be declared", Err: err}
+		return nil, unusable("has vars that cannot be declared", err)
 	}
 	checked, issues := env.Compile(expr)
 	if issues != nil && issues.Err() != nil {
-		return nil, &ConfigUnevaluableError{Msg: "does not compile", Err: issues.Err()}
+		return nil, unusable("does not compile", issues.Err())
 	}
 	program, err := env.Program(checked)
 	if err != nil {
-		return nil, &ConfigUnevaluableError{Msg: "cannot be planned", Err: err}
+		return nil, unusable("cannot be planned", err)
 	}
 
 	pred := &predicate{program: program}
 	if len(vars) > 0 {
 		if pred.vars, err = interpreter.NewActivation(vars); err != nil {
-			return nil, &ConfigUnevaluableError{Msg: "has vars that cannot be bound", Err: err}
+			return nil, unusable("has vars that cannot be bound", err)
 		}
 	}
 	_, bodyShadowed := vars["body"]

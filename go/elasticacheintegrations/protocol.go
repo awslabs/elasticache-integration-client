@@ -393,7 +393,8 @@ func appendJSONValue(dst []byte, v any) ([]byte, error) {
 	case jsonObject:
 		return appendJSONObject(dst, v)
 	default:
-		return nil, &ProtocolError{Msg: fmt.Sprintf("cannot write a %T override as JSON", v)}
+		// Unreachable: copyOverrides produces only the kinds above.
+		return nil, &ConfigError{Option: "CachePolicyOverrides", Msg: fmt.Sprintf("holds a %T, which cannot be written as JSON", v)}
 	}
 }
 
@@ -504,6 +505,11 @@ type serverError struct {
 	message string
 }
 
+// newServerError splits the error reply v, each part capped by serverText.
+func newServerError(v resp.Value) serverError {
+	return serverError{code: serverText(v.ErrorCode(), maxServerCode), message: serverText(v.ErrorMessage(), maxServerMessage)}
+}
+
 func (e serverError) kind() serverErrorKind {
 	switch e.code {
 	case "ORIGIN_ERROR", "INTERNAL_ERROR":
@@ -520,9 +526,9 @@ func (e serverError) kind() serverErrorKind {
 // err is the error a request ends with when the session returns the reply as is.
 func (e serverError) err() error {
 	if e.kind() == serverOrigin {
-		return &OriginError{Code: e.code, Message: e.message}
+		return &OriginError{Code: e.code, ServerMessage: e.message}
 	}
-	return &RejectedError{Code: e.code, Message: e.message}
+	return &RejectedError{Code: e.code, ServerMessage: e.message}
 }
 
 // requestReply is a parsed aws.request reply: a served response or a server error.
@@ -538,7 +544,7 @@ type requestReply struct {
 func parseRequestReply(v resp.Value) (requestReply, error) {
 	switch v.Kind {
 	case resp.KindError:
-		return requestReply{failed: true, server: serverError{code: v.ErrorCode(), message: v.ErrorMessage()}}, nil
+		return requestReply{failed: true, server: newServerError(v)}, nil
 	case resp.KindArray:
 	default:
 		return requestReply{}, &ProtocolError{Msg: "aws.request reply is " + v.String() + ", not an array"}
@@ -695,10 +701,11 @@ func parseResponsePush(v resp.Value) (string, resp.Value, error) {
 func parseConfigReply(v resp.Value, refresh bool) (*resolvedConfig, error) {
 	switch v.Kind {
 	case resp.KindError:
-		if code := v.ErrorCode(); code != configInvalidCode {
-			return nil, &RejectedError{Code: code, Message: v.ErrorMessage()}
+		e := newServerError(v)
+		if e.code != configInvalidCode {
+			return nil, &RejectedError{Code: e.code, ServerMessage: e.message}
 		}
-		return nil, &OverridesRejectedError{Message: v.ErrorMessage()}
+		return nil, &OverridesRejectedError{ServerMessage: e.message}
 	case resp.KindNull:
 		if refresh {
 			return nil, nil

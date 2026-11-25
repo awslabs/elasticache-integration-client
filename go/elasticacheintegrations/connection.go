@@ -138,7 +138,7 @@ func (c *connection) handshake(ctx context.Context, auth authProvider) (*resolve
 	}
 	frame, err := appendConfig(nil, c.cfg.cachePolicyOverrides)
 	if err != nil {
-		return nil, &ConnectionError{Msg: "aws.config cannot be written", Err: err}
+		return nil, err // a *ConfigError: no attempt can send these overrides
 	}
 	if v, err = c.exchange(ctx, frame, "aws.config"); err != nil {
 		return nil, err
@@ -281,7 +281,7 @@ func (c *connection) err() error {
 // fails every entry with its cause in one critical section.
 func (c *connection) checkDeadlines() {
 	first := false
-	fatal := c.pending.expire(time.Now(), c.timeoutError, errEarlierTimedOut, func(lost error) error {
+	fatal := c.pending.expire(time.Now(), c.timeoutError, newEarlierTimedOutError, func(lost error) error {
 		first = c.markDead(lost)
 		return c.cause
 	})
@@ -291,7 +291,7 @@ func (c *connection) checkDeadlines() {
 	}
 }
 
-func errEarlierTimedOut() error {
+func newEarlierTimedOutError() error {
 	return &ConnectionLostError{Msg: "an earlier request on the connection timed out"}
 }
 
@@ -376,7 +376,7 @@ func (c *connection) start(ctx context.Context, frame []byte, deferrable bool) (
 	return e, err
 }
 
-func errNoTurn() error {
+func newNoTurnError() error {
 	return &RequestNotSentError{Msg: "the request was not sent within its budget for sending"}
 }
 
@@ -391,11 +391,11 @@ func (c *connection) takeTurn(ctx context.Context, a *admission) error {
 	case c.turn <- struct{}{}:
 		return nil
 	case <-a.expired():
-		return errNoTurn()
+		return newNoTurnError()
 	case <-ctx.Done():
 		return ctx.Err()
 	case <-c.dead:
-		return errConnectionClosed()
+		return newConnectionClosedError()
 	}
 }
 
@@ -408,7 +408,7 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 	}
 	if !time.Now().Before(sendBy) {
 		c.pending.slots.release()
-		return nil, errNoTurn()
+		return nil, newNoTurnError()
 	}
 	e, err := c.pending.register(deferrable)
 	if err != nil {

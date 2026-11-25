@@ -46,7 +46,7 @@ func TestPendingTimerRearms(t *testing.T) {
 		var p *pendingRequests
 		fatal := make(chan *pendingEntry, 1)
 		p = newPendingRequests(5, func() {
-			if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut, nil); e != nil {
+			if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, newEarlierTimedOutError, nil); e != nil {
 				fatal <- e
 			}
 		})
@@ -83,7 +83,7 @@ func TestPendingTimerLoweredAfterRearmAndStoppedByFailAll(t *testing.T) {
 		start := time.Now()
 		p = newPendingRequests(5, func() {
 			fired = append(fired, time.Since(start))
-			p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut, nil)
+			p.expire(time.Now(), func() error { return &TimeoutError{} }, newEarlierTimedOutError, nil)
 		})
 		a := track(t, p, true, start.Add(time.Second))
 		p.deferHead("1")
@@ -115,7 +115,7 @@ func TestPendingEntryBeingWrittenHasNoDeadline(t *testing.T) {
 			var p *pendingRequests
 			fatal := make(chan *pendingEntry, 1)
 			p = newPendingRequests(5, func() {
-				if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut, nil); e != nil {
+				if e := p.expire(time.Now(), func() error { return &TimeoutError{} }, newEarlierTimedOutError, nil); e != nil {
 					fatal <- e
 				}
 			})
@@ -193,7 +193,7 @@ func TestPendingStopTimerWaitsForEveryScheduledCallback(t *testing.T) {
 				close(held)
 				<-release
 			}
-			p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut, nil)
+			p.expire(time.Now(), func() error { return &TimeoutError{} }, newEarlierTimedOutError, nil)
 		})
 		start := time.Now()
 		track(t, p, true, start.Add(time.Hour))

@@ -4,7 +4,7 @@
 // Package elasticacheintegrations serves Amazon DynamoDB calls made with the AWS SDK for
 // Go v2 from an ElastiCache Serverless cache.
 //
-// NewFromConfig builds a [github.com/aws/aws-sdk-go-v2/service/dynamodb.Client] whose HTTP
+// [NewFromConfig] builds a [github.com/aws/aws-sdk-go-v2/service/dynamodb.Client] whose HTTP
 // client sends the calls the cache's routing rules select to the cache and every other call
 // to DynamoDB. Call sites, paginators and waiters stay unchanged:
 //
@@ -19,5 +19,7 @@
 //
 // Every error the package creates matches [ErrIntegrations] with [errors.Is]; a done ctx is
 // returned as ctx.Err(). Use [errors.As] to reach a specific type such as [*ConfigError] or
-// [*CacheUnavailableError].
+// [*CacheUnavailableError]. Their fields follow one rule: Msg is text the client wrote; Code
+// and ServerMessage are text the cache sent, at most 64 and 256 bytes, not checked by the
+// client; Err is the cause.
 package elasticacheintegrations

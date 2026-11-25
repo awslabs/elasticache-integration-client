@@ -142,7 +142,7 @@ func TestDialCacheTimesOut(t *testing.T) {
 	_, err := dialCache(ctx, mockConfig(t, s, addr))
 	var ce *ConnectionError
 	var te *TimeoutError
-	if !errors.As(err, &ce) || !errors.As(err, &te) || !strings.Contains(ce.Msg, "TLS handshake") || !strings.Contains(ce.Msg, "timed out") {
+	if !errors.As(err, &ce) || !errors.As(err, &te) || !strings.Contains(ce.Msg, "TLS handshake") || !strings.Contains(err.Error(), "timed out") {
 		t.Fatalf("held handshake: %v", err)
 	}
 	if time.Since(start) > 2*time.Second {

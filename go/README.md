@@ -225,7 +225,7 @@ Each connection is opened, authenticated and re-authenticated, refreshes its cac
 | `item_write_behavior` | How a write updates the cached item. |
 | `table_overrides` | The settings above for one table, keyed by table name. |
 
-If the cache rejects the overrides, `NewFromConfig` returns an `*OverridesRejectedError` with the cache's message.
+If the cache rejects the overrides, `NewFromConfig` returns an `*OverridesRejectedError` with the cache's message in `ServerMessage`.
 
 ### Example
 
@@ -349,11 +349,11 @@ Your application handles these failures as it does without the cache: once the S
 _, err := ddb.GetItem(ctx, input)
 var unavailable *elasticacheintegrations.CacheUnavailableError
 if errors.As(err, &unavailable) {
-	log.Print("the cache is unavailable: ", unavailable.Reason)
+	log.Print("the cache is unavailable: ", unavailable.Msg)
 }
 ```
 
-Every error the client creates matches `elasticacheintegrations.ErrIntegrations` with `errors.Is`. "At startup" means from `NewFromConfig` or `New`.
+Every error the client creates matches `elasticacheintegrations.ErrIntegrations` with `errors.Is`. "At startup" means from `NewFromConfig` or `New`. In every error type, `Msg` is text the client wrote, `Code` and `ServerMessage` are text the cache sent (at most 64 and 256 bytes, not checked by the client), and `Err` is the cause.
 
 | Error | When | Retryable |
 |---|---|---|
@@ -365,10 +365,11 @@ Every error the client creates matches `elasticacheintegrations.ErrIntegrations`
 | `*TimeoutError` | The cache did not answer within `CacheRequestTimeout`. `Timeout()` is true. | yes; failed by `Close`: no |
 | `*ConnectionLostError` | The connection closed while the request was in flight. The cache answering `MOVED` or `NOAUTH`, a reply stream the client cannot decode, and a reply over 16 MiB also close the connection; the last two wrap a `*ProtocolError`. `Close` fails its requests in flight with it too. | yes; failed by `Close`: no |
 | `*OriginError` | The cache could not complete its call to DynamoDB (`ORIGIN_ERROR`, `INTERNAL_ERROR`) and the connection is up. If the connection was down by the time the reply was handled, or `Close` was running, the call fails with a `*RejectedError` with that code instead. | yes |
-| `*CacheUnavailableError` | No connection and the fallback window is spent, or strict mode. `Reason` says which. In strict mode it may wrap a `*RequestNotSentError`: the connection had no room for the request in time. | yes |
+| `*CacheUnavailableError` | No connection and the fallback window is spent, or strict mode. `Msg` says which. In strict mode it may wrap a `*RequestNotSentError`: the connection had no room for the request in time. | yes |
 | `*RejectedError` | The cache refused the request (`PARSE_ERROR`, `UNSUPPORTED`, `UNIMPLEMENTED`, `REGION_MISMATCH` or an unknown code), or answered `ORIGIN_ERROR` or `INTERNAL_ERROR` on a connection that was down by then or while `Close` ran. `Code` holds the code. It never goes to DynamoDB. | no |
 | `*RequestNotSentError` | The connection had no room for the request in time while `Close` ran. Nothing reached the cache. Outside `Close` such a request goes to DynamoDB, or in strict mode fails with a `*CacheUnavailableError`. | no |
 | `*ProtocolError` | The cache sent a reply of the wrong shape, such as a header block over 64 KiB or 1024 lines. The connection stays open. | no |
+| Request body error | The SDK's request body could not be read. The error matches `ErrIntegrations` and wraps the read error; it has no type of its own. Nothing was sent. | no |
 
 A `*ProtocolError` can also sit inside a retryable `*ConnectionLostError`, when the stream cannot be decoded at all. Check for `*ConnectionLostError` first when the difference matters.
 

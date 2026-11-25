@@ -134,7 +134,7 @@ func TestOpenRetriesUntilConnectionTimeout(t *testing.T) {
 		start := time.Now()
 		_, err := openSession(context.Background(), c, &sessionAuth{})
 		var ce *ConnectionError
-		if !errors.As(err, &ce) || !strings.Contains(ce.Msg, "timed out after 5000ms") || ce.Err == nil {
+		if !errors.As(err, &ce) || ce.Msg != "no connection within 5000ms" || ce.Err == nil {
 			t.Fatalf("err %v", err)
 		}
 		if !strings.Contains(err.Error(), "HELLO 3 rejected: ERR") {
@@ -207,6 +207,23 @@ func TestOpenStopsAtOnceOnUnevaluableConfig(t *testing.T) {
 		}
 		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 1 || recs[0].Level != slog.LevelError {
 			t.Fatalf("1307 records: %v", recs)
+		}
+	})
+}
+
+func TestOpenStopsAtOnceOnUnwritableOverrides(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		m, c, _ := sessionMock(t, mockcache.Config{})
+		c.cachePolicyOverrides = map[string]any{"a": struct{}{}} // copyOverrides never makes this
+		start := time.Now()
+		_, err := openSession(context.Background(), c, &sessionAuth{})
+		var ce *ConfigError
+		if !errors.As(err, &ce) || ce.Option != "CachePolicyOverrides" || errors.As(err, new(*ConnectionError)) {
+			t.Fatalf("err = %v, want a bare *ConfigError for CachePolicyOverrides", err)
+		}
+		if time.Since(start) != 0 || commandCount(m, "HELLO") != 1 || len(m.Overrides()) != 0 {
+			t.Fatalf("after %v: %d HELLO, %d aws.config; want one attempt that sends no aws.config",
+				time.Since(start), commandCount(m, "HELLO"), len(m.Overrides()))
 		}
 	})
 }

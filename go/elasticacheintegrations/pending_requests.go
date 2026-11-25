@@ -12,9 +12,9 @@ import (
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
 )
 
-func errConnectionClosed() error { return &ConnectionLostError{Msg: "the connection is closed"} }
+func newConnectionClosedError() error { return &ConnectionLostError{Msg: "the connection is closed"} }
 
-func errNoSlot() error {
+func newNoSlotError() error {
 	return &RequestNotSentError{Msg: "no pending slot was free within the request budget"}
 }
 
@@ -60,7 +60,7 @@ func (l *slotLimiter) acquire(ctx context.Context, a *admission) error {
 	l.mu.Lock()
 	if l.closed {
 		l.mu.Unlock()
-		return errConnectionClosed()
+		return newConnectionClosedError()
 	}
 	if l.free > 0 && l.waiters.Len() == 0 {
 		l.free--
@@ -75,7 +75,7 @@ func (l *slotLimiter) acquire(ctx context.Context, a *admission) error {
 	select {
 	case <-w.ready:
 	case <-a.expired():
-		err = errNoSlot()
+		err = newNoSlotError()
 	case <-ctx.Done():
 		err = ctx.Err()
 	}
@@ -87,7 +87,7 @@ func (l *slotLimiter) acquire(ctx context.Context, a *admission) error {
 	case w.granted:
 		l.releaseLocked()
 	case l.closed:
-		return errConnectionClosed()
+		return newConnectionClosedError()
 	default:
 		l.waiters.Remove(el)
 	}
@@ -182,7 +182,7 @@ func (p *pendingRequests) register(deferrable bool) (*pendingEntry, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
-		return nil, errConnectionClosed()
+		return nil, newConnectionClosedError()
 	}
 	e := &pendingEntry{done: make(chan struct{}), deferrable: deferrable}
 	p.fifo = append(p.fifo, e)

@@ -6,6 +6,7 @@ package elasticacheintegrations
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"slices"
@@ -30,16 +31,11 @@ type identity struct {
 	region string
 }
 
-// requestBodyError reports that the body of an SDK request could not be read.
-type requestBodyError struct {
-	Err error
+// bodyError is the error of an SDK request body that cannot be read. It matches
+// ErrIntegrations and wraps err.
+func bodyError(err error) error {
+	return fmt.Errorf("%w: cannot read the request body: %w", ErrIntegrations, err)
 }
-
-func (e *requestBodyError) Error() string {
-	return format("cannot read the request body", "", e.Err)
-}
-func (e *requestBodyError) Unwrap() error        { return e.Err }
-func (e *requestBodyError) Is(target error) bool { return target == ErrIntegrations }
 
 // adaptRequest builds the cache request for a signed SDK request. routable is false, with req
 // untouched, when the request must go to DynamoDB as it is. Once the body has been read, a
@@ -132,7 +128,7 @@ func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 		return nil, nil, nil
 	}
 	if body == nil {
-		return nil, nil, &requestBodyError{Err: io.ErrUnexpectedEOF}
+		return nil, nil, bodyError(io.ErrUnexpectedEOF)
 	}
 	before, after := int64(0), int64(1) // the extra byte detects a body longer than n
 	if n >= directBodyMin {
@@ -144,7 +140,7 @@ func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 		if err == io.EOF {
 			err = io.ErrUnexpectedEOF // n bytes were promised
 		}
-		return nil, nil, &requestBodyError{Err: err}
+		return nil, nil, bodyError(err)
 	}
 	switch _, err := io.ReadFull(body, buf[before+n:before+n+1]); err {
 	case io.EOF:
@@ -153,9 +149,9 @@ func readBody(body io.Reader, n int64) (b, room []byte, err error) {
 		}
 		return b, room, nil
 	case nil:
-		return nil, nil, &requestBodyError{Err: errBodyTooLong}
+		return nil, nil, bodyError(errBodyTooLong)
 	default:
-		return nil, nil, &requestBodyError{Err: err}
+		return nil, nil, bodyError(err)
 	}
 }
 

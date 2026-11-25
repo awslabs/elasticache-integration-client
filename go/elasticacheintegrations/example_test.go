@@ -121,6 +121,6 @@ func ExampleOptions_strict() {
 	})
 	var unavailable *elasticacheintegrations.CacheUnavailableError
 	if errors.As(err, &unavailable) {
-		log.Print("the cache is unavailable: ", unavailable.Reason)
+		log.Print("the cache is unavailable: ", unavailable.Msg)
 	}
 }

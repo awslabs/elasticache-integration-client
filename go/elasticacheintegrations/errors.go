@@ -3,16 +3,21 @@
 
 package elasticacheintegrations
 
-import "errors"
+import (
+	"errors"
+	"strings"
+	"unicode/utf8"
+)
 
 // ErrIntegrations matches every error this package creates, with [errors.Is]. A caller's done
 // ctx is returned as ctx.Err().
-var ErrIntegrations = errors.New("elasticache integrations")
+var ErrIntegrations = errors.New("elasticacheintegrations")
 
 const errPrefix = "elasticacheintegrations: "
 
 // ConfigError reports an option, region, credentials or CA file that cannot be used.
-// It is returned before the cache is contacted.
+// It is returned before the cache is contacted, or, for [Options.CachePolicyOverrides] the
+// client cannot write, before the first aws.config is sent; it is never retried.
 type ConfigError struct {
 	Option string // the option or input at fault, such as "Endpoint" or "Region"
 	Msg    string // what is wrong, read after Option: "is required", "must be ..."
@@ -29,9 +34,9 @@ func (e *ConfigError) Error() string {
 func (e *ConfigError) Unwrap() error        { return e.Err }
 func (e *ConfigError) Is(target error) bool { return target == ErrIntegrations }
 
-// ConnectionError reports that the first connection to the cache could not be opened in
+// ConnectionError reports that a connection to the cache could not be opened at start-up in
 // time: TCP, TLS, HELLO or the first aws.config failed in a way that is not an [AuthError],
-// [OverridesRejectedError] or [ConfigUnevaluableError].
+// [ConfigError], [OverridesRejectedError] or [ConfigUnevaluableError].
 type ConnectionError struct {
 	Msg string
 	Err error // the last failure, if any
@@ -84,12 +89,12 @@ func (e *TimeoutError) Timeout() bool { return true }
 // RejectedError reports a -CODE error reply that ends a request: to aws.request, or at
 // start-up to aws.config (other than CONFIG_INVALID), where a [ConnectionError] wraps it.
 type RejectedError struct {
-	Code    string // the bare code, without "-", such as "PARSE_ERROR" or "UNSUPPORTED"
-	Message string // the rest of the reply
+	Code          string // the bare code, without "-", such as "PARSE_ERROR" or "UNSUPPORTED"
+	ServerMessage string // the rest of the reply, from the cache, at most 256 bytes
 }
 
 func (e *RejectedError) Error() string {
-	return format("request rejected by the cache", spaced(e.Code, e.Message), nil)
+	return format("request rejected by the cache", spaced(e.Code, e.ServerMessage), nil)
 }
 func (e *RejectedError) Is(target error) bool { return target == ErrIntegrations }
 
@@ -104,14 +109,14 @@ func (e *AuthError) Error() string {
 }
 func (e *AuthError) Is(target error) bool { return target == ErrIntegrations }
 
-// OverridesRejectedError reports that the cache rejected Options.CachePolicyOverrides
+// OverridesRejectedError reports that the cache rejected [Options.CachePolicyOverrides]
 // (-CONFIG_INVALID). Retrying with the same overrides fails the same way.
 type OverridesRejectedError struct {
-	Message string
+	ServerMessage string // the cache's reason, at most 256 bytes
 }
 
 func (e *OverridesRejectedError) Error() string {
-	return format("cache policy overrides rejected", e.Message, nil)
+	return format("cache policy overrides rejected", e.ServerMessage, nil)
 }
 func (e *OverridesRejectedError) Is(target error) bool { return target == ErrIntegrations }
 
@@ -143,12 +148,12 @@ func (e *RequestNotSentError) Is(target error) bool { return target == ErrIntegr
 // connection, no room on the connection (wrapping a [RequestNotSentError]), an AUTH_ERROR
 // reply, or Close while the request waited for a reconnect. The SDK may retry it.
 type CacheUnavailableError struct {
-	Reason string
-	Err    error // what made the cache unavailable, if known
+	Msg string // why the request may not go to DynamoDB
+	Err error  // what made the cache unavailable, if known
 }
 
 func (e *CacheUnavailableError) Error() string {
-	return format("cache unavailable", e.Reason, e.Err)
+	return format("cache unavailable", e.Msg, e.Err)
 }
 func (e *CacheUnavailableError) Unwrap() error        { return e.Err }
 func (e *CacheUnavailableError) Is(target error) bool { return target == ErrIntegrations }
@@ -158,12 +163,12 @@ func (e *CacheUnavailableError) Is(target error) bool { return target == ErrInte
 // fail the same way, so the SDK may retry it. If the connection was down when the reply was
 // handled, or Close was running, the reply is returned as a terminal [RejectedError] instead.
 type OriginError struct {
-	Code    string // the bare code: "ORIGIN_ERROR" or "INTERNAL_ERROR"
-	Message string // the rest of the reply
+	Code          string // the bare code: "ORIGIN_ERROR" or "INTERNAL_ERROR"
+	ServerMessage string // the rest of the reply, from the cache, at most 256 bytes
 }
 
 func (e *OriginError) Error() string {
-	return format("could not complete the origin request", spaced(e.Code, e.Message), nil)
+	return format("could not complete the origin request", spaced(e.Code, e.ServerMessage), nil)
 }
 func (e *OriginError) Is(target error) bool { return target == ErrIntegrations }
 
@@ -179,16 +184,44 @@ func (e *sdkError) Error() string        { return e.err.Error() }
 func (e *sdkError) Unwrap() error        { return e.err }
 func (e *sdkError) RetryableError() bool { return e.retryable }
 
-// format returns "elasticacheintegrations: <what>[: <detail>][: <cause>]".
+// format returns "elasticacheintegrations: <what>[: <detail>][: <cause>]". A cause from this
+// package is written without the prefix, and without what when it starts with the same words,
+// so neither repeats. The text of any other cause is kept whole.
 func format(what, detail string, cause error) string {
 	s := errPrefix + what
 	if detail != "" {
 		s += ": " + detail
 	}
 	if cause != nil {
-		s += ": " + cause.Error()
+		c := cause.Error()
+		if rest, ok := strings.CutPrefix(c, errPrefix); ok && errors.Is(cause, ErrIntegrations) {
+			if rest == what {
+				return s
+			}
+			c, _ = strings.CutPrefix(rest, what+": ")
+		}
+		s += ": " + c
 	}
 	return s
+}
+
+// Text the cache sends is capped before it goes into an error, so a broken cache cannot make
+// errors and log records arbitrarily long.
+const (
+	maxServerCode    = 64
+	maxServerMessage = 256
+)
+
+// serverText returns s cut to at most n bytes on a UTF-8 boundary, marked with "..." when cut.
+func serverText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n - len("...")
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
 // spaced joins the non-empty parts with one space.

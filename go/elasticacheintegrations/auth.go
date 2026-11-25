@@ -234,7 +234,7 @@ func (m *tokenManager) start() {
 	go m.run()
 }
 
-func errAuthClosed() error { return &ConnectionError{Msg: "the client is closed"} }
+func newAuthClosedError() error { return &ConnectionError{Msg: "the client is closed"} }
 
 func (m *tokenManager) credentials(ctx context.Context) (authCredentials, error) {
 	tok, err := m.token(ctx)
@@ -250,7 +250,7 @@ func (m *tokenManager) token(ctx context.Context) (secret, error) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return secret{}, errAuthClosed()
+		return secret{}, newAuthClosedError()
 	}
 	now := time.Now()
 	if c := m.cached; c != nil && c.usable(now) {
@@ -269,7 +269,7 @@ func (m *tokenManager) forceRefresh(ctx context.Context) error {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return errAuthClosed()
+		return newAuthClosedError()
 	}
 	m.cached = nil
 	m.retryNotBefore = time.Time{}
@@ -284,7 +284,7 @@ func (m *tokenManager) close() {
 	if !m.closed {
 		m.closed = true
 		m.cached = nil
-		m.completeLocked(m.inflight, secret{}, errAuthClosed())
+		m.completeLocked(m.inflight, secret{}, newAuthClosedError())
 	}
 	m.mu.Unlock()
 	m.cancel()

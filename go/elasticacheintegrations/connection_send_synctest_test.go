@@ -631,7 +631,7 @@ func TestCloseAfterDeathStillReportsIt(t *testing.T) {
 		conn, _, lost := rawConnection(t)
 		logs, l := testutil.NewLogCapture()
 		conn.cfg.logger = newLogger(l)
-		cause := errEarlierTimedOut()
+		cause := newEarlierTimedOutError()
 		if !conn.markDead(cause) {
 			t.Fatal("markDead did not mark a live connection")
 		}

@@ -63,7 +63,7 @@ func TestBringUpTimesOutAtEachStep(t *testing.T) {
 				var ce *ConnectionError
 				if conn != nil || !errors.As(err, &ce) || !errors.As(err, new(*TimeoutError)) ||
 					errors.As(err, new(*ConnectionLostError)) ||
-					!strings.HasPrefix(ce.Msg, tc.step) || !strings.Contains(ce.Msg, "timed out") {
+					!strings.HasPrefix(ce.Msg, tc.step) || !strings.Contains(err.Error(), ": timed out") {
 					t.Fatalf("openConnection: %v; want a *ConnectionError wrapping a *TimeoutError for %q", err, tc.step)
 				}
 				if took := time.Since(start); took != 5*time.Second {

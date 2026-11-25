@@ -420,9 +420,9 @@ func TestAppendConfigEscapesKeysAndStrings(t *testing.T) {
 func TestAppendConfigRefusesUnknownType(t *testing.T) {
 	dst := []byte("keep")
 	got, err := appendConfig(dst, map[string]any{"a": []any{struct{}{}}})
-	var pe *ProtocolError
-	if !errors.As(err, &pe) {
-		t.Fatalf("err = %v, want *ProtocolError", err)
+	var ce *ConfigError
+	if !errors.As(err, &ce) || ce.Option != "CachePolicyOverrides" {
+		t.Fatalf("err = %v, want a *ConfigError for CachePolicyOverrides", err)
 	}
 	if string(got) != "keep" {
 		t.Errorf("dst changed on error: %q", got)
@@ -1032,11 +1032,11 @@ func TestServerErrorKinds(t *testing.T) {
 		var re *RejectedError
 		switch {
 		case c.kind == serverOrigin:
-			if !errors.As(e, &oe) || oe.Code != c.code || oe.Message != c.msg || errors.As(e, &re) {
+			if !errors.As(e, &oe) || oe.Code != c.code || oe.ServerMessage != c.msg || errors.As(e, &re) {
 				t.Errorf("%q: err() = %#v, want *OriginError only", c.wire, e)
 			}
 		default:
-			if !errors.As(e, &re) || re.Code != c.code || re.Message != c.msg || errors.As(e, &oe) {
+			if !errors.As(e, &re) || re.Code != c.code || re.ServerMessage != c.msg || errors.As(e, &oe) {
 				t.Errorf("%q: err() = %#v, want *RejectedError only", c.wire, e)
 			}
 		}
@@ -1183,12 +1183,12 @@ func TestParseConfigReplyDetails(t *testing.T) {
 	}
 	rejected, err := parseConfigReply(decodeReply(t, "-CONFIG_INVALID unknown key ttl\r\n"), true)
 	var oe *OverridesRejectedError
-	if rejected != nil || !errors.As(err, &oe) || oe.Message != "unknown key ttl" {
+	if rejected != nil || !errors.As(err, &oe) || oe.ServerMessage != "unknown key ttl" {
 		t.Errorf("got %v, %#v", rejected, err)
 	}
 	_, err = parseConfigReply(decodeReply(t, "-ERR boom now\r\n"), true)
 	var re *RejectedError
-	if !errors.As(err, &re) || re.Code != "ERR" || re.Message != "boom now" {
+	if !errors.As(err, &re) || re.Code != "ERR" || re.ServerMessage != "boom now" {
 		t.Errorf("got %#v", err)
 	}
 }

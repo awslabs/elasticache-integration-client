@@ -46,10 +46,10 @@ func tlsConfig(c *config) *tls.Config {
 }
 
 // stepFailed is the *ConnectionError for a failed bring-up step. A step that ran out of time
-// wraps a *TimeoutError.
+// wraps a *TimeoutError, which says so.
 func stepFailed(ctx context.Context, step string, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || isTimeout(err) {
-		return &ConnectionError{Msg: step + " timed out", Err: &TimeoutError{Err: err}}
+		return &ConnectionError{Msg: step, Err: &TimeoutError{Err: err}}
 	}
 	return &ConnectionError{Msg: step + " failed", Err: err}
 }

@@ -195,7 +195,7 @@ func TestOpenConnectionConfigReplies(t *testing.T) {
 	}{
 		{"CONFIG_INVALID", mockcache.Now(resp.ErrorValue("CONFIG_INVALID", "bad ttl")), func(err error) bool {
 			var o *OverridesRejectedError
-			return errors.As(err, &o) && o.Message == "bad ttl" && !errors.As(err, new(*ConnectionError))
+			return errors.As(err, &o) && o.ServerMessage == "bad ttl" && !errors.As(err, new(*ConnectionError))
 		}},
 		{"not onboarded", mockcache.Now(resp.ErrorValue("ERR", "unknown command 'aws.config'")), func(err error) bool {
 			var r *RejectedError

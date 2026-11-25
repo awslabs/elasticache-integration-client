@@ -20,7 +20,7 @@ func TestRetryable(t *testing.T) {
 		err          error
 		open, closed bool // retryable while the client is open, and once it is closed
 	}{
-		{err: &CacheUnavailableError{Reason: "x"}, open: true, closed: true},
+		{err: &CacheUnavailableError{Msg: "x"}, open: true, closed: true},
 		{err: &OriginError{Code: "ORIGIN_ERROR"}, open: true},
 		{err: &OriginError{Code: "INTERNAL_ERROR"}, open: true},
 		{err: lost, open: true},
@@ -62,7 +62,7 @@ func TestReplyOutcomeServerCodes(t *testing.T) {
 		for _, strict := range []bool{false, true} {
 			o, drop := replyOutcome(rejected(code), nil, strict, false, true)
 			var re *RejectedError
-			if o.kind != outcomeFailed || o.retryable || drop != "" || !errors.As(o.err, &re) || re.Code != code || re.Message != "msg" {
+			if o.kind != outcomeFailed || o.retryable || drop != "" || !errors.As(o.err, &re) || re.Code != code || re.ServerMessage != "msg" {
 				t.Errorf("%s strict %v: %+v, drop %q; want a terminal *RejectedError with the code and message, no drop", code, strict, o, drop)
 			}
 		}
@@ -198,7 +198,7 @@ func TestCacheUnavailableReasons(t *testing.T) {
 		java + "the client is closed":                              closedOutcome(true, true),
 	} {
 		var cu *CacheUnavailableError
-		if !errors.As(o.err, &cu) || cu.Reason != want {
+		if !errors.As(o.err, &cu) || cu.Msg != want {
 			t.Errorf("reason %+v, want %q", o.err, want)
 		}
 	}
