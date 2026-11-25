@@ -8,6 +8,7 @@ package mockcache
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -63,4 +64,40 @@ func synctestServe(t *testing.T, s *Server) {
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// DropAll waits for a write the client has not read yet: the client then reads the whole
+// frame and the end of the stream.
+func TestDropAllWaitsForAWriteInProgress(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, err := New(Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		conn, err := s.Dial(context.Background(), "tcp", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := newClient(t, conn)
+		c.wait = 2 * time.Hour
+		c.ready()
+		big := resp.AppendBulk(nil, make([]byte, 1<<20))
+		wrote := make(chan error, 1)
+		go func() { wrote <- s.WriteRaw(big) }()
+		synctest.Wait()
+		dropped := make(chan struct{})
+		go func() { s.DropAll(); close(dropped) }()
+		synctest.Wait()
+		got, err := io.ReadAll(conn)
+		if err != nil || len(got) != len(big) {
+			t.Fatalf("read %d bytes, err %v; want %d bytes and the end of the stream", len(got), err, len(big))
+		}
+		if err := <-wrote; err != nil {
+			t.Fatalf("WriteRaw() = %v, want nil", err)
+		}
+		<-dropped
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

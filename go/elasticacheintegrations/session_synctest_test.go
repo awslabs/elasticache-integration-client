@@ -199,7 +199,7 @@ func TestOpenStopsAtOnceOnOverridesRejected(t *testing.T) {
 
 func TestOpenStopsAtOnceOnUnevaluableConfig(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		m, c, logs := sessionMock(t, mockcache.Config{ConfigJSON: `{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"service ==="}]}`})
+		m, c, logs := sessionMock(t, mockcache.Config{AWSConfigReply: `{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"service ==="}]}`})
 		start := time.Now()
 		_, err := openSession(context.Background(), c, &sessionAuth{})
 		if !errors.As(err, new(*ConfigUnevaluableError)) || time.Since(start) != 0 || commandCount(m, "HELLO") != 1 {

@@ -141,7 +141,7 @@ func newHarness(t *testing.T, setup ...func(*harnessConfig)) *harness {
 		f(&hc)
 	}
 	h := &harness{t: t, dynamo: newDynamo(t)}
-	cache, err := mockcache.New(mockcache.Config{TLS: true, ConfigJSON: hc.configJSON})
+	cache, err := mockcache.New(mockcache.Config{TLS: true, AWSConfigReply: hc.configJSON})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -117,7 +117,7 @@ func sdkMock(t testing.TB) (*mockcache.Server, string) {
 // sdkMockConfig is sdkMock serving configJSON, or the ten operations when it is empty.
 func sdkMockConfig(t testing.TB, configJSON string) (*mockcache.Server, string) {
 	t.Helper()
-	s, err := mockcache.New(mockcache.Config{TLS: true, ConfigJSON: configJSON})
+	s, err := mockcache.New(mockcache.Config{TLS: true, AWSConfigReply: configJSON})
 	if err != nil {
 		t.Fatal(err)
 	}

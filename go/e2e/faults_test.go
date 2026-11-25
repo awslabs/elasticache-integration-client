@@ -321,7 +321,7 @@ func TestBlockedWriteTimesOutAndReconnects(t *testing.T) {
 	}
 	// What the relay held reaches the cache once it resumes, and the cache reads the cut
 	// connection to its end. A complete PutItem there would mean the write was not cut.
-	eventually(t, "the cache to finish the cut connection", func() bool { return h.cache.Open() == 1 })
+	eventually(t, "the cache to finish the cut connection", func() bool { return h.cache.OpenConns() == 1 })
 	for _, cmd := range h.cache.Requests() {
 		if operation(cmd) == "PutItem" {
 			t.Fatal("the whole PutItem reached the cache: the write never blocked")

@@ -153,6 +153,13 @@ func TestTLS(t *testing.T) {
 	if _, err := tls.Dial("tcp", addr, &tls.Config{ServerName: "example.com", RootCAs: s.CertPool()}); err == nil {
 		t.Fatal("a certificate for another name was accepted")
 	}
+	waitFor(t, "the server to record the refused handshake", func() bool { return len(s.TLSErrors()) == 1 })
+	if err := s.TLSErrors()[0]; !strings.Contains(err.Error(), "TLS handshake") {
+		t.Fatalf("TLSErrors()[0] = %v, want a TLS handshake error", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("Close() = %v; a refused handshake is not a server failure", err)
+	}
 	if len(s.CertPEM()) == 0 {
 		t.Fatal("no PEM")
 	}
@@ -350,7 +357,7 @@ func TestOrderAndShapeFailures(t *testing.T) {
 }
 
 func TestCommandReplies(t *testing.T) {
-	s := newServer(t, Config{ConfigJSON: `{"version":"1.0","refresh_interval":5}`})
+	s := newServer(t, Config{AWSConfigReply: `{"version":"1.0","refresh_interval":5}`})
 	c := dialTCP(t, listen(t, s))
 	if v := c.call("HELLO", "2"); v.ErrorCode() != "NOPROTO" {
 		t.Fatalf("HELLO 2: %v", v)
@@ -641,14 +648,46 @@ func TestDropAllWithStuckWrite(t *testing.T) {
 	}
 }
 
-func TestOpenCountsConnectionsBeingServed(t *testing.T) {
+// DropAll while a write is in progress lets the write finish, then ends the stream: a client
+// that reads gets the whole frame and then the end of the stream.
+func TestDropAllLetsAWriteInProgressFinish(t *testing.T) {
+	s := newServer(t, Config{})
+	c := dialTCP(t, listen(t, s))
+	c.ready()
+	big := resp.AppendBulk(nil, make([]byte, 32<<20))
+	wrote := make(chan error, 1)
+	go func() { wrote <- s.WriteRaw(big) }()
+	var sc *serverConn
+	waitFor(t, "the write to take its turn", func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for conn := range s.conns {
+			sc = conn
+		}
+		return len(sc.wturn) == 1
+	})
+	dropped := make(chan struct{})
+	go func() { s.DropAll(); close(dropped) }()
+	time.Sleep(50 * time.Millisecond) // DropAll waits for the write the client has not read
+	_ = c.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	got, err := io.Copy(io.Discard, c.conn)
+	if err != nil || got != int64(len(big)) {
+		t.Fatalf("read %d bytes, err %v; want %d bytes and the end of the stream", got, err, len(big))
+	}
+	if err := <-wrote; err != nil {
+		t.Fatalf("WriteRaw() = %v, want nil", err)
+	}
+	<-dropped
+}
+
+func TestOpenConnsCountsConnectionsBeingServed(t *testing.T) {
 	s := newServer(t, Config{})
 	addr := listen(t, s)
 	a, b := dialTCP(t, addr), dialTCP(t, addr)
 	a.ready()
 	b.ready()
-	if s.Open() != 2 {
-		t.Fatalf("Open() = %d, want 2", s.Open())
+	if s.OpenConns() != 2 {
+		t.Fatalf("OpenConns() = %d, want 2", s.OpenConns())
 	}
 	frame := resp.AppendCommandStrings(nil, "aws.request", "POST", "http://dynamodb/",
 		"content-type:application/x-amz-json-1.0", "{}", "service=dynamodb&op=GetItem")
@@ -656,11 +695,11 @@ func TestOpenCountsConnectionsBeingServed(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = a.conn.Close()
-	waitFor(t, "the cut connection to end", func() bool { return s.Open() == 1 })
+	waitFor(t, "the cut connection to end", func() bool { return s.OpenConns() == 1 })
 	if n := len(s.Requests()); n != 0 {
 		t.Fatalf("a cut aws.request was recorded: %d requests", n)
 	}
 	b.request("http://dynamodb/")
 	_ = b.conn.Close()
-	waitFor(t, "the second connection to end", func() bool { return s.Open() == 0 })
+	waitFor(t, "the second connection to end", func() bool { return s.OpenConns() == 0 })
 }

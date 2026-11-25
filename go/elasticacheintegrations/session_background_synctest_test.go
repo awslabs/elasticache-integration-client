@@ -357,8 +357,9 @@ func TestReconnectAppliesNewRefreshInterval(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		m, c, _ := sessionMock(t, mockcache.Config{})
 		s := openTestSession(t, c, &sessionAuth{})
+		synctest.Wait() // the refresh runner arms its first wait before the reconnect
 		conn := s.live.Load()
-		m.SetConfigJSON(routeGetItem)
+		m.SetAWSConfigReply(routeGetItem)
 		drop := time.Now()
 		m.DropAll()
 		waitLive(t, s, conn)

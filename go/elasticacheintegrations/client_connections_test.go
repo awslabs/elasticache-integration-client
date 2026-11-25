@@ -274,7 +274,7 @@ func TestConnectionsCloseClosesAll(t *testing.T) {
 			t.Fatalf("session %d not closed", i)
 		}
 	}
-	waitFor(t, "the mock to see every connection end", func() bool { return s.Open() == 0 })
+	waitFor(t, "the mock to see every connection end", func() bool { return s.OpenConns() == 0 })
 	if _, err := ddb.GetItem(context.Background(), &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()}); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestConnectionsStartFailureClosesAll(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("err = %v, want *ConnectionError", err)
 	}
-	waitFor(t, "every connection to close", func() bool { return s.Open() == 0 })
+	waitFor(t, "every connection to close", func() bool { return s.OpenConns() == 0 })
 }
 
 // A session that loses its connection between the pick and the call does not make the call

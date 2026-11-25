@@ -38,8 +38,8 @@ const (
 
 // Config chooses how the server serves. The zero value is plaintext with RouteTenOperations.
 type Config struct {
-	TLS        bool   // serve TLS with a certificate for localhost, 127.0.0.1 and ::1
-	ConfigJSON string // the reply to aws.config with overrides
+	TLS            bool   // serve TLS with a certificate for localhost, 127.0.0.1 and ::1
+	AWSConfigReply string // the reply to aws.config with overrides
 }
 
 // Command is one command the server received.
@@ -79,6 +79,7 @@ type Server struct {
 	held       chan struct{}
 	listener   net.Listener
 	failure    error
+	tlsErrors  []error
 	closed     bool
 }
 
@@ -86,7 +87,7 @@ type Server struct {
 func New(c Config) (*Server, error) {
 	s := &Server{
 		stop:       make(chan struct{}),
-		configJSON: c.ConfigJSON,
+		configJSON: c.AWSConfigReply,
 		conns:      map[*serverConn]struct{}{},
 	}
 	if s.configJSON == "" {
@@ -95,7 +96,7 @@ func New(c Config) (*Server, error) {
 	if c.TLS {
 		cert, certPEM, err := selfSigned()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("mockcache: self-signed certificate: %w", err)
 		}
 		s.tlsConf = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 		s.certPEM = certPEM
@@ -144,7 +145,7 @@ func (s *Server) ServeConn(conn net.Conn) {
 		return
 	}
 	s.accepted++
-	sc := &serverConn{s: s, n: s.accepted, raw: conn, gate: s.held}
+	sc := &serverConn{s: s, n: s.accepted, raw: conn, gate: s.held, wturn: make(chan struct{}, 1)}
 	s.conns[sc] = struct{}{}
 	s.wg.Add(1)
 	s.mu.Unlock()
@@ -181,6 +182,14 @@ func (s *Server) Close() error {
 	return s.Err()
 }
 
+// TLSErrors returns the TLS handshakes that failed, in order, except those cut by Close or a
+// drop. They are not failures of the server: a test that refuses its certificate causes one.
+func (s *Server) TLSErrors() []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]error(nil), s.tlsErrors...)
+}
+
 // Err returns the first failure so far.
 func (s *Server) Err() error {
 	s.mu.Lock()
@@ -214,8 +223,8 @@ func (s *Server) SetOnRefresh(f func() Reply) { s.mu.Lock(); s.onRefresh = f; s.
 // reply replaces the normal one.
 func (s *Server) SetIntercept(f func(Command) *Reply) { s.mu.Lock(); s.intercept = f; s.mu.Unlock() }
 
-// SetConfigJSON sets the reply to aws.config with overrides.
-func (s *Server) SetConfigJSON(j string) { s.mu.Lock(); s.configJSON = j; s.mu.Unlock() }
+// SetAWSConfigReply sets the reply to aws.config with overrides.
+func (s *Server) SetAWSConfigReply(j string) { s.mu.Lock(); s.configJSON = j; s.mu.Unlock() }
 
 // Push writes v to every open connection.
 func (s *Server) Push(v resp.Value) error {
@@ -306,9 +315,9 @@ func (s *Server) Connections() int {
 	return s.configured
 }
 
-// Open counts the connections the server has not finished serving: once one leaves the
+// OpenConns counts the connections the server has not finished serving: once one leaves the
 // count, every byte it received was read and recorded.
-func (s *Server) Open() int {
+func (s *Server) OpenConns() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.conns)
@@ -320,6 +329,9 @@ func (s *Server) CertPool() *x509.CertPool { return s.pool }
 // CertPEM is the server's certificate as a PEM CA bundle; nil without TLS.
 func (s *Server) CertPEM() []byte { return s.certPEM }
 
+// stuckWrite is how long drop lets a write in progress finish before its deadline cuts it.
+const stuckWrite = time.Second
+
 // serverConn is one connection. Its writes are serialized, so replies never interleave.
 type serverConn struct {
 	s    *Server
@@ -327,7 +339,9 @@ type serverConn struct {
 	raw  net.Conn
 	gate chan struct{}
 
-	wmu     sync.Mutex
+	// wturn holds a token while a goroutine writes or sets out. A channel, not a mutex,
+	// so a goroutine waiting for its turn is durably blocked in a synctest bubble.
+	wturn   chan struct{}
 	out     net.Conn // set once TLS is up
 	dropped atomic.Bool
 
@@ -356,13 +370,18 @@ func (sc *serverConn) serve() {
 	if s.tlsConf != nil {
 		tc := tls.Server(sc.raw, s.tlsConf)
 		if err := tc.Handshake(); err != nil {
+			s.mu.Lock()
+			if !s.closed && !sc.dropped.Load() {
+				s.tlsErrors = append(s.tlsErrors, fmt.Errorf("mockcache: connection %d: TLS handshake: %w", sc.n, err))
+			}
+			s.mu.Unlock()
 			return
 		}
 		conn = tc
 	}
-	sc.wmu.Lock()
+	sc.wturn <- struct{}{}
 	sc.out = conn
-	sc.wmu.Unlock()
+	<-sc.wturn
 	r := resp.NewReader(conn, readSize, maxFrame)
 	for {
 		v, err := r.Next()
@@ -665,8 +684,8 @@ func (sc *serverConn) writeValue(v resp.Value) bool {
 }
 
 func (sc *serverConn) write(b []byte) error {
-	sc.wmu.Lock()
-	defer sc.wmu.Unlock()
+	sc.wturn <- struct{}{}
+	defer func() { <-sc.wturn }()
 	if sc.dropped.Load() {
 		return errors.New("mockcache: connection dropped")
 	}
@@ -679,15 +698,17 @@ func (sc *serverConn) write(b []byte) error {
 
 // drop ends the stream after what was written. A TCP connection shuts its write side and is
 // read until the client closes it: closing it with unread input would reset it, and the
-// client could see the reset in place of the end of the stream. A write stuck on a client
-// that does not read is cut by closing the connection.
+// client could see the reset in place of the end of the stream. A write in progress finishes
+// first; one stuck for stuckWrite on a client that does not read is cut by a write deadline.
 func (sc *serverConn) drop() {
-	if !sc.wmu.TryLock() {
-		sc.dropped.Store(true)
-		_ = sc.raw.Close()
-		return
+	select {
+	case sc.wturn <- struct{}{}:
+	default:
+		_ = sc.raw.SetWriteDeadline(time.Now().Add(stuckWrite))
+		sc.wturn <- struct{}{}
+		_ = sc.raw.SetWriteDeadline(time.Time{})
 	}
-	defer sc.wmu.Unlock()
+	defer func() { <-sc.wturn }()
 	if sc.dropped.Swap(true) {
 		return
 	}
