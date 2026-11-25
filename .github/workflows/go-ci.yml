@@ -39,7 +39,8 @@ jobs:
       - run: go version
 
       # The local gate: gofmt, go vet (also GOARCH=386), go mod tidy, staticcheck, the
-      # examples, go test -race, go test with the coverage floor, license headers.
+      # examples, go test -race, go test with the coverage floor, one run of each benchmark,
+      # license headers.
       # The alignment tests run in alignment-ci.yml.
       - run: scripts/verify.sh --skip-alignment --coverprofile coverage.out
 

@@ -1,8 +1,8 @@
 name: Compatibility
 
 # Slower checks that don't need to run on every pull request: the full Python
-# matrix, a clean wheel install, and the oldest and newest AWS SDK versions each
-# client allows. Not part of the required `ci` check.
+# matrix, a clean wheel install, the oldest and newest AWS SDK versions each
+# client allows, and Go fuzzing. Not part of the required `ci` check.
 on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC
@@ -304,3 +304,59 @@ jobs:
 
       - name: Verify
         run: scripts/verify.sh
+
+  # Fuzzes every Fuzz target past its seeds. The targets parse bytes from the network (RESP,
+  # replies, pushes, headers), so a crash found here is a real bug. A failing input is kept in
+  # the uploaded testdata/fuzz; add it to the package's corpus with the fix.
+  go-fuzz:
+    name: go (fuzz)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: go
+    env:
+      GOWORK: "off"
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
+
+      - name: Fuzz each target for 30 s
+        # A package that does not build, or no target at all, fails the job instead of
+        # fuzzing nothing.
+        run: |
+          set -euo pipefail
+          failed=0
+          count=0
+          pkgs="$(go list ./...)"
+          for pkg in $pkgs; do
+            targets="$(go test -list '^Fuzz' "$pkg")"
+            for target in $(printf '%s\n' "$targets" | grep '^Fuzz' || true); do
+              count=$((count + 1))
+              echo "== $pkg $target"
+              go test -run '^$' -fuzz "^${target}\$" -fuzztime 30s "$pkg" || failed=1
+            done
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "error: no Fuzz targets found." >&2
+            exit 1
+          fi
+          echo "fuzzed $count targets"
+          exit "$failed"
+
+      - name: Upload failing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: go-fuzz-failures
+          path: go/**/testdata/fuzz/
+          retention-days: 7

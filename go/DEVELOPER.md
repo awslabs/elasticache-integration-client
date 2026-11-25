@@ -4,7 +4,7 @@
 
 The module is `go/` (`go.mod`, `go 1.24.0`). The `go` directive is the floor users need, not the toolchain you develop with: use Go 1.24 or later, and Go 1.26 or later for staticcheck (the gate fetches a newer toolchain for it when needed). Do not add a `toolchain` line.
 
-- `scripts/verify.sh` is the complete local gate. It runs, in order and stopping at the first failure: `gofmt -l .`, `go vet ./...`, `GOARCH=386 go vet ./...` (the RESP codec's length arithmetic must hold where `int` is 32 bits), `go mod tidy -diff` for `go/` and `go/examples/`, staticcheck (pinned in the script, run with `go run`, never a module dependency) for both modules, `go vet` and `go test -race` of the examples, `go test -race -count=1 ./...`, `go test -count=1 ./...` with a coverage floor of 90% of statements (the allocation tests skip under `-race`, so they run only here), and the repository's license header check.
+- `scripts/verify.sh` is the complete local gate. It runs, in order and stopping at the first failure: `gofmt -l .`, `go vet ./...`, `GOARCH=386 go vet ./...` (the RESP codec's length arithmetic must hold where `int` is 32 bits), `go mod tidy -diff` for `go/` and `go/examples/`, staticcheck (pinned in the script, run with `go run`, never a module dependency) for both modules, `go vet` and `go test -race` of the examples, `go test -race -count=1 ./...`, `go test -count=1 ./...` with a coverage floor (the allocation tests skip under `-race`, so they run only here), one iteration of every benchmark (`-bench . -benchtime 1x`, which catches a benchmark that fails, not one that got slower), and the repository's license header check. The floor counts the statements of the production packages, `elasticacheintegrations` and `internal/resp`, covered by any test package, the e2e suite included; the test support packages do not count. It is 95%, and 92.5% on Go 1.24, where the `testing/synctest` tests (`//go:build go1.25`) do not build.
   - `--skip-alignment` leaves out the alignment tests, as CI's `go-ci.yml` does.
   - `--coverprofile FILE` keeps the coverage profile.
   - It uses the `go` on `PATH`; run it under another toolchain with, for example, `mise exec go@1.24 -- scripts/verify.sh`.
@@ -28,13 +28,13 @@ On an older local toolchain it also reports vulnerabilities fixed in later Go pa
 
 ### Fuzzing and benchmarks
 
-The parsers have fuzz targets: `FuzzDecode` and `FuzzReader` in `internal/resp`, and `FuzzParseRequestReply`, `FuzzParsePush`, `FuzzParseConfigReply`, `FuzzParseEndpoint`, `FuzzCopyOverrides` and others in `elasticacheintegrations`. `go test` runs their seeds. Fuzz one for a while after changing its parser:
+The parsers have fuzz targets: `FuzzDecode` and `FuzzReader` in `internal/resp`, and `FuzzParseRequestReply`, `FuzzParsePush`, `FuzzParseConfigReply`, `FuzzParseEndpoint`, `FuzzCopyOverrides` and others in `elasticacheintegrations`. `go test` runs their seeds, and the weekly `go-fuzz` job in `.github/workflows/compat.yml` fuzzes each one for 30 seconds. Fuzz one for a while after changing its parser:
 
 ```sh
 go test -run '^$' -fuzz '^FuzzDecode$' -fuzztime 5m ./internal/resp
 ```
 
-Benchmarks report allocations and do not gate CI. Compare before and after a change on the same host:
+Benchmarks report allocations; CI runs each once to check it works, and does not compare numbers. Compare before and after a change on the same host:
 
 ```sh
 go test -run '^$' -bench 'GetItemHit|GetItemPlain' -benchmem ./elasticacheintegrations

@@ -50,8 +50,9 @@ Run commands from the client directory they apply to:
 - Go: use focused `go test -run` tests when appropriate and `scripts/verify.sh`
   for the complete local gate (gofmt, go vet also for `GOARCH=386`,
   `go mod tidy -diff`, staticcheck, the examples module, `go test -race`,
-  `go test` without `-race` so the allocation tests run, with a 90% coverage
-  floor, and the license check). CI runs the same script.
+  `go test` without `-race` so the allocation tests run, with a coverage floor
+  on the production packages, one run of every benchmark, and the license
+  check). CI runs the same script.
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
   `<path>` is a file of case-insensitive Perl regular expressions, one per
   line, kept outside the repository. It fails when a file that git

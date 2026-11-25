@@ -30,8 +30,8 @@
 - `e2e/`: the end-to-end suite, package `e2e`, tests only. Each test builds a real
   `dynamodb.Client` with `NewFromConfig` against `internal/mockcache` over TLS. A fake DynamoDB
   answers the mock cache's `aws.request` handler and is also the client's origin. It has no build
-  tag and runs in both `go test ./...` passes of `verify.sh`; it has no statements, so it does not
-  count toward the coverage floor. Every test calls `t.Parallel()` on real time, so do not run it
+  tag and runs in both `go test ./...` passes of `verify.sh`, and the client code it runs counts
+  toward the coverage floor. Every test calls `t.Parallel()` on real time, so do not run it
   with `GOMAXPROCS=1` or `-cpu=1` under `-race`: its timing budgets assume more than one CPU.
 - `internal/testutil/`: test helpers: static credentials, `AWS_*` isolation, the shared
   fixture reader, a log capture, the no-secrets assertion.
@@ -44,8 +44,9 @@
   `ci.yml`, `alignment-ci.yml`, `go-ci.yml` or `go-release.yml`. The `verify` job runs
   `scripts/verify.sh --skip-alignment` on Go 1.24 (the floor),
   `oldstable` and `stable`; the `vulncheck` job runs `govulncheck` on both modules.
-  `alignment-ci.yml` runs the alignment tests; `compat.yml` (`go-latest`) runs the gate weekly
-  with every dependency at its newest release.
+  `alignment-ci.yml` runs the alignment tests; `compat.yml` runs the gate weekly
+  with every dependency at its newest release (`go-latest`) and fuzzes every target for 30 s
+  (`go-fuzz`).
 
 ## Validation
 
@@ -74,8 +75,9 @@ Run from this directory:
   for `go/`. Tools such as staticcheck and govulncheck run with `go run` at a pinned
   version, never through `go.mod`.
 - Ensure changed behavior has focused regression coverage; add or update tests
-  when existing coverage does not already lock the behavior. The gate fails below 90%
-  statement coverage.
+  when existing coverage does not already lock the behavior. The gate fails when statement
+  coverage of `elasticacheintegrations` and `internal/resp` drops below the floor in
+  `scripts/verify.sh` (95%, and 92.5% on Go 1.24, which cannot build the synctest tests).
 - A change to an option, a default, an error type, a retry decision or a log event updates
   the matching table in `README.md` in the same change.
 - Every `.go` file starts with the license header, above any `//go:build` line.

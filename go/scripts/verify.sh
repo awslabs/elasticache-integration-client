@@ -4,8 +4,9 @@
 #
 # Run every local gate for the Go client, in order, and stop at the first failure:
 # gofmt, go vet (also for GOARCH=386), go mod tidy, staticcheck, go vet and go test of the
-# examples, go test -race, go test without -race with a coverage floor (the allocation tests
-# run only without -race), license headers. CI runs this script too.
+# examples, go test -race, go test without -race with a coverage floor on the production
+# packages (the allocation tests run only without -race), one run of every benchmark, license
+# headers. CI runs this script too.
 #
 # Usage: go/scripts/verify.sh [--skip-alignment] [--coverprofile FILE]
 #   --skip-alignment     skip the TestAlignment* tests; CI runs them in alignment-ci.yml
@@ -21,8 +22,14 @@ set -euo pipefail
 # v0.8.2 needs Go 1.26 or later; under an older go it runs on a downloaded newer toolchain.
 STATICCHECK="honnef.co/go/tools/cmd/staticcheck@v0.8.2"
 
-# The lowest statement coverage the go test pass may report, in percent.
-MIN_COVERAGE=90.0
+# The packages whose statements the coverage floor counts: the production code, not the test
+# support packages. Every test package counts toward them, the e2e suite included.
+COVER_PACKAGES="./elasticacheintegrations/...,./internal/resp/..."
+
+# The lowest statement coverage of COVER_PACKAGES, in percent, about two points under the
+# measured value. The synctest tests need Go 1.25, so Go 1.24 runs fewer and has its own floor.
+MIN_COVERAGE=95.0
+MIN_COVERAGE_GO124=92.5
 
 skip=()
 profile=""
@@ -97,15 +104,24 @@ echo "== go vet ./... and go test -race ./... (go/examples/)"
 echo "== go test -race -count=1 ${skip[*]+${skip[*]}} ./..."
 go test -race -count=1 ${skip[@]+"${skip[@]}"} ./...
 
+case "$(go env GOVERSION)" in
+  go1.24 | go1.24.*) min="$MIN_COVERAGE_GO124" ;;
+  *) min="$MIN_COVERAGE" ;;
+esac
+
 # The allocation tests skip under -race, so the tests also run once without it.
-echo "== go test -count=1 ${skip[*]+${skip[*]}} -coverprofile ./... (at least $MIN_COVERAGE%)"
-go test -count=1 ${skip[@]+"${skip[@]}"} -coverprofile="$profile" ./...
+echo "== go test -count=1 ${skip[*]+${skip[*]}} -coverpkg $COVER_PACKAGES ./... (at least $min%)"
+go test -count=1 ${skip[@]+"${skip[@]}"} -coverpkg="$COVER_PACKAGES" -coverprofile="$profile" ./...
 total="$(go tool cover -func="$profile" | awk '$1 == "total:" { sub(/%$/, "", $NF); print $NF }')"
-echo "total statement coverage: $total%"
-if ! awk -v total="$total" -v min="$MIN_COVERAGE" 'BEGIN { exit !(total != "" && total + 0 >= min + 0) }'; then
-  echo "error: statement coverage $total% is below $MIN_COVERAGE%." >&2
+echo "production statement coverage: $total%"
+if ! awk -v total="$total" -v min="$min" 'BEGIN { exit !(total != "" && total + 0 >= min + 0) }'; then
+  echo "error: production statement coverage $total% is below $min%." >&2
   exit 1
 fi
+
+# One iteration of each benchmark: catches a benchmark that fails, not a slower one.
+echo "== go test -run '^\$' -bench . -benchtime 1x ./..."
+go test -count=1 -run '^$' -bench . -benchtime 1x ./...
 
 echo "== license headers"
 ../scripts/check-license-headers.sh
