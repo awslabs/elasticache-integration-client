@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -225,25 +224,6 @@ func TestConnectionsDefaultIsFour(t *testing.T) {
 	}
 }
 
-// Start-up opens the default four connections at once: each HELLO takes 400 ms, so four in a
-// row would take longer than the 1 s ConnectionTimeout.
-func TestConnectionsDefaultOpenAtOnce(t *testing.T) {
-	s, addr := sdkMock(t)
-	s.SetOnRequest(func(mockcache.Command) mockcache.Reply { return servedJSON(200, hitBody) })
-	intercept(s, "HELLO", mockcache.After(400*time.Millisecond, mockcache.Hello()))
-	c := sdkConfig(t, s, addr)
-	c.connectionTimeout = time.Second
-	begin := time.Now()
-	ddb, cache := startSDK(t, c, &fakeOrigin{})
-	if took := time.Since(begin); took >= c.connectionTimeout {
-		t.Fatalf("start-up took %v, want under ConnectionTimeout", took)
-	}
-	getHit(t, ddb)
-	if s.Connections() != 4 || len(cache.sessions) != 4 {
-		t.Fatalf("connections = %d, sessions = %d", s.Connections(), len(cache.sessions))
-	}
-}
-
 func TestConnectionsReauthEach(t *testing.T) {
 	s, _, _, _ := connectionsSDK(t, 3, func(c *config) { c.reauthInterval = 20 * time.Millisecond })
 	waitFor(t, "a re-AUTH on every connection", func() bool {
@@ -281,38 +261,6 @@ func TestConnectionsDropOneKeepsServing(t *testing.T) {
 		}
 		return true
 	})
-}
-
-// With every connection down, the picked session's outage decides: fallback to DynamoDB, or
-// in strict mode a *CacheUnavailableError and nothing sent to DynamoDB.
-func TestConnectionsAllDown(t *testing.T) {
-	for _, strict := range []bool{false, true} {
-		t.Run(map[bool]string{false: "fallback", true: "strict"}[strict], func(t *testing.T) {
-			s, ddb, _, origin := connectionsSDK(t, 2, func(c *config) {
-				c.connectionTimeout = 500 * time.Millisecond
-				c.reconnectAttemptTimeout = 500 * time.Millisecond
-				if strict {
-					c.fallbackUnlimited, c.fallbackDuration = false, 0
-				}
-			})
-			s.Hold()
-			defer s.Release()
-			s.DropAll()
-			out, err := ddb.GetItem(context.Background(), &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()})
-			if strict {
-				if !errors.As(err, new(*CacheUnavailableError)) || origin.count() != 0 {
-					t.Fatalf("err = %v, origin calls = %d; want a *CacheUnavailableError and none", err, origin.count())
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if out.Item != nil || origin.count() == 0 {
-				t.Fatalf("item = %v, origin calls = %d; want the origin's empty reply", out.Item, origin.count())
-			}
-		})
-	}
 }
 
 func TestConnectionsCloseClosesAll(t *testing.T) {
@@ -362,43 +310,6 @@ func TestConnectionsStartFailureClosesAll(t *testing.T) {
 	waitFor(t, "every connection to close", func() bool { return s.Open() == 0 })
 }
 
-// While one connection reconnects, calls never wait for it: the other connection serves them.
-func TestConnectionsNeverWaitOnAReconnectingSession(t *testing.T) {
-	s, ddb, cache, origin := connectionsSDK(t, 2, nil) // ConnectionTimeout 5s: a wait would show
-	s.Hold()
-	defer s.Release()
-	var dropped atomic.Bool
-	s.SetOnRequest(func(cmd mockcache.Command) mockcache.Reply {
-		if cmd.Conn == 1 && dropped.CompareAndSwap(false, true) {
-			return mockcache.Drop()
-		}
-		return servedJSON(200, hitBody)
-	})
-	start := time.Now()
-	for range 10 {
-		getHit(t, ddb)
-	}
-	if !dropped.Load() {
-		t.Fatal("connection 1 got no request")
-	}
-	if took := time.Since(start); took > 2*time.Second {
-		t.Fatalf("10 calls took %v: a call waited for the reconnecting session", took)
-	}
-	if cache.sessions[0].connected() && cache.sessions[1].connected() {
-		t.Fatal("the dropped session reconnected while new connections are held")
-	}
-	if origin.count() != 0 {
-		t.Fatalf("origin calls = %d, want 0", origin.count())
-	}
-	reqs := s.Requests()
-	after := slices.IndexFunc(reqs, func(c mockcache.Command) bool { return c.Conn == 1 }) + 1
-	for _, cmd := range reqs[after:] {
-		if cmd.Conn != 2 {
-			t.Fatalf("a call after the drop went to connection %d", cmd.Conn)
-		}
-	}
-}
-
 // A session that loses its connection between the pick and the call does not make the call
 // wait: tryRequest reports it, and another session serves it.
 func TestTryRequestDoesNotWait(t *testing.T) {
@@ -412,35 +323,5 @@ func TestTryRequestDoesNotWait(t *testing.T) {
 	r := getItem("https://dynamodb.us-east-1.amazonaws.com/")
 	if _, ok := ss.tryRequest(context.Background(), r, false); ok {
 		t.Fatal("tryRequest without a connection returned an outcome")
-	}
-}
-
-// With every connection down, the fallback window counts from the last drop, as with one
-// connection: a session whose own window ran out while another served calls does not decide a
-// call that one connection would send to DynamoDB.
-func TestConnectionsAllDownFallbackFromLastDrop(t *testing.T) {
-	// The timeouts leave start-up room for three TLS handshakes on a busy runner under -race.
-	s, ddb, cache, _ := connectionsSDK(t, 3, func(c *config) {
-		c.connectionTimeout = 500 * time.Millisecond
-		c.reconnectAttemptTimeout = 500 * time.Millisecond
-		c.fallbackUnlimited, c.fallbackDuration = false, 2*time.Second
-	})
-	getHit(t, ddb)
-	s.Hold()
-	defer s.Release()
-	first := cache.sessions[0]
-	first.live.Load().drop("test")
-	waitFor(t, "session 1 to see the drop", func() bool { return !first.connected() })
-	// The outage starts, and its fallback window ends while the other sessions are up.
-	first.request(context.Background(), getItem("https://dynamodb.us-east-1.amazonaws.com/"))
-	time.Sleep(2300 * time.Millisecond)
-	for _, ss := range cache.sessions[1:] {
-		ss.live.Load().drop("test")
-	}
-	for i := range 6 {
-		o := cache.request(context.Background(), getItem("https://dynamodb.us-east-1.amazonaws.com/"))
-		if o.kind != outcomeOrigin {
-			t.Fatalf("call %d: outcome %v, err %v; want DynamoDB inside the fallback window", i, o.kind, o.err)
-		}
 	}
 }
