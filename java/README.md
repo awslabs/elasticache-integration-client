@@ -150,7 +150,7 @@ Options on `ElastiCacheIntegrationsClientConfiguration.builder()`:
 |---|---|---|
 | `cacheRequestTimeoutMs(long)` | 5000 | How long to wait for the cache to answer a request. See [Errors](#errors) for what a timeout looks like. |
 | `connectionTimeoutMs(long)` | 5000 | How long to try connecting at startup, and how long a request waits for a lost connection to come back. See [Reconnection and fallback](#reconnection-and-fallback). |
-| `fallbackDurationSeconds(long)` | no limit | How long requests may go to DynamoDB while the cache is unreachable. `0` means never. See [Reconnection and fallback](#reconnection-and-fallback). |
+| `fallbackDurationSeconds(long)` | no limit | How long cache-routed requests may fall back to DynamoDB while the cache is unreachable. `0` disables fallback. See [Reconnection and fallback](#reconnection-and-fallback). |
 | `cachePolicyOverrides(Map)` | none | What to cache and for how long. See [Cache policy overrides](#cache-policy-overrides). |
 | `cachePolicyTimeoutSeconds(long)` | 3600 | How long the client keeps using a cache policy the cache has not confirmed. See [Cache policy timeout](#cache-policy-timeout). |
 | `iamTokenRefreshDelaySeconds(long)` | 300 | How long after a token is issued a replacement is signed in the background. 1 to 879. See [Authentication](#authentication). |
@@ -221,6 +221,8 @@ public class Main {
 ## Request routing
 
 Requests for the tables and operations you choose in [`cachePolicyOverrides`](#cache-policy-overrides) go through the cache. Without overrides, all of them do. Every other request goes straight to DynamoDB, with no round trip to the cache.
+
+Requests with a request-level credentials provider or credentials identity provider in `overrideConfiguration` always go straight to DynamoDB, even when `fallbackDurationSeconds` is `0`. The cache connection uses the client-level identity, so bypassing the cache lets the AWS SDK sign and authorize the request with its overridden identity.
 
 ## Cache policy timeout
 

@@ -3,6 +3,9 @@
 
 package software.amazon.elasticache.integrations.session;
 
+import software.amazon.awssdk.awscore.AwsRequest;
+import software.amazon.awssdk.awscore.AwsRequestOverrideConfiguration;
+import software.amazon.awssdk.core.SdkRequest;
 import software.amazon.awssdk.core.interceptor.ExecutionAttribute;
 import software.amazon.awssdk.core.interceptor.ExecutionAttributes;
 import software.amazon.elasticache.integrations.model.ElastiCacheIntegrationsRequest;
@@ -24,6 +27,26 @@ final class ElastiCacheIntegrationsRequestContext {
 
     void capture(ElastiCacheIntegrationsRequest request, ExecutionAttributes executionAttributes) {
         executionAttributes.putAttribute(AWS_REQUEST, request);
+    }
+
+    /**
+     * Whether the request selects credentials independently of the client. Cache connections are
+     * authenticated as the client identity, so these requests must use the origin transport where the
+     * SDK can apply the request-level identity.
+     */
+    static boolean hasCredentialsOverride(SdkRequest request) {
+        if (!(request instanceof AwsRequest)) {
+            return false;
+        }
+        return ((AwsRequest) request)
+                .overrideConfiguration()
+                .map(ElastiCacheIntegrationsRequestContext::hasCredentialsOverride)
+                .orElse(false);
+    }
+
+    private static boolean hasCredentialsOverride(AwsRequestOverrideConfiguration configuration) {
+        return configuration.credentialsProvider().isPresent()
+                || configuration.credentialsIdentityProvider().isPresent();
     }
 
     /** Mark a request to pass through to the origin without Cache, such as a streaming body. */
