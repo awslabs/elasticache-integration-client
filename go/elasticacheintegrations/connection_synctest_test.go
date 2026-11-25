@@ -131,7 +131,7 @@ func TestDeathDoesNotWaitForAnUnreadingCache(t *testing.T) {
 			t.Fatal(err)
 		}
 		e := track(t, conn.pending, false, later())
-		if _, err := conn.conn.Write(appendConfigRefresh(nil)); err != nil {
+		if _, err := conn.nc.Write(appendConfigRefresh(nil)); err != nil {
 			t.Fatal(err)
 		}
 		synctest.Wait() // the mock sleeps on the refresh and reads nothing more

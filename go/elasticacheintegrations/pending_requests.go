@@ -275,13 +275,19 @@ func (p *pendingRequests) setDeadline(e *pendingEntry, at time.Time) {
 	}
 }
 
-// expire fails each deferred entry past its deadline with timeoutErr() and frees its slot. For
-// a FIFO entry past its deadline it calls dying(lost()), then fails that entry with timeoutErr()
-// and every other entry with the error dying returns, as failAll does, all in one critical
-// section, so no reply can resolve it in between; expire then returns it, and the connection
-// must close. Otherwise it arms the timer for the next deadline. A nil dying fails them with
-// lost().
-func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error, dying func(error) error) *pendingEntry {
+// expireHooks are what expire fails entries with.
+type expireHooks struct {
+	timeout func() error      // the error of an entry past its deadline
+	lost    func() error      // the error of the other entries when a FIFO entry is past it
+	dying   func(error) error // if set, called with lost() first; its result replaces it
+}
+
+// expire fails each deferred entry past its deadline with h.timeout() and frees its slot. For
+// a FIFO entry past its deadline it calls h.dying(h.lost()), then fails that entry with
+// h.timeout() and every other entry with the error dying returns, as failAll does, all in one
+// critical section, so no reply can resolve it in between; expire then returns it, and the
+// connection must close. Otherwise it arms the timer for the next deadline.
+func (p *pendingRequests) expire(now time.Time, h expireHooks) *pendingEntry {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.closed {
@@ -295,7 +301,7 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error, d
 		}
 		if !e.deadline.After(now) {
 			delete(p.deferred, id)
-			p.finishLocked(e, resp.Value{}, timeoutErr())
+			p.finishLocked(e, resp.Value{}, h.timeout())
 			continue
 		}
 		next = earlier(next, e.deadline)
@@ -305,11 +311,11 @@ func (p *pendingRequests) expire(now time.Time, timeoutErr, lost func() error, d
 			continue
 		}
 		if !e.deadline.After(now) {
-			err := lost()
-			if dying != nil {
-				err = dying(err)
+			err := h.lost()
+			if h.dying != nil {
+				err = h.dying(err)
 			}
-			p.failAllLocked(err, e, timeoutErr())
+			p.failAllLocked(err, e, h.timeout())
 			return e
 		}
 		next = earlier(next, e.deadline)

@@ -42,7 +42,7 @@ func startScripted(t *testing.T, interval time.Duration, failureDelay func(int) 
 	sr := &scriptedRunner{logs: logs, done: make(chan struct{})}
 	start := time.Now()
 	n := 0
-	r := newPeriodicRunner("Test task", interval, c, failureDelay, func(context.Context) (bool, error) {
+	r := newPeriodicRunner("Test task", interval, c.jitter, c.logger, failureDelay, func(context.Context) (bool, error) {
 		sr.mu.Lock()
 		defer sr.mu.Unlock()
 		sr.at = append(sr.at, time.Since(start))
@@ -210,7 +210,7 @@ func TestPeriodicRunnerCancelDuringTickIsNotAFailure(t *testing.T) {
 		logs, l := testutil.NewLogCapture()
 		c.logger = newLogger(l)
 		ctx, cancel := context.WithCancel(context.Background())
-		r := newPeriodicRunner("Test task", time.Second, c, nil, func(ctx context.Context) (bool, error) {
+		r := newPeriodicRunner("Test task", time.Second, c.jitter, c.logger, nil, func(ctx context.Context) (bool, error) {
 			cancel()
 			return true, ctx.Err()
 		})

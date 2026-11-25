@@ -26,11 +26,6 @@ const (
 	sigV4Request = "aws4_request"
 )
 
-// identity is the region the cache connection authenticates in.
-type identity struct {
-	region string
-}
-
 // bodyError is the error of an SDK request body that cannot be read. It matches
 // ErrIntegrations and wraps err.
 func bodyError(err error) error {
@@ -40,7 +35,7 @@ func bodyError(err error) error {
 // adaptRequest builds the cache request for a signed SDK request. routable is false, with req
 // untouched, when the request must go to DynamoDB as it is. Once the body has been read, a
 // non-nil error fails the call; req.Body is then spent.
-func adaptRequest(req *http.Request, id identity) (r *request, routable bool, err error) {
+func adaptRequest(req *http.Request, clientRegion string) (r *request, routable bool, err error) {
 	n := req.ContentLength
 	if n < 0 || n > maxRequestBody || (n == 0 && req.Body != nil && req.Body != http.NoBody) {
 		return nil, false, nil // unknown length, or too large to buffer
@@ -50,7 +45,7 @@ func adaptRequest(req *http.Request, id identity) (r *request, routable bool, er
 		return nil, false, nil
 	}
 	keyID, region, ok := signedScope(req.Header)
-	if !ok || !matchesIdentity(req.Context(), id.region, keyID, region) {
+	if !ok || !matchesIdentity(req.Context(), clientRegion, keyID, region) {
 		return nil, false, nil // a per-call identity or region, or not SigV4-signed
 	}
 	body, room, err := readBody(req.Body, n)
@@ -296,7 +291,7 @@ func (h *httpClient) Do(req *http.Request) (*http.Response, error) {
 	if c.closed() {
 		return h.origin.Do(req)
 	}
-	creq, routable, err := adaptRequest(req, c.identity)
+	creq, routable, err := adaptRequest(req, c.region)
 	if err != nil {
 		return nil, &sdkError{err: err}
 	}

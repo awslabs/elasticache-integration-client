@@ -30,7 +30,7 @@ var (
 // validate checks every option before any network I/O and returns the resolved config.
 // Every failure is a *ConfigError naming the option.
 func (o Options) validate() (*config, error) {
-	c := &config{
+	cfg := &config{
 		endpoint:                o.Endpoint,
 		insecureSkipVerify:      o.InsecureSkipVerify,
 		logger:                  newLogger(o.Logger),
@@ -44,57 +44,57 @@ func (o Options) validate() (*config, error) {
 		jitter:                  defaultJitter,
 	}
 	var err error
-	if c.host, c.port, err = parseEndpoint(o.Endpoint); err != nil {
+	if cfg.host, cfg.port, err = parseEndpoint(o.Endpoint); err != nil {
 		return nil, err
 	}
-	if c.cacheName, err = checkName("CacheName", o.CacheName, "", cacheNamePattern); err != nil {
+	if cfg.cacheName, err = checkName("CacheName", o.CacheName, "", cacheNamePattern); err != nil {
 		return nil, err
 	}
-	if c.userID, err = checkName("UserID", o.UserID, defaultUserID, userIDPattern); err != nil {
+	if cfg.userID, err = checkName("UserID", o.UserID, defaultUserID, userIDPattern); err != nil {
 		return nil, err
 	}
-	if c.cacheRequestTimeout, err = wholeMillis("CacheRequestTimeout", o.CacheRequestTimeout, defaultCacheRequestTimeout); err != nil {
+	if cfg.cacheRequestTimeout, err = wholeMillis("CacheRequestTimeout", o.CacheRequestTimeout, defaultCacheRequestTimeout); err != nil {
 		return nil, err
 	}
-	if c.connectionTimeout, err = wholeMillis("ConnectionTimeout", o.ConnectionTimeout, defaultConnectionTimeout); err != nil {
+	if cfg.connectionTimeout, err = wholeMillis("ConnectionTimeout", o.ConnectionTimeout, defaultConnectionTimeout); err != nil {
 		return nil, err
 	}
 	switch {
 	case o.Connections == 0:
-		c.connections = defaultConnections
+		cfg.connections = defaultConnections
 	case o.Connections < 0 || o.Connections > maxConnections:
 		return nil, &ConfigError{Option: "Connections", Msg: fmt.Sprintf("must be from 1 to %d (0 for the default), got %d", maxConnections, o.Connections)}
 	default:
-		c.connections = o.Connections
+		cfg.connections = o.Connections
 	}
 	if o.FallbackDuration == nil {
-		c.fallbackUnlimited = true
+		cfg.fallbackUnlimited = true
 	} else {
 		d := *o.FallbackDuration
 		if d < 0 || d%time.Second != 0 {
 			return nil, &ConfigError{Option: "FallbackDuration",
 				Msg: fmt.Sprintf("must be a whole number of seconds, 0 or more (nil for no limit), got %v", d)}
 		}
-		c.fallbackDuration = d
+		cfg.fallbackDuration = d
 	}
-	if c.cachePolicyTimeout, err = wholeSeconds("CachePolicyTimeout", o.CachePolicyTimeout, defaultCachePolicyTimeout, 0); err != nil {
+	if cfg.cachePolicyTimeout, err = wholeSeconds("CachePolicyTimeout", o.CachePolicyTimeout, defaultCachePolicyTimeout, 0); err != nil {
 		return nil, err
 	}
-	if c.iamTokenRefreshDelay, err = wholeSeconds("IAMTokenRefreshDelay", o.IAMTokenRefreshDelay, defaultIAMTokenRefreshDelay, maxIAMTokenRefreshDelay); err != nil {
+	if cfg.iamTokenRefreshDelay, err = wholeSeconds("IAMTokenRefreshDelay", o.IAMTokenRefreshDelay, defaultIAMTokenRefreshDelay, maxIAMTokenRefreshDelay); err != nil {
 		return nil, err
 	}
-	if c.cachePolicyOverrides, err = copyOverrides(o.CachePolicyOverrides); err != nil {
+	if cfg.cachePolicyOverrides, err = copyOverrides(o.CachePolicyOverrides); err != nil {
 		return nil, err
 	}
 	if o.CACertsFile != "" {
 		if o.InsecureSkipVerify {
 			return nil, &ConfigError{Option: "CACertsFile", Msg: "cannot be set with InsecureSkipVerify, which would ignore it"}
 		}
-		if c.rootCAs, err = loadCACerts(o.CACertsFile); err != nil {
+		if cfg.rootCAs, err = loadCACerts(o.CACertsFile); err != nil {
 			return nil, err
 		}
 	}
-	return c, nil
+	return cfg, nil
 }
 
 // parseEndpoint splits "host:port". The port must be decimal digits in 1-65535.
@@ -144,16 +144,16 @@ func wholeMillis(option string, d, def time.Duration) (time.Duration, error) {
 	return d, nil
 }
 
-// wholeSeconds checks a period: 0 means def, otherwise whole seconds from 1s to max
-// (no upper bound when max is 0).
-func wholeSeconds(option string, d, def, max time.Duration) (time.Duration, error) {
+// wholeSeconds checks a period: 0 means def, otherwise whole seconds from 1s to upper
+// (no upper bound when upper is 0).
+func wholeSeconds(option string, d, def, upper time.Duration) (time.Duration, error) {
 	if d == 0 {
 		return def, nil
 	}
-	if d < time.Second || (max > 0 && d > max) || d%time.Second != 0 {
+	if d < time.Second || (upper > 0 && d > upper) || d%time.Second != 0 {
 		limit := "or more"
-		if max > 0 {
-			limit = fmt.Sprintf("to %ds", max/time.Second)
+		if upper > 0 {
+			limit = fmt.Sprintf("to %ds", upper/time.Second)
 		}
 		return 0, &ConfigError{Option: option,
 			Msg: fmt.Sprintf("must be a whole number of seconds from 1s %s, got %v", limit, d)}

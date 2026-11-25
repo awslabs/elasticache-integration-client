@@ -160,7 +160,7 @@ func startSDK(t testing.TB, c *config, origin aws.HTTPClient, optFns ...func(*dy
 func startSDKWith(t testing.TB, ac aws.Config, c *config, origin aws.HTTPClient, optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client) {
 	t.Helper()
 	fns := append([]func(*dynamodb.Options){func(o *dynamodb.Options) { o.HTTPClient = origin }}, optFns...)
-	ddb, cache, err := start(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+	ddb, cache, err := startClient(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 		return dynamodb.NewFromConfig(ac, fns...)
 	}, fns)
 	if err != nil {
@@ -438,7 +438,7 @@ func TestStartErrors(t *testing.T) {
 				tc.aws(&ac)
 			}
 			before := s.Connections()
-			ddb, cache, err := start(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+			ddb, cache, err := startClient(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 				return dynamodb.NewFromConfig(ac, fns...)
 			}, tc.optFns)
 			if ddb != nil || cache != nil || err == nil || !tc.check(err) || !errors.Is(err, ErrIntegrations) {
@@ -470,7 +470,7 @@ func TestStartCallerCancels(t *testing.T) {
 	s, addr := sdkMock(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ddb, cache, err := start(ctx, sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+	ddb, cache, err := startClient(ctx, sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 		return dynamodb.NewFromConfig(awsConfig(), fns...)
 	}, nil)
 	if ddb != nil || cache != nil || !errors.Is(err, context.Canceled) {
@@ -484,7 +484,7 @@ func TestOptFnsNotMutated(t *testing.T) {
 	origin := &fakeOrigin{}
 	fns := make([]func(*dynamodb.Options), 1, 4)
 	fns[0] = func(o *dynamodb.Options) { o.HTTPClient = origin }
-	ddb, cache, err := start(context.Background(), sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+	ddb, cache, err := startClient(context.Background(), sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 		return dynamodb.NewFromConfig(awsConfig(), fns...)
 	}, fns)
 	if err != nil {
@@ -521,7 +521,7 @@ func TestConfigHTTPClientIsOrigin(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ac := awsConfig()
 			tc.cfg(&ac)
-			ddb, cache, err := start(context.Background(), sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+			ddb, cache, err := startClient(context.Background(), sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 				return dynamodb.NewFromConfig(ac, fns...)
 			}, nil)
 			if err != nil {

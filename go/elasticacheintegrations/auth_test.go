@@ -59,7 +59,7 @@ func splitToken(t *testing.T, token string) (string, url.Values) {
 func signVector(t *testing.T, v tokenVector, cache string, now time.Time) string {
 	t.Helper()
 	creds := aws.Credentials{AccessKeyID: v.AccessKeyID, SecretAccessKey: v.SecretAccessKey, SessionToken: v.SessionToken}
-	tok, err := signToken(context.Background(), creds, cache, v.User, v.Region, now)
+	tok, err := signToken(context.Background(), creds, tokenScope{cache: cache, user: v.User, region: v.Region}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestSignTokenLowercasesHostAndUsesUTC(t *testing.T) {
 }
 
 func TestSignTokenHasNoScheme(t *testing.T) {
-	tok, err := signToken(context.Background(), testCreds(), "c", "u", "us-east-1", time.Now())
+	tok, err := signToken(context.Background(), testCreds(), tokenScope{cache: "c", user: "u", region: "us-east-1"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestMatchesIdentity(t *testing.T) {
 }
 
 func TestSignTokenLeavesNoSecrets(t *testing.T) {
-	tok, err := signToken(context.Background(), testCreds(), "my-cache", "default.iam-user", "us-east-1", time.Now())
+	tok, err := signToken(context.Background(), testCreds(), tokenScope{cache: "my-cache", user: "default.iam-user", region: "us-east-1"}, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestSignTokenLeavesNoSecrets(t *testing.T) {
 	out := fmt.Sprintf("%v %+v %#v %s %q", tok, tok, tok, tok, tok)
 	testutil.AssertNoSecrets(t, out, secrets...)
 
-	_, err = signToken(context.Background(), testCreds(), "bad host\x7f", "u", "us-east-1", time.Now())
+	_, err = signToken(context.Background(), testCreds(), tokenScope{cache: "bad host\x7f", user: "u", region: "us-east-1"}, time.Now())
 	if err == nil {
 		t.Fatal("no error for an invalid host")
 	}

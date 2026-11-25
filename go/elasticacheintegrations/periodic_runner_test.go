@@ -44,6 +44,32 @@ func TestBackoff(t *testing.T) {
 	}
 }
 
+func TestExpBackoffBounds(t *testing.T) {
+	noRand := func() float64 { t.Fatal("rnd called with no jitter"); return 0 }
+	cases := []struct {
+		lo, hi  time.Duration
+		attempt int
+		want    time.Duration
+	}{
+		{lo: 100 * time.Millisecond, hi: time.Second, attempt: 0, want: 100 * time.Millisecond},
+		{lo: 100 * time.Millisecond, hi: time.Second, attempt: -5, want: 100 * time.Millisecond},
+		{lo: 0, hi: time.Second, attempt: 3, want: time.Millisecond},
+		{lo: 2 * time.Second, hi: time.Second, attempt: 3, want: 2 * time.Second},
+		{lo: 2 * time.Second, hi: 2 * time.Second, attempt: math.MaxInt, want: 2 * time.Second},
+		{lo: 9 * time.Second, hi: time.Hour, attempt: 40, want: time.Hour},
+		{lo: 9 * time.Second, hi: time.Hour, attempt: math.MaxInt, want: time.Hour},
+		{lo: 1<<34 + 1, hi: time.Hour, attempt: 31, want: time.Hour}, // lo<<30 wraps to about 1s
+		{lo: time.Nanosecond, hi: 2 * time.Hour, attempt: 45, want: 2 * time.Hour},
+		{lo: time.Nanosecond, hi: 2 * time.Hour, attempt: 64, want: 2 * time.Hour},
+		{lo: time.Millisecond, hi: math.MaxInt64, attempt: 64, want: math.MaxInt64},
+	}
+	for _, tc := range cases {
+		if got := expBackoff(tc.lo, tc.hi, 0, tc.attempt, noRand); got != tc.want {
+			t.Errorf("expBackoff(%v, %v, 0, %d) = %v, want %v", tc.lo, tc.hi, tc.attempt, got, tc.want)
+		}
+	}
+}
+
 func TestBackoffJitter(t *testing.T) {
 	c := mockConfig(t, nil, "localhost:6379")
 	lo, hi := time.Hour, time.Duration(0)
@@ -73,7 +99,7 @@ func TestJittered(t *testing.T) {
 func TestPeriodicRunnerSetIntervalIgnoresNonPositive(t *testing.T) {
 	c := mockConfig(t, nil, "localhost:6379")
 	c.jitter = 0
-	r := newPeriodicRunner("Test task", time.Minute, c, nil, nil)
+	r := newPeriodicRunner("Test task", time.Minute, c.jitter, c.logger, nil, nil)
 	for _, d := range []time.Duration{0, -time.Second} {
 		r.setInterval(d)
 		if got := r.delay(0); got != time.Minute {

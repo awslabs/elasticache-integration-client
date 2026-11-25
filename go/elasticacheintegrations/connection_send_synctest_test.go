@@ -638,7 +638,7 @@ func TestCloseAfterDeathStillReportsIt(t *testing.T) {
 		closed := make(chan struct{})
 		go func() { conn.close(); close(closed) }()
 		synctest.Wait() // close waits for the reader goroutine
-		_ = closeSocket(conn.conn)
+		_ = closeSocket(conn.nc)
 		conn.reportDeath(true, eventInOrderTimeout, cause)
 		<-closed
 		if err := lost.wait(t); err != cause || lost.count() != 1 {
@@ -677,7 +677,7 @@ func TestInOrderTimeoutAfterDeathLeavesTheReportToTheFirst(t *testing.T) {
 		if lost.count() != 0 || len(eventRecords(logs, eventInOrderTimeout)) != 0 {
 			t.Fatalf("onLost %d calls, records:\n%s", lost.count(), logs.Text())
 		}
-		_ = closeSocket(conn.conn)
+		_ = closeSocket(conn.nc)
 		conn.reportDeath(true, eventConnectionLost, cause)
 		if err := lost.wait(t); err != cause || lost.count() != 1 {
 			t.Fatalf("onLost %v, %d calls", err, lost.count())

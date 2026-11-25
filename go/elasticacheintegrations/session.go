@@ -80,8 +80,8 @@ type session struct {
 // openSession opens the first connection, retrying until ConnectionTimeout has passed, and
 // starts re-AUTH and config refresh. It closes auth on failure and on close; a client passes
 // a sharedAuth, whose close does nothing.
-func openSession(ctx context.Context, c *config, auth authProvider) (*session, error) {
-	s := newSession(c, auth)
+func openSession(ctx context.Context, cfg *config, auth authProvider) (*session, error) {
+	s := newSession(cfg, auth)
 	if err := s.open(ctx); err != nil {
 		s.close()
 		return nil, err
@@ -89,9 +89,9 @@ func openSession(ctx context.Context, c *config, auth authProvider) (*session, e
 	return s, nil
 }
 
-func newSession(c *config, auth authProvider) *session {
+func newSession(cfg *config, auth authProvider) *session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &session{cfg: c, auth: auth, lg: c.logger, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
+	return &session{cfg: cfg, auth: auth, lg: cfg.logger, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 }
 
 // open is the start-up loop (Java Session.open).
@@ -213,9 +213,9 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 
 // startRunners starts re-AUTH and config refresh. It runs once, under mu.
 func (s *session) startRunners(refreshInterval time.Duration) {
-	reauth := newPeriodicRunner("re-AUTH", s.cfg.reauthInterval, s.cfg,
+	reauth := newPeriodicRunner("re-AUTH", s.cfg.reauthInterval, s.cfg.jitter, s.cfg.logger,
 		func(failures int) time.Duration { return backoff(s.cfg, failures) }, s.reauthOnce)
-	refresh := newPeriodicRunner("config refresh", refreshInterval, s.cfg, nil, s.refreshOnce)
+	refresh := newPeriodicRunner("config refresh", refreshInterval, s.cfg.jitter, s.cfg.logger, nil, s.refreshOnce)
 	s.refresh = refresh
 	s.wg.Add(2)
 	go func() { defer s.wg.Done(); reauth.run(s.ctx) }()
@@ -465,14 +465,14 @@ func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (req
 			continue
 		}
 		reply, err := c.request(ctx, r)
-		o, drop := replyOutcome(reply, err, strict, s.closed(), s.connected())
+		o, drop := replyOutcome(reply, err, outcomeContext{strict: strict, closed: s.closed(), healthy: s.connected()})
 		if drop != "" && c.drop(drop) && reply.server.kind() == serverAuth {
 			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
 		}
 		if o.retryable && !c.alive() && droppedBy(o.err) {
 			o.charge = c.charge
 		}
-		if err != nil && errors.As(err, new(*RequestNotSentError)) {
+		if errors.As(err, new(*RequestNotSentError)) {
 			if s.notSent.hit(time.Now()) {
 				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
 			}
@@ -518,5 +518,5 @@ func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOut
 	if out.exhausted.CompareAndSwap(false, true) {
 		s.lg.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
 	}
-	return failure(unavailable(noFallback+"there is no cache connection", nil), false), true
+	return classified(unavailable(noFallback+"there is no cache connection", nil), false), true
 }

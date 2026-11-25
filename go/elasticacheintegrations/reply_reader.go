@@ -20,7 +20,7 @@ func (c *connection) readLoop() {
 			err = c.dispatch(v)
 		}
 		if err != nil {
-			c.die(eventConnectionLost, readFailed(err), nil, nil)
+			c.die(eventConnectionLost, readFailed(err))
 			return
 		}
 	}

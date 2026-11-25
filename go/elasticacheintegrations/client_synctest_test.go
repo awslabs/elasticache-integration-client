@@ -63,7 +63,7 @@ func TestStartLeavesNothingRunning(t *testing.T) {
 						tc.setup(s)
 					}
 					t0 := time.Now()
-					ddb, cache, err := start(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+					ddb, cache, err := startClient(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 						return dynamodb.NewFromConfig(aws.Config{Region: testRegion, Credentials: testutil.StaticCredentials()}, fns...)
 					}, nil)
 					if !tc.check(err) {

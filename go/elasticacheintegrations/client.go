@@ -21,7 +21,7 @@ import (
 // client is no longer used.
 type Client struct {
 	cfg      *config
-	identity identity
+	region   string       // the region the cache connections authenticate in
 	sessions []*session   // one per connection; each reconnects and falls back on its own
 	auth     authProvider // shared by every session; closed after them
 	next     atomic.Uint64
@@ -42,33 +42,33 @@ type Client struct {
 // and credentials. A call made with a per-call region, credentials or HTTPClient override
 // goes to DynamoDB. The client's retryer is wrapped so that the requests one dropped
 // cache connection fails cost its retry quota one retry; a Retryer set per call is not.
-func NewFromConfig(ctx context.Context, cfg aws.Config, opts Options,
+func NewFromConfig(ctx context.Context, awsCfg aws.Config, cacheOpts Options,
 	optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
-	c, err := opts.validate()
+	cfg, err := cacheOpts.validate()
 	if err != nil {
 		return nil, nil, err
 	}
-	return start(ctx, c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
-		return dynamodb.NewFromConfig(cfg, fns...)
+	return startClient(ctx, cfg, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+		return dynamodb.NewFromConfig(awsCfg, fns...)
 	}, optFns)
 }
 
 // New is NewFromConfig for callers that build [dynamodb.Options] themselves, as
 // [dynamodb.New] does.
-func New(ctx context.Context, options dynamodb.Options, opts Options,
+func New(ctx context.Context, ddbOptions dynamodb.Options, cacheOpts Options,
 	optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
-	c, err := opts.validate()
+	cfg, err := cacheOpts.validate()
 	if err != nil {
 		return nil, nil, err
 	}
-	return start(ctx, c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
-		return dynamodb.New(options, fns...)
+	return startClient(ctx, cfg, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+		return dynamodb.New(ddbOptions, fns...)
 	}, optFns)
 }
 
-// start builds the DynamoDB client with install as its last option function, then opens the
-// session. On failure nothing it started keeps running.
-func start(ctx context.Context, cfg *config, build func(...func(*dynamodb.Options)) *dynamodb.Client,
+// startClient builds the DynamoDB client with install as its last option function, then opens
+// the session. On failure nothing it started keeps running.
+func startClient(ctx context.Context, cfg *config, build func(...func(*dynamodb.Options)) *dynamodb.Client,
 	optFns []func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
 	c := &Client{cfg: cfg, start: time.Now()}
 	// The three-index slice keeps append from writing into the caller's array.
@@ -104,7 +104,7 @@ func (c *Client) open(ctx context.Context, o dynamodb.Options) error {
 	if err := resolveIdentity(ctx, o.Region, o.Credentials); err != nil {
 		return err
 	}
-	c.identity = identity{region: o.Region}
+	c.region = o.Region
 	auth := newTokenManager(c.cfg, o.Region, o.Credentials)
 	sessions, err := openSessions(ctx, c.cfg, auth)
 	if err != nil {
@@ -212,11 +212,20 @@ func (c *Client) pick(tried uint32) int {
 			failed = now-at < int64(failedAvoid)
 		}
 		f := s.inflight.Load()
-		if best < 0 || bestFailed && !failed || failed == bestFailed && f < least {
+		if best < 0 || betterPick(failed, f, bestFailed, least) {
 			best, least, bestFailed = int(j), f, failed
 		}
 	}
 	return best
+}
+
+// betterPick reports whether a session with failed and inflight beats the best so far: one
+// with no recent failure beats one with, then fewer calls in flight win.
+func betterPick(failed bool, inflight int64, bestFailed bool, bestInflight int64) bool {
+	if failed != bestFailed {
+		return !failed
+	}
+	return inflight < bestInflight
 }
 
 // sinceStart is the monotonic time since the client was created, in nanoseconds, at least 1.

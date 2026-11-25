@@ -221,7 +221,7 @@ func TestWriteAfterAdmissionEndNotSent(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	_, err := conn.write(context.Background(), []byte("x"), true, now.Add(time.Second), now)
+	_, err := conn.write(context.Background(), []byte("x"), true, sendBudget{deadline: now.Add(time.Second), sendBy: now})
 	if !errors.As(err, new(*RequestNotSentError)) {
 		t.Fatalf("%v", err)
 	}

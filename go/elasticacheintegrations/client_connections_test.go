@@ -297,7 +297,7 @@ func TestConnectionsStartFailureClosesAll(t *testing.T) {
 	c := sdkConfig(t, s, addr)
 	c.connections = 4
 	c.connectionTimeout = 200 * time.Millisecond
-	ddb, cache, err := start(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+	ddb, cache, err := startClient(context.Background(), c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 		return dynamodb.NewFromConfig(awsConfig(), fns...)
 	}, []func(*dynamodb.Options){func(o *dynamodb.Options) { o.HTTPClient = &fakeOrigin{} }})
 	if err == nil || ddb != nil || cache != nil {
@@ -323,5 +323,20 @@ func TestTryRequestDoesNotWait(t *testing.T) {
 	r := getItem("https://dynamodb.us-east-1.amazonaws.com/")
 	if _, ok := ss.tryRequest(context.Background(), r, false); ok {
 		t.Fatal("tryRequest without a connection returned an outcome")
+	}
+}
+
+func TestBetterPick(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		for _, bestFailed := range []bool{false, true} {
+			for _, inflight := range []int64{1, 2, 3} {
+				const bestInflight = 2
+				want := failed != bestFailed && !failed || failed == bestFailed && inflight < bestInflight
+				if got := betterPick(failed, inflight, bestFailed, bestInflight); got != want {
+					t.Errorf("betterPick(%v, %d, %v, %d) = %v, want %v",
+						failed, inflight, bestFailed, bestInflight, got, want)
+				}
+			}
+		}
 	}
 }

@@ -316,7 +316,7 @@ func TestPendingExpire(t *testing.T) {
 
 	lost := &ConnectionLostError{Msg: "gone"}
 	lostErr := func() error { return lost }
-	if fatal := p.expire(now.Add(time.Second), timeout, lostErr, nil); fatal != nil {
+	if fatal := p.expire(now.Add(time.Second), expireHooks{timeout: timeout, lost: lostErr}); fatal != nil {
 		t.Fatalf("fatal %v at 1s", fatal)
 	}
 	if _, err := finishedWith(t, deferredLate); !errors.As(err, new(*TimeoutError)) {
@@ -331,7 +331,7 @@ func TestPendingExpire(t *testing.T) {
 	if free, _ := p.slots.state(); free != 3 {
 		t.Fatalf("free %d", free)
 	}
-	if fatal := p.expire(now.Add(2*time.Second), timeout, lostErr, nil); fatal != inOrder {
+	if fatal := p.expire(now.Add(2*time.Second), expireHooks{timeout: timeout, lost: lostErr}); fatal != inOrder {
 		t.Fatalf("fatal %v at 2s, want the in-order entry", fatal)
 	}
 	// The late in-order entry fails every other entry in the same critical section.
@@ -370,7 +370,7 @@ func TestPendingFailAll(t *testing.T) {
 	if err := p.slots.acquire(context.Background(), budget(time.Second)); !errors.As(err, new(*ConnectionLostError)) {
 		t.Fatalf("acquire after failAll: %v", err)
 	}
-	if p.resolveDeferred("1", resp.IntValue(1)) || p.expire(time.Now(), nil, nil, nil) != nil {
+	if p.resolveDeferred("1", resp.IntValue(1)) || p.expire(time.Now(), expireHooks{}) != nil {
 		t.Fatal("a closed tracker resolved something")
 	}
 	if !p.resolveHead(resp.IntValue(1)) {
@@ -408,7 +408,7 @@ func TestPendingExpireFailsLateDeferredBeforeFatal(t *testing.T) {
 	p.deferHead("1")
 	inOrder := track(t, p, false, now.Add(time.Second))
 	timeout := &TimeoutError{Msg: "late"}
-	if fatal := p.expire(now.Add(time.Second), func() error { return timeout }, newEarlierTimedOutError, nil); fatal != inOrder {
+	if fatal := p.expire(now.Add(time.Second), expireHooks{timeout: func() error { return timeout }, lost: newEarlierTimedOutError}); fatal != inOrder {
 		t.Fatalf("fatal %v, want the in-order entry", fatal)
 	}
 	if _, err := finishedWith(t, deferred); err != timeout {
@@ -437,7 +437,7 @@ func TestPendingExpireCallsDyingFirst(t *testing.T) {
 		return err
 	}
 	timeout := func() error { return &TimeoutError{Msg: "late"} }
-	if fatal := p.expire(now.Add(time.Second), timeout, func() error { return lost }, dying); fatal != inOrder || got != lost {
+	if fatal := p.expire(now.Add(time.Second), expireHooks{timeout: timeout, lost: func() error { return lost }, dying: dying}); fatal != inOrder || got != lost {
 		t.Fatalf("fatal %v, dying got %v", fatal, got)
 	}
 	if _, err := finishedWith(t, other); err != lost {
@@ -455,7 +455,7 @@ func TestPendingExpireFailsWithDyingCause(t *testing.T) {
 	cause := &ConnectionLostError{Msg: "the connection was closed"}
 	timeout := &TimeoutError{Msg: "late"}
 	dying := func(error) error { return cause }
-	if fatal := p.expire(now.Add(time.Second), func() error { return timeout }, newEarlierTimedOutError, dying); fatal != inOrder {
+	if fatal := p.expire(now.Add(time.Second), expireHooks{timeout: func() error { return timeout }, lost: newEarlierTimedOutError, dying: dying}); fatal != inOrder {
 		t.Fatalf("fatal %v, want the in-order entry", fatal)
 	}
 	if _, err := finishedWith(t, inOrder); err != timeout {

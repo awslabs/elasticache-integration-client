@@ -545,7 +545,7 @@ func TestSDKNoSecretsInLogsOrErrors(t *testing.T) {
 	bc.logger = newLogger(lg)
 	bc.connectionTimeout = time.Second
 	bc.backoffMin, bc.backoffMax, bc.jitter = 2*time.Second, 2*time.Second, 0
-	_, _, err := start(context.Background(), bc, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+	_, _, err := startClient(context.Background(), bc, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
 		return dynamodb.NewFromConfig(awsConfig(), fns...)
 	}, nil)
 	if !errors.As(err, new(*AuthError)) {

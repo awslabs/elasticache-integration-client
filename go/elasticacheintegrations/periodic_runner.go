@@ -11,14 +11,25 @@ import (
 	"time"
 )
 
-// backoff is the wait after failed attempt n (from 1): backoffMin doubling up to backoffMax,
-// with ±jitter, and at least 1ms.
-func backoff(c *config, attempt int) time.Duration {
-	d := c.backoffMin
-	for i := 1; i < attempt && d < c.backoffMax; i++ {
-		d = min(2*d, c.backoffMax)
+// backoff is the reconnect and re-AUTH wait after failed attempt n (from 1).
+func backoff(cfg *config, attempt int) time.Duration {
+	return expBackoff(cfg.backoffMin, cfg.backoffMax, cfg.jitter, attempt, rand.Float64)
+}
+
+// expBackoff is the wait after failed attempt n (from 1): lo doubling up to hi, scaled by
+// 1-jitter+2*jitter*rnd(), in whole milliseconds and at least 1ms.
+func expBackoff(lo, hi time.Duration, jitter float64, attempt int, rnd func() float64) time.Duration {
+	d := lo
+	if n := min(max(attempt-1, 0), 63); lo < hi {
+		d = hi
+		if lo <= hi>>n { // lo<<n neither passes hi nor overflows
+			d = lo << n
+		}
 	}
-	return max(time.Millisecond, jittered(d, c.jitter).Round(time.Millisecond))
+	if jitter != 0 {
+		d = time.Duration(float64(d) * (1 - jitter + 2*jitter*rnd()))
+	}
+	return max(time.Millisecond, d.Round(time.Millisecond))
 }
 
 // jittered returns d scaled by a uniform factor in [1-j, 1+j).
@@ -43,9 +54,9 @@ type periodicRunner struct {
 	logger       *logger
 }
 
-func newPeriodicRunner(name string, interval time.Duration, c *config,
+func newPeriodicRunner(name string, interval time.Duration, jitter float64, logger *logger,
 	failureDelay func(failures int) time.Duration, tick func(context.Context) (bool, error)) *periodicRunner {
-	r := &periodicRunner{name: name, jitter: c.jitter, failureDelay: failureDelay, tick: tick, logger: c.logger}
+	r := &periodicRunner{name: name, jitter: jitter, failureDelay: failureDelay, tick: tick, logger: logger}
 	r.setInterval(interval)
 	return r
 }

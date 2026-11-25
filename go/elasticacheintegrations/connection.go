@@ -45,7 +45,7 @@ func authErrorCode(v resp.Value) string {
 // tracker. It never reconnects; the session opens a new one.
 type connection struct {
 	cfg     *config
-	conn    net.Conn
+	nc      net.Conn
 	reader  *resp.Reader // read by the bring-up, then only by the reader goroutine
 	pending *pendingRequests
 	turn    chan struct{} // the write turn: taken by a send, given back by a receive
@@ -61,36 +61,36 @@ type connection struct {
 	charge     *dropCharge // shared by the requests its death fails
 }
 
-func newConnection(c *config, nc net.Conn, onLost func(error)) *connection {
-	conn := &connection{
-		cfg:        c,
-		conn:       nc,
-		reader:     resp.NewReader(nc, c.readSize, c.maxResponseSize),
+func newConnection(cfg *config, nc net.Conn, onLost func(error)) *connection {
+	c := &connection{
+		cfg:        cfg,
+		nc:         nc,
+		reader:     resp.NewReader(nc, cfg.readSize, cfg.maxResponseSize),
 		turn:       make(chan struct{}, 1),
 		onLost:     onLost,
 		dead:       make(chan struct{}),
 		readerDone: make(chan struct{}),
 		charge:     &dropCharge{},
 	}
-	conn.pending = newPendingRequests(c.maxPending, conn.checkDeadlines)
-	return conn
+	c.pending = newPendingRequests(cfg.maxPending, c.checkDeadlines)
+	return c
 }
 
 // openConnection brings one connection up before deadline: TCP, TLS, HELLO 3 AUTH with a
 // token from auth, then aws.config with the overrides. On success the reader goroutine runs.
 // A done ctx returns ctx.Err().
-func openConnection(ctx context.Context, c *config, auth authProvider, deadline time.Time,
+func openConnection(ctx context.Context, cfg *config, auth authProvider, deadline time.Time,
 	onLost func(error)) (*connection, *resolvedConfig, error) {
 	bctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	nc, err := dialCache(bctx, c)
+	nc, err := dialCache(bctx, cfg)
 	if err != nil {
 		return nil, nil, bringUpError(ctx, err)
 	}
 	_ = nc.SetDeadline(deadline)
 	// A done bctx moves the socket deadline to the past, so a blocked read or write returns.
 	stop := context.AfterFunc(bctx, func() { _ = nc.SetDeadline(time.Unix(1, 0)) })
-	conn := newConnection(c, nc, onLost)
+	conn := newConnection(cfg, nc, onLost)
 	rc, err := conn.handshake(bctx, auth)
 	if err == nil && !stop() {
 		err = stepFailed(bctx, "bring-up", bctx.Err())
@@ -155,7 +155,7 @@ func (c *connection) handshake(ctx context.Context, auth authProvider) (*resolve
 
 // exchange writes one bring-up frame and reads its reply.
 func (c *connection) exchange(ctx context.Context, frame []byte, step string) (resp.Value, error) {
-	if _, err := c.conn.Write(frame); err != nil {
+	if _, err := c.nc.Write(frame); err != nil {
 		return resp.Value{}, stepFailed(ctx, step, err)
 	}
 	v, err := c.reader.Next()
@@ -188,13 +188,18 @@ func checkHello(v resp.Value) error {
 	}
 }
 
-// die ends the connection once: it closes the socket, fails every pending entry with lost
-// (timedOut with timeoutErr), and, unless its owner closed it first, logs ev and calls onLost.
-// It reports whether this call ended it.
-func (c *connection) die(ev eventID, lost error, timedOut *pendingEntry, timeoutErr error) bool {
+// die ends the connection once: it closes the socket, fails every pending entry with lost,
+// and, unless its owner closed it first, logs ev and calls onLost. It reports whether this
+// call ended it.
+func (c *connection) die(ev eventID, lost error) bool {
+	return c.dieTimedOut(ev, lost, nil, nil)
+}
+
+// dieTimedOut is die, failing timedOut with timeoutErr instead of lost.
+func (c *connection) dieTimedOut(ev eventID, lost error, timedOut *pendingEntry, timeoutErr error) bool {
 	first := c.markDead(lost)
 	if first {
-		_ = closeSocket(c.conn)
+		_ = closeSocket(c.nc)
 		c.pending.failAll(lost, timedOut, timeoutErr)
 	}
 	return c.reportDeath(first, ev, lost)
@@ -245,7 +250,7 @@ func closeSocket(nc net.Conn) error {
 // must not be called from onLost.
 func (c *connection) close() {
 	c.closing.Store(true)
-	c.die(eventConnectionLost, &ConnectionLostError{Msg: "the connection was closed"}, nil, nil)
+	c.die(eventConnectionLost, &ConnectionLostError{Msg: "the connection was closed"})
 	if c.started.Load() {
 		<-c.readerDone
 	}
@@ -255,7 +260,7 @@ func (c *connection) close() {
 // drop closes a live connection the session no longer trusts; onLost runs as for any death.
 // It reports whether this call ended the connection.
 func (c *connection) drop(reason string) bool {
-	return c.die(eventConnectionLost, &ConnectionLostError{Msg: reason}, nil, nil)
+	return c.die(eventConnectionLost, &ConnectionLostError{Msg: reason})
 }
 
 // alive reports whether the connection has not died or been closed.
@@ -281,12 +286,16 @@ func (c *connection) err() error {
 // fails every entry with its cause in one critical section.
 func (c *connection) checkDeadlines() {
 	first := false
-	fatal := c.pending.expire(time.Now(), c.timeoutError, newEarlierTimedOutError, func(lost error) error {
-		first = c.markDead(lost)
-		return c.cause
+	fatal := c.pending.expire(time.Now(), expireHooks{
+		timeout: c.timeoutError,
+		lost:    newEarlierTimedOutError,
+		dying: func(lost error) error {
+			first = c.markDead(lost)
+			return c.cause
+		},
 	})
 	if fatal != nil && first {
-		_ = closeSocket(c.conn)
+		_ = closeSocket(c.nc)
 		c.reportDeath(true, eventInOrderTimeout, c.cause)
 	}
 }
@@ -371,9 +380,16 @@ func (c *connection) start(ctx context.Context, frame []byte, deferrable bool) (
 		c.pending.slots.release()
 		return nil, err
 	}
-	e, err := c.write(ctx, frame, deferrable, deadline, a.until)
+	e, err := c.write(ctx, frame, deferrable, sendBudget{deadline: deadline, sendBy: a.until})
 	<-c.turn
 	return e, err
+}
+
+// sendBudget bounds one request: it must be written by sendBy, and its reply is due by
+// deadline, or a quarter of the request timeout after the write, whichever is later.
+type sendBudget struct {
+	deadline time.Time
+	sendBy   time.Time
 }
 
 func newNoTurnError() error {
@@ -401,12 +417,12 @@ func (c *connection) takeTurn(ctx context.Context, a *admission) error {
 
 // write registers the entry and writes the whole frame, under the write turn, so FIFO order
 // is wire order. The caller's slot belongs to the entry once it is registered.
-func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, deadline, sendBy time.Time) (*pendingEntry, error) {
+func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, b sendBudget) (*pendingEntry, error) {
 	if err := ctx.Err(); err != nil {
 		c.pending.slots.release()
 		return nil, err
 	}
-	if !time.Now().Before(sendBy) {
+	if !time.Now().Before(b.sendBy) {
 		c.pending.slots.release()
 		return nil, newNoTurnError()
 	}
@@ -415,17 +431,17 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 		c.pending.slots.release()
 		return nil, err
 	}
-	_ = c.conn.SetWriteDeadline(deadline)
-	_, err = c.conn.Write(frame)
+	_ = c.nc.SetWriteDeadline(b.deadline)
+	_, err = c.nc.Write(frame)
 	// A TLS read may write too (a key update), so no stale deadline is left behind.
-	_ = c.conn.SetWriteDeadline(time.Time{})
+	_ = c.nc.SetWriteDeadline(time.Time{})
 	if err != nil {
 		// Part of the frame may be on the wire, so the stream is out of step.
 		if isTimeout(err) {
-			c.die(eventConnectionLost, &ConnectionLostError{Msg: "a request write timed out"}, e,
+			c.dieTimedOut(eventConnectionLost, &ConnectionLostError{Msg: "a request write timed out"}, e,
 				&TimeoutError{Msg: "the request write timed out", Err: err})
 		} else {
-			c.die(eventConnectionLost, &ConnectionLostError{Msg: "socket write failed", Err: err}, nil, nil)
+			c.die(eventConnectionLost, &ConnectionLostError{Msg: "socket write failed", Err: err})
 		}
 		<-e.done
 		if e.err == nil {
@@ -434,7 +450,7 @@ func (c *connection) write(ctx context.Context, frame []byte, deferrable bool, d
 		return nil, e.err
 	}
 	// The reply gets what is left of the budget, and at least a quarter of it.
-	c.pending.setDeadline(e, laterOf(deadline, time.Now().Add(c.cfg.cacheRequestTimeout/4)))
+	c.pending.setDeadline(e, laterOf(b.deadline, time.Now().Add(c.cfg.cacheRequestTimeout/4)))
 	return e, nil
 }
 

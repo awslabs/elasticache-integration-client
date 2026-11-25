@@ -11,11 +11,11 @@ import (
 	"strconv"
 )
 
-// dialCache opens the byte stream to the cache: TCP, then TLS unless c.plaintext. Both steps
+// dialCache opens the byte stream to the cache: TCP, then TLS unless cfg.plaintext. Both steps
 // run under ctx, whose deadline is the bring-up deadline.
-func dialCache(ctx context.Context, c *config) (net.Conn, error) {
-	addr := net.JoinHostPort(c.host, strconv.Itoa(c.port))
-	dial := c.dial
+func dialCache(ctx context.Context, cfg *config) (net.Conn, error) {
+	addr := net.JoinHostPort(cfg.host, strconv.Itoa(cfg.port))
+	dial := cfg.dial
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext // TCP keepalive and TCP_NODELAY are on by default
 	}
@@ -23,10 +23,10 @@ func dialCache(ctx context.Context, c *config) (net.Conn, error) {
 	if err != nil {
 		return nil, stepFailed(ctx, "connect to "+addr, err)
 	}
-	if c.plaintext {
+	if cfg.plaintext {
 		return raw, nil
 	}
-	conn := tls.Client(raw, tlsConfig(c))
+	conn := tls.Client(raw, tlsConfig(cfg))
 	if err := conn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
 		return nil, stepFailed(ctx, "TLS handshake with "+addr, err)
@@ -36,10 +36,10 @@ func dialCache(ctx context.Context, c *config) (net.Conn, error) {
 
 // tlsConfig is TLS 1.2 or later, verified against the endpoint host. For an IP literal Go sends
 // no SNI and checks the IP against the certificate's IP addresses.
-func tlsConfig(c *config) *tls.Config {
-	t := &tls.Config{ServerName: c.host, MinVersion: tls.VersionTLS12, RootCAs: c.rootCAs}
-	if c.insecureSkipVerify {
-		c.logger.warnInsecureSkipVerify()
+func tlsConfig(cfg *config) *tls.Config {
+	t := &tls.Config{ServerName: cfg.host, MinVersion: tls.VersionTLS12, RootCAs: cfg.rootCAs}
+	if cfg.insecureSkipVerify {
+		cfg.logger.warnInsecureSkipVerify()
 		t.InsecureSkipVerify = true
 	}
 	return t

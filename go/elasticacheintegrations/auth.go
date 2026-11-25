@@ -32,12 +32,20 @@ const (
 	refreshBackoffJitter = 0.2
 )
 
+// tokenScope is what an IAM token grants: connecting to cache as user, signed in region.
+type tokenScope struct {
+	cache  string
+	user   string
+	region string
+}
+
 // signToken returns the IAM token: the presigned ElastiCache connect URL without its scheme.
 // The SDK writes the query in SigV4 canonical order.
-func signToken(ctx context.Context, creds aws.Credentials, cache, user, region string, now time.Time) (secret, error) {
+func signToken(ctx context.Context, creds aws.Credentials, scope tokenScope, now time.Time) (secret, error) {
+	cache, region := scope.cache, scope.region
 	q := url.Values{
 		"Action":        {"connect"},
-		"User":          {user},
+		"User":          {scope.user},
 		"ResourceType":  {"ServerlessCache"},
 		"X-Amz-Expires": {strconv.Itoa(tokenExpirySeconds)},
 	}
@@ -82,10 +90,10 @@ func resolveIdentity(ctx context.Context, region string, provider aws.Credential
 }
 
 // matchesIdentity reports whether a request signed with signedKeyID in signedRegion may use
-// the client's cache connection: the region is the client's and the SDK signed it with the key
-// the client's own provider returned for this call.
-func matchesIdentity(ctx context.Context, region, signedKeyID, signedRegion string) bool {
-	if signedRegion != region || signedKeyID == "" {
+// the client's cache connection: signedRegion is clientRegion and the SDK signed it with the
+// key the client's own provider returned for this call.
+func matchesIdentity(ctx context.Context, clientRegion, signedKeyID, signedRegion string) bool {
+	if signedRegion != clientRegion || signedKeyID == "" {
 		return false
 	}
 	slot, ok := ctx.Value(signerSlotKey{}).(*signerSlot)
@@ -168,9 +176,7 @@ type authProvider interface {
 // developer toolkit's token manager does. One worker goroutine does every refresh.
 type tokenManager struct {
 	provider     aws.CredentialsProvider
-	cache        string
-	user         string
-	region       string
+	scope        tokenScope
 	refreshDelay time.Duration
 	random       func() float64 // in [0, 1), for the backoff jitter
 
@@ -208,20 +214,18 @@ var _ authProvider = (*tokenManager)(nil)
 
 // newTokenManager starts a token manager for the client's cache, user and refresh delay,
 // signing with region and the credentials of provider.
-func newTokenManager(c *config, region string, provider aws.CredentialsProvider) *tokenManager {
-	m := buildTokenManager(c, region, provider)
+func newTokenManager(cfg *config, region string, provider aws.CredentialsProvider) *tokenManager {
+	m := buildTokenManager(cfg, region, provider)
 	m.start()
 	return m
 }
 
-func buildTokenManager(c *config, region string, provider aws.CredentialsProvider) *tokenManager {
+func buildTokenManager(cfg *config, region string, provider aws.CredentialsProvider) *tokenManager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &tokenManager{
 		provider:     provider,
-		cache:        c.cacheName,
-		user:         c.userID,
-		region:       region,
-		refreshDelay: c.iamTokenRefreshDelay,
+		scope:        tokenScope{cache: cfg.cacheName, user: cfg.userID, region: region},
+		refreshDelay: cfg.iamTokenRefreshDelay,
 		random:       rand.Float64,
 		ctx:          ctx,
 		cancel:       cancel,
@@ -241,7 +245,7 @@ func (m *tokenManager) credentials(ctx context.Context) (authCredentials, error)
 	if err != nil {
 		return authCredentials{}, err
 	}
-	return authCredentials{user: m.user, token: tok}, nil
+	return authCredentials{user: m.scope.user, token: tok}, nil
 }
 
 // token returns the cached token while it is usable, starting a background refresh once it
@@ -390,7 +394,7 @@ func (m *tokenManager) sign(now time.Time) (secret, aws.Credentials, error) {
 	if !creds.HasKeys() {
 		return secret{}, creds, errors.New("the credentials have no access key id or secret access key")
 	}
-	tok, err := signToken(m.ctx, creds, m.cache, m.user, m.region, now)
+	tok, err := signToken(m.ctx, creds, m.scope, now)
 	return tok, creds, err
 }
 
@@ -438,10 +442,5 @@ func (m *tokenManager) fail(call *refreshCall, lastErr error) (time.Duration, bo
 
 // backoff is the wait after failed attempt n: min(100 ms·2^(n-1), 5 s), ±20%.
 func (m *tokenManager) backoff(attempt int) time.Duration {
-	d := refreshBackoffBase << min(attempt-1, 30)
-	if d > refreshBackoffMax || d <= 0 {
-		d = refreshBackoffMax
-	}
-	jitter := 1 - refreshBackoffJitter + 2*refreshBackoffJitter*m.random()
-	return time.Duration(float64(d) * jitter).Round(time.Millisecond)
+	return expBackoff(refreshBackoffBase, refreshBackoffMax, refreshBackoffJitter, attempt, m.random)
 }

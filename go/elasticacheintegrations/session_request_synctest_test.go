@@ -496,7 +496,7 @@ func TestRequestFindsLiveConnectionDead(t *testing.T) {
 		s := openTestSession(t, c, &sessionAuth{})
 		conn := s.live.Load()
 		conn.closing.Store(true) // dies without calling onLost
-		conn.die(eventConnectionLost, &ConnectionLostError{Msg: "lost"}, nil, nil)
+		conn.die(eventConnectionLost, &ConnectionLostError{Msg: "lost"})
 		synctest.Wait()
 		if s.live.Load() != conn {
 			t.Fatal("onLost ran")

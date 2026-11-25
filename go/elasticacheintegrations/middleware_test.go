@@ -22,10 +22,6 @@ import (
 
 const testRegion = "us-east-1"
 
-func testIdentity() identity {
-	return identity{region: testRegion}
-}
-
 // signedRequest is a DynamoDB request as the SDK hands it to its HTTP client: operation name
 // in the context, the client's own key recorded by its provider, SigV4-signed with creds in
 // region.
@@ -69,7 +65,7 @@ func getItemRequest(t testing.TB) *http.Request {
 
 func TestAdaptRequest(t *testing.T) {
 	req := getItemRequest(t)
-	r, ok, err := adaptRequest(req, testIdentity())
+	r, ok, err := adaptRequest(req, testRegion)
 	if err != nil || !ok {
 		t.Fatalf("adaptRequest = %v, %v", ok, err)
 	}
@@ -115,7 +111,7 @@ func TestAdaptRequestHeaders(t *testing.T) {
 	req.Header["X-Dup"] = []string{"aa"}
 	req.Header["X-DUP"] = []string{" mm"}
 	req.Header.Set("Content-Length", "999")
-	r, ok, err := adaptRequest(req, testIdentity())
+	r, ok, err := adaptRequest(req, testRegion)
 	if err != nil || !ok {
 		t.Fatalf("adaptRequest = %v, %v", ok, err)
 	}
@@ -146,7 +142,7 @@ func TestAdaptRequestHeaderBlock(t *testing.T) {
 			req.Header[" X-Dup"] = []string{"d"}
 		}
 		want := headerBlock(requestHeaders(req.Header, req.ContentLength))
-		r, ok, err := adaptRequest(req, testIdentity())
+		r, ok, err := adaptRequest(req, testRegion)
 		if err != nil || !ok {
 			t.Fatalf("adaptRequest = %v, %v", ok, err)
 		}
@@ -169,7 +165,7 @@ func TestAdaptRequestHeadersSameLowercaseNameIsDeterministic(t *testing.T) {
 		req.Header["x-d"] = []string{"zz"}
 		req.Header["X-D"] = []string{"aa"}
 		req.Header["X-d"] = []string{"mm"}
-		r, ok, err := adaptRequest(req, testIdentity())
+		r, ok, err := adaptRequest(req, testRegion)
 		if err != nil || !ok {
 			t.Fatalf("adaptRequest = %v, %v", ok, err)
 		}
@@ -183,7 +179,7 @@ func TestAdaptRequestEmptyBody(t *testing.T) {
 	for _, body := range []io.ReadCloser{nil, http.NoBody} {
 		req := signedRequest(t, "ListTables", "", testCredentials(t), testRegion)
 		req.Body, req.ContentLength = body, 0
-		r, ok, err := adaptRequest(req, testIdentity())
+		r, ok, err := adaptRequest(req, testRegion)
 		if err != nil || !ok || len(r.body) != 0 || r.headerMap()["content-length"] != "0" {
 			t.Fatalf("body %v: adaptRequest = %+v, %v, %v", body, r, ok, err)
 		}
@@ -194,7 +190,7 @@ func TestAdaptRequestOperationFromTarget(t *testing.T) {
 	req := getItemRequest(t)
 	req = req.WithContext(signerContext())
 	req.Header.Set("X-Amz-Target", "DynamoDB_20120810.Query ")
-	r, ok, err := adaptRequest(req, testIdentity())
+	r, ok, err := adaptRequest(req, testRegion)
 	if err != nil || !ok || r.metadata.operation != "Query" {
 		t.Fatalf("adaptRequest = %+v, %v, %v", r, ok, err)
 	}
@@ -206,64 +202,63 @@ func TestAdaptRequestNotRoutable(t *testing.T) {
 	cases := []struct {
 		name string
 		req  func() *http.Request
-		id   identity
 	}{
-		{"unknown length", func() *http.Request { r := getItemRequest(t); r.ContentLength = -1; return r }, testIdentity()},
-		{"zero length with a body", func() *http.Request { r := getItemRequest(t); r.ContentLength = 0; return r }, testIdentity()},
-		{"over 16 MiB", func() *http.Request { r := getItemRequest(t); r.ContentLength = maxRequestBody + 1; return r }, testIdentity()},
+		{"unknown length", func() *http.Request { r := getItemRequest(t); r.ContentLength = -1; return r }},
+		{"zero length with a body", func() *http.Request { r := getItemRequest(t); r.ContentLength = 0; return r }},
+		{"over 16 MiB", func() *http.Request { r := getItemRequest(t); r.ContentLength = maxRequestBody + 1; return r }},
 		{"no operation", func() *http.Request {
 			r := getItemRequest(t)
 			r = r.WithContext(signerContext())
 			r.Header.Del("X-Amz-Target")
 			return r
-		}, testIdentity()},
+		}},
 		{"two targets", func() *http.Request {
 			r := getItemRequest(t).WithContext(signerContext())
 			r.Header.Add("X-Amz-Target", "DynamoDB_20120810.Query")
 			return r
-		}, testIdentity()},
+		}},
 		{"empty target operation", func() *http.Request {
 			r := getItemRequest(t).WithContext(signerContext())
 			r.Header.Set("X-Amz-Target", "DynamoDB_20120810.")
 			return r
-		}, testIdentity()},
-		{"unsigned", func() *http.Request { r := getItemRequest(t); r.Header.Del("Authorization"); return r }, testIdentity()},
+		}},
+		{"unsigned", func() *http.Request { r := getItemRequest(t); r.Header.Del("Authorization"); return r }},
 		{"two signatures", func() *http.Request {
 			r := getItemRequest(t)
 			r.Header.Add("Authorization", r.Header.Get("Authorization"))
 			return r
-		}, testIdentity()},
-		{"other scheme", func() *http.Request { r := getItemRequest(t); r.Header.Set("Authorization", "Bearer x"); return r }, testIdentity()},
+		}},
+		{"other scheme", func() *http.Request { r := getItemRequest(t); r.Header.Set("Authorization", "Bearer x"); return r }},
 		{"no credential", func() *http.Request {
 			r := getItemRequest(t)
 			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 SignedHeaders=host, Signature=00")
 			return r
-		}, testIdentity()},
+		}},
 		{"short scope", func() *http.Request {
 			r := getItemRequest(t)
 			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1/aws4_request, Signature=00")
 			return r
-		}, testIdentity()},
+		}},
 		{"other service", func() *http.Request {
 			r := getItemRequest(t)
 			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1/s3/aws4_request, Signature=00")
 			return r
-		}, testIdentity()},
+		}},
 		{"no service", func() *http.Request {
 			r := getItemRequest(t)
 			r.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+testutil.AccessKeyID+"/20260101/us-east-1//aws4_request, Signature=00")
 			return r
-		}, testIdentity()},
+		}},
 		{"per-call credentials", func() *http.Request {
 			return signedRequest(t, "GetItem", `{}`, other, testRegion)
-		}, testIdentity()},
+		}},
 		{"per-call region", func() *http.Request {
 			return signedRequest(t, "GetItem", `{}`, testCredentials(t), "us-west-2")
-		}, testIdentity()},
+		}},
 		{"not signed by the client's provider", func() *http.Request {
 			r := getItemRequest(t)
 			return r.WithContext(awsmiddleware.SetOperationName(context.Background(), "GetItem"))
-		}, testIdentity()},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -271,7 +266,7 @@ func TestAdaptRequestNotRoutable(t *testing.T) {
 			spy := &readSpy{r: req.Body}
 			req.Body = spy
 			length, auth := req.ContentLength, req.Header.Get("Authorization")
-			r, ok, err := adaptRequest(req, tc.id)
+			r, ok, err := adaptRequest(req, testRegion)
 			if ok || err != nil || r != nil {
 				t.Fatalf("adaptRequest = %+v, %v, %v; want not routable", r, ok, err)
 			}
@@ -315,7 +310,7 @@ func TestAdaptRequestBodyErrors(t *testing.T) {
 			if tc.body != nil {
 				req.Body = io.NopCloser(tc.body)
 			}
-			_, ok, err := adaptRequest(req, testIdentity())
+			_, ok, err := adaptRequest(req, testRegion)
 			if ok || err == nil {
 				t.Fatalf("adaptRequest = %v, %v; want an error", ok, err)
 			}
@@ -331,7 +326,7 @@ func TestAdaptRequestBodyErrors(t *testing.T) {
 
 func TestRestoreBody(t *testing.T) {
 	req := getItemRequest(t)
-	r, _, err := adaptRequest(req, testIdentity())
+	r, _, err := adaptRequest(req, testRegion)
 	if err != nil {
 		t.Fatal(err)
 	}
