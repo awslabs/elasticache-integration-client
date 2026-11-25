@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package testutil holds helpers shared by the client's tests: log capture, secret markers,
-// a hermetic AWS environment, static credentials and the shared fixtures.
+// a hermetic AWS environment, static credentials, the shared fixtures and polling.
 package testutil
 
 import (
@@ -18,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 )
@@ -83,6 +84,27 @@ func StaticCredentials() aws.CredentialsProvider {
 			Source:          "testutil",
 		}, nil
 	})
+}
+
+// Poll calls cond every millisecond until it returns true or timeout passes, and reports
+// whether it returned true. Unlike [Eventually] it may run on any goroutine.
+func Poll(timeout time.Duration, cond func() bool) bool {
+	for end := time.Now().Add(timeout); !cond(); {
+		if time.Now().After(end) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return true
+}
+
+// Eventually fails the test unless cond returns true within timeout. Call it only from the
+// test's goroutine.
+func Eventually(t testing.TB, what string, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	if !Poll(timeout, cond) {
+		t.Fatalf("timed out after %v waiting for %s", timeout, what)
+	}
 }
 
 // ClearAWSEnv unsets every AWS_ environment variable for the test and points the shared

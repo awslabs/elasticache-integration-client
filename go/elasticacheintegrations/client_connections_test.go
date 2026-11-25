@@ -6,6 +6,7 @@ package elasticacheintegrations
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/mockcache"
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
@@ -38,15 +40,25 @@ func connectionsSDK(t *testing.T, n int, tune func(*config)) (*mockcache.Server,
 	return s, ddb, cache, origin
 }
 
+// getHit fails the test unless one GetItem returns the hit item. Call it only from the test
+// goroutine; another goroutine uses hitErr.
 func getHit(t *testing.T, ddb *dynamodb.Client) {
 	t.Helper()
-	out, err := ddb.GetItem(context.Background(), &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()})
-	if err != nil {
+	if err := hitErr(ddb); err != nil {
 		t.Fatal(err)
 	}
-	if got := attrS(t, out.Item, "Artist"); got != "Acme" {
-		t.Fatalf("Artist = %q", got)
+}
+
+// hitErr makes one GetItem and reports an error unless it returns the hit item.
+func hitErr(ddb *dynamodb.Client) error {
+	out, err := ddb.GetItem(context.Background(), &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()})
+	if err != nil {
+		return err
 	}
+	if v, ok := out.Item["Artist"].(*types.AttributeValueMemberS); !ok || v.Value != "Acme" {
+		return fmt.Errorf("GetItem Artist = %#v, want \"Acme\"", out.Item["Artist"])
+	}
+	return nil
 }
 
 // perConn counts the commands named name on each connection.
@@ -101,8 +113,8 @@ func TestConnectionsPickFewestInFlight(t *testing.T) {
 		}
 		return servedJSON(200, hitBody)
 	})
-	done := make(chan struct{})
-	go func() { defer close(done); getHit(t, ddb) }()
+	done := make(chan error, 1)
+	go func() { done <- hitErr(ddb) }()
 	waitFor(t, "the first call to be in flight", func() bool { return heldConn.Load() >= 0 })
 	for range 4 {
 		getHit(t, ddb)
@@ -112,7 +124,9 @@ func TestConnectionsPickFewestInFlight(t *testing.T) {
 		t.Fatalf("requests per connection = %v, want 1 on the held connection %d", got, heldConn.Load())
 	}
 	held <- mockcache.Served(200, map[string]string{"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(hitBody)}, []byte(hitBody))
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("the held call: %v", err)
+	}
 	if origin.count() != 0 {
 		t.Fatalf("origin calls = %d", origin.count())
 	}
@@ -135,8 +149,8 @@ func TestConnectionsAvoidConnectionThatJustFailed(t *testing.T) {
 		}
 		return servedJSON(200, hitBody)
 	})
-	done := make(chan struct{})
-	go func() { defer close(done); getHit(t, ddb) }()
+	done := make(chan error, 1)
+	go func() { done <- hitErr(ddb) }()
 	waitFor(t, "the first call to be in flight", func() bool { return heldConn.Load() >= 0 })
 	h := ddb.Options().HTTPClient.(*httpClient)
 	failures := 0
@@ -163,7 +177,9 @@ func TestConnectionsAvoidConnectionThatJustFailed(t *testing.T) {
 		t.Fatal("a call after failedAvoid did not go back to the idle connection")
 	}
 	held <- mockcache.Served(200, map[string]string{"content-type": "application/x-amz-json-1.0", "x-amz-crc32": crc(hitBody)}, []byte(hitBody))
-	<-done
+	if err := <-done; err != nil {
+		t.Fatalf("the held call: %v", err)
+	}
 	if origin.count() != 0 {
 		t.Fatalf("origin calls = %d", origin.count())
 	}

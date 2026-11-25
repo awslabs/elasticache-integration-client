@@ -245,12 +245,16 @@ func TestOpenConnectionCallerCancels(t *testing.T) {
 	s, addr := startMock(t, mockcache.Config{})
 	intercept(s, "HELLO", mockcache.Hang())
 	ctx, cancel := context.WithCancel(context.Background())
+	sent := make(chan bool, 1)
 	go func() {
-		waitFor(t, "HELLO", func() bool { return len(s.Commands()) == 1 })
-		cancel()
+		defer cancel()
+		sent <- testutil.Poll(5*time.Second, func() bool { return len(s.Commands()) == 1 })
 	}()
 	start := time.Now()
 	_, _, err := openConnection(ctx, mockConfig(t, s, addr), &staticAuth{}, time.Now().Add(time.Minute), nil)
+	if !<-sent {
+		t.Fatal("timed out waiting for HELLO")
+	}
 	if !errors.Is(err, context.Canceled) || time.Since(start) > 5*time.Second {
 		t.Fatalf("err %v after %v", err, time.Since(start))
 	}

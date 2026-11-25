@@ -165,6 +165,7 @@ func TestSwitchableCredentials(t *testing.T) {
 
 // echoServer answers every connection by echoing its bytes.
 func echoServer(t *testing.T) string {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -258,6 +259,7 @@ func isClosed(err error) bool { return err != nil && !isTimeout(err) }
 // blockedRelay starts a relay to an echo server whose upstream dial waits for release, and
 // reports on entered when it starts.
 func blockedRelay(t *testing.T) (r *relay, entered, release chan struct{}) {
+	t.Helper()
 	entered, release = make(chan struct{}, 1), make(chan struct{})
 	r, err := startRelayDial("127.0.0.1:0", echoServer(t), func(network, addr string, timeout time.Duration) (net.Conn, error) {
 		entered <- struct{}{}

@@ -16,6 +16,7 @@ import (
 )
 
 func synctestClient(t *testing.T, s *Server) *client {
+	t.Helper()
 	conn, err := s.Dial(context.Background(), "tcp", "")
 	if err != nil {
 		t.Fatal(err)
@@ -39,6 +40,7 @@ func TestSynctest(t *testing.T) {
 }
 
 func synctestServe(t *testing.T, s *Server) {
+	t.Helper()
 	s.SetOnRequest(func(cmd Command) Reply {
 		if cmd.Arg(2) == "deferred" {
 			return DeferredAfter(30*time.Minute, resp.IntValue(2))

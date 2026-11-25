@@ -82,16 +82,21 @@ func TestTokenManagerSharesOneRefresh(t *testing.T) {
 
 		var wg sync.WaitGroup
 		tokens := make([]string, 20)
+		errs := make([]error, len(tokens))
 		for i := range tokens {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				tokens[i] = mustToken(t, m).reveal()
+				tok, err := m.token(context.Background())
+				tokens[i], errs[i] = tok.reveal(), err
 			}()
 		}
 		synctest.Wait()
 		close(release)
 		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			t.Fatal(err)
+		}
 		if f.count() != 1 {
 			t.Errorf("calls %d, want 1", f.count())
 		}

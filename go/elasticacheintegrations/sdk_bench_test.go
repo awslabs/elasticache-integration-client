@@ -45,7 +45,9 @@ type cannedReply struct {
 }
 
 func newCannedCache(tb testing.TB, served resp.Value) *cannedCache {
+	tb.Helper()
 	enc := func(v resp.Value) []byte {
+		tb.Helper()
 		out, err := resp.AppendValue(nil, v)
 		if err != nil {
 			tb.Fatal(err)
@@ -271,6 +273,7 @@ type httpDoFunc func(*http.Request) (*http.Response, error)
 func (f httpDoFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
 
 func benchSDKGetItem(b *testing.B, ddb *dynamodb.Client) {
+	b.Helper()
 	ctx := context.Background()
 	in := &dynamodb.GetItemInput{TableName: aws.String("Music"), Key: musicKey()}
 	b.ReportAllocs()
@@ -284,6 +287,7 @@ func benchSDKGetItem(b *testing.B, ddb *dynamodb.Client) {
 }
 
 func benchSDKPutItem(b *testing.B, ddb *dynamodb.Client, size int) {
+	b.Helper()
 	ctx := context.Background()
 	in := &dynamodb.PutItemInput{TableName: aws.String("Music"), Item: map[string]types.AttributeValue{
 		"Artist": &types.AttributeValueMemberS{Value: "Acme"},

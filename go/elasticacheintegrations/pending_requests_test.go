@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
+	"github.com/awslabs/elasticache-integration-client/go/internal/testutil"
 )
 
 func budget(d time.Duration) *admission { return &admission{until: time.Now().Add(d)} }
@@ -22,15 +23,11 @@ func (l *slotLimiter) state() (free, waiting int) {
 	return l.free, l.waiters.Len()
 }
 
+// waitFor fails the test unless cond holds within 5 s. Call it only from the test goroutine;
+// another goroutine uses testutil.Poll.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testutil.Eventually(t, what, 5*time.Second, cond)
 }
 
 func TestSlotLimiterHandsSlotsInArrivalOrder(t *testing.T) {
@@ -79,11 +76,16 @@ func TestSlotLimiterBoundedWait(t *testing.T) {
 		t.Fatalf("got %v after %v", err, time.Since(start))
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	queued := make(chan bool, 1)
 	go func() {
-		waitFor(t, "waiter", func() bool { _, w := l.state(); return w == 1 })
-		cancel()
+		defer cancel()
+		queued <- testutil.Poll(5*time.Second, func() bool { _, w := l.state(); return w == 1 })
 	}()
-	if err := l.acquire(ctx, budget(time.Minute)); !errors.Is(err, context.Canceled) {
+	err = l.acquire(ctx, budget(time.Minute))
+	if !<-queued {
+		t.Fatal("timed out waiting for the waiter")
+	}
+	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled wait: %v", err)
 	}
 	if _, waiting := l.state(); waiting != 0 {

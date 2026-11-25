@@ -270,15 +270,10 @@ func (h *harness) seen(err error) error {
 	return err
 }
 
-// eventually polls cond every 5 ms for up to 10 s.
+// eventually fails the test unless cond holds within 10 s.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	for end := time.Now().Add(10 * time.Second); !cond(); {
-		if time.Now().After(end) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	testutil.Eventually(t, what, 10*time.Second, cond)
 }
 
 // requests counts the valid aws.requests the cache received.

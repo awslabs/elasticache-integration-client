@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"testing/slogtest"
+	"time"
 )
 
 func TestClearAWSEnv(t *testing.T) {
@@ -27,6 +28,20 @@ func TestClearAWSEnv(t *testing.T) {
 	}
 	if _, err := os.Stat(os.Getenv("AWS_CONFIG_FILE")); !os.IsNotExist(err) {
 		t.Errorf("AWS_CONFIG_FILE exists: %v", err)
+	}
+}
+
+func TestPoll(t *testing.T) {
+	n := 0
+	if !Poll(time.Second, func() bool { n++; return n == 3 }) || n != 3 {
+		t.Errorf("Poll returned before cond held: %d calls, want 3", n)
+	}
+	start := time.Now()
+	if Poll(20*time.Millisecond, func() bool { return false }) {
+		t.Error("Poll(20ms, false) = true, want false")
+	}
+	if took := time.Since(start); took < 20*time.Millisecond {
+		t.Errorf("Poll(20ms, false) returned after %v, want at least 20ms", took)
 	}
 }
 
@@ -141,6 +156,7 @@ func TestLogCaptureConformsToSlogtest(t *testing.T) {
 
 // addAttr adds a to m as a JSON handler would, and fails on a key written twice.
 func addAttr(t *testing.T, m map[string]any, a slog.Attr) {
+	t.Helper()
 	v := a.Value.Resolve()
 	if a.Equal(slog.Attr{}) {
 		return

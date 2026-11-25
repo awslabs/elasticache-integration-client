@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awslabs/elasticache-integration-client/go/internal/resp"
+	"github.com/awslabs/elasticache-integration-client/go/internal/testutil"
 )
 
 // newRelay starts a relay in front of a plaintext mock cache.
@@ -27,15 +28,10 @@ func newRelay(t *testing.T) (*Server, *Relay) {
 	return s, r
 }
 
-// waitFor polls cond every millisecond for up to 5 s.
+// waitFor fails the test unless cond holds within 5 s.
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Second); !cond(); {
-		if time.Now().After(end) {
-			t.Fatalf("timed out waiting for %s", what)
-		}
-		time.Sleep(time.Millisecond)
-	}
+	testutil.Eventually(t, what, 5*time.Second, cond)
 }
 
 // expectNoBytes fails unless conn stays open and silent for d.

@@ -234,7 +234,8 @@ func signedAt(t *testing.T, call originCall) time.Time {
 func TestServedHitDoesNotSkewSigningClock(t *testing.T) {
 	testutil.ClearAWSEnv(t)
 	stale := time.Now().Add(-time.Hour).UTC().Format(http.TimeFormat)
-	listTables := func(ddb *dynamodb.Client) {
+	listTables := func(t *testing.T, ddb *dynamodb.Client) {
+		t.Helper()
 		if _, err := ddb.ListTables(context.Background(), &dynamodb.ListTablesInput{}, func(o *dynamodb.Options) {
 			o.RetryMaxAttempts = 1
 		}); err != nil {
@@ -254,7 +255,7 @@ func TestServedHitDoesNotSkewSigningClock(t *testing.T) {
 		if _, err := getMusic(context.Background(), ddb); err != nil {
 			t.Fatal(err)
 		}
-		listTables(ddb)
+		listTables(t, ddb)
 		if d := time.Since(signedAt(t, origin.last())); d > time.Minute || d < -time.Minute {
 			t.Errorf("the origin call was signed %v off the clock", d)
 		}
@@ -273,8 +274,8 @@ func TestServedHitDoesNotSkewSigningClock(t *testing.T) {
 			return r, nil
 		}}
 		ddb, _ := startSDK(t, sdkConfig(t, s, addr), origin)
-		listTables(ddb)
-		listTables(ddb)
+		listTables(t, ddb)
+		listTables(t, ddb)
 		if d := time.Since(signedAt(t, origin.last())); d < 50*time.Minute {
 			t.Errorf("the SDK did not correct skew from a stale Date (%v); the served test proves nothing", d)
 		}
