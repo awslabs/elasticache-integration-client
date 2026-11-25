@@ -798,3 +798,38 @@ func TestDoOutcomes(t *testing.T) {
 }
 
 func errorReply(code, msg string) resp.Value { return resp.ErrorValue(code, msg) }
+
+// A client built from a bare aws.Config or dynamodb.Options, with no retryer of its own,
+// gets the SDK's default retryer wrapped: the calls of one drop cost one retry. Without the
+// wrap the default bucket grants 35 of them.
+func TestInstallWrapsTheSDKDefaultRetryer(t *testing.T) {
+	builds := map[string]func(...func(*dynamodb.Options)) *dynamodb.Client{
+		"NewFromConfig": func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+			return dynamodb.NewFromConfig(aws.Config{Region: testRegion, Credentials: testutil.StaticCredentials()}, fns...)
+		},
+		"New": func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+			return dynamodb.New(dynamodb.Options{Region: testRegion, Credentials: testutil.StaticCredentials()}, fns...)
+		},
+		"NewFromConfig with RetryMaxAttempts": func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+			return dynamodb.NewFromConfig(aws.Config{Region: testRegion, Credentials: testutil.StaticCredentials(),
+				RetryMaxAttempts: 2}, fns...)
+		},
+	}
+	for name, build := range builds {
+		t.Run(name, func(t *testing.T) {
+			c := &Client{}
+			ddb := build(c.install)
+			if c.installErr != nil {
+				t.Fatal(c.installErr)
+			}
+			r, ok := ddb.Options().Retryer.(aws.RetryerV2)
+			if !ok {
+				t.Fatalf("Retryer is %T, not an aws.RetryerV2", ddb.Options().Retryer)
+			}
+			d := &dropCharge{}
+			if n := tokens(r, repeat(100, func() error { return lostErr(d) })...); n != 100 {
+				t.Fatalf("%d of 100 calls of one drop got a retry token, want 100", n)
+			}
+		})
+	}
+}

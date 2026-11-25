@@ -165,16 +165,22 @@ func TestWarnOnceWritesOnceAndOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
-func TestWarnInsecureSkipVerifyOncePerProcess(t *testing.T) {
-	insecureSkipVerifyWarned.Store(false)
-	t.Cleanup(func() { insecureSkipVerifyWarned.Store(false) })
+// The warning is written once per client: two clients in one process each warn.
+func TestWarnInsecureSkipVerifyOncePerClient(t *testing.T) {
+	t.Parallel()
 	capture, l := testutil.NewLogCapture()
-	newLogger(l).warnInsecureSkipVerify()
-	newLogger(l).warnInsecureSkipVerify()
+	first, second := newLogger(l), newLogger(l)
+	first.warnInsecureSkipVerify()
+	first.warnInsecureSkipVerify()
+	second.warnInsecureSkipVerify()
 	records := capture.Records()
-	if len(records) != 1 || records[0].Level != slog.LevelWarn ||
-		!strings.Contains(records[0].Message, "InsecureSkipVerify") {
-		t.Fatalf("records = %v", records)
+	if len(records) != 2 {
+		t.Fatalf("%d records, want 2 (one per client): %v", len(records), records)
+	}
+	for _, r := range records {
+		if r.Level != slog.LevelWarn || !strings.Contains(r.Message, "InsecureSkipVerify") {
+			t.Fatalf("record = %v, want a Warn naming InsecureSkipVerify", r)
+		}
 	}
 }
 

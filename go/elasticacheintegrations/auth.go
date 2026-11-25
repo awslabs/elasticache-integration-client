@@ -174,7 +174,7 @@ type tokenManager struct {
 	refreshDelay time.Duration
 	random       func() float64 // in [0, 1), for the backoff jitter
 
-	ctx    context.Context // cancelled by close
+	ctx    context.Context // the worker's lifetime, cancelled by close; never a caller's context
 	cancel context.CancelFunc
 	kick   chan struct{} // wakes the worker for a pending refresh
 	wg     sync.WaitGroup

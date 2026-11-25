@@ -161,3 +161,61 @@ func TestPendingEntryBeingWrittenHasNoDeadline(t *testing.T) {
 		})
 	}
 }
+
+// After close, the deadline timer is stopped for good: a later setDeadline does not arm it.
+func TestPendingStopTimerHaltsTheTimer(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fired := 0
+		p := newPendingRequests(5, func() { fired++ })
+		e, err := p.register(false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.setDeadline(e, time.Now().Add(time.Second))
+		p.stopTimer()
+		p.setDeadline(e, time.Now().Add(time.Second))
+		time.Sleep(time.Minute)
+		if fired != 0 {
+			t.Fatalf("the timer fired %d times after stopTimer, want 0", fired)
+		}
+	})
+}
+
+// stopTimer returns once every callback the timer scheduled has run or been cancelled: one
+// replaced by a lower deadline, one armed while another runs, and one stopped.
+func TestPendingStopTimerWaitsForEveryScheduledCallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var p *pendingRequests
+		held, release := make(chan struct{}), make(chan struct{})
+		runs := 0
+		p = newPendingRequests(5, func() {
+			if runs++; runs == 1 {
+				close(held)
+				<-release
+			}
+			p.expire(time.Now(), func() error { return &TimeoutError{} }, errEarlierTimedOut, nil)
+		})
+		start := time.Now()
+		track(t, p, true, start.Add(time.Hour))
+		p.deferHead("1")
+		track(t, p, true, start.Add(time.Second)) // replaces the pending callback
+		p.deferHead("2")
+		<-held                                         // the 1s callback runs and is held
+		track(t, p, true, start.Add(time.Millisecond)) // armed while it runs
+		p.deferHead("3")
+		synctest.Wait()
+		close(release)
+		synctest.Wait() // the timer is now armed for the hour, not yet fired
+		stopped := make(chan struct{})
+		go func() { p.stopTimer(); close(stopped) }()
+		synctest.Wait()
+		select {
+		case <-stopped:
+		default:
+			t.Fatal("stopTimer is still waiting after every callback ran or was stopped")
+		}
+		if runs != 2 {
+			t.Fatalf("the timer ran %d callbacks, want 2", runs)
+		}
+	})
+}

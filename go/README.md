@@ -376,7 +376,7 @@ A cancelled or expired `ctx` ends the call with a `*smithy.CanceledError` that w
 
 **How the SDK learns what to retry.** Each error the client hands the SDK has a `RetryableError() bool` method with the decision in the table above. The SDK's standard retryer (`retry.NewStandard`, the default) and the adaptive retryer (`retry.NewAdaptiveMode`) check it right after the cancellation check, before their other rules. If you replace the retryer, yours must honour `RetryableError` too. One that ignores it treats every cache error as a connection error and retries even a `*RejectedError` or a request `Close` failed.
 
-**The retry quota.** Each retry spends 14 tokens of the standard retryer's 500-token bucket (5 for a throttling error). One connection carries up to 100 requests in flight, so when it drops, every one of them fails at the same moment. The client wraps the DynamoDB client's retryer so that one drop costs the bucket one retry, however many requests it failed, as one dropped HTTP connection costs one retry without the cache: the first of them to retry pays, and the others retry without spending tokens, or are refused if it was. This applies to the retryer the DynamoDB client has after its option functions, the default included; a `Retryer` set on a single call is used as it is. Your retryer still decides whether to retry and how many attempts a request gets. In a long outage with strict mode, or a spent fallback window, every request fails with a retryable `*CacheUnavailableError`, which pays the full cost, so the bucket can empty. While it is empty the SDK does not retry, including throttling errors from DynamoDB. Successful calls refill it slowly.
+**The retry quota.** Each retry spends 14 tokens of the standard retryer's 500-token bucket (5 for a throttling error). One connection carries up to 100 requests in flight, so when it drops, every one of them fails at the same moment. The client wraps the DynamoDB client's retryer so that one drop costs the bucket one retry, however many requests it failed, as one dropped HTTP connection costs one retry without the cache: the first of them to retry pays, and the others retry without spending tokens, or are refused if it was. A call waiting for that answer stops waiting when its own context ends; if the paying call's context ends first, the next call pays. This applies to the retryer the DynamoDB client has after its option functions, the default included; a `Retryer` set on a single call is used as it is. Your retryer still decides whether to retry and how many attempts a request gets. In a long outage with strict mode, or a spent fallback window, every request fails with a retryable `*CacheUnavailableError`, which pays the full cost, so the bucket can empty. While it is empty the SDK does not retry, including throttling errors from DynamoDB. Successful calls refill it slowly.
 
 ## Authentication
 
@@ -406,7 +406,7 @@ A read served from the cache is authorized by the cache connection alone; Dynamo
 
 ## TLS
 
-The connection always uses TLS 1.2 or later. The cache's certificate and host name are checked against the system roots, or against `CACertsFile` when set. The name checked is the `Endpoint` host, also when it is an IP address. `InsecureSkipVerify` keeps TLS but skips the check, and logs a warning once per process; it is not a production option.
+The connection always uses TLS 1.2 or later. The cache's certificate and host name are checked against the system roots, or against `CACertsFile` when set. The name checked is the `Endpoint` host, also when it is an IP address. `InsecureSkipVerify` keeps TLS but skips the check, and logs a warning once per client; it is not a production option.
 
 ## Logging
 
@@ -416,7 +416,7 @@ A failure that repeats logs at Warn the first time and every 100th time, so an o
 
 | Event | Meaning | Level |
 |---|---|---|
-| 1001 | `InsecureSkipVerify` is on | Warn, once per process |
+| 1001 | `InsecureSkipVerify` is on | Warn, once per client |
 | 1101 | A re-AUTH or config refresh failed | Warn on the first and every 100th failure, else Debug |
 | 1102 | A re-AUTH or config refresh succeeded after failures | Info |
 | 1103 | The cache replied `AUTH_ERROR`; reconnecting | Warn, once per dropped connection |

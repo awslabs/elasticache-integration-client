@@ -21,7 +21,7 @@ type Options struct {
 	UserID string
 
 	// InsecureSkipVerify skips TLS certificate checks. Use it only against a local or test
-	// endpoint; the client logs a warning once per process.
+	// endpoint; the client logs a warning once.
 	InsecureSkipVerify bool
 	// CACertsFile is a PEM bundle that replaces the system roots. It is read once at start-up.
 	CACertsFile string

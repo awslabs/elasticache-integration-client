@@ -240,7 +240,8 @@ func closeSocket(nc net.Conn) error {
 	return nc.Close()
 }
 
-// close fails every pending request and waits for the reader goroutine. It is idempotent and
+// close fails every pending request and waits for the reader goroutine and for a deadline
+// check in progress, so neither logs or calls onLost after it returns. It is idempotent and
 // must not be called from onLost.
 func (c *connection) close() {
 	c.closing.Store(true)
@@ -248,6 +249,7 @@ func (c *connection) close() {
 	if c.started.Load() {
 		<-c.readerDone
 	}
+	c.pending.stopTimer()
 }
 
 // drop closes a live connection the session no longer trusts; onLost runs as for any death.

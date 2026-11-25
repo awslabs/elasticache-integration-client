@@ -155,13 +155,16 @@ type pendingRequests struct {
 	slots   *slotLimiter
 	onTimer func() // the connection's deadline check
 
-	mu       sync.Mutex
-	fifo     []*pendingEntry // fifo[head:] awaits in-order replies, oldest first
-	head     int
-	deferred map[string]*pendingEntry
-	closed   bool
-	timer    *time.Timer
-	armedAt  time.Time // zero when not armed
+	mu          sync.Mutex
+	fifo        []*pendingEntry // fifo[head:] awaits in-order replies, oldest first
+	head        int
+	deferred    map[string]*pendingEntry
+	closed      bool
+	timer       *time.Timer
+	armedAt     time.Time // zero when not armed
+	timerHalted bool      // stopTimer ran; the timer is never armed again
+
+	timerRuns sync.WaitGroup // callbacks the timer will run or is running
 }
 
 func newPendingRequests(maxPending int, onTimer func()) *pendingRequests {
@@ -349,9 +352,24 @@ func (p *pendingRequests) failAllLocked(lost error, timedOut *pendingEntry, time
 		fail(e)
 	}
 	p.fifo, p.head, p.deferred = nil, 0, map[string]*pendingEntry{}
-	if p.timer != nil {
-		p.timer.Stop()
+	p.stopTimerLocked()
+}
+
+// stopTimer stops the timer for good and waits for a callback that already started, so no
+// deadline check runs after it returns. It must not be called from the callback.
+func (p *pendingRequests) stopTimer() {
+	p.mu.Lock()
+	p.timerHalted = true
+	p.stopTimerLocked()
+	p.mu.Unlock()
+	p.timerRuns.Wait()
+}
+
+func (p *pendingRequests) stopTimerLocked() {
+	if p.timer != nil && p.timer.Stop() {
+		p.timerRuns.Done() // the callback will not run
 	}
+	p.armedAt = time.Time{}
 }
 
 // pending counts the entries awaiting a reply, in the FIFO and deferred.
@@ -390,17 +408,26 @@ func (p *pendingRequests) finishLocked(e *pendingEntry, v resp.Value, err error)
 	p.slots.release()
 }
 
-// armLocked makes the timer fire by at.
+// armLocked makes the timer fire by at. Every scheduled callback is counted in timerRuns
+// until it returns or is stopped.
 func (p *pendingRequests) armLocked(at time.Time) {
-	if !p.armedAt.IsZero() && !at.Before(p.armedAt) {
+	if p.timerHalted || !p.armedAt.IsZero() && !at.Before(p.armedAt) {
 		return
 	}
 	p.armedAt = at
+	p.timerRuns.Add(1) // before the callback can run and call Done
 	if p.timer == nil {
-		p.timer = time.AfterFunc(time.Until(at), p.onTimer)
+		p.timer = time.AfterFunc(time.Until(at), p.runTimer)
 		return
 	}
-	p.timer.Reset(time.Until(at))
+	if p.timer.Reset(time.Until(at)) {
+		p.timerRuns.Done() // the callback it replaced will not run
+	}
+}
+
+func (p *pendingRequests) runTimer() {
+	defer p.timerRuns.Done()
+	p.onTimer()
 }
 
 func laterOf(a, b time.Time) time.Time {

@@ -6,6 +6,8 @@ package elasticacheintegrations
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -170,5 +172,143 @@ func TestDropRetryerWrappedTwice(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("GetRetryToken deadlocked")
+	}
+}
+
+// blockingRetryer holds GetRetryToken until release is closed.
+type blockingRetryer struct {
+	aws.RetryerV2
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingRetryer) GetRetryToken(ctx context.Context, err error) (func(error) error, error) {
+	close(r.entered)
+	<-r.release
+	return noRelease, nil
+}
+
+// A call that waits for another call of the same drop to pay gives up when its own ctx ends.
+func TestDropRetryerFollowerHonoursItsContext(t *testing.T) {
+	inner := &blockingRetryer{entered: make(chan struct{}), release: make(chan struct{})}
+	r := wrapRetryer(inner).(aws.RetryerV2)
+	d := &dropCharge{}
+	leader := make(chan error, 1)
+	go func() {
+		_, err := r.GetRetryToken(context.Background(), lostErr(d))
+		leader <- err
+	}()
+	<-inner.entered
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	follower := make(chan error, 1)
+	go func() {
+		_, err := r.GetRetryToken(ctx, lostErr(d))
+		follower <- err
+	}()
+	select {
+	case err := <-follower:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("follower: got %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Error("the follower waited for the paying call past its own ctx")
+	}
+	close(inner.release)
+	if err := <-leader; err != nil {
+		t.Errorf("leader: got %v, want nil", err)
+	}
+	if _, err := r.GetRetryToken(context.Background(), lostErr(d)); err != nil {
+		t.Errorf("a call after the payment: got %v, want nil", err)
+	}
+}
+
+// ctxRetryer refuses a retry token with ctx.Err() once ctx has ended, as a retryer that waits
+// on ctx does, and counts the tokens it grants.
+type ctxRetryer struct {
+	aws.RetryerV2
+	granted int
+}
+
+func (r *ctxRetryer) GetRetryToken(ctx context.Context, err error) (func(error) error, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	r.granted++
+	return noRelease, nil
+}
+
+// A payment refused only because the paying call's own ctx ended settles nothing: the next
+// call of the drop pays, and no call sees another call's context error.
+func TestDropRetryerPayerContextEndSettlesNothing(t *testing.T) {
+	inner := &ctxRetryer{}
+	r := wrapRetryer(inner).(aws.RetryerV2)
+	d := &dropCharge{}
+	ended, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := r.GetRetryToken(ended, lostErr(d)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("payer with an ended ctx: got %v, want context.Canceled", err)
+	}
+	for i := range 3 {
+		if _, err := r.GetRetryToken(context.Background(), lostErr(d)); err != nil {
+			t.Fatalf("call %d after it: got %v, want nil", i, err)
+		}
+	}
+	if inner.granted != 1 {
+		t.Fatalf("the retryer granted %d tokens for one drop, want 1", inner.granted)
+	}
+}
+
+// panicRetryer panics on its first GetRetryToken and grants every later one.
+type panicRetryer struct {
+	aws.RetryerV2
+	calls int
+}
+
+func (r *panicRetryer) GetRetryToken(context.Context, error) (func(error) error, error) {
+	if r.calls++; r.calls == 1 {
+		panic("retryer failed")
+	}
+	return noRelease, nil
+}
+
+// A payment that panics settles nothing: the panic reaches the paying call and the next call
+// of the drop pays.
+func TestDropRetryerPanicSettlesNothing(t *testing.T) {
+	inner := &panicRetryer{}
+	r := wrapRetryer(inner).(aws.RetryerV2)
+	d := &dropCharge{}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("the retryer's panic did not reach the paying call")
+			}
+		}()
+		_, _ = r.GetRetryToken(context.Background(), lostErr(d))
+	}()
+	if _, err := r.GetRetryToken(context.Background(), lostErr(d)); err != nil || inner.calls != 2 {
+		t.Fatalf("next call: got %v after %d retryer calls, want nil after 2", err, inner.calls)
+	}
+}
+
+// Calls of one drop asking at once share one payment.
+func TestDropRetryerConcurrentCallsPayOnce(t *testing.T) {
+	inner := &countingRetryer{RetryerV2: retry.NewStandard()}
+	r := wrapRetryer(inner).(aws.RetryerV2)
+	d := &dropCharge{}
+	var wg sync.WaitGroup
+	var granted atomic.Int32
+	for range 50 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := r.GetRetryToken(context.Background(), lostErr(d)); err == nil {
+				granted.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := granted.Load(); n != 50 || inner.retryTokens != 1 {
+		t.Fatalf("granted %d, quota asked %d times; want 50, 1", n, inner.retryTokens)
 	}
 }

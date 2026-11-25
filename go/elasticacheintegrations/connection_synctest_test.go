@@ -8,6 +8,7 @@ package elasticacheintegrations
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"strings"
 	"testing"
@@ -203,5 +204,64 @@ func TestIdleConnectionStaysUp(t *testing.T) {
 			t.Fatalf("an idle connection died: %v", conn.err())
 		}
 		conn.close()
+	})
+}
+
+// holdHandler holds every record of event ev until release is closed.
+type holdHandler struct {
+	ev      eventID
+	held    chan struct{} // closed when the first record of ev arrives
+	release chan struct{}
+}
+
+func (h *holdHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *holdHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *holdHandler) WithGroup(string) slog.Handler            { return h }
+func (h *holdHandler) Handle(_ context.Context, r slog.Record) error {
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == "event" && a.Value.Int64() == int64(h.ev) {
+			select {
+			case <-h.held:
+			default:
+				close(h.held)
+			}
+			<-h.release
+			return false
+		}
+		return true
+	})
+	return nil
+}
+
+// A deadline check that has marked the connection dead and is still reporting it holds up
+// close: close returns only after the check has logged and called onLost.
+func TestConnectionCloseWaitsForTheDeadlineCheck(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, c := pipeMock(t, mockcache.Config{})
+		h := &holdHandler{ev: eventInOrderTimeout, held: make(chan struct{}), release: make(chan struct{})}
+		c.logger = newLogger(slog.New(h))
+		s.SetOnRequest(func(mockcache.Command) mockcache.Reply { return mockcache.Hang() })
+		lost := newLostRecorder()
+		conn, _, err := openConnection(context.Background(), c, &staticAuth{}, time.Now().Add(5*time.Second), lost.onLost)
+		if err != nil {
+			t.Fatal(err)
+		}
+		reply := send(context.Background(), conn, "a", time.Now())
+		<-h.held // the deadline check is logging 1202, before onLost
+		<-reply
+		closed := make(chan struct{})
+		go func() { conn.close(); close(closed) }()
+		synctest.Wait()
+		select {
+		case <-closed:
+			close(h.release)
+			t.Fatal("close returned while the deadline check was still running")
+		default:
+		}
+		close(h.release)
+		<-closed
+		if n := lost.count(); n != 1 {
+			t.Fatalf("onLost ran %d times by the time close returned, want 1", n)
+		}
 	})
 }

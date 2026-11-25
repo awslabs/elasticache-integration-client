@@ -48,7 +48,9 @@ type session struct {
 	auth authProvider
 	lg   *logger
 
-	ctx       context.Context // cancelled by close; every goroutine of the session stops on it
+	// ctx is the lifetime of the session's own goroutines, cancelled by close. It is never
+	// the context of a caller's request.
+	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
 	closeDone chan struct{} // closed when close has finished
@@ -63,12 +65,13 @@ type session struct {
 
 	isClosed atomic.Bool // set under mu when the state becomes closed
 
-	mu           sync.Mutex // never held across I/O, a wait, or a call to drop or close
-	state        sessionState
-	reconnecting bool        // a reconnect goroutine runs
-	dead         *connection // the dropped connection the next reconnect goroutine reaps
-	confirmedAt  time.Time   // the last time the cache confirmed the config
-	refresh      *periodicRunner
+	mu sync.Mutex // never held across I/O, a wait, or a call to drop or close
+	// state guards the reconnect goroutine: lost starts one only from sessionOpen, and it
+	// leaves sessionReconnecting only by publishing, so at most one is reconnecting.
+	state       sessionState
+	dead        *connection // the dropped connection the next reconnect goroutine reaps
+	confirmedAt time.Time   // the last time the cache confirmed the config
+	refresh     *periodicRunner
 
 	reconnectFailures failureLog
 	notSent           burstLog
@@ -192,7 +195,6 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 	s.confirmedAt = time.Now()
 	s.live.Store(conn)
 	s.state = sessionOpen
-	s.reconnecting = false
 	failures = s.reconnectFailures.recovered() // before a drop of conn can count a failure
 	if s.refresh == nil {
 		s.startRunners(snap.config.refreshInterval)
@@ -212,10 +214,11 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 func (s *session) startRunners(refreshInterval time.Duration) {
 	reauth := newPeriodicRunner("re-AUTH", s.cfg.reauthInterval, s.cfg,
 		func(failures int) time.Duration { return backoff(s.cfg, failures) }, s.reauthOnce)
-	s.refresh = newPeriodicRunner("config refresh", refreshInterval, s.cfg, nil, s.refreshOnce)
+	refresh := newPeriodicRunner("config refresh", refreshInterval, s.cfg, nil, s.refreshOnce)
+	s.refresh = refresh
 	s.wg.Add(2)
 	go func() { defer s.wg.Done(); reauth.run(s.ctx) }()
-	go func() { defer s.wg.Done(); s.refresh.run(s.ctx) }()
+	go func() { defer s.wg.Done(); refresh.run(s.ctx) }()
 }
 
 // reauthOnce sends AUTH with fresh credentials on the live connection (Java
@@ -327,11 +330,8 @@ func (s *session) lost(c *connection) {
 	s.live.Store(nil)
 	s.state = sessionReconnecting
 	s.dead = c
-	if !s.reconnecting {
-		s.reconnecting = true
-		s.wg.Add(1)
-		go s.reconnectLoop()
-	}
+	s.wg.Add(1)
+	go s.reconnectLoop()
 }
 
 // reconnectLoop brings up connections until one is published or the session closes.

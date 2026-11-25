@@ -107,8 +107,7 @@ func TestDialCacheRefusesBadCertificates(t *testing.T) {
 }
 
 func TestDialCacheInsecureSkipVerifyWarnsOnce(t *testing.T) {
-	insecureSkipVerifyWarned.Store(false)
-	t.Cleanup(func() { insecureSkipVerifyWarned.Store(false) })
+	t.Parallel()
 	s, addr := startMock(t, mockcache.Config{TLS: true})
 	logs, logger := testutil.NewLogCapture()
 	c := mockConfig(t, s, addr)

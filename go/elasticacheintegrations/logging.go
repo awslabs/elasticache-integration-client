@@ -43,9 +43,10 @@ const (
 )
 
 // logger writes the client's records. It never panics and never blocks the caller on a
-// failing handler beyond the handler's own call.
+// failing handler beyond the handler's own call. Each client has its own.
 type logger struct {
-	l *slog.Logger
+	l              *slog.Logger
+	insecureWarned atomic.Bool // the InsecureSkipVerify warning was written
 }
 
 // newLogger returns the configured logger, or the default: Info and above, as text, to
@@ -116,13 +117,9 @@ func (lg *logger) error(ev eventID, msg string, attrs ...slog.Attr) {
 	lg.log(slog.LevelError, ev, msg, attrs...)
 }
 
-// insecureSkipVerifyWarned is the only package-level mutable state: the warning is written
-// once per process.
-var insecureSkipVerifyWarned atomic.Bool
-
-// warnInsecureSkipVerify warns once per process that certificate checks are off.
+// warnInsecureSkipVerify warns once per client that certificate checks are off.
 func (lg *logger) warnInsecureSkipVerify() {
-	lg.warnOnce(&insecureSkipVerifyWarned, eventInsecureSkipVerify,
+	lg.warnOnce(&lg.insecureWarned, eventInsecureSkipVerify,
 		"TLS certificate verification is disabled (InsecureSkipVerify); use it only against a local or test endpoint")
 }
 

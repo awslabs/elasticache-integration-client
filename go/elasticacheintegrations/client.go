@@ -181,6 +181,9 @@ func closeSessions(sessions []*session) {
 	wg.Wait()
 }
 
+// pick marks tried sessions in a uint32, so there can be at most 32.
+var _ [32 - maxConnections]struct{}
+
 // failedAvoid is how long pick passes over a connection where a call failed, while another
 // connection is up: one that fails fast has the fewest calls in flight and would take them all.
 const failedAvoid = time.Second

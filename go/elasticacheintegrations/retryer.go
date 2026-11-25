@@ -14,8 +14,10 @@ import (
 // dropCharge is the retry quota cost of one connection drop, shared by every call the drop
 // failed. The first of them to ask for a retry token pays it; the others follow its answer.
 type dropCharge struct {
-	once sync.Once
-	err  error // the retryer's refusal, if it refused the first
+	mu      sync.Mutex
+	settled bool          // the retryer granted the token or refused it
+	err     error         // the refusal, once settled
+	paying  chan struct{} // non-nil while a call pays; closed when it is done
 }
 
 // dropRetryer is the SDK retryer of a client. A call failed by a connection drop costs the
@@ -38,25 +40,56 @@ func wrapRetryer(r aws.Retryer) aws.Retryer {
 }
 
 // GetRetryToken pays the drop's retry cost for the first call the drop failed. The others
-// retry without a token, or are refused as the first was.
+// wait for its answer, or for their own ctx, then retry without a token or are refused as the
+// first was. A payment that ends because the paying call's own ctx ended settles nothing: a
+// waiting call pays instead.
 func (r dropRetryer) GetRetryToken(ctx context.Context, opErr error) (func(error) error, error) {
 	var e *sdkError
 	if !errors.As(opErr, &e) || e.charge == nil || ctx.Value(payingDrop{}) != nil {
 		return r.RetryerV2.GetRetryToken(ctx, opErr)
 	}
-	release := noRelease
-	paid := false
-	e.charge.once.Do(func() {
-		paid = true
-		release, e.charge.err = r.RetryerV2.GetRetryToken(context.WithValue(ctx, payingDrop{}, true), opErr)
-	})
-	if e.charge.err != nil {
-		return nil, e.charge.err
+	d := e.charge
+	for {
+		d.mu.Lock()
+		if d.settled {
+			err := d.err
+			d.mu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+			return noRelease, nil
+		}
+		paying := d.paying
+		if paying == nil {
+			paying = make(chan struct{})
+			d.paying = paying
+			d.mu.Unlock()
+			return r.pay(ctx, opErr, d, paying)
+		}
+		d.mu.Unlock()
+		select {
+		case <-paying:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	if !paid {
-		return noRelease, nil
-	}
-	return release, nil
+}
+
+// pay asks the wrapped retryer for the drop's one token.
+func (r dropRetryer) pay(ctx context.Context, opErr error, d *dropCharge, paying chan struct{}) (release func(error) error, err error) {
+	answered := false
+	defer func() {
+		d.mu.Lock()
+		if answered && (err == nil || ctx.Err() == nil) {
+			d.settled, d.err = true, err
+		}
+		d.paying = nil
+		d.mu.Unlock()
+		close(paying)
+	}()
+	release, err = r.RetryerV2.GetRetryToken(context.WithValue(ctx, payingDrop{}, true), opErr)
+	answered = true
+	return release, err
 }
 
 func noRelease(error) error { return nil }

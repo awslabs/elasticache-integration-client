@@ -30,7 +30,7 @@ type Relay struct {
 	target   string
 	listener net.Listener
 	dial     func(ctx context.Context, addr string) (net.Conn, error)
-	ctx      context.Context
+	ctx      context.Context // the lifetime of the relay's goroutines, cancelled by Close
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 

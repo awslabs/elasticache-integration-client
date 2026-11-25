@@ -115,7 +115,7 @@ require the corresponding tests, README, and build checks to change with it.
   100 pending requests; a waiter that gives up never loses a slot.
 - **Lifecycle:** every goroutine is owned by the session and stopped by `Close`, which is
   idempotent and never waits on the cache. No package-level mutable state except the
-  once-per-process insecure-TLS warning and the `sync.Pool` buffers.
+  `sync.Pool` buffers.
 - **Authentication and transport:** credentials come from the built DynamoDB client's
   provider for every token; a rejected AUTH forces a new token; TLS 1.2 or later with
   certificate and host name checks by default. Tokens, signatures, credentials and bodies never
