@@ -225,8 +225,9 @@ public class PendingRequests {
     /**
      * Handle an already-detected response timeout and update pending state atomically.
      *
-     * <p>Async requests are removed without closing the tracker. FIFO timeouts fail all pending
-     * requests and are fatal. A request completed concurrently is reported as {@link
+     * <p>Async requests are removed without closing the tracker. A FIFO timeout completes only the
+     * timed-out request and is fatal; the caller must mark the connection dead before failing the
+     * remaining requests. A request completed concurrently is reported as {@link
      * TimeoutDisposition#COMPLETED}.
      */
     TimeoutDisposition onTimeout(CompletableFuture<RespValue> future, Throwable cause) {
@@ -238,7 +239,7 @@ public class PendingRequests {
             if (future.isDone()) {
                 return TimeoutDisposition.COMPLETED;
             }
-            failAllLocked(cause);
+            future.completeExceptionally(cause);
             return TimeoutDisposition.FATAL;
         } finally {
             lock.unlock();
