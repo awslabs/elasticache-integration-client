@@ -61,14 +61,15 @@ jobs:
           done
 
   # Report when a tracked file uses an internal term. The patterns come from the
-  # DENYLIST repository secret, so they stay out of the public repository. Fork
-  # pull requests get no secrets, so this job skips them. The push to main still
-  # checks merged content. The ci aggregate job does not need this job, so a
-  # failed run does not block merge.
+  # DENYLIST repository secret, so they stay out of the public repository.
+  # Fork pull requests and pull request runs triggered by Dependabot cannot
+  # access Actions secrets. Pushes still check merged content. The ci
+  # aggregate job does not need this job, so a failed run does not block merge.
   denylist:
     if: >-
       github.event_name != 'pull_request' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

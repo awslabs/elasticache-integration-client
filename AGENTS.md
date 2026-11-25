@@ -49,7 +49,8 @@ Run commands from the client directory they apply to:
   line, kept outside the repository. It fails when a file that git
   tracks, or an untracked file that `.gitignore` doesn't exclude, matches one of
   them. CI runs it on pull requests from this repository and on pushes to `main`
-  with the `DENYLIST` secret. Fork pull requests skip it because they get no
+  and `release-*` with the `DENYLIST` secret. Fork pull requests and pull request
+  runs triggered by Dependabot skip it because they cannot access Actions
   secrets. The job is not in the `ci` aggregate, so a failed run does not block
   merge.
 - Repository: run `scripts/check-license-headers.sh` from any directory. It
