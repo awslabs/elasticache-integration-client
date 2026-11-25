@@ -16,6 +16,9 @@ on:
       node:
         type: boolean
         required: true
+      go:
+        type: boolean
+        required: true
 
 permissions:
   contents: read
@@ -96,3 +99,33 @@ jobs:
       - run: npm ci
       - name: Run alignment tests
         run: npx vitest run test/protocol-vectors.test.ts test/sdk-request-cases.test.ts
+
+  go:
+    if: inputs.go
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          cache-dependency-path: go/go.sum
+      # -run selects tests by name, so fail if a rename left none for it to select in a
+      # package that has them, or if listing fails.
+      - name: List the alignment tests
+        shell: bash
+        run: |
+          for pkg in ./elasticacheintegrations ./internal/resp; do
+            list="$(go test -list '^TestAlignment' "$pkg")"
+            if ! grep -q '^TestAlignment' <<<"$list"; then
+              echo "error: no TestAlignment tests in $pkg" >&2
+              exit 1
+            fi
+          done
+      - name: Run alignment tests
+        run: go test -count=1 -run '^TestAlignment' ./...

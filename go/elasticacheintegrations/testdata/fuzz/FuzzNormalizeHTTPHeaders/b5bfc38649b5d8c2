@@ -1,0 +1,10 @@
+go test fuzz v1
+string("0")
+string("")
+string("\xca")
+string(" ")
+string("0")
+string("0")
+string("\x85")
+string(" ")
+int64(0)

@@ -1,0 +1,12 @@
+# Test binaries, profiles and coverage output
+*.test
+*.out
+*.prof
+coverage.html
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Built binaries
+/bin/

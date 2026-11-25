@@ -118,6 +118,7 @@ jobs:
       python: true
       java: false
       node: false
+      go: false
 
   smoke:
     name: Smoke test wheel on Python ${{ matrix.python-version }}

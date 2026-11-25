@@ -16,6 +16,7 @@ includes a set of test examples.
 | Java | [`software.amazon.elasticache:aws-elasticache-integration-client`](https://central.sonatype.com/artifact/software.amazon.elasticache/aws-elasticache-integration-client) | JDK 8, AWS SDK for Java v2 2.21.0 | [java/README.md](java/README.md) |
 | Python | [`aws-elasticache-integration-client`](https://pypi.org/project/aws-elasticache-integration-client/) | Python 3.10, boto3 1.43 | [python/README.md](python/README.md) |
 | Node.js | [`@aws-sdk/aws-elasticache-integration-client`](https://www.npmjs.com/package/@aws-sdk/aws-elasticache-integration-client) | Node.js 22, AWS SDK for JavaScript v3 | [node/README.md](node/README.md) |
+| Go | [`github.com/awslabs/elasticache-integration-client/go`](https://pkg.go.dev/github.com/awslabs/elasticache-integration-client/go/elasticacheintegrations) | Go 1.24, AWS SDK for Go v2 1.48.0 | [go/README.md](go/README.md) |
 
 ## Getting started
 
@@ -70,6 +71,37 @@ await install({
 });
 
 await dynamodb.send(new GetItemCommand({ TableName: "Users", Key: { id: { S: "42" } } })); // unchanged
+```
+
+**Go**
+
+```go
+import (
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+
+	"github.com/awslabs/elasticache-integration-client/go/elasticacheintegrations"
+)
+
+cfg, err := config.LoadDefaultConfig(ctx, config.WithRegion("us-east-1"))
+if err != nil {
+	return err
+}
+ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticacheintegrations.Options{
+	Endpoint:  "my-cache-abc123.serverless.use1.cache.amazonaws.com:6379",
+	CacheName: "my-cache",
+})
+if err != nil {
+	return err
+}
+defer cache.Close()
+
+_, err = ddb.GetItem(ctx, &dynamodb.GetItemInput{ // unchanged
+	TableName: aws.String("Users"),
+	Key:       map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "42"}},
+})
 ```
 
 Each client's README covers configuration, what happens when the cache is unreachable, errors and authentication.

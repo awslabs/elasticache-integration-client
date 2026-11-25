@@ -1,0 +1,83 @@
+name: Go CI
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.go-version }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor in go.mod, then the two Go releases the Go team supports. setup-go
+        # resolves oldstable and stable, so the matrix follows new Go releases.
+        go-version: ["1.24", oldstable, stable]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Run the matrix Go, so a go.mod that raises the floor fails the 1.24 leg instead of
+      # switching to a newer toolchain. setup-go also sets it.
+      GOTOOLCHAIN: local
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: |
+            go/go.sum
+            go/examples/go.sum
+
+      - run: go version
+
+      # The local gate: gofmt, go vet (also GOARCH=386), go mod tidy, staticcheck, the
+      # examples, go test -race, go test with the coverage floor, one run of each benchmark,
+      # license headers.
+      # The alignment tests run in alignment-ci.yml.
+      - run: scripts/verify.sh --skip-alignment --coverprofile coverage.out
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-go-${{ matrix.go-version }}
+          path: go/coverage.out
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Known vulnerabilities in the code paths the module and the examples call, against the
+  # newest Go release, whose standard library a user can pick.
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: go
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            go/go.sum
+            go/examples/go.sum
+
+      - name: govulncheck
+        env:
+          GOWORK: "off"
+          GOVULNCHECK: golang.org/x/vuln/cmd/govulncheck@v1.10.0
+        run: |
+          go run "$GOVULNCHECK" ./...
+          cd examples
+          go run "$GOVULNCHECK" ./...

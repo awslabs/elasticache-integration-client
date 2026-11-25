@@ -17,6 +17,7 @@ body:
         - Java
         - Python
         - Node.js
+        - Go
         - All clients
     validations:
       required: true
@@ -34,7 +35,7 @@ body:
     id: sdk-version
     attributes:
       label: AWS SDK and runtime versions
-      placeholder: e.g. AWS SDK for Java 2.30.0 on JDK 21, boto3 1.43.0 on Python 3.12, AWS SDK for JavaScript 3.900.0 on Node.js 22
+      placeholder: e.g. AWS SDK for Java 2.30.0 on JDK 21, boto3 1.43.0 on Python 3.12, AWS SDK for JavaScript 3.900.0 on Node.js 22, AWS SDK for Go v2 1.48.0 on Go 1.26
     validations:
       required: true
 

@@ -6,21 +6,24 @@
 - Keep changes within the relevant client directory unless the change affects
   shared documentation or CI.
 - Read the package-specific `AGENTS.md` and `README.md` before editing code in
-  `node/` or `java/`.
+  `node/`, `java/` or `go/`.
 
 ## Repository map
 
 - `node/`: TypeScript/Node.js ElastiCache Integrations client.
 - `java/`: Java/AWS SDK v2 ElastiCache Integrations client.
 - `python/`: Python/boto3 ElastiCache Integrations client.
+- `go/`: Go/AWS SDK for Go v2 ElastiCache Integrations client.
 - `shared/`: language-neutral client test fixtures. `protocol-vectors.json` and
   `sdk-request-cases.json` are run by every client's tests and are not
   packaged. A change to the wire format or to how an SDK adapter
   builds a request updates the fixtures in the same change. The tests that run
   them are tagged `alignment` (a pytest marker, a JUnit tag, and the two Vitest
-  files). Pull request CI runs them in `.github/workflows/alignment-ci.yml` and
+  files) or, in Go, named `TestAlignment*` and selected with `-run` and `-skip`.
+  Pull request CI runs them in `.github/workflows/alignment-ci.yml` and
   excludes them from the client CI workflows. The release workflows still run
-  them before publishing.
+  them before publishing. Go has no release workflow: a Go release is a
+  `go/vX.Y.Z` tag on a commit whose CI is green.
 - `README.md`: repository-wide overview and client scope.
 - `.github/workflows/`: CI contracts for each client.
 
@@ -44,6 +47,12 @@ Run commands from the client directory they apply to:
   to fix formatting.
 - Python: use focused pytest tests when appropriate and `python -m pytest` for
   the complete local gate.
+- Go: use focused `go test -run` tests when appropriate and `scripts/verify.sh`
+  for the complete local gate (gofmt, go vet also for `GOARCH=386`,
+  `go mod tidy -diff`, staticcheck, the examples module, `go test -race`,
+  `go test` without `-race` so the allocation tests run, with a coverage floor
+  on the production packages, one run of every benchmark, and the license
+  check). CI runs the same script.
 - Repository: run `scripts/check-denylist.sh < <path>` from any directory.
   `<path>` is a file of case-insensitive Perl regular expressions, one per
   line, kept outside the repository. It fails when a file that git
@@ -53,7 +62,7 @@ Run commands from the client directory they apply to:
   secrets. The job is not in the `ci` aggregate, so a failed run does not block
   merge.
 - Repository: run `scripts/check-license-headers.sh` from any directory. It
-  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, or Python
+  fails when a tracked Java, TypeScript, JavaScript, Gradle Kotlin, Python, or Go
   file has no `SPDX-License-Identifier: Apache-2.0` header in its first 5
   lines. Files under `vendor/`, `node_modules/`, and `shared/` are skipped. CI
   runs it on every pull request, and the `ci` aggregate needs it.
@@ -75,7 +84,10 @@ Run commands from the client directory they apply to:
   `number` in Node, both in configuration and internally. Convert to seconds
   only at the call that needs them, such as `time.monotonic()`,
   `Future.result()` or a socket API. Longer periods — fallback windows,
-  cache-policy lifetimes, token refresh delays — stay in seconds.
+  cache-policy lifetimes, token refresh delays — stay in seconds. Go keeps
+  `time.Duration`, the type its APIs use, and refuses a timeout that is not a
+  whole number of milliseconds or a longer period that is not a whole number
+  of seconds, so every Go value is one the other clients can express.
 
 ## Completion checklist
 
