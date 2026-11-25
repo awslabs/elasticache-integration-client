@@ -191,8 +191,9 @@ func TestOpenStopsAtOnceOnOverridesRejected(t *testing.T) {
 		if !errors.As(err, new(*OverridesRejectedError)) || time.Since(start) != 0 || commandCount(m, "HELLO") != 1 {
 			t.Fatalf("err %v after %v, %d attempts", err, time.Since(start), commandCount(m, "HELLO"))
 		}
-		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 1 || recs[0].Level != slog.LevelError {
-			t.Fatalf("1307 records: %v", recs)
+		// Start-up returns the error, so it does not log it too.
+		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 0 {
+			t.Fatalf("1307 records: %v, want none", recs)
 		}
 	})
 }
@@ -205,8 +206,8 @@ func TestOpenStopsAtOnceOnUnevaluableConfig(t *testing.T) {
 		if !errors.As(err, new(*ConfigUnevaluableError)) || time.Since(start) != 0 || commandCount(m, "HELLO") != 1 {
 			t.Fatalf("err %v after %v", err, time.Since(start))
 		}
-		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 1 || recs[0].Level != slog.LevelError {
-			t.Fatalf("1307 records: %v", recs)
+		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 0 {
+			t.Fatalf("1307 records: %v, want none", recs)
 		}
 	})
 }
@@ -485,29 +486,38 @@ func TestLostIgnoresOtherConnections(t *testing.T) {
 	})
 }
 
-func TestReconnectLogsRejectedOverridesEveryAttempt(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		m, c, logs := sessionMock(t, mockcache.Config{})
-		s := openTestSession(t, c, &sessionAuth{})
-		first := s.live.Load()
-		var mu sync.Mutex
-		rejected := 0
-		m.SetIntercept(func(cmd mockcache.Command) *mockcache.Reply {
-			mu.Lock()
-			defer mu.Unlock()
-			if cmd.Name() != "AWS.CONFIG" || rejected == 3 {
-				return nil
-			}
-			rejected++
-			r := mockcache.Now(resp.ErrorValue("CONFIG_INVALID", "unknown table"))
-			return &r
+// A reconnect logs 1307 once per attempt that gets overrides rejected or a config the client
+// cannot evaluate.
+func TestReconnectLogsUnusableConfigEveryAttempt(t *testing.T) {
+	for name, r := range map[string]resp.Value{
+		"overrides rejected": resp.ErrorValue("CONFIG_INVALID", "unknown table"),
+		"unevaluable":        resp.BulkStringValue(`{"version":"1.0","refresh_interval":60,"predicates":[{"expr":"("}]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				m, c, logs := sessionMock(t, mockcache.Config{})
+				s := openTestSession(t, c, &sessionAuth{})
+				first := s.live.Load()
+				var mu sync.Mutex
+				bad := 0
+				m.SetIntercept(func(cmd mockcache.Command) *mockcache.Reply {
+					mu.Lock()
+					defer mu.Unlock()
+					if cmd.Name() != "AWS.CONFIG" || bad == 3 {
+						return nil
+					}
+					bad++
+					reply := mockcache.Now(r)
+					return &reply
+				})
+				m.DropAll()
+				waitLive(t, s, first)
+				if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 3 || recs[0].Level != slog.LevelError {
+					t.Fatalf("1307 records: %v, want 3 at Error", recs)
+				}
+			})
 		})
-		m.DropAll()
-		waitLive(t, s, first)
-		if recs := eventRecords(logs, eventConfigUnusable); len(recs) != 3 || recs[0].Level != slog.LevelError {
-			t.Fatalf("1307 records: %v", recs)
-		}
-	})
+	}
 }
 
 // closeGateAuth is a sessionAuth whose close waits for release.

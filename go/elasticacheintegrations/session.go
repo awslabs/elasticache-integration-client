@@ -44,9 +44,9 @@ func (o *outage) end() { o.readyOnce.Do(func() { close(o.ready) }) }
 // session owns the live cache connection: it opens it, replaces it after a drop, routes
 // requests to it, and runs re-AUTH and config refresh on it.
 type session struct {
-	cfg  *config
-	auth authProvider
-	lg   *logger
+	cfg    *config
+	auth   authProvider
+	logger *logger
 
 	// ctx is the lifetime of the session's own goroutines, cancelled by close. It is never
 	// the context of a caller's request.
@@ -91,7 +91,7 @@ func openSession(ctx context.Context, cfg *config, auth authProvider) (*session,
 
 func newSession(cfg *config, auth authProvider) *session {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &session{cfg: cfg, auth: auth, lg: cfg.logger, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
+	return &session{cfg: cfg, auth: auth, logger: cfg.logger, ctx: ctx, cancel: cancel, closeDone: make(chan struct{})}
 }
 
 // open is the start-up loop (Java Session.open).
@@ -116,7 +116,7 @@ func (s *session) open(ctx context.Context) error {
 			return err // a retry sends the same overrides and gets the same answer
 		}
 		last = err
-		s.lg.debug(eventBringUpAttemptFailed, "connecting to the cache failed; retrying",
+		s.logger.debug(eventBringUpAttemptFailed, "connecting to the cache failed; retrying",
 			slog.Int("attempt", attempt), slog.String("error", err.Error()))
 		left := time.Until(deadline)
 		if left <= 0 {
@@ -161,14 +161,8 @@ func (s *session) attempt(ctx context.Context, deadline time.Time) (*connection,
 	}
 	conn, rc, err := openConnection(ctx, s.cfg, s.auth, deadline, onLost)
 	if err != nil {
-		if errors.As(err, new(*OverridesRejectedError)) {
-			s.lg.error(eventConfigUnusable, "the cache rejected the overrides (CONFIG_INVALID); the connection is closed",
-				slog.String("error", err.Error()))
-		}
 		if errors.As(err, new(*AuthError)) {
-			fctx, cancel := context.WithDeadline(ctx, deadline)
-			_ = s.auth.forceRefresh(fctx)
-			cancel()
+			s.forceRefresh(ctx, deadline)
 		}
 		return nil, nil, err
 	}
@@ -176,11 +170,31 @@ func (s *session) attempt(ctx context.Context, deadline time.Time) (*connection,
 	preds, err := compilePredicates(rc.raw)
 	if err != nil {
 		conn.close()
-		s.lg.error(eventConfigUnusable, "the cache sent a config this client cannot evaluate; the connection is closed",
-			slog.String("error", err.Error()))
 		return nil, nil, err
 	}
 	return conn, &snapshot{config: rc, predicates: preds}, nil
+}
+
+// forceRefresh signs a new token, after the cache rejected one, before deadline. Its error is
+// not returned: the caller already returns the *AuthError, and the next credentials call
+// reports a signer that keeps failing.
+func (s *session) forceRefresh(ctx context.Context, deadline time.Time) {
+	fctx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	_ = s.auth.forceRefresh(fctx)
+}
+
+// logUnusable logs a reconnect that got overrides rejected or a config the client cannot
+// evaluate. Start-up returns those errors instead.
+func (s *session) logUnusable(err error) {
+	switch {
+	case errors.As(err, new(*OverridesRejectedError)):
+		s.logger.error(eventConfigUnusable, "the cache rejected the overrides (CONFIG_INVALID); the connection is closed",
+			slog.String("error", err.Error()))
+	case errors.As(err, new(*ConfigUnevaluableError)):
+		s.logger.error(eventConfigUnusable, "the cache sent a config this client cannot evaluate; the connection is closed",
+			slog.String("error", err.Error()))
+	}
 }
 
 // publish makes conn the live connection and returns the reconnect failures before it. It
@@ -207,7 +221,7 @@ func (s *session) publish(conn *connection, snap *snapshot) (failures uint64, ok
 	if o != nil {
 		o.end()
 	}
-	s.lg.debug(eventConfigApplied, "applied the cache config", slog.Any("config", snap.config))
+	s.logger.debug(eventConfigApplied, "applied the cache config", slog.Any("config", snap.config))
 	return failures, true
 }
 
@@ -240,9 +254,7 @@ func (s *session) reauthOnce(ctx context.Context) (bool, error) {
 	}
 	if err := c.reauth(ctx, creds); err != nil {
 		if errors.As(err, new(*AuthError)) && c.alive() {
-			fctx, cancel := context.WithTimeout(ctx, s.cfg.cacheRequestTimeout)
-			_ = s.auth.forceRefresh(fctx)
-			cancel()
+			s.forceRefresh(ctx, time.Now().Add(s.cfg.cacheRequestTimeout))
 		}
 		return true, err
 	}
@@ -285,7 +297,7 @@ func (s *session) refreshConfirmed(c *connection, next *snapshot) bool {
 	s.confirmedAt = time.Now()
 	s.mu.Unlock()
 	if next != nil {
-		s.lg.debug(eventConfigApplied, "applied the cache config", slog.Any("config", next.config))
+		s.logger.debug(eventConfigApplied, "applied the cache config", slog.Any("config", next.config))
 	}
 	return true
 }
@@ -304,11 +316,11 @@ func (s *session) refreshFailed(c *connection, err error) (bool, error) {
 	age := time.Since(s.confirmedAt)
 	s.mu.Unlock()
 	if errors.As(err, new(*ConfigUnevaluableError)) || errors.As(err, new(*OverridesRejectedError)) {
-		s.lg.error(eventConfigUnusable, "the cache sent a config this client cannot use; keeping the current one",
+		s.logger.error(eventConfigUnusable, "the cache sent a config this client cannot use; keeping the current one",
 			slog.String("error", err.Error()))
 	}
 	if age >= s.cfg.cachePolicyTimeout {
-		s.lg.warn(eventConfigStale, "the config was not confirmed within CachePolicyTimeout; reconnecting to fetch a current one",
+		s.logger.warn(eventConfigStale, "the config was not confirmed within CachePolicyTimeout; reconnecting to fetch a current one",
 			slog.Duration("age", age), slog.Duration("cache_policy_timeout", s.cfg.cachePolicyTimeout))
 		c.drop("the config was not confirmed within CachePolicyTimeout")
 	}
@@ -356,7 +368,7 @@ func (s *session) reconnectLoop() {
 				if n == 0 {
 					level = slog.LevelDebug // the first attempt worked; 1201 already said why
 				}
-				s.lg.log(level, eventReconnected, "reconnected to the cache", slog.Uint64("failed_attempts", n))
+				s.logger.log(level, eventReconnected, "reconnected to the cache", slog.Uint64("failed_attempts", n))
 				return
 			}
 			if s.closed() {
@@ -367,11 +379,12 @@ func (s *session) reconnectLoop() {
 		if s.ctx.Err() != nil {
 			return
 		}
+		s.logUnusable(err)
 		if n, log := s.reconnectFailures.failed(); log {
-			s.lg.warn(eventReconnecting, "reconnecting to the cache failed; retrying in the background",
+			s.logger.warn(eventReconnecting, "reconnecting to the cache failed; retrying in the background",
 				slog.Uint64("failures", n), slog.String("error", err.Error()))
 		} else {
-			s.lg.debug(eventReconnecting, "reconnecting to the cache failed",
+			s.logger.debug(eventReconnecting, "reconnecting to the cache failed",
 				slog.Uint64("failures", n), slog.String("error", err.Error()))
 		}
 		if !sleepCtx(s.ctx, backoff(s.cfg, attempt)) {
@@ -467,14 +480,14 @@ func (s *session) tryRequest(ctx context.Context, r *request, mayWait bool) (req
 		reply, err := c.request(ctx, r)
 		o, drop := replyOutcome(reply, err, outcomeContext{strict: strict, closed: s.closed(), healthy: s.connected()})
 		if drop != "" && c.drop(drop) && reply.server.kind() == serverAuth {
-			s.lg.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
+			s.logger.warn(eventAuthDegraded, "the cache has no valid AWS credentials for this connection; reconnecting")
 		}
 		if o.retryable && !c.alive() && droppedBy(o.err) {
 			o.charge = c.charge
 		}
 		if errors.As(err, new(*RequestNotSentError)) {
 			if s.notSent.hit(time.Now()) {
-				s.lg.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
+				s.logger.warn(eventPendingLimitReached, "a request found no capacity on the cache connection in time")
 			}
 		}
 		return o, true
@@ -516,7 +529,7 @@ func (s *session) awaitReconnect(ctx context.Context, strict bool) (o requestOut
 		return toOrigin(), true
 	}
 	if out.exhausted.CompareAndSwap(false, true) {
-		s.lg.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
+		s.logger.warn(eventCacheUnavailable, "the cache is unreachable and fallback to DynamoDB is not allowed; requests fail until it reconnects")
 	}
 	return classified(unavailable(noFallback+"there is no cache connection", nil), false), true
 }

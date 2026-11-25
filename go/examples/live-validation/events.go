@@ -104,6 +104,7 @@ func (h *eventHandler) Handle(_ context.Context, r slog.Record) error {
 	if e.at.IsZero() {
 		e.at = time.Now()
 	}
+	var task string
 	visit := func(a slog.Attr) bool {
 		v := a.Value.Resolve()
 		switch {
@@ -111,6 +112,8 @@ func (h *eventHandler) Handle(_ context.Context, r slog.Record) error {
 			e.id = int(v.Int64())
 		case a.Key == "error":
 			e.err = v.String()
+		case a.Key == "task":
+			task = v.String()
 		}
 		return true
 	}
@@ -118,6 +121,9 @@ func (h *eventHandler) Handle(_ context.Context, r slog.Record) error {
 		visit(a)
 	}
 	r.Attrs(visit)
+	if task != "" {
+		e.msg = task + ": " + e.msg // so a prefix can name the periodic task
+	}
 	h.log.add(e)
 	return nil
 }

@@ -87,10 +87,10 @@ func TestLoadSettings(t *testing.T) {
 func TestEventLog(t *testing.T) {
 	var out bytes.Buffer
 	l := newEventLog(&out)
-	lg := l.logger().With(slog.Int("event", 1101))
-	lg.Debug("re-AUTH failed; retrying", slog.String("error", "WRONGPASS bad"))
+	lg := l.logger().With(slog.Int("event", 1101), slog.String("task", "re-AUTH"))
+	lg.Debug("a periodic task failed; retrying", slog.String("error", "WRONGPASS bad"))
 	mark := l.mark()
-	lg.Warn("re-AUTH failed; retrying", slog.String("error", "WRONGPASS bad"))
+	lg.Warn("a periodic task failed; retrying", slog.String("error", "WRONGPASS bad"))
 	l.logger().Info("reconnected to the cache", slog.Int("event", 1304))
 	if n := l.since(0, 1101, "re-AUTH"); n != 2 {
 		t.Fatalf("since(0) = %d, want 2", n)

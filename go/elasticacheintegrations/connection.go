@@ -87,7 +87,10 @@ func openConnection(ctx context.Context, cfg *config, auth authProvider, deadlin
 	if err != nil {
 		return nil, nil, bringUpError(ctx, err)
 	}
-	_ = nc.SetDeadline(deadline)
+	if err := nc.SetDeadline(deadline); err != nil {
+		_ = closeSocket(nc)
+		return nil, nil, bringUpError(ctx, stepFailed(bctx, "bring-up", err))
+	}
 	// A done bctx moves the socket deadline to the past, so a blocked read or write returns.
 	stop := context.AfterFunc(bctx, func() { _ = nc.SetDeadline(time.Unix(1, 0)) })
 	conn := newConnection(cfg, nc, onLost)

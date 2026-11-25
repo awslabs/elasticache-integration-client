@@ -59,8 +59,9 @@ type Options struct {
 	// start-up time matters more than throughput. Default 4, at most 16.
 	Connections int
 
-	// Logger receives the client's log records. Default: Info and above, as text, to stderr.
-	// Use slog.New(slog.DiscardHandler) to silence it.
+	// Logger receives the client's log records. Default: slog.Default(), read for each
+	// record, which with no configuration writes Info and above to stderr. Use
+	// slog.New(slog.DiscardHandler) to silence it.
 	Logger *slog.Logger
 }
 

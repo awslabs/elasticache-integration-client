@@ -174,7 +174,7 @@ ddb, cache, err := elasticacheintegrations.NewFromConfig(ctx, cfg, elasticachein
 | `CachePolicyTimeout` | 1h | How long the client keeps using a cache policy the cache has not confirmed. Whole seconds. See [Cache policy timeout](#cache-policy-timeout). |
 | `IAMTokenRefreshDelay` | 300s | How long after a token is signed a replacement is signed in the background. Whole seconds, 1s to 879s. See [Authentication](#authentication). |
 | `Connections` | 4 | How many cache connections the client opens, 1 to 16. See [Connections](#connections). |
-| `Logger` | Info and above, as text, to stderr | Where the client logs. See [Logging](#logging). |
+| `Logger` | `slog.Default()` | Where the client logs. See [Logging](#logging). |
 
 Timeouts are `time.Duration` values, but they must be whole milliseconds and the longer periods whole seconds, so every value is one the other clients can express too.
 
@@ -411,15 +411,15 @@ The connection always uses TLS 1.2 or later. The cache's certificate and host na
 
 ## Logging
 
-The client logs through `log/slog`. Without `Options.Logger` it writes Info and above, as text, to stderr, so warnings are never lost. Pass `slog.New(slog.DiscardHandler)` to silence it. Every record has `component=elasticacheintegrations` and an `event` id. Messages never hold tokens, signatures, credentials, request or response bodies. A logger that panics cannot stop the client.
+The client logs through `log/slog`. Without `Options.Logger` it writes each record through `slog.Default()` as it is at that moment: an application that configures slog, before or after `NewFromConfig`, gets the client's records in its own format, and with no configuration they go to stderr at Info and above, so warnings are never lost. Pass `slog.New(slog.DiscardHandler)` to silence it. Every record has `component=elasticacheintegrations` and an `event` id. Messages never hold tokens, signatures, credentials, request or response bodies. A logger that panics cannot stop the client.
 
 A failure that repeats logs at Warn the first time and every 100th time, so an outage does not flood the log.
 
 | Event | Meaning | Level |
 |---|---|---|
 | 1001 | `InsecureSkipVerify` is on | Warn, once per client |
-| 1101 | A re-AUTH or config refresh failed | Warn on the first and every 100th failure, else Debug |
-| 1102 | A re-AUTH or config refresh succeeded after failures | Info |
+| 1101 | A re-AUTH or config refresh failed; `task` names it | Warn on the first and every 100th failure, else Debug |
+| 1102 | A re-AUTH or config refresh succeeded after failures; `task` names it | Info |
 | 1103 | The cache replied `AUTH_ERROR`; reconnecting | Warn, once per dropped connection |
 | 1201 | The connection was lost | Info; 1303 warns when reconnecting keeps failing |
 | 1202 | An in-order reply did not arrive in time; the connection is closed | Warn |
@@ -430,7 +430,7 @@ A failure that repeats logs at Warn the first time and every 100th time, so an o
 | 1304 | Reconnected | Info, or Debug when the first attempt worked |
 | 1305 | The cache is unreachable and requests may not go to DynamoDB | Warn, once per outage |
 | 1306 | The config was not confirmed within `CachePolicyTimeout`; reconnecting | Warn |
-| 1307 | The cache rejected the overrides, or sent a config the client cannot use | Error |
+| 1307 | On a reconnect or refresh, the cache rejected the overrides, or sent a config the client cannot use. At startup the error is returned instead | Error |
 | 1308 | A request found no room on the connection in time | Warn once per burst; a burst ends after 1 s with none |
 
 ## Limits

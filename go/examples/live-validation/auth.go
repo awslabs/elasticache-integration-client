@@ -42,7 +42,7 @@ func runAuth(ctx context.Context, l *live) error {
 	l.step("credentials broken; waiting up to %s for the first periodic re-AUTH", reauthWait)
 
 	wctx, cancel := context.WithTimeout(ctx, reauthWait)
-	failed, ok := l.events.wait(wctx, mark, 1101, "re-AUTH failed", 1)
+	failed, ok := l.events.wait(wctx, mark, 1101, "re-AUTH: a periodic task failed", 1)
 	cancel()
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -64,10 +64,10 @@ func runAuth(ctx context.Context, l *live) error {
 	sw.broken.Store(false)
 
 	wctx, cancel = context.WithTimeout(ctx, time.Minute)
-	recovered, ok := l.events.wait(wctx, mark, 1102, "re-AUTH succeeded", 1)
+	recovered, ok := l.events.wait(wctx, mark, 1102, "re-AUTH: a periodic task succeeded", 1)
 	cancel()
 	l.check("7 re-AUTH with good credentials succeeds", ok, "after %s: %s, failed attempts %d",
-		recovered.at.Sub(failed.at).Round(time.Millisecond), recovered.msg, l.events.since(mark, 1101, "re-AUTH failed"))
+		recovered.at.Sub(failed.at).Round(time.Millisecond), recovered.msg, l.events.since(mark, 1101, "re-AUTH: a periodic task failed"))
 	return l.miss(ctx, c, "7 miss routed after the re-AUTH recovered", "auth-3")
 }
 

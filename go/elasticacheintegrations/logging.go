@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"runtime"
 	"sync/atomic"
 	"time"
@@ -45,20 +44,24 @@ const (
 // logger writes the client's records. It never panics and never blocks the caller on a
 // failing handler beyond the handler's own call. Each client has its own.
 type logger struct {
-	l              *slog.Logger
-	insecureWarned atomic.Bool // the InsecureSkipVerify warning was written
+	l              *slog.Logger // nil: slog.Default() as it is for each record
+	insecureWarned atomic.Bool  // the InsecureSkipVerify warning was written
 }
 
-// newLogger returns the configured logger, or the default: Info and above, as text, to
-// stderr, so warnings are visible with no configuration. A configured handler that panics
-// while taking the component attribute is replaced by the default.
+// componentAttr is on every record.
+var componentAttr = slog.String("component", "elasticacheintegrations")
+
+// newLogger returns the configured logger, or else one that writes each record through
+// slog.Default(), which with no configuration writes Info and above to stderr, so warnings
+// are visible. A configured handler that panics while taking the component attribute is
+// replaced by slog.Default().
 func newLogger(configured *slog.Logger) *logger {
 	if configured != nil {
 		if l := withComponent(configured); l != nil {
 			return &logger{l: l}
 		}
 	}
-	return &logger{l: withComponent(slog.New(newDefaultHandler(os.Stderr)))}
+	return &logger{}
 }
 
 func withComponent(l *slog.Logger) (out *slog.Logger) {
@@ -67,11 +70,17 @@ func withComponent(l *slog.Logger) (out *slog.Logger) {
 			out = nil
 		}
 	}()
-	return l.With(slog.String("component", "elasticacheintegrations"))
+	return l.With(componentAttr)
 }
 
-func newDefaultHandler(w io.Writer) slog.Handler {
-	return slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})
+// handler is the handler for one record. It is read per record when following
+// slog.Default(), so an application that calls slog.SetDefault later still gets the records,
+// at their own level.
+func (lg *logger) handler() slog.Handler {
+	if lg.l != nil {
+		return lg.l.Handler()
+	}
+	return slog.Default().Handler()
 }
 
 func (lg *logger) enabled(level slog.Level) (ok bool) {
@@ -80,7 +89,7 @@ func (lg *logger) enabled(level slog.Level) (ok bool) {
 			ok = false
 		}
 	}()
-	return lg.l.Enabled(context.Background(), level)
+	return lg.handler().Enabled(context.Background(), level)
 }
 
 // log writes one record. Its source is the caller of debug, info, warn or error.
@@ -89,13 +98,16 @@ func (lg *logger) log(level slog.Level, ev eventID, msg string, attrs ...slog.At
 	// not take them down.
 	defer func() { _ = recover() }()
 	ctx := context.Background()
-	h := lg.l.Handler()
+	h := lg.handler()
 	if !h.Enabled(ctx, level) {
 		return
 	}
 	var pcs [1]uintptr
 	runtime.Callers(3, pcs[:]) // skip Callers, log and the level method
 	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	if lg.l == nil {
+		r.AddAttrs(componentAttr)
+	}
 	r.AddAttrs(slog.Int("event", int(ev)))
 	r.AddAttrs(attrs...)
 	_ = h.Handle(ctx, r)

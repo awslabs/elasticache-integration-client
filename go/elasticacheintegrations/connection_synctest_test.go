@@ -265,3 +265,27 @@ func TestConnectionCloseWaitsForTheDeadlineCheck(t *testing.T) {
 		}
 	})
 }
+
+// noDeadlineConn refuses every deadline.
+type noDeadlineConn struct{ net.Conn }
+
+func (c noDeadlineConn) SetDeadline(time.Time) error { return errors.New("cannot set a deadline") }
+
+// A socket whose bring-up deadline cannot be set fails the attempt at once.
+func TestBringUpSetDeadlineFailure(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		s, c := pipeMock(t, mockcache.Config{})
+		c.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			nc, err := s.Dial(ctx, network, addr)
+			return noDeadlineConn{nc}, err
+		}
+		conn, _, err := openConnection(context.Background(), c, &staticAuth{}, time.Now().Add(5*time.Second), nil)
+		var ce *ConnectionError
+		if conn != nil || !errors.As(err, &ce) || !strings.Contains(err.Error(), "cannot set a deadline") {
+			t.Fatalf("openConnection = %v, %v; want a *ConnectionError naming the deadline failure", conn, err)
+		}
+		if n := commandCount(s, "HELLO"); n != 0 {
+			t.Fatalf("%d HELLO sent, want 0", n)
+		}
+	})
+}

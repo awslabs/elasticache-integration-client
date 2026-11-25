@@ -450,7 +450,7 @@ func (a *hookAuth) forceRefresh(ctx context.Context) error {
 func runnerRecords(logs *testutil.LogCapture, ev eventID, name string) []slog.Record {
 	var out []slog.Record
 	for _, r := range eventRecords(logs, ev) {
-		if strings.HasPrefix(r.Message, name+" ") {
+		if v, ok := testutil.Attr(r, "task"); ok && v.String() == name {
 			out = append(out, r)
 		}
 	}

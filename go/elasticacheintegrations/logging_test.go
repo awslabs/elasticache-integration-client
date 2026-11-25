@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"log/slog"
 	"path/filepath"
 	"runtime"
@@ -83,21 +84,23 @@ func TestLoggerAddsEventAndComponent(t *testing.T) {
 	}
 }
 
-func TestDefaultHandlerWritesInfoAndAboveAsText(t *testing.T) {
+// With no Logger option and no slog configuration, records reach stderr through the log
+// package at Info and above.
+func TestDefaultLoggerWritesInfoAndAboveWithNoConfiguration(t *testing.T) {
 	var buf bytes.Buffer
-	lg := newLogger(slog.New(newDefaultHandler(&buf)))
+	w, flags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(w); log.SetFlags(flags) })
+	lg := newLogger(nil)
 	lg.debug(eventLatePushDropped, "hidden")
-	lg.info(eventConfigApplied, "shown")
+	lg.warn(eventConnectionLost, "shown")
 	out := buf.String()
 	if strings.Contains(out, "hidden") {
 		t.Errorf("debug record written: %s", out)
 	}
-	if !strings.Contains(out, "level=INFO") || !strings.Contains(out, "msg=shown") ||
-		!strings.Contains(out, "event=1301") || !strings.Contains(out, "component=elasticacheintegrations") {
+	if !strings.Contains(out, "WARN shown") || !strings.Contains(out, "event=1201") ||
+		!strings.Contains(out, "component=elasticacheintegrations") {
 		t.Errorf("unexpected default output: %s", out)
-	}
-	if newLogger(nil).l == nil {
-		t.Fatal("newLogger(nil) has no logger")
 	}
 }
 
@@ -115,10 +118,70 @@ type panicOnWithAttrs struct{ slog.Handler }
 
 func (panicOnWithAttrs) WithAttrs([]slog.Attr) slog.Handler { panic("with attrs") }
 
+// setDefaultLogger makes l slog's default logger for the test, and restores the log
+// package's output, which slog.SetDefault redirects. Such tests cannot run in parallel.
+func setDefaultLogger(t *testing.T, l *slog.Logger) {
+	old, w, flags := slog.Default(), log.Writer(), log.Flags()
+	slog.SetDefault(l)
+	t.Cleanup(func() {
+		slog.SetDefault(old)
+		log.SetOutput(w)
+		log.SetFlags(flags)
+	})
+}
+
+func TestSetDefaultLoggerRestoresLogOutput(t *testing.T) {
+	w, flags := log.Writer(), log.Flags()
+	t.Run("swap", func(t *testing.T) { setDefaultLogger(t, slog.New(slog.DiscardHandler)) })
+	if log.Writer() != w || log.Flags() != flags {
+		t.Fatal("the log package's output was left redirected")
+	}
+}
+
 func TestNewLoggerFallsBackWhenWithAttrsPanics(t *testing.T) {
-	lg := newLogger(slog.New(panicOnWithAttrs{slog.DiscardHandler}))
-	if _, ok := lg.l.Handler().(*slog.TextHandler); !ok {
-		t.Fatalf("handler = %T, want the default text handler", lg.l.Handler())
+	capture, l := testutil.NewLogCapture()
+	setDefaultLogger(t, l)
+	newLogger(slog.New(panicOnWithAttrs{slog.DiscardHandler})).info(eventConfigApplied, "m")
+	records := capture.Records()
+	if len(records) != 1 {
+		t.Fatalf("slog.Default() got %d records, want 1", len(records))
+	}
+	if v, ok := testutil.Attr(records[0], "component"); !ok || v.String() != "elasticacheintegrations" {
+		t.Errorf("component = %v %v, want elasticacheintegrations", v, ok)
+	}
+}
+
+// With no Logger option the client logs through slog.Default(), so an application that sets
+// it gets the client's records in its own format.
+func TestNewLoggerDefaultsToSlogDefault(t *testing.T) {
+	capture, l := testutil.NewLogCapture()
+	setDefaultLogger(t, l)
+	newLogger(nil).warn(eventConnectionLost, "w")
+	records := capture.Records()
+	if len(records) != 1 || records[0].Message != "w" || records[0].Level != slog.LevelWarn {
+		t.Fatalf("records = %v, want the one warning", records)
+	}
+	if v, ok := testutil.Attr(records[0], "component"); !ok || v.String() != "elasticacheintegrations" {
+		t.Errorf("component = %v %v, want elasticacheintegrations", v, ok)
+	}
+	if v, ok := testutil.Attr(records[0], "event"); !ok || v.Int64() != int64(eventConnectionLost) {
+		t.Errorf("event = %v %v, want %d", v, ok, eventConnectionLost)
+	}
+}
+
+// slog.Default() is read for each record, so an application that configures slog after the
+// client starts gets every record, at its own level, from then on.
+func TestDefaultLoggerFollowsLaterSetDefault(t *testing.T) {
+	lg := newLogger(nil)
+	capture, l := testutil.NewLogCapture()
+	setDefaultLogger(t, l)
+	lg.warn(eventConnectionLost, "w")
+	records := capture.Records()
+	if len(records) != 1 || records[0].Level != slog.LevelWarn || records[0].Message != "w" {
+		t.Fatalf("records = %v, want the warning at Warn", records)
+	}
+	if v, ok := testutil.Attr(records[0], "component"); !ok || v.String() != "elasticacheintegrations" {
+		t.Errorf("component = %v %v, want elasticacheintegrations", v, ok)
 	}
 }
 
@@ -139,6 +202,8 @@ func TestLoggerSurvivesPanickingHandler(t *testing.T) {
 		var flag atomic.Bool
 		lg.warnOnce(&flag, eventInsecureSkipVerify, "m")
 	}
+	setDefaultLogger(t, slog.New(panicOnHandle{slog.DiscardHandler}))
+	newLogger(nil).warn(eventConnectionLost, "m")
 }
 
 func TestWarnOnceWritesOnceAndOnlyWhenEnabled(t *testing.T) {

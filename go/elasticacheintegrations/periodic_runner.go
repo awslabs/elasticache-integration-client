@@ -84,19 +84,18 @@ func (r *periodicRunner) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		switch {
-		case err != nil:
+		if err != nil {
 			failures++
 			level := slog.LevelDebug
 			if failures == 1 || failures%100 == 0 {
 				level = slog.LevelWarn
 			}
-			r.logger.log(level, eventPeriodicFailed, r.name+" failed; retrying",
-				slog.Int("failures", failures), slog.String("error", err.Error()))
-		default:
+			r.logger.log(level, eventPeriodicFailed, "a periodic task failed; retrying",
+				slog.String("task", r.name), slog.Int("failures", failures), slog.String("error", err.Error()))
+		} else {
 			if ran && failures > 0 {
-				r.logger.info(eventPeriodicRecovered, r.name+" succeeded after failures",
-					slog.Int("failures", failures))
+				r.logger.info(eventPeriodicRecovered, "a periodic task succeeded after failures",
+					slog.String("task", r.name), slog.Int("failures", failures))
 			}
 			failures = 0
 		}
