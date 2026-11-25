@@ -18,7 +18,8 @@
   other clients' files: `protocol.go`, `transport.go`,
   `connection.go`, `pending_requests.go`, `reply_reader.go`, `session.go`,
   `periodic_runner.go`, `fallback_policy.go` (the request outcome table and the retry
-  decision), `auth.go`, `predicates.go`, `predicate_body.go`, `predicate_fastpath.go`,
+  decision), `retryer.go` (the retryer wrapper that charges one dropped connection one
+  retry), `auth.go`, `predicates.go`, `predicate_body.go`, `predicate_fastpath.go`,
   `middleware.go` (the `aws.HTTPClient` wrapper and the request and response adapters),
   `client.go` (`NewFromConfig`, `New`, `Close`), `errors.go`, `models.go`, `options.go`,
   `options_validator.go`, `logging.go`, and `doc.go` (the package doc). Unit tests sit next to

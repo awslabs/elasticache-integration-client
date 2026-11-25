@@ -41,10 +41,11 @@ GitHub provides additional documentation on [forking a repository](https://help.
 ├── node/    # Node.js client
 ├── java/    # Java client
 ├── python/  # Python client
+├── go/      # Go client
 └── shared/  # Language-neutral client contracts
 ```
 
-- Building, testing and releasing a client: [Python](python/DEVELOPER.md), [Node.js](node/DEVELOPER.md), [Java](java/DEVELOPER.md).
+- Building, testing and releasing a client: [Python](python/DEVELOPER.md), [Node.js](node/DEVELOPER.md), [Java](java/DEVELOPER.md), [Go](go/DEVELOPER.md).
 - Adding third-party code to the repository or to a published package? Add its attribution to [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES).
 
 ## Finding contributions to work on

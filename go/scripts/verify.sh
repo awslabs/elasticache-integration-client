@@ -19,8 +19,10 @@
 set -euo pipefail
 
 # staticcheck runs through `go run` at this pinned version, so it is never a module dependency.
-# v0.8.2 needs Go 1.26 or later; under an older go it runs on a downloaded newer toolchain.
+# v0.8.2 needs Go 1.26 or later; under an older go the step is skipped (CI runs it on the
+# oldstable and stable legs), so the gate never downloads another toolchain.
 STATICCHECK="honnef.co/go/tools/cmd/staticcheck@v0.8.2"
+STATICCHECK_MIN_GO=26
 
 # The packages whose statements the coverage floor counts: the production code, not the test
 # support packages. Every test package counts toward them, the e2e suite included.
@@ -93,9 +95,20 @@ echo "== go mod tidy -diff (go/, go/examples/)"
 go mod tidy -diff
 (cd examples && go mod tidy -diff)
 
-echo "== staticcheck ./... ($STATICCHECK; go/, go/examples/)"
-GOTOOLCHAIN=auto go run "$STATICCHECK" ./...
-(cd examples && GOTOOLCHAIN=auto go run "$STATICCHECK" ./...)
+# GOVERSION is go1.26.3, go1.27rc1 or, for a development build, "devel go1.27-<hash> <date>".
+goversion="$(go env GOVERSION)"
+go_minor="$(sed -nE 's/^(devel )?go1\.([0-9]+).*/\2/p' <<<"$goversion")"
+if [ -z "$go_minor" ]; then
+  echo "error: cannot read the Go version from GOVERSION \"$goversion\"." >&2
+  exit 1
+fi
+if [ "$go_minor" -ge "$STATICCHECK_MIN_GO" ]; then
+  echo "== staticcheck ./... ($STATICCHECK; go/, go/examples/)"
+  go run "$STATICCHECK" ./...
+  (cd examples && go run "$STATICCHECK" ./...)
+else
+  echo "== staticcheck skipped: $goversion is older than go1.$STATICCHECK_MIN_GO"
+fi
 
 # The examples use only the public API, so building them checks it from outside the module.
 echo "== go vet ./... and go test -race ./... (go/examples/)"

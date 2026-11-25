@@ -478,6 +478,79 @@ func TestStartCallerCancels(t *testing.T) {
 	}
 }
 
+// A ctx that ends during start-up is returned as it is, before ConnectionTimeout.
+func TestStartCallerDeadline(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	intercept(s, "HELLO", mockcache.Hang())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	begin := time.Now()
+	ddb, cache, err := startClient(ctx, sdkConfig(t, s, addr), func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+		return dynamodb.NewFromConfig(awsConfig(), fns...)
+	}, nil)
+	if ddb != nil || cache != nil || err != context.DeadlineExceeded {
+		t.Fatalf("start = %v, %v, %v; want context.DeadlineExceeded", ddb, cache, err)
+	}
+	if took := time.Since(begin); took >= defaultConnectionTimeout {
+		t.Fatalf("start returned after %v; want before ConnectionTimeout", took)
+	}
+}
+
+// Ending the start-up ctx after start returns stops nothing: re-AUTH, the IAM token refresh,
+// reconnects and cache calls go on.
+func TestStartContextBoundsOnlyStartUp(t *testing.T) {
+	testutil.ClearAWSEnv(t)
+	s, addr := sdkMock(t)
+	var drop atomic.Bool
+	s.SetOnRequest(func(mockcache.Command) mockcache.Reply {
+		if drop.CompareAndSwap(true, false) {
+			return mockcache.Drop()
+		}
+		return servedJSON(200, musicItem)
+	})
+	c := sdkConfig(t, s, addr)
+	c.connections = 1
+	c.reauthInterval = 20 * time.Millisecond
+	c.iamTokenRefreshDelay = 50 * time.Millisecond
+	origin := &fakeOrigin{}
+	ctx, cancel := context.WithCancel(context.Background())
+	ddb, cache, err := startClient(ctx, c, func(fns ...func(*dynamodb.Options)) *dynamodb.Client {
+		return dynamodb.NewFromConfig(awsConfig(), fns...)
+	}, []func(*dynamodb.Options){func(o *dynamodb.Options) { o.HTTPClient = origin }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cache.Close()
+	cancel()
+
+	m := cache.auth.(*tokenManager)
+	cached := func() *cachedToken { m.mu.Lock(); defer m.mu.Unlock(); return m.cached }
+	first := cached()
+	waitFor(t, "a re-AUTH and a refreshed IAM token", func() bool {
+		auths := 0
+		for _, cmd := range s.Commands() {
+			if cmd.Name() == "AUTH" {
+				auths++
+			}
+		}
+		return auths >= 1 && cached() != first
+	})
+
+	drop.Store(true)
+	if _, err := getMusic(context.Background(), ddb); err != nil {
+		t.Fatalf("call on a dropped connection = %v", err)
+	}
+	waitFor(t, "the reconnect", func() bool { return s.Connections() == 2 && cache.sessions[0].connected() })
+	before, calls := len(s.Requests()), origin.count()
+	if _, err := getMusic(context.Background(), ddb); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(s.Requests()); got != before+1 || origin.count() != calls {
+		t.Fatalf("cache requests %d, origin calls %d; want %d, %d", got, origin.count(), before+1, calls)
+	}
+}
+
 func TestOptFnsNotMutated(t *testing.T) {
 	testutil.ClearAWSEnv(t)
 	s, addr := sdkMock(t)

@@ -11,6 +11,7 @@ body:
         - Java
         - Python
         - Node.js
+        - Go
         - All clients
     validations:
       required: true

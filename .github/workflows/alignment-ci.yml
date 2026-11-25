@@ -115,8 +115,17 @@ jobs:
         with:
           go-version: stable
           cache-dependency-path: go/go.sum
-      # -run selects tests by name, so fail if a rename left none for it to select.
+      # -run selects tests by name, so fail if a rename left none for it to select in a
+      # package that has them, or if listing fails.
       - name: List the alignment tests
-        run: go test -list '^TestAlignment' ./... | grep '^TestAlignment'
+        shell: bash
+        run: |
+          for pkg in ./elasticacheintegrations ./internal/resp; do
+            list="$(go test -list '^TestAlignment' "$pkg")"
+            if ! grep -q '^TestAlignment' <<<"$list"; then
+              echo "error: no TestAlignment tests in $pkg" >&2
+              exit 1
+            fi
+          done
       - name: Run alignment tests
         run: go test -count=1 -run '^TestAlignment' ./...

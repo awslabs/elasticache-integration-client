@@ -18,7 +18,7 @@ import (
 )
 
 // Client owns the cache connections of one DynamoDB client. Call Close when the DynamoDB
-// client is no longer used.
+// client is no longer used. A Client is safe for concurrent use.
 type Client struct {
 	cfg      *config
 	region   string       // the region the cache connections authenticate in
@@ -32,9 +32,17 @@ type Client struct {
 	closeOnce  sync.Once
 }
 
-// NewFromConfig builds a DynamoDB client from cfg and optFns, as [dynamodb.NewFromConfig] does,
-// and connects it to the cache: TCP, TLS, HELLO 3 AUTH and the first aws.config. It returns
-// only when the cache is usable, so a client that would never cache is not returned.
+// NewFromConfig builds a DynamoDB client from awsCfg and optFns, as [dynamodb.NewFromConfig] does,
+// and connects it to the cache: TCP, TLS, HELLO 3 AUTH and the first aws.config on each of
+// [Options.Connections] connections, opened at once. It returns only when every connection is
+// usable, so a client that would never cache is not returned.
+//
+// ctx bounds only this start-up: the first credentials retrieval and connecting, which
+// [Options.ConnectionTimeout] also bounds. The connections, their reconnects and the IAM
+// token refresh run in the background until [Client.Close], whatever happens to ctx. On
+// failure nothing keeps running, and the error is a
+// [*ConfigError], [*ConnectionError], [*AuthError], [*OverridesRejectedError] or
+// [*ConfigUnevaluableError], or ctx.Err() when ctx ended first.
 //
 // The returned client is a plain *dynamodb.Client. Calls the cache serves go to the cache;
 // every other call goes to DynamoDB through the HTTP client the SDK would have used, which
@@ -53,8 +61,8 @@ func NewFromConfig(ctx context.Context, awsCfg aws.Config, cacheOpts Options,
 	}, optFns)
 }
 
-// New is NewFromConfig for callers that build [dynamodb.Options] themselves, as
-// [dynamodb.New] does.
+// New is [NewFromConfig] for callers that build [dynamodb.Options] themselves, as
+// [dynamodb.New] does. Start-up, ctx and the errors are as for NewFromConfig.
 func New(ctx context.Context, ddbOptions dynamodb.Options, cacheOpts Options,
 	optFns ...func(*dynamodb.Options)) (*dynamodb.Client, *Client, error) {
 	cfg, err := cacheOpts.validate()
@@ -287,10 +295,14 @@ func (c *Client) closed() bool { return c.isClosed.Load() }
 
 const clientString = "elasticacheintegrations.Client"
 
-// String, GoString and Format print only the type name: the Client holds the DynamoDB
-// client's credentials provider, which may hold secrets in exported fields.
-func (c *Client) String() string             { return clientString }
-func (c *Client) GoString() string           { return clientString }
+// String returns only the type name: the Client holds the DynamoDB client's credentials
+// provider, which may hold secrets in exported fields.
+func (c *Client) String() string { return clientString }
+
+// GoString returns only the type name, as String does.
+func (c *Client) GoString() string { return clientString }
+
+// Format writes only the type name for every verb, as String does.
 func (c *Client) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, clientString) }
 
 // Close closes the cache connections, fails the requests still in flight on them, and waits

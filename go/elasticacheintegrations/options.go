@@ -54,9 +54,8 @@ type Options struct {
 	// Connections is how many cache connections the client opens. Each has its own AUTH,
 	// re-AUTH, config refresh, reconnect and fallback; they share one IAM token, and start-up
 	// opens them at once. Each call goes to the one that is up with the fewest calls in flight,
-	// passing over for one second one where a call failed. One connection serves about 35,000
-	// calls or 200 MB of replies per second. Use 16 for items of 100 KiB or more, and 1 when
-	// start-up time matters more than throughput. Default 4, at most 16.
+	// passing over for one second one where a call failed. Default 4, from 1 to 16. The
+	// README has sizing advice.
 	Connections int
 
 	// Logger receives the client's log records. Default: slog.Default(), read for each
@@ -88,8 +87,8 @@ const (
 	defaultJitter           = 0.2
 )
 
-// config is a validated Options with every default applied. Later fields are not public;
-// tests set them directly.
+// config is a validated Options with every default applied. The fields from maxPending on
+// have no Options counterpart; tests set them directly.
 type config struct {
 	endpoint string // as given, for messages
 	host     string // brackets of an IPv6 literal removed
