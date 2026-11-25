@@ -230,7 +230,7 @@ func TestRequestNotSentWhenWriteTurnStaysBusy(t *testing.T) {
 		start := time.Now()
 		o := <-send(context.Background(), conn, "u", start)
 		if !errors.As(o.err, new(*RequestNotSentError)) || o.at != 3750*time.Millisecond {
-			t.Fatalf("%v at %v", o.err, o.at)
+			t.Fatalf("request = %v at %v, want a *RequestNotSentError at 3.75s", o.err, o.at)
 		}
 		if free, _ := conn.pending.slots.state(); free != c.maxPending || len(s.Requests()) != 0 {
 			t.Fatalf("free %d, sent %d", free, len(s.Requests()))
@@ -258,7 +258,7 @@ func TestWriteTimeoutClosesConnection(t *testing.T) {
 		start := time.Now()
 		o := <-send(context.Background(), conn, "u", start)
 		if !errors.As(o.err, new(*TimeoutError)) || o.at != 5*time.Second {
-			t.Fatalf("%v at %v", o.err, o.at)
+			t.Fatalf("request = %v at %v, want a *TimeoutError at 5s", o.err, o.at)
 		}
 		if err := lost.wait(t); !errors.As(err, new(*ConnectionLostError)) || conn.alive() {
 			t.Fatalf("onLost(%v)", err)
@@ -472,8 +472,8 @@ func TestSlowWriteLeavesReplyItsMinimumBudget(t *testing.T) {
 		}()
 		start := time.Now()
 		o := <-send(context.Background(), conn, "u", start)
-		if !errors.As(o.err, new(*TimeoutError)) || o.at != 4900*time.Millisecond+1250*time.Millisecond {
-			t.Fatalf("%v at %v", o.err, o.at)
+		if want := 4900*time.Millisecond + 1250*time.Millisecond; !errors.As(o.err, new(*TimeoutError)) || o.at != want {
+			t.Fatalf("request = %v at %v, want a *TimeoutError at %v", o.err, o.at, want)
 		}
 		if lost.wait(t) == nil || conn.alive() {
 			t.Fatal("an in-order timeout kept the connection")
@@ -511,7 +511,7 @@ func TestCloseWithRequestsInFlight(t *testing.T) {
 		for _, ch := range outs {
 			var cl *ConnectionLostError
 			if o := <-ch; !errors.As(o.err, &cl) || cl.Msg != "the connection was closed" || o.at != time.Second {
-				t.Fatalf("%v at %v", o.err, o.at)
+				t.Fatalf("request = %v at %v, want *ConnectionLostError %q at 1s", o.err, o.at, "the connection was closed")
 			}
 		}
 		if lost.count() != 0 {
@@ -581,7 +581,7 @@ func TestBlockedWriteIsAWriteTimeout(t *testing.T) {
 			o := <-send(context.Background(), conn, "u", time.Now())
 			var te *TimeoutError
 			if !errors.As(o.err, &te) || te.Msg != "the request write timed out" || o.at != 5*time.Second {
-				t.Fatalf("%v at %v", o.err, o.at)
+				t.Fatalf("request = %v at %v, want *TimeoutError %q at 5s", o.err, o.at, "the request write timed out")
 			}
 			recs := eventRecords(logs, eventConnectionLost)
 			if len(recs) != 1 || recs[0].Level != slog.LevelInfo || len(eventRecords(logs, eventInOrderTimeout)) != 0 {

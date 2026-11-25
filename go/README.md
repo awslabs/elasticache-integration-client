@@ -94,7 +94,7 @@ func main() {
 		Key:       map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "42"}},
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err) // not log.Fatal, which would skip the deferred Close
 	}
 }
 ```
@@ -288,7 +288,7 @@ func main() {
 		Key:       map[string]types.AttributeValue{"id": &types.AttributeValueMemberS{Value: "42"}},
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err) // not log.Fatal, which would skip the deferred Close
 	}
 }
 ```

@@ -139,7 +139,7 @@ func TestLogCaptureConformsToSlogtest(t *testing.T) {
 	}, func(t *testing.T) map[string]any {
 		records := capture.Records()
 		if len(records) != 1 {
-			t.Fatalf("%d records", len(records))
+			t.Fatalf("Records() has %d records, want 1", len(records))
 		}
 		r := records[0]
 		m := map[string]any{slog.LevelKey: r.Level, slog.MessageKey: r.Message}
@@ -195,7 +195,7 @@ func TestLogCaptureKeepsAttrsGroupsAndIsConcurrent(t *testing.T) {
 	wg.Wait()
 	records := capture.Records()
 	if len(records) != 20 {
-		t.Fatalf("%d records", len(records))
+		t.Fatalf("Records() has %d records, want 20", len(records))
 	}
 	if v, ok := Attr(records[0], "a"); !ok || v.Int64() != 1 {
 		t.Errorf("a = %v %v", v, ok)

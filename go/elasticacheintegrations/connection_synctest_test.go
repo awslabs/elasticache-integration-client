@@ -43,14 +43,14 @@ func TestBringUpTimesOutAtEachStep(t *testing.T) {
 		setup func(s *mockcache.Server)
 		step  string
 	}{
-		{"TLS", func(s *mockcache.Server) { s.Hold() }, "TLS handshake"},
-		{"HELLO", func(s *mockcache.Server) { intercept(s, "HELLO", mockcache.Hang()) }, "HELLO 3"},
-		{"aws.config", func(s *mockcache.Server) { intercept(s, "AWS.CONFIG", mockcache.Hang()) }, "aws.config"},
+		{name: "TLS", setup: func(s *mockcache.Server) { s.Hold() }, step: "TLS handshake"},
+		{name: "HELLO", setup: func(s *mockcache.Server) { intercept(s, "HELLO", mockcache.Hang()) }, step: "HELLO 3"},
+		{name: "aws.config", setup: func(s *mockcache.Server) { intercept(s, "AWS.CONFIG", mockcache.Hang()) }, step: "aws.config"},
 		// The cache stops reading: closing the socket must not wait on the TLS close alert.
-		{"HELLO, cache not reading", func(s *mockcache.Server) { intercept(s, "HELLO", mockcache.After(time.Hour, resp.NullValue())) }, "HELLO 3"},
-		{"aws.config, cache not reading", func(s *mockcache.Server) {
+		{name: "HELLO, cache not reading", setup: func(s *mockcache.Server) { intercept(s, "HELLO", mockcache.After(time.Hour, resp.NullValue())) }, step: "HELLO 3"},
+		{name: "aws.config, cache not reading", setup: func(s *mockcache.Server) {
 			intercept(s, "AWS.CONFIG", mockcache.After(time.Hour, resp.NullValue()))
-		}, "aws.config"},
+		}, step: "aws.config"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,7 +64,7 @@ func TestBringUpTimesOutAtEachStep(t *testing.T) {
 				if conn != nil || !errors.As(err, &ce) || !errors.As(err, new(*TimeoutError)) ||
 					errors.As(err, new(*ConnectionLostError)) ||
 					!strings.HasPrefix(ce.Msg, tc.step) || !strings.Contains(ce.Msg, "timed out") {
-					t.Fatalf("err %v", err)
+					t.Fatalf("openConnection: %v; want a *ConnectionError wrapping a *TimeoutError for %q", err, tc.step)
 				}
 				if took := time.Since(start); took != 5*time.Second {
 					t.Fatalf("returned after %v, want the 5s deadline", took)

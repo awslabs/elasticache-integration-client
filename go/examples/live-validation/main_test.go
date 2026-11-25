@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -391,8 +392,11 @@ func TestRelayUnreachableTarget(t *testing.T) {
 	}
 	defer r.close()
 	c, err := net.Dial("tcp", r.addr())
+	if errors.Is(err, syscall.ECONNRESET) {
+		return // the relay reset the connection before the dial returned: it does not work
+	}
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("Dial(relay) = %v, want a connection or a reset", err)
 	}
 	defer c.Close()
 	if _, err := roundTrip(c, "x"); err == nil {
